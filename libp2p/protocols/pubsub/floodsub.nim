@@ -12,7 +12,7 @@ import
   ./timedcache,
   ./peertable,
   ./rpc/[message, messages, protobuf],
-  nimcrypto/[hash, sha2],
+  nimcrypto/sha2,
   ../../crypto/crypto,
   ../../stream/connection,
   ../../peerid,
