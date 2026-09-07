@@ -393,6 +393,19 @@ suite "GossipSubParams validation":
     params.maxLowPriorityQueueLen = 1
     check params.validateParameters().isOk()
 
+  test "maxIWantsPerMessage fails when zero":
+    const errorMessage = "gossipsub: maxIWantsPerMessage parameter error, Must be > 0"
+    var params = newDefaultValidParams()
+    params.maxIWantsPerMessage = 0
+    let res = params.validateParameters()
+    check res.isErr()
+    check res.error == errorMessage
+
+  test "maxIWantsPerMessage succeeds when positive":
+    var params = newDefaultValidParams()
+    params.maxIWantsPerMessage = 1
+    check params.validateParameters().isOk()
+
   test "overheadRateLimit.bytes fails when zero":
     const errorMessage =
       "gossipsub: overheadRateLimit.bytes parameter error, Must be > 0"
