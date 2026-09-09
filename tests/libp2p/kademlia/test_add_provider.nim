@@ -127,6 +127,27 @@ suite "KadDHT - Add Provider":
       kads[1].providerManager.knownKeys.len == 0
       kads[0].providerManager.providedKeys.len == 0
 
+  asyncTest "Refreshing a provided key at capacity preserves other keys":
+    let kad = setupKad()
+    startAndDeferStop(@[kad])
+    let keys = kad.providerManager.providedKeys
+    keys.capacity = 2
+    let first = Cid
+      .init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[1.byte]).get())
+      .get()
+    let second = Cid
+      .init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[2.byte]).get())
+      .get()
+    keys.provided[first.toKey()] = Moment.now() - 2.seconds
+    keys.provided[second.toKey()] = Moment.now() - 1.seconds
+
+    await kad.startProviding(second)
+
+    check:
+      keys.len == 2
+      keys.hasKey(first.toKey())
+      keys.hasKey(second.toKey())
+
   asyncTest "Provider limits":
     let kads = setupKadSwitches(2, republishProvidedKeysInterval = chronos.hours(1))
     startAndDeferStop(kads)
@@ -469,6 +490,26 @@ suite "KadDHT - Add Provider":
       kads[0].providerManager.providerRecords.len == 1
       kads[0].providerManager.providerRecords[0].provider.id.get() ==
         kads[1].rtable.selfId
+
+  asyncTest "Optimistic provider RPCs belong to the DHT before the lookup returns":
+    var cfg = testKadConfig(timeout = 3.seconds, providerRejection = true)
+    cfg.optimisticProvide = true
+    let sender = setupKad(cfg)
+    let receiver = setupMockKad(cfg)
+    receiver.handleAddProviderDelay = 1.seconds
+    startAndDeferStop(@[sender, KadDHT(receiver)])
+    await connect(sender, receiver)
+    sender.nsEstimator.seedLinearMeasurements(1000)
+
+    let pending = sender.addProvider(receiver.rtable.selfId.toCid())
+    checkUntilTimeout:
+      receiver.handleAddProviderCalls > 0
+    check not pending.finished()
+    let owned = sender.provideTasks
+    check owned.len > 0
+    await sender.stop()
+    await pending.wait(2.seconds)
+    check owned.allIt(it.finished())
 
   asyncTest "Optimistic provide falls back to classic without a size estimate":
     optimisticProvideStores(seedEstimate = false)

@@ -205,7 +205,6 @@ type OptimisticState = ref object
   returnThreshold: int ## completed RPCs to wait for before returning
   scheduled: HashSet[PeerId]
   failed: int
-  puts: seq[Future[void]]
   completed: int
   doneEvent: AsyncEvent
 
@@ -229,14 +228,17 @@ proc putProviderRecord(
     os: OptimisticState, pid: PeerId
 ) {.async: (raises: [CancelledError]).} =
   ## A rejected record still counts: the walk only needs the peer to answer.
+  defer:
+    os.completed.inc()
+    os.doneEvent.fire()
   if (await os.kad.dispatchAddProvider(pid, os.key)).isErr():
     os.failed.inc()
-  os.completed.inc()
-  os.doneEvent.fire()
 
 proc schedulePut(os: OptimisticState, pid: PeerId) {.raises: [].} =
+  if os.kad.stopping:
+    return
   os.scheduled.incl(pid)
-  os.puts.add(os.putProviderRecord(pid))
+  os.kad.provideTasks.trackFut(os.putProviderRecord(pid))
 
 proc maybeTrackNetsize(kad: KadDHT, key: Key, closest: seq[PeerId]) =
   ## Feed a converged lookup's closest-first peers into the estimator, so classic
@@ -275,7 +277,7 @@ proc optimisticStop(
 proc waitForReturn(os: OptimisticState) {.async: (raises: [CancelledError]).} =
   ## Return once ``returnThreshold`` RPCs completed, or all of them if fewer ran.
   ## `completed` only grows and is re-read after each clear, so no wakeup is lost.
-  let target = min(os.returnThreshold, os.puts.len)
+  let target = min(os.returnThreshold, os.scheduled.len)
   while os.completed < target:
     await os.doneEvent.wait()
     os.doneEvent.clear()
@@ -297,10 +299,6 @@ proc optimisticProvide(
 
   await os.waitForReturn()
   kad.maybeTrackNetsize(key, closest)
-
-  # Keep the still-running puts alive and cancellable on `stop`.
-  for fut in os.puts:
-    kad.provideTasks.trackFut(fut)
 
 proc addProvider*(kad: KadDHT, key: Key) {.async: (raises: [CancelledError]), gcsafe.} =
   if kad.config.optimisticProvide:
@@ -324,10 +322,11 @@ proc addProvider*(kad: KadDHT, cid: Cid) {.async: (raises: [CancelledError]), gc
   await addProvider(kad, cid.toKey())
 
 proc startProviding*(kad: KadDHT, c: Cid) {.async: (raises: [CancelledError]).} =
-  if kad.providerManager.providedKeys.isFull():
+  let k = c.toKey()
+  if not kad.providerManager.providedKeys.hasKey(k) and
+      kad.providerManager.providedKeys.isFull():
     kad.providerManager.providedKeys.deleteOldest()
 
-  let k = c.toKey()
   kad.providerManager.providedKeys.provided[k] = chronos.Moment.now()
   await kad.addProvider(k)
 

@@ -12,6 +12,8 @@ type MockKadDHT* = ref object of KadDHT
   findNodeTables*: seq[RoutingTable]
   getValueResponse*: Opt[Message]
   handleAddProviderMessage*: Opt[Message]
+  handleAddProviderDelay*: Duration
+  handleAddProviderCalls*: int
   handleFindNodeDelay*: Duration
   handleFindNodeCalls*: int
   handleFindNodeMalformedResponse*: bool
@@ -60,6 +62,8 @@ method handleGetValue*(
 method handleAddProvider*(
     kad: MockKadDHT, stream: Stream, msg: Message
 ) {.async: (raises: [CancelledError]).} =
+  kad.handleAddProviderCalls.inc()
+  await sleepAsync(kad.handleAddProviderDelay)
   await procCall handleAddProvider(
     KadDHT(kad), stream, kad.handleAddProviderMessage.valueOr(msg)
   )
