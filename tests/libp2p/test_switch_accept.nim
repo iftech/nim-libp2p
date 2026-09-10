@@ -3,11 +3,12 @@
 
 {.used.}
 
-import sequtils
+import std/[sequtils, importutils]
 import chronos
 import
   ../../libp2p/
     [builders, switch, dial, multiaddress, transports/transport, stream/connection]
+import ../../libp2p/protocols/protocol
 import ../stubs/transportstub
 import ../tools/[unittest, crypto, lifecycle, multiaddress, switch_builder]
 
@@ -41,6 +42,24 @@ proc newStubAcceptSwitch(
 
   let switch = b.build()
   (switch, MemoryTransportStub(switch.transports[0]))
+
+privateAccess(ConnManager)
+
+type SlowStopProtocol = ref object of LPProtocol
+  stopping, release: AsyncEvent
+
+method stop(p: SlowStopProtocol) {.async: (raises: []).} =
+  p.stopping.fire()
+  await noCancel p.release.wait()
+  p.started = false
+
+proc newSlowStopProtocol(): SlowStopProtocol =
+  result = SlowStopProtocol(stopping: newAsyncEvent(), release: newAsyncEvent())
+  result.codec = "/test/slow-stop/1.0.0"
+  result.handler = proc(
+      stream: Stream, proto: string
+  ) {.async: (raises: [CancelledError]).} =
+    await stream.close()
 
 suite "Switch accept-loop failure handling":
   teardown:
@@ -149,3 +168,44 @@ suite "Switch accept-loop failure handling":
     let tcpAddrs = server.peerInfo.addrs.filterIt(TCP.match(it))
     await client.connect(server.peerInfo.peerId, tcpAddrs)
     check client.isConnected(server.peerInfo.peerId)
+
+  asyncTest "accepts and registered upgrades drain before slow protocol teardown":
+    let
+      server = makeStandardSwitch(MemoryAutoAddress())
+      client = makeStandardSwitch(MemoryAutoAddress())
+      protocol = newSlowStopProtocol()
+      registered = newAsyncEvent()
+      releaseUpgrade = newAsyncEvent()
+
+    proc onConnected(
+        peerId: PeerId, event: ConnEvent
+    ) {.async: (raises: [CancelledError]).} =
+      registered.fire()
+      await releaseUpgrade.wait()
+
+    server.addConnEventHandler(onConnected, ConnEventKind.Connected)
+    server.mount(protocol)
+    startAndDeferStop(@[server, client])
+    defer:
+      releaseUpgrade.fire()
+      protocol.release.fire()
+
+    let connecting = client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+    await registered.wait()
+    await connecting
+    let conn = server.connManager.selectMuxer(client.peerInfo.peerId).connection
+    check not conn.closed
+
+    let stopped = server.stop()
+    await protocol.stopping.wait()
+    check:
+      server.acceptFuts.allIt(it.finished)
+      conn.closed
+      not server.connManager.closed
+      not stopped.finished
+    releaseUpgrade.fire()
+    protocol.release.fire()
+    await stopped
+    check server.isStopping
+    await server.start()
+    check not server.isStopping

@@ -171,6 +171,8 @@ type
     supportsSendingPartial*: bool
 
   PubSub* = ref object of LPProtocol
+    stopping: bool
+    peerStopFuts: seq[Future[void].Raising([])] # cleanup outlives removal from peers
     switch*: Switch # the switch used to dial/connect to peers
     peerInfo*: PeerInfo # this peer's info
     topics*: Table[string, TopicData] # the topics that _we_ are interested in
@@ -221,6 +223,13 @@ method unsubscribePeer*(p: PubSub, peerId: PeerId) {.base, gcsafe.} =
   ##
 
   debug "unsubscribing pubsub peer", peerId
+  p.peers.withValue(peerId, peer):
+    let stopped = peer[].stopTasks()
+    if p.stopping:
+      # Shutdown drains the whole batch; pruning on each removal is quadratic.
+      p.peerStopFuts.add(stopped)
+    else:
+      p.peerStopFuts.trackFut(stopped)
   p.peers.del(peerId)
 
   libp2p_pubsub_peers.set(p.peers.len.int64)
@@ -393,6 +402,8 @@ method getOrCreatePeer*(
   proc getStream(): Future[Stream] {.
       async: (raises: [CancelledError, GetStreamDialError])
   .} =
+    if p.stopping or p.switch.isStopping:
+      raise newException(CancelledError, "pubsub is stopping")
     try:
       return await p.switch.dial(peerId, protos)
     except DialFailedError as e:
@@ -477,6 +488,18 @@ template handleSelfPublishing*(p: PubSub, topic: string, data: seq[byte]) =
   if p.triggerSelf:
     await handleData(p, topic, data)
 
+method start*(p: PubSub) {.async: (raises: [CancelledError]).} =
+  p.stopping = false
+  await procCall LPProtocol(p).start()
+
+method stop*(p: PubSub) {.async: (raises: []).} =
+  p.stopping = true
+  p.started = false
+  for peerId in toSeq(p.peers.keys):
+    p.unsubscribePeer(peerId)
+  await noCancel allFutures(p.peerStopFuts)
+  p.peerStopFuts = @[]
+
 method handleConn*(
     p: PubSub, stream: Stream, proto: string
 ) {.base, async: (raises: [CancelledError]).} =
@@ -486,6 +509,10 @@ method handleConn*(
   ## 1) register a new PubSubPeer for the connection
   ## 2) handle RPC messages received on this stream
   ##
+
+  if p.stopping or p.switch.isStopping:
+    await stream.close()
+    return
 
   let peer = p.getOrCreatePeer(stream.peerId, @[], proto)
 
@@ -500,6 +527,9 @@ method subscribePeer*(p: PubSub, peer: PeerId) {.base, gcsafe.} =
   ## subscribe to remote peer to receive/send pubsub
   ## messages
   ##
+
+  if p.stopping or p.switch.isStopping:
+    return
 
   let pubSubPeer = p.getOrCreatePeer(peer, p.codecs)
   pubSubPeer.connect()

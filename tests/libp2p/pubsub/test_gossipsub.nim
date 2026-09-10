@@ -376,7 +376,7 @@ suite "GossipSub":
         randomPeerId(), nil, nil, GossipSubCodec_12, 1024 * 1024, handler = handler
       )
     defer:
-      peer.stopTasks()
+      await peer.stopTasks()
       await stream.close()
 
     let handleFut = peer.runHandleLoop(stream)

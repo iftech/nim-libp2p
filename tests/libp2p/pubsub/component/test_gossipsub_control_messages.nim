@@ -46,9 +46,9 @@ suite "GossipSub Component - Control Messages":
       not n0.mesh.hasPeerId(topic, n1.peerInfo.peerId)
       not n1.mesh.hasPeerId(topic, n0.peerInfo.peerId)
 
-    # Stop both nodes in order to prevent GRAFT message to be sent by heartbeat 
-    await n0.stop()
-    await n1.stop()
+    # Pause automatic GRAFTs while testing explicit control messages.
+    await n0.heartbeatFut.cancelAndWait()
+    await n1.heartbeatFut.cancelAndWait()
 
     # Second part of the hack
     # Set values so peers can be GRAFTed

@@ -177,7 +177,7 @@ type
     maxHighPriorityQueueLen*: int
     maxMediumPriorityQueueLen*: int
     maxLowPriorityQueueLen*: int
-    disconnected: bool
+    stopped: bool
     customStreamCallbacks*: Opt[CustomStreamCallbacks]
     connectFut: Future[void]
     sendFuts: seq[Future[void]]
@@ -309,7 +309,7 @@ proc runHandleLoop*(
   defer:
     debug "exiting pubsub read loop", stream, peer = p, closed = stream.closed
 
-  while not stream.atEof:
+  while not p.stopped and not stream.atEof:
     trace "waiting for data", stream, peer = p, closed = stream.closed
 
     var data =
@@ -321,6 +321,9 @@ proc runHandleLoop*(
         debug "Exception occurred reading message PubSubPeer.handle",
           stream, peer = p, closed = stream.closed, description = e.msg
         return
+
+    if p.stopped:
+      return
 
     trace "read data from peer",
       stream, peer = p, closed = stream.closed, data = data.shortLog
@@ -365,7 +368,7 @@ proc connectOnce(
         await p.getStream().wait(5.seconds)
       except AsyncTimeoutError:
         raise newException(GetStreamDialError, "establishing stream timed out")
-    if p.disconnected:
+    if p.stopped:
       await newStream.close()
       return
 
@@ -403,17 +406,17 @@ proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
     # send stream might get disconnected due to a timeout or an unrelated
     # issue so we try to get a new one
     while true:
-      if p.disconnected:
+      if p.stopped:
         p.connectedFut.completeOnce()
         return
       await connectOnce(p)
-  except CancelledError as exc:
-    debug "Could not establish send stream", description = exc.msg
+  except CancelledError:
+    discard
   except GetStreamDialError as exc:
     debug "Could not establish send stream", description = exc.msg
 
 proc connect*(p: PubSubPeer) =
-  if p.connected:
+  if p.stopped or p.connected:
     return
   if not p.connectFut.isNil() and not p.connectFut.finished():
     return
@@ -517,8 +520,8 @@ proc sendMsg(
     await sendMsgSlow(p, move(msg))
 
 proc disconnectPeer(p: PubSubPeer): Future[void] =
-  if not p.disconnected:
-    p.disconnected = true
+  if not p.stopped:
+    p.stopped = true
     when defined(pubsubpeer_queue_metrics):
       libp2p_pubsub_disconnects_over_high_priority_queue_limit.inc()
     return p.closeSendStream(PubSubPeerEventKind.DisconnectionRequested)
@@ -591,6 +594,9 @@ proc sendEncoded*(
   ## Low and medium priority messages are queued and sent only after all high
   ## priority messages have been sent.
   doAssert(not isNil(p), "pubsubpeer nil!")
+
+  if p.stopped:
+    return newFutureCompleted[void]()
 
   p.clearSendPriorityQueue()
 
@@ -747,33 +753,33 @@ proc startSendNonHighPriorityTask(p: PubSubPeer) =
   if p.rpcmessagequeue.sendNonHighPriorityTask.isNil:
     p.rpcmessagequeue.sendNonHighPriorityTask = p.sendNonHighPriorityTask()
 
-proc stopTasks*(p: PubSubPeer) =
-  ## Peer-wide teardown: cancels the connector loop, in-flight sends, and the
-  ## non-high-priority sender task; clears its priority queues.
-  if not p.connectFut.isNil():
-    p.connectFut.cancelSoon()
-    p.connectFut = nil
-  for fut in p.sendFuts:
-    fut.cancelSoon()
-  p.sendFuts = @[]
-  if not p.rpcmessagequeue.sendNonHighPriorityTask.isNil():
-    debug "stopping sendNonHighPriorityTask", p
-    p.rpcmessagequeue.sendNonHighPriorityTask.cancelSoon()
-    p.rpcmessagequeue.sendNonHighPriorityTask = nil
-    for fut in p.rpcmessagequeue.sendPriorityQueue:
-      fut.cancelSoon()
-    p.rpcmessagequeue.sendPriorityQueue.clear()
-    p.rpcmessagequeue.mediumPriorityQueue.clear()
-    p.rpcmessagequeue.lowPriorityQueue.clear()
+proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
+  ## Prevents further work, cancels peer tasks, and waits for cleanup to finish.
+  p.stopped = true
+  var pending = p.sendFuts
+  if not p.connectFut.isNil:
+    pending.add(p.connectFut)
+  if not p.rpcmessagequeue.sendNonHighPriorityTask.isNil:
+    trace "stopping sendNonHighPriorityTask", peer = p
+    pending.add(p.rpcmessagequeue.sendNonHighPriorityTask)
+  for fut in p.rpcmessagequeue.sendPriorityQueue:
+    pending.add(fut)
 
-    when defined(pubsubpeer_queue_metrics):
-      libp2p_gossipsub_high_priority_queue_size.set(
-        labelValues = [$p.peerId], value = 0
-      )
-      libp2p_gossipsub_medium_priority_queue_size.set(
-        labelValues = [$p.peerId], value = 0
-      )
-      libp2p_gossipsub_low_priority_queue_size.set(labelValues = [$p.peerId], value = 0)
+  # Retain task handles until cancellation finishes, including for repeated stops.
+  await noCancel chronos.cancelAndWait(pending)
+  p.connectFut = nil
+  p.sendFuts = @[]
+  p.rpcmessagequeue.sendNonHighPriorityTask = nil
+  p.rpcmessagequeue.sendPriorityQueue.clear()
+  p.rpcmessagequeue.mediumPriorityQueue.clear()
+  p.rpcmessagequeue.lowPriorityQueue.clear()
+
+  when defined(pubsubpeer_queue_metrics):
+    libp2p_gossipsub_high_priority_queue_size.set(labelValues = [$p.peerId], value = 0)
+    libp2p_gossipsub_medium_priority_queue_size.set(
+      labelValues = [$p.peerId], value = 0
+    )
+    libp2p_gossipsub_low_priority_queue_size.set(labelValues = [$p.peerId], value = 0)
 
 proc new(T: typedesc[RpcMessageQueue]): T =
   return T(

@@ -61,6 +61,7 @@ type
     peerStore*: PeerStore
     nameResolver*: NameResolver
     started: bool
+    stopping: bool
     services*: seq[Service]
     rng*: Rng
 
@@ -327,6 +328,10 @@ when defined(libp2p_testing):
   proc acceptFuts*(s: Switch): seq[Future[void]] =
     s.acceptFuts
 
+proc isStopping*(s: Switch): bool =
+  ## True from the beginning of shutdown until the next start.
+  s.stopping
+
 proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
   ## Stop listening on every transport, and
   ## close every active connections
@@ -334,6 +339,7 @@ proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
   trace "Stopping switch"
 
   s.started = false
+  s.stopping = true
 
   try:
     # Stop accepting incoming connections
@@ -352,6 +358,9 @@ proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
   for service in s.services:
     await service.stop(s)
 
+  # Drain incoming work and services before protocols, keeping established connections.
+  await s.ms.stop()
+
   # close and cleanup all connections
   await s.connManager.close()
 
@@ -362,8 +371,6 @@ proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
       raise exc
     except CatchableError as exc:
       warn "error cleaning up transports", description = exc.msg
-
-  await s.ms.stop()
 
   s.peerStore.close()
 
@@ -376,6 +383,7 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
     return
 
   debug "starting switch for peer", peerInfo = s.peerInfo
+  s.stopping = false
 
   # start services and transports without await to prevent any
   # issues when one needs another to start first.

@@ -213,6 +213,7 @@ type
     heartbeatEvents*: seq[AsyncEvent]
     scoringHeartbeatEvents*: seq[AsyncEvent]
     pendingTasks*: seq[Future[void]]
+    stopFut*: Future[void].Raising([]) # Concurrent stops share cleanup after tasks move.
     overheadMetricsWindowStart*: Moment
     rpcOverheadBytesMax*: int
     peerOverheadBytesPerSecondMax*: int

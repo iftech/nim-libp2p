@@ -393,8 +393,6 @@ method unsubscribePeer*(g: GossipSub, peer: PeerId) =
     for topic, info in stats[].topicInfos.mpairs:
       info.firstMessageDeliveries = 0
 
-  pubSubPeer.stopTasks()
-
   g.extensionsState.removePeer(peer)
 
   procCall FloodSub(g).unsubscribePeer(peer)
@@ -1029,6 +1027,8 @@ proc publishPartial*(
 proc maintainDirectPeer(
     g: GossipSub, id: PeerId, addrs: seq[MultiAddress]
 ) {.async: (raises: [CancelledError]).} =
+  if g.switch.isStopping:
+    return
   if id notin g.peers:
     trace "Attempting to dial a direct peer", peer = id
     if g.switch.isConnected(id):
@@ -1037,7 +1037,8 @@ proc maintainDirectPeer(
     try:
       await g.switch.connect(id, addrs, forceDial = true)
       # populate the peer after it's connected
-      discard g.getOrCreatePeer(id, g.codecs)
+      if not g.switch.isStopping:
+        discard g.getOrCreatePeer(id, g.codecs)
     except CancelledError as exc:
       trace "Direct peer dial canceled"
       raise exc
@@ -1150,35 +1151,31 @@ proc createExtensionsState(g: GossipSub): ExtensionsState =
     g.parameters.preambleExtensionConfig,
   )
 
-method start*(
-    g: GossipSub
-): Future[void] {.async: (raises: [CancelledError], raw: true).} =
-  trace "gossipsub start"
-
+method start*(g: GossipSub): Future[void] {.async: (raises: [CancelledError]).} =
   if g.started:
     warn "Starting gossipsub twice"
-    return newFutureCompleted[void]()
+    return
+
+  await procCall PubSub(g).start()
 
   g.heartbeatFut = g.heartbeat()
   g.scoringHeartbeatFut = g.scoringHeartbeat()
   g.directPeersLoop = g.maintainDirectPeers()
-  g.started = true
-  newFutureCompleted[void]()
 
-method stop*(g: GossipSub): Future[void] {.async: (raises: [], raw: true).} =
-  trace "gossipsub stop"
-
+method stop*(g: GossipSub): Future[void] {.async: (raw: true, raises: []).} =
   if not g.started:
     warn "Stopping gossipsub without starting it"
-    return newFutureCompleted[void]()
+  if not g.stopFut.isNil and not g.stopFut.finished:
+    return g.stopFut
 
-  g.started = false
-  g.directPeersLoop.cancelSoon()
-  g.scoringHeartbeatFut.cancelSoon()
-  g.heartbeatFut.cancelSoon()
-  g.pendingTasks.cancelSoon()
-  g.pendingTasks = @[]
-  newFutureCompleted[void]()
+  info "gossipsub stop"
+  let peersStopped = procCall PubSub(g).stop()
+  var pending = move g.pendingTasks
+  for fut in [move g.directPeersLoop, move g.scoringHeartbeatFut, move g.heartbeatFut]:
+    if not fut.isNil:
+      pending.add(fut)
+  g.stopFut = noCancel allFutures(peersStopped, chronos.cancelAndWait(pending))
+  return g.stopFut
 
 method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   procCall FloodSub(g).initPubSub()
