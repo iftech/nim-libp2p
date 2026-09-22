@@ -458,7 +458,7 @@ suite "KadDHT Iterative Lookup":
 
     check queried[] == known[0 .. 0]
 
-  asyncTest "Lookup does not retry a peer whose dial failed":
+  asyncTest "Lookup neither retries nor returns a peer whose dial failed":
     let kad = setupLookupKad()
 
     let targetKey = randomPeerId().toKey()
@@ -472,6 +472,8 @@ suite "KadDHT Iterative Lookup":
       queried[].countIt(it == known[0]) == 1
       kad.probeBackedOff(known[0], kad.dialAddrs(known[0]))
       state.responded[known[0]] == RespondedStatus.Failed
+      known[0] in state.shortlist
+      state.allSortedPeers() == known[1 .. ^1]
 
   asyncTest "Lookup stops retrying a peer whose timed-out dial fails":
     let kad = setupLookupKad(timeout = 200.milliseconds)

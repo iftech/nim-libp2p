@@ -145,7 +145,7 @@ proc dialBackedOff(kad: KadDHT, peerId: PeerId): bool {.raises: [].} =
 proc sortedShortlist(
     state: LookupState, excludeResponded: bool = true
 ): seq[(PeerId, XorDistance)] =
-  ## Sort shortlist by closer distance first
+  ## Closest first, without peers we cannot dial, so lookup results skip them too.
   var sortedShortlist = newSeqOfCap[(PeerId, XorDistance)](state.shortlist.len)
 
   let selfPid = state.kad.switch.peerInfo.peerId
