@@ -558,7 +558,7 @@ proc applyReplies(
     onReply: ReplyHandler,
 ) {.async: (raises: [CancelledError]).} =
   # Successes first, so a retry that answered outranks a late failure of the same peer.
-  for res in completed.sortedByIt(it.outcome):
+  for res in completed.sortedByIt(it.outcome != Completed):
     if state.responded.getOrDefault(res.peer) == RespondedStatus.Success:
       continue
 

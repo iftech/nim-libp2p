@@ -519,8 +519,9 @@ suite "KadDHT Iterative Lookup":
       known[0] notin second[]
       known[0].toKey() in kad.rtable
 
-    # The first backoff lasts one timeout.
-    await sleepAsync(300.milliseconds)
+    checkUntilTimeout:
+      not kad.probeBackedOff(known[0], kad.dialAddrs(known[0]))
+
     let third = new(seq[PeerId])
     let state =
       await kad.iterativeLookup(targetKey, recordingDispatch(third), noopReply)
