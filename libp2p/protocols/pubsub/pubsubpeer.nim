@@ -76,6 +76,8 @@ const
   DefaultMaxHighPriorityQueueLen* = 256
   DefaultMaxMediumPriorityQueueLen* = 512
   DefaultMaxLowPriorityQueueLen* = 1024
+  DefaultSendStreamRetryBaseDelay* = 1.seconds
+  DefaultSendStreamRetryMaxDelay* = 16.seconds
 
 type
   PeerRateLimitError* = object of CatchableError
@@ -187,6 +189,8 @@ type
     maxHighPriorityQueueLen*: int
     maxMediumPriorityQueueLen*: int
     maxLowPriorityQueueLen*: int
+    sendStreamRetryBaseDelay*: Duration
+    sendStreamRetryMaxDelay*: Duration
     stopped: bool
     customStreamCallbacks*: Opt[CustomStreamCallbacks]
     connectFut: Future[void]
@@ -430,20 +434,21 @@ proc connectOnce(
     await p.closeSendStream(PubSubPeerEventKind.StreamClosed)
 
 proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
+  ## Keeps a send stream open; a failed open retries with capped exponential backoff.
+  var delay = p.sendStreamRetryBaseDelay
   try:
-    # Keep trying to establish a stream while it's possible to do so - the
-    # send stream might get disconnected due to a timeout or an unrelated
-    # issue so we try to get a new one
-    while true:
-      if p.stopped:
-        p.connectedFut.completeOnce()
-        return
-      await connectOnce(p)
+    while not p.stopped:
+      try:
+        await p.connectOnce()
+        delay = p.sendStreamRetryBaseDelay
+      except GetStreamDialError as e:
+        libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
+        trace "Could not establish send stream, retrying", peer = p, err = e.msg, delay
+        await sleepAsync(delay)
+        delay = min(delay * 2, p.sendStreamRetryMaxDelay)
+    p.connectedFut.completeOnce()
   except CancelledError:
     discard
-  except GetStreamDialError as exc:
-    libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
-    trace "Could not establish send stream", err = exc.msg
 
 proc connect*(p: PubSubPeer) =
   if p.stopped or p.connected:
@@ -876,6 +881,8 @@ proc new*(
     maxLowPriorityQueueLen: int = DefaultMaxLowPriorityQueueLen,
     overheadRateLimitOpt: Opt[TokenBucket] = Opt.none(TokenBucket),
     customStreamCallbacks: Opt[CustomStreamCallbacks] = Opt.none(CustomStreamCallbacks),
+    sendStreamRetryBaseDelay: Duration = DefaultSendStreamRetryBaseDelay,
+    sendStreamRetryMaxDelay: Duration = DefaultSendStreamRetryMaxDelay,
 ): T =
   doAssert not handler.isNil, "RPC handler must be set"
   let response = T(
@@ -893,6 +900,8 @@ proc new*(
     maxMediumPriorityQueueLen: maxMediumPriorityQueueLen,
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
     customStreamCallbacks: customStreamCallbacks,
+    sendStreamRetryBaseDelay: sendStreamRetryBaseDelay,
+    sendStreamRetryMaxDelay: sendStreamRetryMaxDelay,
   )
   response.sentIHaves.addFirst(default(HashSet[MessageId]))
   response.iDontWants.addFirst(default(HashSet[SaltedId]))

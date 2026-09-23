@@ -569,6 +569,7 @@ method handleConn*(
     return
 
   let peer = p.getOrCreatePeer(stream.peerId, @[], proto)
+  peer.connect()
 
   try:
     await peer.runHandleLoop(stream)
