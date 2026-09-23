@@ -303,6 +303,22 @@ suite "KadDHT - Limits":
       kads[0].containsData(existingKey, existingValue)
       kads[0].containsNoData(lookupKey)
 
+  asyncTest "getValue drops replies larger than maxValueSize":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+
+    kads[0].config.limits.maxValueSize = 8
+
+    let key = kads[1].rtable.selfId
+    kads[1].dataTable.insert(key, newSeq[byte](64), Timestamp.now())
+
+    let res = await kads[0].getValue(key, quorumOverride = Opt.some(1))
+
+    check:
+      res.isErr()
+      kads[0].containsNoData(key)
+
   asyncTest "getValue caps ReceivedTable at maxReceivedSize":
     let kads = setupKadSwitches(4)
     startAndDeferStop(kads)

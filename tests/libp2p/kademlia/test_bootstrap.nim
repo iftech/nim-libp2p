@@ -425,3 +425,65 @@ suite "KadDHT Bootstrap Component":
     check:
       kad.hasKey(peer.toKey())
       kad.livenessProbes.len == 0
+
+  asyncTest "failed liveness probe keeps a peer marked useful mid-flight":
+    let config =
+      testKadConfig(timeout = chronos.milliseconds(200), disableBootstrapping = true)
+    let hub = setupKad(config = config)
+    let leaf = setupKad(config = config)
+    startAndDeferStop(@[hub, leaf])
+    await connect(hub, leaf)
+
+    let leafId = leaf.switch.peerInfo.peerId
+    await leaf.stop()
+    await leaf.switch.stop()
+    agePeerPastLivenessGrace(hub.rtable, leafId.toKey())
+
+    let batch = hub.probeAndEvictPeers(hub.rtable)
+    check not batch.finished()
+    hub.rtable.markUseful(leafId)
+    await batch
+
+    check hub.hasKey(leafId.toKey())
+
+  asyncTest "cancelling a liveness batch cancels its in-flight probes":
+    let kad = setupMockKad()
+    startAndDeferStop(@[kad])
+
+    let peer = randomPeerId()
+    check kad.rtable.insert(peer)
+    agePeerPastLivenessGrace(kad.rtable, peer.toKey())
+
+    let hang = newFuture[void]("liveness-probe-cancel-hang")
+    kad.livenessProbes[peer] = hang
+
+    let batch = kad.probeAndEvictPeers(kad.rtable)
+    await batch.cancelAndWait()
+    kad.livenessProbes.del(peer)
+
+    check:
+      batch.cancelled()
+      hang.cancelled()
+      kad.hasKey(peer.toKey())
+
+  asyncTest "stop ends a liveness loop parked on an in-flight probe":
+    let kad = setupKad(
+      config = testKadConfig(
+        disableBootstrapping = true, livenessIdleInterval = chronos.milliseconds(20)
+      )
+    )
+    await kad.switch.start()
+    defer:
+      await kad.switch.stop()
+
+    await kad.start()
+    let hang = newFuture[void]("liveness-loop-stop-hang")
+    kad.livenessProbes[randomPeerId()] = hang
+    # Several idle intervals, so the loop parks on the in-flight probe.
+    await sleepAsync(chronos.milliseconds(100))
+
+    await kad.stop()
+    check:
+      hang.cancelled()
+      kad.livenessLoop.isNil
+      kad.livenessProbes.len == 0

@@ -112,3 +112,46 @@ suite "KadDHT dynamic mode":
     # EOF, not a timeout (a timeout would mean the reset never propagated).
     expect LPStreamEOFError:
       discard await stream.readLp(MaxMsgSize).wait(3.seconds)
+
+  asyncTest "server closes the stream on an undecodable request":
+    let querier = setupKad()
+    let server = setupKad(isServer = true)
+    startAndDeferStop(@[querier, server])
+
+    let stream = await querier.switch.dial(
+      server.switch.peerInfo.peerId, server.switch.peerInfo.addrs, querier.codec
+    )
+    defer:
+      await stream.close()
+
+    let truncated = @[0x0A'u8, 0x05, 0x01]
+    check Message.decode(truncated).isErr()
+
+    await stream.writeLp(truncated)
+    expect LPStreamEOFError:
+      discard await stream.readLp(MaxMsgSize).wait(3.seconds)
+
+  asyncTest "server skips REGISTER and GET_ADS and keeps the stream open":
+    let querier = setupKad()
+    let server = setupKad(isServer = true)
+    startAndDeferStop(@[querier, server])
+
+    let stream = await querier.switch.dial(
+      server.switch.peerInfo.peerId, server.switch.peerInfo.addrs, querier.codec
+    )
+    defer:
+      await stream.close()
+
+    let hide = querier.config.hideConnectionStatus
+    for msgType in [MessageType.register, MessageType.getAds]:
+      await stream.writeLp(
+        Message(msgType: Opt.some(msgType), key: server.rtable.selfId).encode(hide)
+      )
+    await stream.writeLp(
+      Message(msgType: Opt.some(MessageType.findNode), key: server.rtable.selfId).encode(
+        hide
+      )
+    )
+
+    let reply = Message.decode(await stream.readLp(MaxMsgSize).wait(3.seconds))
+    check reply.get().msgType == Opt.some(MessageType.findNode)

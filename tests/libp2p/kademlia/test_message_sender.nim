@@ -302,3 +302,23 @@ suite "KadDHT message sender":
       reply.isErr()
       reply.error().stage == dialStage
       proto.streams == 0
+
+  asyncTest "a restarted sender dials again":
+    let proto = newCountingEcho()
+    let (client, server) = setupPair(proto)
+    startAndDeferStop(@[client, server])
+
+    let sender = MessageSender.new(client, TestCodec, MaxTestMsgSize)
+    defer:
+      await sender.stop()
+
+    await sender.stop()
+    sender.start()
+    check not sender.stopped
+
+    let reply = await sender.sendRequest(
+      server.peerInfo.peerId, server.peerInfo.addrs, @[byte 1], 1.seconds
+    )
+    check:
+      reply.tryGet() == @[byte 1]
+      proto.streams == 1

@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, results, sets, sequtils, tables, stew/byteutils
+import algorithm, chronos, results, sets, sequtils, tables, stew/byteutils
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
 import ../../tools/[lifecycle, topology, unittest]
@@ -14,6 +14,27 @@ proc isAtMaxCapacity(providerRecords: ProviderRecords): bool =
 
 proc isAtMaxCapacity(providedKeys: ProvidedKeys): bool =
   providedKeys.len == providedKeys.capacity
+
+proc setupOptimisticHub(): seq[KadDHT] =
+  var cfg = testKadConfig(replication = 2, beta = 1)
+  cfg.optimisticProvide = true
+  (0 ..< 6).mapIt(setupKad(cfg))
+
+proc holdsProviderRecord(kad: KadDHT): bool =
+  kad.providerManager.providerRecords.len == 1
+
+proc mineKeyWithTwoReceiversWithin(
+    receivers: seq[KadDHT], maxDistance: float64, hasher: Opt[XorDHasher]
+): (Key, seq[KadDHT]) =
+  ## Two receivers share the top bit, so a key with both in range exists.
+  for _ in 0 ..< 10000:
+    let key = randomServiceId()
+    let closest = receivers
+      .mapIt((normedDistance(xorDistance(it.switch.peerInfo.peerId, key, hasher)), it))
+      .sortedByIt(it[0])
+    if closest[1][0] < maxDistance:
+      return (key, closest[0 .. 1].mapIt(it[1]))
+  raiseAssert "no key puts two receivers within " & $maxDistance
 
 suite "KadDHT - Add Provider":
   teardown:
@@ -516,6 +537,42 @@ suite "KadDHT - Add Provider":
 
   asyncTest "Optimistic provide stores records once the estimator has data":
     optimisticProvideStores(seedEstimate = true)
+
+  asyncTest "Optimistic provide stops once k close peers are scheduled":
+    let kads = setupOptimisticHub()
+    startAndDeferStop(kads)
+    await connectHub(kads[0], kads[1 ..^ 1])
+
+    kads[0].nsEstimator.seedLinearMeasurements(1)
+    let netSize = kads[0].nsEstimator.networkSize().expect("seeded estimate")
+    let k = float64(kads[0].config.replication)
+    let threshold = gammaIncRegInv(k, 0.1) / float64(netSize)
+
+    # Full buckets reject receivers, and the walk only reaches the hub's table.
+    let known =
+      kads[1 ..^ 1].filterIt(kads[0].hasKey(it.switch.peerInfo.peerId.toKey()))
+
+    let (key, receivers) =
+      known.mineKeyWithTwoReceiversWithin(threshold * 0.9, kads[0].rtable.config.hasher)
+
+    await kads[0].addProvider(key)
+
+    checkUntilTimeout:
+      receivers[0].holdsProviderRecord()
+      receivers[1].holdsProviderRecord()
+
+  asyncTest "Optimistic provide falls back to the mean distance of the k closest":
+    let kads = setupOptimisticHub()
+    startAndDeferStop(kads)
+    await connectHub(kads[0], kads[1 ..^ 1])
+
+    # A large network puts every receiver outside the individual threshold.
+    kads[0].nsEstimator.seedLinearMeasurements(1000)
+
+    await kads[0].addProvider(randomServiceId())
+
+    checkUntilTimeout:
+      kads[1 ..^ 1].countIt(it.holdsProviderRecord()) == 2
 
 suite "KadDHT - Republish By Keyspace Region":
   teardown:

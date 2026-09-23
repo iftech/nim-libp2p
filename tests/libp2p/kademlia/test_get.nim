@@ -446,3 +446,18 @@ suite "KadDHT Get":
     check:
       record.isOk()
       record.get().value == value
+
+  asyncTest "GET_VALUE handler drops an expired record instead of serving it":
+    let kads = setupKadSwitches(2, cleanupDataEntriesInterval = chronos.hours(1))
+    startAndDeferStop(kads)
+
+    await connect(kads[0], kads[1])
+
+    let key = kads[1].rtable.selfId
+    kads[1].dataTable.insert(key, @[1.byte, 2, 3], "2000-01-01T00:00:00Z")
+
+    let record = await kads[0].getValue(key, quorumOverride = Opt.some(1))
+
+    check:
+      record.isErr()
+      kads[1].containsNoData(key)

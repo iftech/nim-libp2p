@@ -43,3 +43,11 @@ suite "Service Discovery Component - Find Random":
     let fut = discos[0].lookupRandom()
     await sleepAsync(1.millis)
     await fut.cancelAndWait()
+
+  asyncTest "a disco node answers a ping on its own codec":
+    let discos = setupServiceDiscoveryNodes(2)
+    startAndDeferStop(discos)
+
+    check await discos[0].ping(
+      discos[1].switch.peerInfo.peerId, discos[1].switch.peerInfo.addrs
+    )

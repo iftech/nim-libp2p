@@ -194,6 +194,17 @@ suite "KadDHT Find":
     let res2 = await kads[1].findPeer(randomPeerId())
     check res2.isErr()
 
+  asyncTest "Find peer returns a connected peer without a lookup":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+
+    let target = kads[1].switch.peerInfo.peerId
+    await kads[0].switch.connect(target, kads[1].switch.peerInfo.addrs)
+    check kads[0].rtable.peerCount() == 0
+
+    let res = await kads[0].findPeer(target)
+    check res.get().peerId == target
+
   asyncTest "Discovered peer failing its admission probe is not admitted":
     let kads = setupKadSwitches(2)
     startAndDeferStop(kads)
