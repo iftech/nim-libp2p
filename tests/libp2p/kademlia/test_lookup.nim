@@ -4,35 +4,47 @@
 {.used.}
 
 import chronos, results, sequtils, sets, tables
-import ../../../libp2p/[protocols/kademlia, switch, builders]
+import ../../../libp2p/[protocols/kademlia, switch, builders, utils/future]
 import
   ../../../libp2p/protocols/kademlia/[find, message_sender, probe_backoff, rpc, types]
 import ../../tools/[multiaddress, unittest]
 import ./utils.nim
+
+type DialGate = Future[void].Raising([CancelledError])
+
+proc holdDial(
+    held: ref Table[PeerId, DialGate], peer: PeerId, cancelled: ref seq[PeerId]
+) {.async: (raises: [CancelledError]).} =
+  ## Releases the previous held dial of `peer` and holds this one until the next.
+  held[].withValue(peer, prev):
+    prev[].completeOnce()
+  let gate = DialGate.init("holdDial")
+  held[][peer] = gate
+  try:
+    await gate
+  except CancelledError as e:
+    cancelled[].add(peer)
+    raise e
 
 proc recordingDispatch(
     queried: ref seq[PeerId],
     closerPeers = initTable[PeerId, seq[PeerId]](),
     failing = initHashSet[PeerId](),
     undialable = initHashSet[PeerId](),
-    dialDelay = ZeroDuration,
-    cancelled: ref seq[PeerId] = nil,
+    holdDials = false,
+    cancelled = new(seq[PeerId]),
 ): DispatchProc =
   ## Answers every query without I/O, records who was asked in order, and replies with
   ## the peers `closerPeers` maps that peer to. Peers in `failing` return an error, and
-  ## peers in `undialable` fail at the refused stage after `dialDelay`. A dial
-  ## cancelled while it waits is recorded in `cancelled`.
+  ## peers in `undialable` fail at the refused stage, after `holdDial` when `holdDials`.
+  let held = new(Table[PeerId, DialGate])
   proc(
       kad: KadDHT, peer: PeerId, target: Key
   ): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
     queried[].add(peer)
     if peer in undialable:
-      try:
-        await sleepAsync(dialDelay)
-      except CancelledError as e:
-        if not cancelled.isNil():
-          cancelled[].add(peer)
-        raise e
+      if holdDials:
+        await held.holdDial(peer, cancelled)
       return err($refusedStage & ": connection refused")
     if peer in failing:
       return err("peer is not answering")
@@ -486,7 +498,7 @@ suite "KadDHT Iterative Lookup":
     let dispatch = recordingDispatch(
       queried,
       undialable = toHashSet([known[0]]),
-      dialDelay = 300.milliseconds,
+      holdDials = true,
       cancelled = cancelled,
     )
     let state = await kad.iterativeLookup(targetKey, dispatch, noopReply)
