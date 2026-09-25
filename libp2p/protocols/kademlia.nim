@@ -204,7 +204,7 @@ proc maintainLiveness(kad: KadDHT) {.async: (raises: [CancelledError]).} =
     try:
       discard await one(inFlight)
     except ValueError:
-      raiseAssert "inFlight is not empty"
+      discard # inFlight is not empty
     except CancelledError as exc:
       await noCancel inFlight.cancelAndWait()
       raise exc

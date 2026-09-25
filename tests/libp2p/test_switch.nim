@@ -1166,6 +1166,22 @@ suite "Switch":
     await stream.close()
     await handleFinished.wait(5.seconds)
 
+  test "tryMount rejects a protocol with no handler or codec":
+    let switch = makeStandardSwitch()
+
+    let noHandler = new TestProto
+    noHandler.codec = TestCodec
+    check switch.tryMount(noHandler).error ==
+      "Protocol has to define a handle method or proc"
+
+    let noCodec = LPProtocol.new(
+      @[""],
+      proc(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+        discard,
+    )
+    check switch.tryMount(noCodec).error == "Protocol has to define a codec string"
+    check TestCodec notin switch.peerInfo.protocols
+
   asyncTest "switch failing to start stops properly":
     let switch = makeStandardSwitch(@[TcpWildcardAddress, ma("/ip4/1.1.1.1/tcp/0")])
 
