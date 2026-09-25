@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos
-import ../../../libp2p/[protocols/kademlia, peerid, switch]
+import ../../../libp2p/[protocols/kademlia, peerid, switch, utils/future]
 import ../../tools/[lifecycle, unittest, multiaddress]
 import ./[mock_kademlia, utils]
 
@@ -474,9 +474,7 @@ suite "KadDHT Bootstrap Component":
     )
     startAndDeferStop(@[kad])
 
-    let done = newFuture[void]("liveness-probe-finished")
-    done.complete()
-    kad.livenessProbes[randomPeerId()] = done
+    kad.livenessProbes[randomPeerId()] = newFutureCompleted[void]()
     kad.maintainableTablesCalls = 0
     await sleepAsync(chronos.milliseconds(100))
 
