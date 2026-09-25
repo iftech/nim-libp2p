@@ -466,6 +466,23 @@ suite "KadDHT Bootstrap Component":
       hang.cancelled()
       kad.hasKey(peer.toKey())
 
+  asyncTest "liveness loop idles on a finished probe":
+    let kad = setupMockKad(
+      testKadConfig(
+        disableBootstrapping = true, livenessIdleInterval = chronos.milliseconds(20)
+      )
+    )
+    startAndDeferStop(@[kad])
+
+    let done = newFuture[void]("liveness-probe-finished")
+    done.complete()
+    kad.livenessProbes[randomPeerId()] = done
+    kad.maintainableTablesCalls = 0
+    await sleepAsync(chronos.milliseconds(100))
+
+    # 100ms / 20ms idle interval is ~5 scans; a spinning loop runs thousands.
+    check kad.maintainableTablesCalls <= 10
+
   asyncTest "stop ends a liveness loop parked on an in-flight probe":
     let kad = setupKad(
       config = testKadConfig(
