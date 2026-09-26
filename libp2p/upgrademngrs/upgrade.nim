@@ -32,8 +32,6 @@ logScope:
 type
   UpgradeFailedError* = object of LPError
 
-  UpgradeResult*[T] = Result[T, string]
-
   Upgrade* = ref object of RootObj
     ms*: MultistreamSelect
     secureManagers*: seq[Secure]
@@ -45,7 +43,7 @@ method upgrade*(
 
 proc trySecure*(
     self: Upgrade, conn: RawConn, peerId: Opt[PeerId]
-): Future[UpgradeResult[SecureConn]] {.async: (raises: [CancelledError, LPError]).} =
+): Future[LPResult[SecureConn]] {.async: (raises: [CancelledError, LPError]).} =
   if self.secureManagers.len <= 0:
     return err("No secure managers registered")
 

@@ -112,7 +112,7 @@ proc new*(
 
 proc listen(
     self: TcpTransport, addrs: openArray[TransportAddress]
-): Result[seq[MultiAddress], string] =
+): LPResult[seq[MultiAddress]] =
   ## Servers created before a failure stay in `self.servers` for the caller to close.
   var supported: seq[MultiAddress]
   for ta in addrs:
@@ -130,7 +130,7 @@ proc listen(
 
   ok(supported)
 
-proc connAddrs(transp: StreamTransport): Result[ConnAddrs, string] =
+proc connAddrs(transp: StreamTransport): LPResult[ConnAddrs] =
   let remote = transp.remoteAddress2().valueOr:
     return err("cannot read remote address. " & osErrorMsg(error))
   let local = transp.localAddress2().valueOr:

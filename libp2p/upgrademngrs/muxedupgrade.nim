@@ -32,7 +32,7 @@ func getMuxerByCodec(self: MuxedUpgrade, muxerName: string): Opt[MuxerProvider] 
 
 proc mux(
     self: MuxedUpgrade, secureConn: SecureConn
-): Future[UpgradeResult[Muxer]] {.async: (raises: [CancelledError, LPStreamError]).} =
+): Future[LPResult[Muxer]] {.async: (raises: [CancelledError, LPStreamError]).} =
   ## mux secure connection
   trace "Mux negotiation started", secureConn
   if self.muxers.len == 0:
@@ -63,7 +63,7 @@ proc mux(
 
 proc tryUpgrade*(
     self: MuxedUpgrade, conn: RawConn, peerId: Opt[PeerId]
-): Future[UpgradeResult[Muxer]] {.async: (raises: [CancelledError, LPError]).} =
+): Future[LPResult[Muxer]] {.async: (raises: [CancelledError, LPError]).} =
   trace "Connection upgrade started", conn, direction = conn.dir
 
   let sconn = ?(await self.trySecure(conn, peerId))

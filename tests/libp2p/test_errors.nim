@@ -21,11 +21,11 @@ suite "Errors":
       e.msg == "Malformed"
 
   test "valueOrRaise returns the value":
-    let r = Result[int, string].ok(7)
+    let r = LPResult[int].ok(7)
     check r.valueOrRaise(DemoError) == 7
 
   test "valueOrRaise raises the requested exception with the message":
-    let r = Result[int, string].err("bad address")
+    let r = LPResult[int].err("bad address")
     try:
       discard r.valueOrRaise(DemoError)
       raiseAssert "should not get here"
@@ -35,9 +35,9 @@ suite "Errors":
   test "valueOrRaise evaluates its argument once":
     var calls = 0
 
-    proc make(): Result[int, string] =
+    proc make(): LPResult[int] =
       inc calls
-      Result[int, string].ok(1)
+      LPResult[int].ok(1)
 
     discard make().valueOrRaise(DemoError)
     check calls == 1
@@ -56,22 +56,22 @@ suite "Errors":
   test "onErrorRaise evaluates its argument once":
     var calls = 0
 
-    proc make(): Result[void, string] =
+    proc make(): LPResult[void] =
       inc calls
-      Result[void, string].ok()
+      LPResult[void].ok()
 
     make().onErrorRaise(DemoError)
     check calls == 1
 
   test "each template can be called twice in the same scope":
     let
-      a = Result[int, string].ok(1).valueOrRaise(DemoError)
-      b = Result[int, string].ok(2).valueOrRaise(DemoError)
-    Result[void, string].ok().onErrorRaise(DemoError)
-    Result[void, string].ok().onErrorRaise(DemoError)
+      a = LPResult[int].ok(1).valueOrRaise(DemoError)
+      b = LPResult[int].ok(2).valueOrRaise(DemoError)
+    LPResult[void].ok().onErrorRaise(DemoError)
+    LPResult[void].ok().onErrorRaise(DemoError)
     check a + b == 3
 
   test "each template accepts only its kind of result":
     check:
-      not compiles(Result[void, string].ok().valueOrRaise(DemoError))
-      not compiles(Result[int, string].ok(1).onErrorRaise(DemoError))
+      not compiles(LPResult[void].ok().valueOrRaise(DemoError))
+      not compiles(LPResult[int].ok(1).onErrorRaise(DemoError))

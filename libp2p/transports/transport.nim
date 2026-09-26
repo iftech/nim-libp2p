@@ -42,7 +42,7 @@ type
 proc newTransportClosedError*(parent: ref Exception = nil): ref TransportError =
   newException(TransportClosedError, "Transport closed, no more connections!", parent)
 
-proc connAddrs*(transp: StreamTransport): Result[ConnAddrs, string] =
+proc connAddrs*(transp: StreamTransport): LPResult[ConnAddrs] =
   let remote = transp.remoteAddress2().valueOr:
     return err("cannot read remote address. " & osErrorMsg(error))
   let local = transp.localAddress2().valueOr:
@@ -133,7 +133,7 @@ template safeClose*(stream: untyped) =
 
 proc toTransportAddress*(
     self: Transport, addrsMa: seq[MultiAddress]
-): Result[seq[TransportAddress], string] =
+): LPResult[seq[TransportAddress]] =
   var addrsTa = newSeq[TransportAddress](addrsMa.len)
   for i, maAddr in addrsMa:
     if not self.handles(maAddr):

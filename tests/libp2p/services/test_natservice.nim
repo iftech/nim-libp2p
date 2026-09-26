@@ -43,7 +43,7 @@ proc mapperFactory(m: MockPortMapper): PortMapperFactory =
 
 method map*(
     self: MockPortMapper, internalPort: Port, externalPort: Port, proto: MapProto
-): Future[Result[MappedPort, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[MappedPort]] {.async: (raises: [CancelledError]), gcsafe.} =
   let assigned =
     if self.extPortIdx < self.extPortQueue.len:
       let p = self.extPortQueue[self.extPortIdx]
@@ -62,7 +62,7 @@ method map*(
 
 method unmap*(
     self: MockPortMapper, externalPort: Port, proto: MapProto
-): Future[Result[void, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   self.calls.add(MockCall(kind: mckUnmap, externalPort: externalPort, proto: proto))
   ok()
 

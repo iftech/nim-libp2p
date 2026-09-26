@@ -179,7 +179,7 @@ proc tryNew*(
     addressMappers = newSeq[AddressMapper](),
     addressPolicy: PeerAddressPolicy = defaultAddressPolicy,
     announcedAddrs: openArray[MultiAddress] = [],
-): Result[PeerInfo, string] =
+): LPResult[PeerInfo] =
   let pubkey = key.getPublicKey().valueOr:
     return err("PeerInfo.tryNew called with invalid private key. " & $error)
   let peerId = PeerId.init(pubkey).valueOr:
