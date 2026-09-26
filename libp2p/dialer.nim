@@ -503,10 +503,9 @@ proc finishUpgrade(
     # point, and a remote that never answers identify would otherwise hold the
     # peer's dial lock for as long as that connection lives.
     await self.peerStore.identify(muxed, dir).wait(self.dialTimeout)
-  except CancelledError as e:
-    raise e
-  except CatchableError as e:
-    return err("failed identify in finishUpgrade: " & e.msg)
+  except AsyncTimeoutError, IdentityNoMatchError, IdentityInvalidMsgError,
+      MultiStreamError, LPStreamError, MuxerError:
+    return err("failed identify in finishUpgrade: " & getCurrentExceptionMsg())
   await self.connManager.triggerPeerEvents(
     muxed.connection.peerId, PeerEvent(kind: PeerEventKind.Identified, initiator: true)
   )
@@ -528,13 +527,11 @@ proc establishConnection(
         return ok(mux)
 
   if addrs.len == 0:
-    return
-      err("no addresses to dial in establishConnection: peer_id=" & shortLog(peerId))
+    return err("no addresses to dial in establishConnection")
 
   self.dialBackoff.ifValue(backoff):
     if not forceDial and backoff.blocked(peerId):
-      return
-        err("peer on dial backoff in establishConnection: peer_id=" & shortLog(peerId))
+      return err("peer on dial backoff in establishConnection")
 
   let slot = self.connManager.getOutgoingSlot(forceDial).valueOr:
     return err("failed getOutgoingSlot in establishConnection: " & error)
@@ -555,10 +552,7 @@ proc establishConnection(
     if reach.dialed:
       self.dialBackoff.ifValue(backoff):
         backoff.recordFailure(peerId)
-    return err(
-      "Unable to establish outgoing link in establishConnection: peer_id=" &
-        shortLog(peerId) & " addrs=" & dialAddrs.shortLog
-    )
+    return err("Unable to establish outgoing link in establishConnection")
 
   slot.trackMuxer(muxed)
   (await self.finishUpgrade(muxed, dir)).isOkOr:
@@ -612,9 +606,11 @@ method connect*(
   if self.connManager.connCount(peerId) > 0 and reuseConnection:
     return
 
-  discard (
-    await self.internalConnect(Opt.some(peerId), addrs, forceDial, reuseConnection, dir)
-  ).valueOrRaise(DialFailedError)
+  (await self.internalConnect(Opt.some(peerId), addrs, forceDial, reuseConnection, dir)).isOkOr:
+    raise newException(
+      DialFailedError,
+      "failed connect: peer_id=" & $peerId & " addrs=" & $addrs & ": " & error,
+    )
 
 method connect*(
     self: Dialer, address: MultiAddress, allowUnknownPeerId = false
@@ -622,18 +618,24 @@ method connect*(
   ## Connects to a peer and retrieve its PeerId
 
   parseFullAddress(address).toOpt().ifValue(fullAddress):
-    return (
+    let muxed = (
       await self.internalConnect(Opt.some(fullAddress[0]), @[fullAddress[1]], false)
-    ).valueOrRaise(DialFailedError).connection.peerId
+    ).valueOr:
+      raise newException(
+        DialFailedError, "failed connect: address=" & $address & ": " & error
+      )
+    return muxed.connection.peerId
 
   if allowUnknownPeerId == false:
     raise newException(
       DialFailedError, "Address without PeerID and unknown peer id disabled in connect"
     )
 
-  return (await self.internalConnect(Opt.none(PeerId), @[address], false)).valueOrRaise(
-    DialFailedError
-  ).connection.peerId
+  let muxed = (await self.internalConnect(Opt.none(PeerId), @[address], false)).valueOr:
+    raise newException(
+      DialFailedError, "failed connect: address=" & $address & ": " & error
+    )
+  return muxed.connection.peerId
 
 proc negotiateStream*(
     self: Dialer, stream: Stream, protos: seq[string]
@@ -713,8 +715,7 @@ method dial*(
     let stream = await self.connManager.getStream(peerId)
     if stream.isNil:
       raise newException(
-        DialFailedError,
-        "Couldn't get muxed stream in dial for peer_id: " & shortLog(peerId),
+        DialFailedError, "Couldn't get muxed stream in dial for peer_id: " & $peerId
       )
     return await self.negotiateStream(stream, protos)
   except CancelledError as exc:
@@ -752,7 +753,7 @@ method dial*(
     if isNil(stream):
       raise newException(
         DialFailedError,
-        "Couldn't get muxed stream in new dial for remote_peer_id: " & shortLog(peerId),
+        "Couldn't get muxed stream in new dial for remote_peer_id: " & $peerId,
       )
 
     return await self.negotiateStream(stream, protos)
@@ -765,8 +766,8 @@ method dial*(
       err = exc.msg, peerId, protocols = protos, addresses = dialAddrs, conn
     raise newException(
       DialFailedError,
-      "failed new dial: peer_id=" & shortLog(peerId) & " protos=" & protos.shortLog &
-        " addrs=" & dialAddrs.shortLog & ": " & exc.msg,
+      "failed new dial: peer_id=" & $peerId & " protos=" & $protos & " addrs=" &
+        $dialAddrs & ": " & exc.msg,
       exc,
     )
 
