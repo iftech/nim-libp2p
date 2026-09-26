@@ -54,7 +54,7 @@ type
     flag*: bool
     rem*: seq[MultiCodec]
 
-  MaResult*[T] = Result[T, string]
+  MaResult*[T] = LPResult[T]
 
   MaError* = object of LPError
   MaInvalidAddress* = object of MaError

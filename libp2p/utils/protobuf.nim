@@ -4,6 +4,7 @@
 {.push raises: [].}
 
 import std/macros, results, protobuf_serialization
+import ../errors
 
 when defined(libp2p_protobuf_metrics):
   import ./protobuf_metrics
@@ -34,6 +35,7 @@ macro decodeFor*(
   for T in Types:
     let decodeName = ident("decode" & $T)
     let metricLabel = newLit(makeLabel(domain.strVal, $T))
+    let lpResult = bindSym"LPResult"
     stmts.add quote do:
       proc `decodeName`(buf2: seq[byte]): `T` {.raises: [SerializationError].} =
         when defined(libp2p_protobuf_metrics) and `doMetrics`:
@@ -44,7 +46,7 @@ macro decodeFor*(
 
         decode(Protobuf, buf2, `T`)
 
-      proc decode*(_: type `T`, buf: seq[byte]): Result[`T`, string] =
+      proc decode*(_: type `T`, buf: seq[byte]): `lpResult`[`T`] =
         try:
           ok(`decodeName`(buf))
         except SerializationError as e:
@@ -62,6 +64,7 @@ macro serializerFor*(
   for T in Types:
     let decodeName = ident("decode" & $T)
     let metricLabel = newLit(makeLabel(domain.strVal, $T))
+    let lpResult = bindSym"LPResult"
     stmts.add quote do:
       proc encode*(c: `T`): seq[byte] =
         let buf = encode(Protobuf, c)
@@ -79,7 +82,7 @@ macro serializerFor*(
 
         decode(Protobuf, buf2, `T`)
 
-      proc decode*(_: type `T`, buf: seq[byte]): Result[`T`, string] =
+      proc decode*(_: type `T`, buf: seq[byte]): `lpResult`[`T`] =
         let decoded =
           try:
             `decodeName`(buf)

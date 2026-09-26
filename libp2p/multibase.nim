@@ -10,7 +10,7 @@
 {.push raises: [].}
 
 import tables
-import results
+import errors
 import stew/[base32, base58, base64]
 
 type
@@ -495,7 +495,7 @@ proc decode*(
 
 proc encode*(
     mbtype: typedesc[MultiBase], encoding: string, inbytes: openArray[byte]
-): Result[string, string] =
+): LPResult[string] =
   ## Encode array ``inbytes`` using MultiBase encoding scheme ``encoding`` and
   ## return encoded string.
   let length = len(inbytes)
@@ -520,7 +520,7 @@ proc encode*(
 
 proc decode*(
     mbtype: typedesc[MultiBase], inbytes: openArray[char]
-): Result[seq[byte], string] =
+): LPResult[seq[byte]] =
   ## Decode MultiBase encoded array ``inbytes`` and return decoded sequence of
   ## bytes.
   let length = len(inbytes)

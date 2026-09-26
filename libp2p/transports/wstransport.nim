@@ -161,7 +161,7 @@ type HostHeaderHook = ref object of Hook
 
 proc hostHeaderHook(host: string): Hook =
   let hook = HostHeaderHook(host: host)
-  hook.append = proc(ctx: Hook, headers: var HttpTable): Result[void, string] =
+  hook.append = proc(ctx: Hook, headers: var HttpTable): LPResult[void] =
     headers.set("Host", HostHeaderHook(ctx).host)
     ok()
   hook
@@ -203,7 +203,7 @@ proc closeHttpStream(stream: AsyncStream) {.async: (raises: []).} =
 
 proc connHandler(
   self: WsTransport, stream: WSSession, secure: bool, dir: Direction
-): Result[WsStream, string] {.gcsafe.}
+): LPResult[WsStream] {.gcsafe.}
 
 proc wsHandshakeWorker(
     self: WsTransport, server: HttpServer, stream: AsyncStream
@@ -345,7 +345,7 @@ proc listen(
     self: WsTransport,
     addrs: openArray[MultiAddress],
     addrsTa: openArray[TransportAddress],
-): Result[seq[MultiAddress], string] =
+): LPResult[seq[MultiAddress]] =
   ## Servers created before a failure stay in `self.httpservers` for the caller to close.
   var resolved: seq[MultiAddress]
   for i, ma in addrs:
@@ -469,7 +469,7 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
 
 proc connHandler(
     self: WsTransport, stream: WSSession, secure: bool, dir: Direction
-): Result[WsStream, string] =
+): LPResult[WsStream] =
   let codec = ?MultiAddress.init(if secure: "/wss" else: "/ws")
   let addrs = ?stream.stream.reader.tsource.connAddrs()
   let conn = WsStream.new(

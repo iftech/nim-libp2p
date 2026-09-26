@@ -4,7 +4,8 @@
 {.push raises: [].}
 
 import std/net
-import chronos, results
+import chronos
+import ../../errors
 
 type
   MapProto* = enum
@@ -19,14 +20,12 @@ type
 
 method map*(
     self: PortMapper, internalPort: Port, externalPort: Port, proto: MapProto
-): Future[Result[MappedPort, string]] {.
-    base, async: (raises: [CancelledError]), gcsafe
-.} =
+): Future[LPResult[MappedPort]] {.base, async: (raises: [CancelledError]), gcsafe.} =
   raiseAssert "PortMapper.map not implemented"
 
 method unmap*(
     self: PortMapper, externalPort: Port, proto: MapProto
-): Future[Result[void, string]] {.base, async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[void]] {.base, async: (raises: [CancelledError]), gcsafe.} =
   raiseAssert "PortMapper.unmap not implemented"
 
 method close*(self: PortMapper) {.base, async: (raises: []), gcsafe.} =

@@ -24,15 +24,13 @@ type
 proc getIPs*(addrsInfos: seq[AddressInfo]): seq[IpAddress] =
   addrsInfos.mapIt(it.address).getIPs()
 
-proc checkAddresses*(addresses: seq[AddressInfo]): Result[void, string] =
+proc checkAddresses*(addresses: seq[AddressInfo]): LPResult[void] =
   for ai in addresses:
     if ai.address.data.buffer.len == 0 or not ai.address.validate():
       return err("invalid address")
   ok()
 
-proc validateDecoded(
-    T: typedesc[PeerRecord], record: PeerRecord
-): Result[void, string] =
+proc validateDecoded(T: typedesc[PeerRecord], record: PeerRecord): LPResult[void] =
   if record.peerId.len == 0:
     return err("missing peer id")
 

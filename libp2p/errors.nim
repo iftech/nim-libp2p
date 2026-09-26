@@ -14,6 +14,8 @@ type
   # Base exception type for libp2p
   LPError* = object of CatchableError
 
+  LPResult*[T] = Result[T, string]
+
 func toException*(e: cstring): ref LPError =
   (ref LPError)(msg: $e)
 
