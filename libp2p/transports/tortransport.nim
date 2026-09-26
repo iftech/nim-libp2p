@@ -100,7 +100,7 @@ proc handlesDial(address: MultiAddress): bool {.gcsafe.} =
 proc handlesStart(address: MultiAddress): bool {.gcsafe.} =
   return TcpOnion3.match(address)
 
-func checkAuthReply(reply: array[2, byte]): Result[void, string] =
+func checkAuthReply(reply: array[2, byte]): LPResult[void] =
   if reply[0] != Socks5ProtocolVersion:
     return err("Unsupported socks version")
   if reply[1] != Socks5AuthMethod.NoAuth.byte:
@@ -110,16 +110,14 @@ func checkAuthReply(reply: array[2, byte]): Result[void, string] =
 
 proc authenticate(
     transp: StreamTransport
-): Future[Result[void, string]] {.
-    async: (raises: [common.TransportError, CancelledError])
-.} =
+): Future[LPResult[void]] {.async: (raises: [common.TransportError, CancelledError]).} =
   discard
     await transp.write(@[Socks5ProtocolVersion, NMethods, Socks5AuthMethod.NoAuth.byte])
   var serverReply: array[2, byte]
   await transp.readExactly(addr serverReply[0], serverReply.len)
   checkAuthReply(serverReply)
 
-func checkReplyHeader(header: array[4, byte]): Result[void, string] =
+func checkReplyHeader(header: array[4, byte]): LPResult[void] =
   if header[0] != Socks5ProtocolVersion:
     return err("Unsupported socks version")
   if header[1] == Socks5ReplyType.Succeeded.byte:
@@ -133,9 +131,7 @@ func checkReplyHeader(header: array[4, byte]): Result[void, string] =
 
 proc readServerReply(
     transp: StreamTransport
-): Future[Result[void, string]] {.
-    async: (raises: [common.TransportError, CancelledError])
-.} =
+): Future[LPResult[void]] {.async: (raises: [common.TransportError, CancelledError]).} =
   ## The specification for this code is defined on
   ## [link text](https://www.rfc-editor.org/rfc/rfc1928#section-5)
   ## and [link text](https://www.rfc-editor.org/rfc/rfc1928#section-6).
@@ -168,10 +164,10 @@ func parseOnion3(address: MultiAddress): Socks5Target =
     dstPort: address.data.buffer[37 .. 38],
   )
 
-func tcpPort(address: MultiAddress): Result[seq[byte], string] =
+func tcpPort(address: MultiAddress): LPResult[seq[byte]] =
   (?address[TcpMultiCodec]).protoArgument()
 
-func parseIpTcp(address: MultiAddress): Result[Socks5Target, string] =
+func parseIpTcp(address: MultiAddress): LPResult[Socks5Target] =
   let (codec, atyp) =
     if IPv4Tcp.match(address):
       (multiCodec("ip4"), Socks5AddressType.IPv4.byte)
@@ -184,7 +180,7 @@ func parseIpTcp(address: MultiAddress): Result[Socks5Target, string] =
     atyp: atyp, dstAddr: ?(?address[codec]).protoArgument(), dstPort: ?address.tcpPort()
   )
 
-func parseDnsTcp(address: MultiAddress): Result[Socks5Target, string] =
+func parseDnsTcp(address: MultiAddress): LPResult[Socks5Target] =
   let dnsAddress = ?(?address[multiCodec("dns")]).protoArgument()
   if dnsAddress.len > MaxSocks5DomainLength:
     return err("DNS address exceeds SOCKS5 domain length limit")
@@ -195,7 +191,7 @@ func parseDnsTcp(address: MultiAddress): Result[Socks5Target, string] =
     dstPort: ?address.tcpPort(),
   )
 
-func parseTarget(address: MultiAddress): Result[Socks5Target, string] =
+func parseTarget(address: MultiAddress): LPResult[Socks5Target] =
   if Onion3.match(address):
     ok parseOnion3(address)
   elif IPTcp.match(address):
@@ -207,9 +203,7 @@ func parseTarget(address: MultiAddress): Result[Socks5Target, string] =
 
 proc dialPeer(
     transp: StreamTransport, address: MultiAddress
-): Future[Result[void, string]] {.
-    async: (raises: [common.TransportError, CancelledError])
-.} =
+): Future[LPResult[void]] {.async: (raises: [common.TransportError, CancelledError]).} =
   let auth = await authenticate(transp)
   ?auth
 
@@ -257,7 +251,7 @@ method dial*(
     transp, Opt.none(MultiAddress), Opt.none(MultiAddress), Direction.Out
   )
 
-func splitListenAddrs(addrs: openArray[MultiAddress]): Result[TorListenAddrs, string] =
+func splitListenAddrs(addrs: openArray[MultiAddress]): LPResult[TorListenAddrs] =
   if addrs.len == 0:
     return err("TorTransport.start called with no address.")
 

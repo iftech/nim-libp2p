@@ -11,9 +11,9 @@
 {.push raises: [].}
 
 import std/[net, tables]
-import chronos, chronicles, results
+import chronos, chronicles
 import libplum/plum
-import ./portmapper
+import ./portmapper, ../../errors
 
 export ProtocolFilter
 
@@ -62,7 +62,7 @@ proc safeRelease(lock: AsyncLock) =
 
 proc acquirePlum(
     filter: ProtocolFilter, discoverTimeout, mappingTimeout: Duration
-): Result[void, string] =
+): LPResult[void] =
   if plumRefCount == 0:
     plum.init(
       logLevel = PlumLogLevel.None,
@@ -101,13 +101,13 @@ proc new*(
     filter = ProtocolFilter.Any,
     discoverTimeout = DefaultDiscoverTimeout,
     mappingTimeout = DefaultMappingTimeout,
-): Result[T, string] =
+): LPResult[T] =
   ?acquirePlum(filter, discoverTimeout, mappingTimeout)
   ok(PlumMapper(filter: filter, mappingTimeout: mappingTimeout, lock: newAsyncLock()))
 
 method map*(
     self: PlumMapper, internalPort: Port, externalPort: Port, proto: MapProto
-): Future[Result[MappedPort, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[MappedPort]] {.async: (raises: [CancelledError]), gcsafe.} =
   if self.closed:
     return err("PlumMapper closed")
 
@@ -156,7 +156,7 @@ method map*(
 
 method unmap*(
     self: PlumMapper, externalPort: Port, proto: MapProto
-): Future[Result[void, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   if self.closed:
     return err("PlumMapper closed")
 
