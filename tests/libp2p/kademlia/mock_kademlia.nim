@@ -6,6 +6,7 @@ import
   ../../../libp2p/protocols/kademlia/
     [types, routing_table, protobuf, get, provider, find]
 import ../../../libp2p/[peerid, stream/connection]
+import ../../../libp2p/protocols/kademlia
 
 type MockKadDHT* = ref object of KadDHT
   findNodeCalls*: seq[Key]
@@ -19,6 +20,11 @@ type MockKadDHT* = ref object of KadDHT
   handleFindNodeMalformedResponse*: bool
   findNodeStalls*: bool
   findNodeCancels*: int
+  maintainableTablesCalls*: int
+
+method maintainableTables*(kad: MockKadDHT): seq[RoutingTable] {.gcsafe, raises: [].} =
+  kad.maintainableTablesCalls.inc()
+  procCall KadDHT(kad).maintainableTables()
 
 proc stallUntilCancelled(kad: MockKadDHT) {.async: (raises: [CancelledError]).} =
   ## A lookup that only ends when the caller gives up on it.

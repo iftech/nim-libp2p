@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos
-import ../../../libp2p/[protocols/kademlia, peerid, switch]
+import ../../../libp2p/[protocols/kademlia, peerid, switch, utils/future]
 import ../../tools/[lifecycle, unittest, multiaddress]
 import ./[mock_kademlia, utils]
 
@@ -465,6 +465,21 @@ suite "KadDHT Bootstrap Component":
       batch.cancelled()
       hang.cancelled()
       kad.hasKey(peer.toKey())
+
+  asyncTest "liveness loop idles on a finished probe":
+    let kad = setupMockKad(
+      testKadConfig(
+        disableBootstrapping = true, livenessIdleInterval = chronos.milliseconds(20)
+      )
+    )
+    startAndDeferStop(@[kad])
+
+    kad.livenessProbes[randomPeerId()] = newFutureCompleted[void]()
+    kad.maintainableTablesCalls = 0
+    await sleepAsync(chronos.milliseconds(100))
+
+    # 100ms / 20ms idle interval is ~5 scans; a spinning loop runs thousands.
+    check kad.maintainableTablesCalls <= 10
 
   asyncTest "stop ends a liveness loop parked on an in-flight probe":
     let kad = setupKad(

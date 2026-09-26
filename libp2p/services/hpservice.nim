@@ -110,12 +110,9 @@ method setup*(self: HPService, switch: Switch) {.raises: [ServiceSetupError].} =
   self.autonatService.setup(switch)
   self.autoRelayService.setup(switch)
 
-  try:
-    let dcutrProto = Dcutr.new(switch)
-    switch.mount(dcutrProto)
-  except LPError as e:
+  switch.tryMount(Dcutr.new(switch)).isOkOr:
     raise newException(
-      ServiceSetupError, "HPService Failed to mount Dcutr. Reason: " & $e.msg
+      ServiceSetupError, "HPService Failed to mount Dcutr. Reason: " & error
     )
 
   self.newConnectedPeerHandler = proc(
