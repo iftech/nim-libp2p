@@ -36,14 +36,15 @@ when not defined(macosx):
           if i >= 4:
             period = 75.milliseconds
 
+      let start = Moment.now()
       let hb = t()
-      await sleepAsync(500.milliseconds)
+      checkUntilTimeoutCustom(5.seconds, 5.milliseconds):
+        i >= 9
+      let elapsed = Moment.now() - start
       await hb.cancelAndWait()
 
-      # 4x 30 ms heartbeat = 120ms
-      # (500 ms - 120 ms) / 75ms = 5x 75ms
-      # total 9
-      check i in 8 .. 11
+      # 9th tick is due at 465 ms, or at 240 ms if the period stays 30 ms
+      check elapsed >= 450.milliseconds
 
     asyncTest "catch up on slow heartbeat":
       var i = 0
