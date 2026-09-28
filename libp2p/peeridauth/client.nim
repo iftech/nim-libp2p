@@ -254,7 +254,7 @@ proc pubkeyBytes*(pubkey: PublicKey): seq[byte] {.raises: [PeerIDAuthError].} =
 proc parseBearerExpiry(value: string): Opt[DateTime] =
   let expires = parseRfc3339DateTime(value).valueOr:
     if value.len > 0:
-      debug "Ignoring invalid bearer expiry", expiry = value, msg = error
+      debug "Ignoring invalid bearer expiry", expiry = value
     return Opt.none(DateTime)
   Opt.some(expires)
 
