@@ -22,11 +22,13 @@ proc getStream(d: FlakyDialer): GetStream =
       raise (ref GetStreamDialError)(msg: "unreachable")
     return d.stream
 
-proc newPeer(getStream: GetStream, baseDelay, maxDelay: Duration): PubSubPeer =
+proc newPeer(
+    getStream: GetStream, baseDelay, maxDelay: Duration, onEvent: OnEvent = nil
+): PubSubPeer =
   PubSubPeer.new(
     randomPeerId(),
     getStream,
-    nil,
+    onEvent,
     GossipSubCodec_12,
     1024,
     voidPeerHandler,
@@ -73,3 +75,19 @@ suite "PubSubPeer send stream":
     check:
       stopped
       dialer.attempts == before
+
+  asyncTest "a failed send stream open emits no StreamClosed":
+    var closed = 0
+    proc onEvent(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].} =
+      if event.kind == PubSubPeerEventKind.StreamClosed:
+        inc closed
+
+    let dialer = FlakyDialer(failures: int.high)
+    let peer = newPeer(dialer.getStream(), 1.milliseconds, 2.milliseconds, onEvent)
+    peer.connect()
+
+    checkUntilTimeout:
+      dialer.attempts >= 5
+    check closed == 0
+
+    await peer.stopTasks()

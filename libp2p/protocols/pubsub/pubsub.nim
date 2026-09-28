@@ -443,6 +443,7 @@ method getOrCreatePeer*(
     p.maxMessageSize,
     customStreamCallbacks = p.customStreamCallbacks,
     handler = peerHandler,
+    rng = p.rng,
   )
   trace "created new pubsub peer", peerId
 
