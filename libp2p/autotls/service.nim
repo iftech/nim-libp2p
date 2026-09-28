@@ -228,8 +228,8 @@ proc issueCertificate(
   info "AutoTLS successfully renewed certificate"
   ok()
 
-proc hasTcpStarted(switch: Switch): bool =
-  switch.transports.filterIt(it of TcpTransport and it.running).len == 0
+proc hasTcpTransport(switch: Switch): bool =
+  switch.transports.anyIt(it of TcpTransport)
 
 proc tryIssueCertificate(self: AutotlsService) {.async: (raises: [CancelledError]).} =
   var lastError = ""
@@ -266,10 +266,10 @@ method start*(
   self.running.fire()
   self.peerInfo = switch.peerInfo
 
-  # ensure that there's at least one TcpTransport running
-  # for communicating with autotls broker
-  if switch.hasTcpStarted():
-    error "Could not find a running TcpTransport in switch"
+  # Issuance starts concurrently with the transports. Requiring the TCP transport
+  # to be running here would always fail because Switch.start starts services first.
+  if not switch.hasTcpTransport():
+    error "Could not find a TcpTransport in switch"
     return
 
   proc manageCert() {.async: (raises: []).} =
