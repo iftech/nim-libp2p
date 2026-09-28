@@ -4,7 +4,7 @@
 ## This module contains a Switch Building helper.
 {.push raises: [].}
 
-import tables, chronos, chronicles, sequtils
+import tables, chronos, chronicles, sequtils, lsquic
 import
   switch,
   peerid,
@@ -262,12 +262,13 @@ proc withQuicTransport*(
     b: SwitchBuilder,
     inTimeout: Duration = DefaultChanTimeout,
     outTimeout: Duration = DefaultChanTimeout,
+    engineConfig: QuicEngineConfig = DefaultQuicEngineConfig,
 ): SwitchBuilder =
   b.withTransport(
     proc(config: TransportConfig): Transport =
       QuicTransport.new(
         config.upgr, config.privateKey, config.rng, config.connManager, inTimeout,
-        outTimeout,
+        outTimeout, engineConfig,
       )
   )
 

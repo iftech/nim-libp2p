@@ -337,6 +337,7 @@ type QuicTransport* = ref object of Transport
   closeFuts: seq[Future[void]]
   inTimeout: Duration
   outTimeout: Duration
+  engineConfig: QuicEngineConfig
 
 type PeerIdCertificateVerifier = ref object of CertificateVerifier
   expectedPeerId: PeerId
@@ -384,6 +385,7 @@ proc new*(
     connManager: ConnManager = nil,
     inTimeout: Duration = DefaultChanTimeout,
     outTimeout: Duration = DefaultChanTimeout,
+    engineConfig: QuicEngineConfig = DefaultQuicEngineConfig,
 ): QuicTransport =
   doAssert not rng.isNil, "Rng is nil"
 
@@ -394,6 +396,7 @@ proc new*(
     certGenerator: defaultCertGenerator,
     inTimeout: inTimeout,
     outTimeout: outTimeout,
+    engineConfig: engineConfig,
   )
   procCall Transport(self).initialize()
   self
@@ -407,6 +410,7 @@ proc new*(
     connManager: ConnManager = nil,
     inTimeout: Duration = DefaultChanTimeout,
     outTimeout: Duration = DefaultChanTimeout,
+    engineConfig: QuicEngineConfig = DefaultQuicEngineConfig,
 ): QuicTransport =
   doAssert not rng.isNil, "Rng is nil"
 
@@ -417,6 +421,7 @@ proc new*(
     certGenerator: certGenerator,
     inTimeout: inTimeout,
     outTimeout: outTimeout,
+    engineConfig: engineConfig,
   )
   procCall Transport(self).initialize()
   self
@@ -461,7 +466,7 @@ proc listen(
   for ta in addrs:
     let endpoint =
       try:
-        QuicEndpoint.new(tlsConfig, ta)
+        QuicEndpoint.new(tlsConfig, ta, engineConfig = self.engineConfig)
       except QuicError as e:
         return err("cannot listen on " & $ta & ". " & e.msg)
       except TransportOsError as e:
@@ -620,7 +625,7 @@ proc newDialEndpoint(
 ): Result[QuicEndpoint, string] =
   let tlsConfig = ?self.makeConfig()
   try:
-    ok(QuicEndpoint.new(tlsConfig, family))
+    ok(QuicEndpoint.new(tlsConfig, family, engineConfig = self.engineConfig))
   except QuicError as e:
     err("cannot create dial endpoint. " & e.msg)
   except TransportOsError as e:
