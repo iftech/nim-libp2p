@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, stew/byteutils
+import chronos, std/strutils, stew/byteutils
 from times import now
 import
   ../../../libp2p/[
@@ -348,8 +348,7 @@ suite "WebSocket transport with autotls":
     expect TransportClosedError:
       discard await acceptFut
 
-  asyncTest "start never returns when the autotls certificate never arrives":
-    # TODO: vacp2p/nim-libp2p#2957
+  asyncTest "start fails when the autotls certificate never arrives":
     let autotls = AutotlsService(certReady: newAsyncEvent(), running: newAsyncEvent())
     autotls.running.fire()
     let wstransport = WsTransport.new(
@@ -360,8 +359,12 @@ suite "WebSocket transport with autotls":
       rng(),
     )
 
-    let startFut = wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
-    check not (await startFut.withTimeout(200.milliseconds))
+    var errorMsg = ""
+    try:
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(5.seconds)
+    except TransportStartError as exc:
+      errorMsg = exc.msg
+    check "certificate" in errorMsg
 
   asyncTest "a renewed certificate does not reach a running transport":
     # TODO: vacp2p/nim-libp2p#2994

@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, json, net, results, sequtils, uri
+import chronos, json, net, results, sequtils, strutils, uri
 from times import now, format, initDuration, `+`
 import
   ../../../libp2p/[
@@ -238,9 +238,7 @@ suite "AutoTLS on a switch":
   asyncTeardown:
     checkTrackers()
 
-  asyncTest "no ACME request is made, the service starts before its transports":
-    # TODO: vacp2p/nim-libp2p#2957
-    # The service never begins issuance: no TcpTransport is running when it starts.
+  asyncTest "an ACME request is made when the service starts before its transports":
     let acmeServer = startStallServer()
     defer:
       await acmeServer.stop()
@@ -263,12 +261,9 @@ suite "AutoTLS on a switch":
     defer:
       await startFut.cancelAndWait()
 
-    # Issuance would connect to acmeDirectoryURL, so no connection means no attempt.
-    check not (await acmeServer.waitAccepted().withTimeout(200.milliseconds))
+    check await acmeServer.waitAccepted().withTimeout(1.seconds)
 
-  asyncTest "a switch listening on wss never finishes starting without a certificate":
-    # TODO: vacp2p/nim-libp2p#2957
-    # The transport waits for a certificate with no timeout, so start never returns.
+  asyncTest "a switch listening on wss fails to start without a certificate":
     let switch = makeStandardSwitchBuilder(
         @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
       )
@@ -284,5 +279,9 @@ suite "AutoTLS on a switch":
     defer:
       await switch.stop()
 
-    let startFut = switch.start()
-    check not (await startFut.withTimeout(500.milliseconds))
+    var errorMsg = ""
+    try:
+      await switch.start().wait(5.seconds)
+    except LPError as exc:
+      errorMsg = exc.msg
+    check "certificate" in errorMsg

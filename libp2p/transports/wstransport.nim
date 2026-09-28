@@ -400,9 +400,16 @@ method start*(
         return
 
       trace "Waiting for autotls certificate"
+      let certFut = autotls.getCertWhenReady()
+      if not await certFut.withTimeout(DefaultAutotlsWaitTimeout):
+        raise newException(
+          TransportStartError,
+          "Unable to start WebSocket transport: autotls certificate was not available in time",
+        )
+
       let autotlsCert =
         try:
-          await autotls.getCertWhenReady()
+          await certFut
         except AutoTLSError as e:
           raise newException(LPError, e.msg, e)
       self.tlsCertificate = autotlsCert.cert
