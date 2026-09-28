@@ -219,25 +219,30 @@ proc add*(
   s.services.add(service)
   service.setup(s)
 
-proc mount*[T: LPProtocol](
+proc tryMount*[T: LPProtocol](
     s: Switch, proto: T, matcher: Matcher = nil
-) {.gcsafe, raises: [LPError].} =
-  ## mount a protocol to the switch
+): Result[void, string] {.gcsafe, raises: [].} =
+  ## mount a protocol to the switch, or return why the protocol is invalid
 
   if proto.handler.isNil:
-    raise newException(LPError, "Protocol has to define a handle method or proc")
+    return err("Protocol has to define a handle method or proc")
 
-  if proto.codec.len == 0:
-    raise newException(LPError, "Protocol has to define a codec string")
+  if proto.codecs.len == 0 or proto.codec.len == 0:
+    return err("Protocol has to define a codec string")
 
   if s.started and not proto.started:
-    raise newException(
-      LPError, "Protocol needs to be started when mounting to started Switch"
-    )
+    return err("Protocol needs to be started when mounting to started Switch")
 
   s.ms.addHandler(proto, matcher)
   s.peerInfo.protocols.add(proto.codec)
   s.peerInfo.notifyObservers()
+  ok()
+
+proc mount*[T: LPProtocol](
+    s: Switch, proto: T, matcher: Matcher = nil
+) {.gcsafe, raises: [LPError].} =
+  ## mount a protocol to the switch
+  s.tryMount(proto, matcher).onErrorRaise(LPError)
 
 proc upgrader(
     switch: Switch, trans: Transport, conn: RawConn
