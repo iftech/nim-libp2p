@@ -51,7 +51,8 @@ proc newWatermark*(
 
 proc storeMuxers(connMngr: ConnManager, count: uint): Future[seq[PeerId]] {.async.} =
   let peers = PeerId.random(count, rng()).tryGet()
-  await allFuturesRaising(peers.mapIt(connMngr.storeMuxer(makeMuxer(it))))
+  for fut in peers.mapIt(connMngr.storeMuxer(makeMuxer(it))):
+    check (await fut).isOk()
   return peers
 
 suite "Connection Manager":
@@ -64,7 +65,7 @@ suite "Connection Manager":
     let connMngr = newMaxTotal()
     let mux = makeMuxer(peerId)
 
-    await connMngr.storeMuxer(mux)
+    check (await connMngr.storeMuxer(mux)).isOk()
     check mux in connMngr
 
     let peerMux = connMngr.selectMuxer(peerId)
@@ -79,7 +80,7 @@ suite "Connection Manager":
     let peers = PeerId.random(5, rng()).tryGet()
     let muxs = peers.mapIt(makeMuxer(it))
     for mux in muxs:
-      await connMngr.storeMuxer(mux)
+      check (await connMngr.storeMuxer(mux)).isOk()
 
     let connsMux = connMngr.getConnections().values.toSeq().mapIt(it[0])
     check unorderedCompare(connsMux, muxs)
@@ -91,8 +92,7 @@ suite "Connection Manager":
 
     let mux = makeMuxer(peerId)
     await mux.connection.close()
-    expect LPError:
-      await connMngr.storeMuxer(mux)
+    check (await connMngr.storeMuxer(mux)).isErr()
 
     await connMngr.stop()
 
@@ -101,8 +101,7 @@ suite "Connection Manager":
 
     let mux = makeMuxer(peerId)
     mux.connection.isEof = true
-    expect LPError:
-      await connMngr.storeMuxer(mux)
+    check (await connMngr.storeMuxer(mux)).isErr()
 
     await mux.close()
     await connMngr.stop()
@@ -113,8 +112,7 @@ suite "Connection Manager":
     let muxer = makeMuxer(peerId)
     let conn = muxer.connection
     muxer.connection = nil
-    expect LPError:
-      await connMngr.storeMuxer(muxer)
+    check (await connMngr.storeMuxer(muxer)).isErr()
 
     await conn.close()
     await muxer.close()
@@ -126,8 +124,8 @@ suite "Connection Manager":
     let mux1 = makeMuxer(peerId, Direction.Out)
     let mux2 = makeMuxer(peerId)
 
-    await connMngr.storeMuxer(mux1)
-    await connMngr.storeMuxer(mux2)
+    check (await connMngr.storeMuxer(mux1)).isOk()
+    check (await connMngr.storeMuxer(mux2)).isOk()
     check mux1 in connMngr
     check mux2 in connMngr
 
@@ -150,7 +148,7 @@ suite "Connection Manager":
     muxer.peerId = peerId
     muxer.connection = connection
 
-    await connMngr.storeMuxer(muxer)
+    check (await connMngr.storeMuxer(muxer)).isOk()
     check muxer in connMngr
 
     let stream = await connMngr.getStream(peerId)
@@ -169,7 +167,7 @@ suite "Connection Manager":
     muxer.peerId = peerId
     muxer.connection = connection
 
-    await connMngr.storeMuxer(muxer)
+    check (await connMngr.storeMuxer(muxer)).isOk()
     check muxer in connMngr
 
     let stream1 = await connMngr.getStream(peerId, Direction.In)
@@ -186,9 +184,8 @@ suite "Connection Manager":
 
     let muxs = @[makeMuxer(peerId), makeMuxer(peerId)]
 
-    await connMngr.storeMuxer(muxs[0])
-    expect TooManyConnectionsError:
-      await connMngr.storeMuxer(muxs[1])
+    check (await connMngr.storeMuxer(muxs[0])).isOk()
+    check (await connMngr.storeMuxer(muxs[1])).isErr()
 
     let waitedConn1 = connMngr.expectConnection(peerId, In)
 
@@ -200,11 +197,10 @@ suite "Connection Manager":
       waitedConn2 = connMngr.expectConnection(peerId, In)
       waitedConn3 = connMngr.expectConnection(PeerId.random(rng()).tryGet(), In)
       conn = makeMuxer(peerId)
-    await connMngr.storeMuxer(conn)
+    check (await connMngr.storeMuxer(conn)).isOk()
     check (await waitedConn2) == conn
 
-    expect TooManyConnectionsError:
-      await connMngr.storeMuxer(muxs[1])
+    check (await connMngr.storeMuxer(muxs[1])).isErr()
 
     await connMngr.stop()
 
@@ -217,7 +213,7 @@ suite "Connection Manager":
     let connMngr = newMaxTotal()
     let muxer = makeMuxer(peerId)
 
-    await connMngr.storeMuxer(muxer)
+    check (await connMngr.storeMuxer(muxer)).isOk()
     check muxer in connMngr
 
     await muxer.close()
@@ -230,7 +226,7 @@ suite "Connection Manager":
     let connMngr = newMaxTotal()
 
     let readyWaiter = connMngr.waitForPeerReady(peerId, 1.seconds)
-    await connMngr.storeMuxer(makeMuxer(peerId))
+    check (await connMngr.storeMuxer(makeMuxer(peerId))).isOk()
 
     check await readyWaiter
     await connMngr.stop()
@@ -241,7 +237,7 @@ suite "Connection Manager":
     defer:
       await connMngr.stop()
     let readyWaiter = connMngr.waitForPeerReady(peerId, 1.seconds)
-    await connMngr.storeMuxer(makeMuxer(peerId))
+    check (await connMngr.storeMuxer(makeMuxer(peerId))).isOk()
     check await readyWaiter
     await connMngr.stop()
     check not connMngr.isRunning()
@@ -264,7 +260,7 @@ suite "Connection Manager":
     defer:
       await connMngr.stop()
     let readyWaiter = connMngr.waitForPeerReady(peerId, 1.seconds)
-    await connMngr.storeMuxer(makeMuxer(peerId))
+    check (await connMngr.storeMuxer(makeMuxer(peerId))).isOk()
     check await readyWaiter
     checkUntilTimeoutCustom(1.seconds, 10.millis):
       connMngr.peerScore(peerId) == 0
@@ -294,7 +290,7 @@ suite "Connection Manager":
     let longWaiter = connMngr.waitForPeerReady(peerId, 1.seconds)
 
     check not (await shortWaiter)
-    await connMngr.storeMuxer(makeMuxer(peerId))
+    check (await connMngr.storeMuxer(makeMuxer(peerId))).isOk()
     check await longWaiter
 
     await connMngr.stop()
@@ -303,7 +299,7 @@ suite "Connection Manager":
     let connMngr = newMaxTotal()
     let muxer = makeMuxer(peerId)
 
-    await connMngr.storeMuxer(muxer)
+    check (await connMngr.storeMuxer(muxer)).isOk()
     await muxer.close()
 
     checkUntilTimeout:
@@ -361,7 +357,7 @@ suite "Connection Manager":
     check peerId notin connMngr
 
     unblockConnected.fire()
-    await storeFut
+    check (await storeFut).isOk()
 
     checkUntilTimeout:
       events == @["Connected", "Left", "Disconnected"]
@@ -373,7 +369,7 @@ suite "Connection Manager":
       let dir = if i mod 2 == 0: Direction.In else: Direction.Out
 
       let muxer = makeMuxer(peerId, dir)
-      await connMngr.storeMuxer(muxer)
+      check (await connMngr.storeMuxer(muxer)).isOk()
       check muxer in connMngr
       check not connMngr.selectMuxer(peerId, dir).isNil
 
@@ -416,11 +412,9 @@ suite "Connection Manager":
     let connMngr = newMaxTotal(3)
 
     for i in 0 ..< 3:
-      discard connMngr.getOutgoingSlot()
+      check connMngr.getOutgoingSlot().isOk()
 
-    # should throw adding a connection over the limit
-    expect TooManyConnectionsError:
-      discard connMngr.getOutgoingSlot()
+    check connMngr.getOutgoingSlot().isErr()
 
     await connMngr.stop()
 
@@ -428,7 +422,7 @@ suite "Connection Manager":
     let connMngr = newMaxTotal(3)
 
     for i in 0 ..< 3:
-      discard connMngr.getOutgoingSlot()
+      check connMngr.getOutgoingSlot().isOk()
 
     # should timeout adding a connection over the limit
     check not (await connMngr.getIncomingSlot().withTimeout(10.millis))
@@ -441,9 +435,7 @@ suite "Connection Manager":
     for i in 0 ..< 3:
       check await connMngr.getIncomingSlot().withTimeout(10.millis)
 
-    # should throw adding a connection over the limit
-    expect TooManyConnectionsError:
-      discard connMngr.getOutgoingSlot()
+    check connMngr.getOutgoingSlot().isErr()
 
     await connMngr.stop()
 
@@ -461,11 +453,9 @@ suite "Connection Manager":
     let connMngr = newMaxInOut(1, 3)
 
     for i in 0 ..< 3:
-      discard connMngr.getOutgoingSlot()
+      check connMngr.getOutgoingSlot().isOk()
 
-    # should throw adding a connection over the limit
-    expect TooManyConnectionsError:
-      discard connMngr.getOutgoingSlot()
+    check connMngr.getOutgoingSlot().isErr()
 
     await connMngr.stop()
 
@@ -473,7 +463,7 @@ suite "Connection Manager":
     let connMngr = newMaxInOut(1, 3)
 
     for i in 0 ..< 3:
-      discard connMngr.getOutgoingSlot()
+      check connMngr.getOutgoingSlot().isOk()
 
     check await connMngr.getIncomingSlot().withTimeout(10.millis)
 
@@ -488,11 +478,9 @@ suite "Connection Manager":
     for i in 0 ..< 3:
       check await connMngr.getIncomingSlot().withTimeout(10.millis)
 
-    discard connMngr.getOutgoingSlot()
+    check connMngr.getOutgoingSlot().isOk()
 
-    # should throw adding a connection over the limit
-    expect TooManyConnectionsError:
-      discard connMngr.getOutgoingSlot()
+    check connMngr.getOutgoingSlot().isErr()
 
     await connMngr.stop()
 
@@ -500,11 +488,9 @@ suite "Connection Manager":
     let connMngr = newMaxTotal(2)
 
     for i in 0 ..< 3:
-      discard connMngr.getOutgoingSlot(true)
+      check connMngr.getOutgoingSlot(true).isOk()
 
-    # should throw adding a connection over the limit
-    expect TooManyConnectionsError:
-      discard connMngr.getOutgoingSlot(false)
+    check connMngr.getOutgoingSlot(false).isErr()
 
     await connMngr.stop()
 
@@ -513,7 +499,7 @@ suite "Connection Manager":
 
     var muxs: seq[Muxer]
     for i in 0 ..< 3:
-      let slot = connMngr.getOutgoingSlot()
+      let slot = connMngr.getOutgoingSlot().tryGet()
       let muxer = makeMuxer(PeerId.random(rng()).tryGet(), Direction.In)
 
       slot.trackMuxer(muxer)
@@ -542,17 +528,14 @@ suite "Connection Manager maxConnsPerPeer":
 
     # store up to limit
     for _ in 0 ..< numberOfMuxersToConnect:
-      await connMngr.storeMuxer(makeMuxer(peerId))
+      check (await connMngr.storeMuxer(makeMuxer(peerId))).isOk()
 
     check connMngr.connCount(peerId) == numberOfMuxersToConnect
 
     # add one more to exceed limit
-    expect TooManyConnectionsError:
-      let extraMuxer = makeMuxer(peerId)
-      try:
-        await connMngr.storeMuxer(extraMuxer)
-      finally:
-        await extraMuxer.close()
+    let extraMuxer = makeMuxer(peerId)
+    check (await connMngr.storeMuxer(extraMuxer)).isErr()
+    await extraMuxer.close()
 
     check connMngr.connCount(peerId) == numberOfMuxersToConnect
 
@@ -615,7 +598,7 @@ suite "Connection Manager Watermark":
     connMngr.protect(peers[1], "important")
 
     # adding extra peer, triggering trim
-    await connMngr.storeMuxer(makeMuxer(peerId))
+    check (await connMngr.storeMuxer(makeMuxer(peerId))).isOk()
 
     # protected peers must still be connected
     check connMngr.contains(peers[0])
@@ -626,7 +609,7 @@ suite "Connection Manager Watermark":
   asyncTest "unprotect removes tag and allows trimming":
     let connMngr = newWatermark(1, 3)
 
-    await connMngr.storeMuxer(makeMuxer(peerId))
+    check (await connMngr.storeMuxer(makeMuxer(peerId))).isOk()
 
     connMngr.protect(peerId, "tag-a")
     connMngr.protect(peerId, "tag-b")
@@ -666,11 +649,11 @@ suite "Connection Manager Watermark":
 
     await connMngr.stop()
 
-  asyncTest "getOutgoingSlot does not raise in watermark mode":
+  asyncTest "getOutgoingSlot does not fail in watermark mode":
     let connMngr = newWatermark(1, 5)
 
     for i in 0 ..< 10:
-      discard connMngr.getOutgoingSlot()
+      check connMngr.getOutgoingSlot().isOk()
 
     await connMngr.stop()
 
@@ -715,12 +698,12 @@ suite "Connection Manager Watermark":
     connMngr.addPeerEventHandler(peerHandler("Joined"), PeerEventKind.Joined)
     connMngr.addPeerEventHandler(peerHandler("Left"), PeerEventKind.Left)
 
-    await connMngr.storeMuxer(makeMuxer(peers[0]))
-    await connMngr.storeMuxer(makeMuxer(peers[1]))
+    check (await connMngr.storeMuxer(makeMuxer(peers[0]))).isOk()
+    check (await connMngr.storeMuxer(makeMuxer(peers[1]))).isOk()
     # protecting peers[0] leaves peers[1] and prunedPeer as the only trim candidates.
     # reaching lowWater then forces the trim to prune prunedPeer's just-stored connection.
     connMngr.protect(peers[0], "keep")
-    await connMngr.storeMuxer(makeMuxer(prunedPeer))
+    check (await connMngr.storeMuxer(makeMuxer(prunedPeer))).isOk()
 
     checkUntilTimeout:
       events.len == 4
@@ -736,11 +719,11 @@ suite "Connection Manager Watermark":
     let peers = PeerId.random(3, rng()).tryGet()
     let prunedPeer = peers[2]
 
-    await connMngr.storeMuxer(makeMuxer(peers[0]))
-    await connMngr.storeMuxer(makeMuxer(peers[1]))
+    check (await connMngr.storeMuxer(makeMuxer(peers[0]))).isOk()
+    check (await connMngr.storeMuxer(makeMuxer(peers[1]))).isOk()
     # protecting peers[0] forces the trim to prune prunedPeer's just-stored connection
     connMngr.protect(peers[0], "keep")
-    await connMngr.storeMuxer(makeMuxer(prunedPeer))
+    check (await connMngr.storeMuxer(makeMuxer(prunedPeer))).isOk()
 
     checkUntilTimeout:
       prunedPeer notin connMngr
@@ -762,7 +745,7 @@ suite "Connection Manager Scoring":
 
   asyncTest "static tag contributes to peer score":
     let cm = newWatermark(1, 2)
-    await cm.storeMuxer(makeMuxer(peerId))
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeer(peerId, "🌞", 50)
     check cm.peerScore(peerId) == 50
     cm.tagPeer(peerId, "🕶️", 30)
@@ -771,7 +754,7 @@ suite "Connection Manager Scoring":
 
   asyncTest "untagPeer removes score contribution":
     let cm = newWatermark(1, 2)
-    await cm.storeMuxer(makeMuxer(peerId))
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeer(peerId, tag, 50)
     cm.untagPeer(peerId, tag)
     check cm.peerScore(peerId) == 0
@@ -780,26 +763,26 @@ suite "Connection Manager Scoring":
   asyncTest "outbound connection gets outboundBonus":
     const outboundBonus = 2345432
     let cm = newWatermark(1, 2, outboundBonus = outboundBonus)
-    await cm.storeMuxer(makeMuxer(peerId, Direction.Out))
+    check (await cm.storeMuxer(makeMuxer(peerId, Direction.Out))).isOk()
     check cm.peerScore(peerId) == outboundBonus
     await cm.stop()
 
   asyncTest "inbound connection gets no outboundBonus":
     let cm = newWatermark(1, 2)
-    await cm.storeMuxer(makeMuxer(peerId, Direction.In))
+    check (await cm.storeMuxer(makeMuxer(peerId, Direction.In))).isOk()
     check cm.peerScore(peerId) == 0
     await cm.stop()
 
   asyncTest "decaying tag contributes initial value to score":
     let cm = newWatermark(1, 2)
-    await cm.storeMuxer(makeMuxer(peerId))
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeerDecaying(peerId, tag, 100, 1.hours, decayLinear(0.5))
     check cm.peerScore(peerId) == 100
     await cm.stop()
 
   asyncTest "decaying tag value decreases over interval":
     let cm = newWatermark(1, 2, decayResolution = 20.millis)
-    await cm.storeMuxer(makeMuxer(peerId))
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeerDecaying(peerId, tag, 100, 20.millis, decayFixed(30))
     checkUntilTimeout:
       cm.peerScore(peerId) < 100
@@ -807,7 +790,7 @@ suite "Connection Manager Scoring":
 
   asyncTest "decaying tag auto-removed when value hits zero":
     let cm = newWatermark(1, 2, decayResolution = 20.millis)
-    await cm.storeMuxer(makeMuxer(peerId))
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeerDecaying(peerId, tag, 10, 20.millis, decayFixed(15))
     checkUntilTimeout:
       cm.peerScore(peerId) == 0
@@ -815,7 +798,7 @@ suite "Connection Manager Scoring":
 
   asyncTest "bumpDecayingTag increases tag value":
     let cm = newWatermark(1, 2)
-    await cm.storeMuxer(makeMuxer(peerId))
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeerDecaying(peerId, tag, 50, 1.hours, decayNone())
     cm.bumpDecayingTag(peerId, tag, 25)
     check cm.peerScore(peerId) == 75
@@ -823,7 +806,7 @@ suite "Connection Manager Scoring":
 
   asyncTest "removeDecayingTag removes tag immediately":
     let cm = newWatermark(1, 2)
-    await cm.storeMuxer(makeMuxer(peerId))
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeerDecaying(peerId, tag, 50, 1.hours, decayNone())
     cm.removeDecayingTag(peerId, tag)
     check cm.peerScore(peerId) == 0
@@ -833,11 +816,11 @@ suite "Connection Manager Scoring":
     let cm = newWatermark(1, 2)
     let highScorePeer = PeerId.random(rng()).tryGet()
     let lowScorePeer1 = PeerId.random(rng()).tryGet()
-    await cm.storeMuxer(makeMuxer(highScorePeer))
+    check (await cm.storeMuxer(makeMuxer(highScorePeer))).isOk()
     cm.tagPeer(highScorePeer, "destacado", 500)
-    await cm.storeMuxer(makeMuxer(lowScorePeer1))
+    check (await cm.storeMuxer(makeMuxer(lowScorePeer1))).isOk()
     # store a third peer to trigger trim (count=3 > highWater=2)
-    await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet()))
+    check (await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet()))).isOk()
     check cm.contains(highScorePeer)
     check cm.getConnections().len == 1
     await cm.stop()
@@ -845,10 +828,10 @@ suite "Connection Manager Scoring":
   asyncTest "outbound peer survives watermark trim over inbound peers":
     let cm = newWatermark(1, 2, outboundBonus = 500)
     let outboundPeer = PeerId.random(rng()).tryGet()
-    await cm.storeMuxer(makeMuxer(outboundPeer, Direction.Out))
-    await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet(), Direction.In))
+    check (await cm.storeMuxer(makeMuxer(outboundPeer, Direction.Out))).isOk()
+    check (await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet(), Direction.In))).isOk()
     # add one more over the high water to trigger the trim
-    await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet(), Direction.In))
+    check (await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet(), Direction.In))).isOk()
     check cm.contains(outboundPeer)
     check cm.getConnections().len == 1
     await cm.stop()
@@ -880,7 +863,7 @@ suite "Connection Manager: watermark with connection limiting":
       let muxer = makeMuxer(peerId)
       connMngr.protect(peerId, "keep-forever")
       slot.trackMuxer(muxer)
-      await connMngr.storeMuxer(muxer)
+      check (await connMngr.storeMuxer(muxer)).isOk()
 
     # trim fired but found no unprotected candidates, all 3 peers still connected
     check connMngr.getConnections().len == maxConns
@@ -888,8 +871,6 @@ suite "Connection Manager: watermark with connection limiting":
     # all connection slots should be used, getting incoming slot must block
     check not (await connMngr.getIncomingSlot().withTimeout(50.millis))
 
-    # getting outgoing slot must raise (all slots are used)
-    expect TooManyConnectionsError:
-      discard connMngr.getOutgoingSlot()
+    check connMngr.getOutgoingSlot().isErr()
 
     await connMngr.stop()

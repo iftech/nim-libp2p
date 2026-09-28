@@ -407,7 +407,7 @@ suite "Connection Manager Watermark/Scoring Component":
   asyncTest "hard cap rejects new connections when the trim cannot free slots":
     # every peer is protected, so the trim has nothing to prune
     # the cap stays full at maxConnections
-    # the semaphore then rejects further connections: an inbound slot blocks, an outbound slot raises
+    # the semaphore then rejects further connections: an inbound slot blocks, an outbound slot fails
     const
       lowWater = 2
       highWater = 3
@@ -432,8 +432,7 @@ suite "Connection Manager Watermark/Scoring Component":
 
     # with the cap full the semaphore rejects new connections
     check not (await node.connManager.getIncomingSlot().withTimeout(100.millis))
-    expect TooManyConnectionsError:
-      discard node.connManager.getOutgoingSlot()
+    check node.connManager.getOutgoingSlot().isErr()
 
   asyncTest "cap rejection retries watermark trimming after grace":
     const

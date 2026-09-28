@@ -4,9 +4,11 @@
 {.push raises: [].}
 
 import std/[algorithm, tables, sets, sequtils]
-import pkg/[chronos, chronicles, metrics]
+import pkg/[chronos, chronicles, metrics, results]
 import peerinfo, peerstore, stream/connection, muxers/muxer, errors, muxer_store
 import utils/future
+
+export results
 
 logScope:
   topics = "libp2p connection-manager"
@@ -64,7 +66,6 @@ type
     maxIn: int = -1
     maxOut: int = -1
 
-  TooManyConnectionsError* = object of LPError
   AlreadyExpectingConnectionError* = object of LPError
 
   ConnEventKind* {.pure.} = enum
@@ -501,17 +502,17 @@ proc triggerTrimAfter(
 
 proc storeMuxer*(
     c: ConnManager, muxer: Muxer
-) {.async: (raises: [CancelledError, LPError]).} =
+): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
   ## store the connection and muxer
 
   if muxer.isNil:
-    raise newException(LPError, "muxer cannot be nil")
+    return err("muxer cannot be nil")
 
   if muxer.connection.isNil:
-    raise newException(LPError, "muxer's connection cannot be nil")
+    return err("muxer's connection cannot be nil")
 
   if muxer.connection.closed or muxer.connection.atEof:
-    raise newException(LPError, "Connection closed or EOF")
+    return err("Connection closed or EOF")
 
   let
     peerId = muxer.connection.peerId
@@ -526,10 +527,10 @@ proc storeMuxer*(
       expectedConn.complete(muxer)
     else:
       trace "Per peer connections limit reached", conns = peerConnsCount, peerId
-      raise newException(TooManyConnectionsError, "Per peer connections limit reached")
+      return err("Per peer connections limit reached")
 
   if not c.muxerStore.add(muxer):
-    raise newException(LPError, "muxer already stored")
+    return err("muxer already stored")
 
   libp2p_peers.set(c.muxerStore.countPeers().int64)
   libp2p_connections_opened.inc(labelValues = [metricLabel(dir)])
@@ -551,7 +552,7 @@ proc storeMuxer*(
 
   if muxer notin c:
     trace "Muxer dropped before peer joined", muxer, peerId
-    return
+    return ok()
 
   var joinedEvent: Future[void].Raising([CancelledError])
   if isNewPeer:
@@ -568,6 +569,7 @@ proc storeMuxer*(
 
   trace "Stored muxer",
     muxer, direction = $muxer.connection.dir, peers = c.muxerStore.countPeers()
+  ok()
 
 proc getIncomingSlot*(
     c: ConnManager
@@ -583,7 +585,7 @@ proc tryGetIncomingSlot*(c: ConnManager): Opt[ConnectionSlot] =
 
 proc getOutgoingSlot*(
     c: ConnManager, forceDial = false
-): ConnectionSlot {.raises: [TooManyConnectionsError].} =
+): Result[ConnectionSlot, string] =
   if c.outSema != nil:
     if forceDial:
       # force dial by not blocking/waiting on acquire and
@@ -591,11 +593,9 @@ proc getOutgoingSlot*(
       discard c.outSema.acquire()
     elif not c.outSema.tryAcquire():
       trace "Total outgoing connections limit reached"
-      raise newException(
-        TooManyConnectionsError, "Total outgoing connections limit reached"
-      )
+      return err("Total outgoing connections limit reached")
 
-  return ConnectionSlot(connManager: c, direction: Out)
+  ok(ConnectionSlot(connManager: c, direction: Out))
 
 func semaphore(c: ConnManager, dir: Direction): AsyncSemaphore =
   return if dir == In: c.inSema else: c.outSema

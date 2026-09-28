@@ -244,7 +244,7 @@ proc upgrader(
 ) {.async: (raises: [CancelledError, UpgradeError]).} =
   try:
     let muxed = await trans.upgrade(conn, Opt.none(PeerId))
-    await switch.connManager.storeMuxer(muxed)
+    (await switch.connManager.storeMuxer(muxed)).onErrorRaise(UpgradeError)
     await switch.peerStore.identify(muxed, conn.transportDir)
     await switch.connManager.triggerPeerEvents(
       muxed.connection.peerId,

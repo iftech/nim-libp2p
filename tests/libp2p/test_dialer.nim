@@ -112,6 +112,24 @@ suite "Dialer":
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
+  asyncTest "Connect to self fails":
+    let src = makeStandardSwitch()
+    await src.start()
+    defer:
+      await src.stop()
+
+    expect DialFailedError:
+      await src.connect(src.peerInfo.peerId, src.peerInfo.addrs)
+
+  asyncTest "Connect without addresses fails":
+    let src = makeStandardSwitch()
+    await src.start()
+    defer:
+      await src.stop()
+
+    expect DialFailedError:
+      await src.connect(randomPeerId(), @[])
+
   asyncTest "A stalling remote gives up at the dial timeout":
     let
       stall = startStallServer()
