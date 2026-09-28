@@ -32,10 +32,16 @@ suite "RFC 3339 date-time parser":
     check parseRfc3339DateTime("2026-08-21T11:36:41.6219407265Z").get() - base ==
       initDuration(nanoseconds = 621_940_726)
 
-  test "accepts RFC 3339 lowercase separators and leap seconds":
+  test "accepts RFC 3339 lowercase separators":
     check parseRfc3339DateTime("2026-08-21t12:00:00z").get() ==
       dateTime(2026, mAug, 21, 12, zone = utc())
+
+  test "accepts leap seconds at the end of a UTC month":
     check parseRfc3339DateTime("2016-12-31T23:59:60Z").get() ==
+      dateTime(2017, mJan, 1, zone = utc())
+    check parseRfc3339DateTime("2016-12-31T18:59:60-05:00").get() ==
+      dateTime(2017, mJan, 1, zone = utc())
+    check parseRfc3339DateTime("2017-01-01T01:59:60+02:00").get() ==
       dateTime(2017, mJan, 1, zone = utc())
 
   test "accepts valid calendar boundaries":
@@ -57,6 +63,14 @@ suite "RFC 3339 date-time parser":
       "2026-00-21T12:00:00Z", "2026-13-21T12:00:00Z", "2026-08-00T12:00:00Z",
       "2026-02-29T12:00:00Z", "2026-04-31T12:00:00Z", "2026-08-21T24:00:00Z",
       "2026-08-21T12:60:00Z", "2026-08-21T12:00:61Z",
+    ]
+    for value in testCase:
+      check parseRfc3339DateTime(value).isErr()
+
+  test "rejects leap seconds outside the end of a UTC month":
+    let testCase = [
+      "2026-08-21T12:00:60Z", "2026-06-30T23:58:60Z", "2026-06-29T23:59:60Z",
+      "2026-06-30T18:58:60-05:00", "2026-07-01T01:58:60+02:00",
     ]
     for value in testCase:
       check parseRfc3339DateTime(value).isErr()

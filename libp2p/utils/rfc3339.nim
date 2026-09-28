@@ -77,6 +77,15 @@ proc parseRfc3339DateTime*(value: string): Result[DateTime, string] =
   else:
     invalid()
 
-  let localDateTime =
-    dateTime(year, parsedMonth, monthday, hour, minute, second, nanosecond, utc())
-  ok(localDateTime - initDuration(minutes = offsetMinutes))
+  let utcDateTime =
+    dateTime(
+      year, parsedMonth, monthday, hour, minute, min(second, 59), nanosecond, utc()
+    ) - initDuration(minutes = offsetMinutes)
+
+  if second == 60:
+    if utcDateTime.hour != 23 or utcDateTime.minute != 59 or
+        utcDateTime.monthday != getDaysInMonth(utcDateTime.month, utcDateTime.year):
+      invalid()
+    return ok(utcDateTime + initDuration(seconds = 1))
+
+  ok(utcDateTime)
