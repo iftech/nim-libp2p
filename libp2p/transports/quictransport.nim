@@ -4,7 +4,8 @@
 {.push raises: [].}
 
 import std/[hashes, sets, sequtils]
-import chronos, chronicles, metrics, results
+import chronos, chronicles, metrics
+import ../results
 import lsquic
 import
   ../crypto/rng,
@@ -222,7 +223,7 @@ type QuicMuxer* = ref object of Muxer
   handleFut: Future[void]
   handleStreamFuts: seq[Future[void]]
 
-proc parseCertificate(certificatesDer: seq[seq[byte]]): Result[P2pCertificate, string] =
+proc parseCertificate(certificatesDer: seq[seq[byte]]): LPResult[P2pCertificate] =
   if certificatesDer.len != 1:
     return err("expected one certificate, got " & $certificatesDer.len)
 
@@ -231,7 +232,7 @@ proc parseCertificate(certificatesDer: seq[seq[byte]]): Result[P2pCertificate, s
   except CertificateParsingError as e:
     err("cannot parse certificate. " & e.msg)
 
-proc certificatePeerId(certificatesDer: seq[seq[byte]]): Result[PeerId, string] =
+proc certificatePeerId(certificatesDer: seq[seq[byte]]): LPResult[PeerId] =
   let cert = ?parseCertificate(certificatesDer)
   let peerId = PeerId.init(cert.publicKey()).valueOr:
     return err("cannot derive peer ID from certificate. " & $error)
@@ -239,7 +240,7 @@ proc certificatePeerId(certificatesDer: seq[seq[byte]]): Result[PeerId, string] 
 
 proc tryNew*(
     _: type QuicMuxer, conn: P2PConnection, peerId: Opt[PeerId] = Opt.none(PeerId)
-): Result[QuicMuxer, string] =
+): LPResult[QuicMuxer] =
   if conn.isNil:
     return err("QuicMuxer.new called with nil connection")
 
@@ -431,7 +432,7 @@ method handles*(transport: QuicTransport, address: MultiAddress): bool {.raises:
     return false
   QUIC_V1.match(address)
 
-proc makeConfig(self: QuicTransport): Result[TLSConfig, string] =
+proc makeConfig(self: QuicTransport): LPResult[TLSConfig] =
   let pubkey = self.privateKey.getPublicKey().valueOr:
     return err("cannot obtain public key. " & $error)
 
@@ -459,7 +460,7 @@ proc toMultiAddress(ta: TransportAddress): MaResult[MultiAddress] =
 
 proc listen(
     self: QuicTransport, addrs: openArray[TransportAddress]
-): Result[seq[MultiAddress], string] =
+): LPResult[seq[MultiAddress]] =
   ## Endpoints created before a failure stay in `self.listeners` for the caller to stop.
   let tlsConfig = ?self.makeConfig()
   var listenMAs: seq[MultiAddress]
@@ -532,7 +533,7 @@ method stop*(transport: QuicTransport) {.async: (raises: []).} =
 
 proc wrapConnection(
     transport: QuicTransport, connection: QuicConnection, transportDir: Direction
-): Result[QuicSession, string] =
+): LPResult[QuicSession] =
   let observedAddr = ?toMultiAddress(connection.remoteAddress())
   let localAddr = ?toMultiAddress(connection.localAddress())
 
@@ -605,7 +606,7 @@ method accept*(
 
 proc listenerEndpointFor(
     self: QuicTransport, address: TransportAddress
-): Result[Opt[QuicEndpoint], string] =
+): LPResult[Opt[QuicEndpoint]] =
   var matchedEndpoint = Opt.none(QuicEndpoint)
   for endpoint in self.listeners:
     let local =
@@ -622,7 +623,7 @@ proc listenerEndpointFor(
 
 proc newDialEndpoint(
     self: QuicTransport, family: AddressFamily
-): Result[QuicEndpoint, string] =
+): LPResult[QuicEndpoint] =
   let tlsConfig = ?self.makeConfig()
   try:
     ok(QuicEndpoint.new(tlsConfig, family, engineConfig = self.engineConfig))
@@ -633,7 +634,7 @@ proc newDialEndpoint(
 
 proc dialOnlyEndpointFor(
     self: QuicTransport, family: AddressFamily
-): Result[QuicEndpoint, string] =
+): LPResult[QuicEndpoint] =
   case family
   of AddressFamily.IPv4:
     if self.dialEndpoint4.isNone():
@@ -650,7 +651,7 @@ proc dialOnlyEndpointFor(
 
 proc dialEndpointFor(
     self: QuicTransport, address: TransportAddress
-): Result[QuicEndpoint, string] =
+): LPResult[QuicEndpoint] =
   let listenerEndpoint = ?self.listenerEndpointFor(address)
   listenerEndpoint.ifValue(endpoint):
     return ok(endpoint)

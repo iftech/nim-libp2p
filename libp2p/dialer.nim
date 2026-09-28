@@ -3,7 +3,8 @@
 
 import std/[sequtils, tables]
 
-import pkg/[chronos, chronicles, metrics, results]
+import pkg/[chronos, chronicles, metrics]
+import ./results
 
 import
   dial,
@@ -54,8 +55,6 @@ type
   DialLock = ref object
     lock: AsyncLock
     users: int ## dials holding or waiting for `lock`
-
-  DialResult[T] = Result[T, string]
 
   Dialer* = ref object of Dial
     localPeerId*: PeerId
@@ -175,7 +174,7 @@ proc dialAndUpgrade*(
 
 proc expandDnsAddr(
     self: Dialer, peerId: Opt[PeerId], address: MultiAddress, deadline: Moment
-): Future[DialResult[seq[(MultiAddress, Opt[PeerId])]]] {.
+): Future[LPResult[seq[(MultiAddress, Opt[PeerId])]]] {.
     async: (raises: [CancelledError])
 .} =
   if not DNS.matchPartial(address):
@@ -209,7 +208,7 @@ proc expandDnsAddr(
   var addrs: seq[(MultiAddress, Opt[PeerId])]
   for resolvedAddress in resolved:
     let lastPart = ?resolvedAddress[^1]
-    if lastPart.protoCode == Result[MultiCodec, string].ok(multiCodec("p2p")):
+    if lastPart.protoCode == LPResult[MultiCodec].ok(multiCodec("p2p")):
       let addrPeerId = PeerId.init(?lastPart.protoArgument()).valueOr:
         return err($error)
       addrs.add((?resolvedAddress[0 ..^ 2], Opt.some(addrPeerId)))
@@ -410,7 +409,7 @@ proc tryDialAndUpgrade(
     deadline: Moment,
     forceDial: bool,
     reach: DialReach,
-): Future[DialResult[Muxer]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[Muxer]] {.async: (raises: [CancelledError]).} =
   let dialAddrs = normalizedDialAddrs(peerId, addrs)
   trace "Peer dial started", peerId, addresses = dialAddrs
 
@@ -488,7 +487,7 @@ proc acquireDialLock(
 
 proc finishUpgrade(
     self: Dialer, muxed: Muxer, dir: Direction
-): Future[DialResult[void]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   ## Store the muxer, learn who is on the other end, and announce the peer.
   var finished = false
   defer:
@@ -520,7 +519,7 @@ proc establishConnection(
     forceDial: bool,
     reuseConnection: bool,
     dir: Direction,
-): Future[DialResult[Muxer]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[Muxer]] {.async: (raises: [CancelledError]).} =
   if reuseConnection:
     peerId.ifValue(peerId):
       self.tryReusingConnection(peerId).ifValue(mux):
@@ -573,7 +572,7 @@ proc internalConnect(
     forceDial: bool,
     reuseConnection = true,
     dir = Direction.Out,
-): Future[DialResult[Muxer]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[Muxer]] {.async: (raises: [CancelledError]).} =
   if Opt.some(self.localPeerId) == peerId:
     return err("internalConnect can't dial self!")
 

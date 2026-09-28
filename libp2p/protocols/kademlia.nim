@@ -194,17 +194,17 @@ proc maintainLiveness(kad: KadDHT) {.async: (raises: [CancelledError]).} =
     if launchedProbesCount > 0:
       trace "Liveness scan found replaceable peers", launchedProbesCount
 
-    # one() on a finished future completes without a yield, so the loop spins.
-    let inFlight = kad.livenessProbes.values.toSeq().filterIt(not it.finished())
-    if inFlight.len == 0:
+    if kad.livenessProbes.len == 0:
       await sleepAsync(kad.config.livenessIdleInterval)
       continue
 
-    trace "Waiting for in-flight liveness probes", inFlight = inFlight.len
+    trace "Waiting for in-flight liveness probes", inFlight = kad.livenessProbes.len
+    let inFlight = kad.livenessProbes.values.toSeq()
     try:
       discard await one(inFlight)
     except ValueError:
-      raiseAssert "inFlight is not empty"
+      # All futures already finished between the snapshot and the wait.
+      discard
     except CancelledError as exc:
       await noCancel inFlight.cancelAndWait()
       raise exc
