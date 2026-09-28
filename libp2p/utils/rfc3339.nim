@@ -9,8 +9,10 @@ func digit(value: string, index: int): int =
   ord(value[index]) - ord('0')
 
 func decimal(value: string, first, last: int): int =
+  var acc = 0
   for index in first .. last:
-    result = result * 10 + value.digit(index)
+    acc = acc * 10 + value.digit(index)
+  acc
 
 proc parseRfc3339DateTime*(value: string): Result[DateTime, string] =
   ## Parses an RFC 3339 timestamp and normalizes it to UTC. Fractions more precise
