@@ -166,17 +166,39 @@ proc replaceableCandidate(
     return Opt.none(int)
   Opt.some(candidateIdx)
 
-proc tryReplaceStalePeer(
-    rtable: RoutingTable, bucket: var Bucket, newNodeId: Key
+func canRotate(bucket: Bucket, now: Moment): bool =
+  let last = bucket.lastRotation.valueOr:
+    return true
+  now - last >= BucketRotationInterval
+
+func joinedAt(rtable: RoutingTable, nodeId: Key): Moment =
+  let membership = rtable.registry.membership(nodeId, rtable.selfId).valueOr:
+    return Moment.low
+  membership.addedAt
+
+proc rotationVictim(rtable: RoutingTable, bucket: Bucket): int =
+  ## The longest-held half never rotates, so a flood owns at most half a bucket.
+  let byAge = bucket.peers.sortedByIt(rtable.joinedAt(it))
+  let (victim, _) =
+    Bucket(peers: byAge[byAge.len div 2 .. ^1]).oldestPeer(rtable.registry)
+  bucket.peers.find(victim)
+
+proc tryReplacePeer(
+    rtable: RoutingTable, bucket: var Bucket, newNodeId: Key, probed: bool
 ): bool =
   if bucket.peers.len < rtable.config.replication:
     trace "Skipping replace: bucket is not full", newNodeId = newNodeId
     return false
 
+  let now = Moment.now()
   let idx = rtable.replaceableCandidate(bucket, rtable.config.usefulnessGracePeriod).valueOr:
-    trace "Skipping replace: no peer past usefulness grace period",
-      newNodeId = newNodeId
-    return false
+    if not probed or not bucket.canRotate(now):
+      trace "Skipping replace: no peer past usefulness grace period",
+        newNodeId = newNodeId, probed = probed
+      return false
+    bucket.lastRotation = Opt.some(now)
+    kad_routing_table_evictions.inc(labelValues = ["rotation"])
+    rtable.rotationVictim(bucket)
 
   let oldId = bucket.peers[idx]
   bucket.peers[idx] = newNodeId
@@ -194,7 +216,8 @@ proc updateRoutingTableMetrics*(rtable: RoutingTable) =
   kad_routing_table_peers.set(total.float64)
   kad_routing_table_buckets.set(rtable.buckets.len.float64)
 
-proc insert*(rtable: RoutingTable, nodeId: Key): bool =
+proc insert*(rtable: RoutingTable, nodeId: Key, probed = false): bool =
+  ## Only a ``probed`` peer evicts a useful one, at most once per ``BucketRotationInterval``.
   if rtable.detached:
     debug "Cannot insert into detached routing table", nodeId = nodeId
     return false
@@ -219,9 +242,8 @@ proc insert*(rtable: RoutingTable, nodeId: Key): bool =
     rtable.registry.addMembership(nodeId, rtable.selfId)
     kad_routing_table_insertions.inc()
   else:
-    # Full bucket with no replaceable peer: reject rather than evict a useful one.
     # Leave any pre-existing registry row alone; do not create a row without membership.
-    if not rtable.tryReplaceStalePeer(bucket, nodeId):
+    if not rtable.tryReplacePeer(bucket, nodeId, probed):
       debug "Cannot insert, no replaceable peer in bucket",
         bucket = idx, nodeId = nodeId
       return false
@@ -233,8 +255,8 @@ proc insert*(rtable: RoutingTable, nodeId: Key): bool =
   updateRoutingTableMetrics(rtable)
   return true
 
-proc insert*(rtable: RoutingTable, peerId: PeerId): bool =
-  insert(rtable, peerId.toKey())
+proc insert*(rtable: RoutingTable, peerId: PeerId, probed = false): bool =
+  insert(rtable, peerId.toKey(), probed)
 
 proc removePeer*(rtable: RoutingTable, nodeId: Key, reason = "remove"): bool =
   ## Removes ``nodeId`` from this index. Returns true if it was present.
