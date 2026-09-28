@@ -251,6 +251,13 @@ proc pubkeyBytes*(pubkey: PublicKey): seq[byte] {.raises: [PeerIDAuthError].} =
       PeerIDAuthError, "Failed to get bytes from PeerInfo's publicKey: " & $error
     )
 
+proc parseBearerExpiry(value: string): Opt[DateTime] =
+  let expires = parseRfc3339DateTime(value).valueOr:
+    if value.len > 0:
+      debug "Ignoring invalid bearer expiry", expiry = value, msg = error
+    return Opt.none(DateTime)
+  Opt.some(expires)
+
 proc tryRequestAuthorization*(
     self: PeerIDAuthClient,
     peerInfo: PeerInfo,
@@ -275,14 +282,7 @@ proc tryRequestAuthorization*(
 
   let authenticationInfo = response.headers.getString("authentication-info")
   let bearerExpires = authenticationInfo.extractField("expires").valueOr("")
-
-  let parsedExpires = parseRfc3339DateTime(bearerExpires)
-  var expires = Opt.none(DateTime)
-  if parsedExpires.isOk:
-    expires = Opt.some(parsedExpires.get())
-  elif bearerExpires.len > 0:
-    debug "Ignoring invalid bearer expiry",
-      expiry = bearerExpires, msg = parsedExpires.error
+  let expires = parseBearerExpiry(bearerExpires)
 
   ok(
     PeerIDAuthAuthorizationResponse(
