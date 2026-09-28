@@ -73,6 +73,8 @@ proc sendChallenge*(
 
   # If broker returns 401, it is a signal that bearer is no loger accepted.
   if response.status == HttpUnauthorized and self.bearer.isSome():
+    trace "Bearer rejected by AutoTLS broker; retrying with mutual-auth handshake",
+      registrationURL = $self.registrationURL
     # Retry this registration once without bearer, which runs the mutual-auth handshake and
     # obtains a replacement bearer. 
     # Do not retry a 401 from that fresh handshake.
