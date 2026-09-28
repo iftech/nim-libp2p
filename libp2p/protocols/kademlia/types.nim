@@ -25,6 +25,8 @@ const
     ## Peer not seen for this duration marks the bucket stale (refresh trigger).
   DefaultUsefulnessGracePeriod* = 1.hours
     ## New peers resist eviction until in the table this long without proving
+  BucketRotationInterval* = 1.minutes
+    ## Minimum time between two evictions of useful peers from one bucket.
   DefaultLivenessGracePeriod* = 1.hours
     ## Peers with no successful outbound DHT activity within this window are
     ## probed for liveness by the background liveness loop; failures are
@@ -253,6 +255,7 @@ type
   ## looking up ``PeerRecord`` timestamps in the shared registry.
   Bucket* = object
     peers*: seq[Key]
+    lastRotation*: Opt[Moment]
 
   RoutingTableConfig* = ref object
     replication*: int

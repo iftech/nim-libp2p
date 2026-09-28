@@ -324,7 +324,7 @@ proc admitPeer(
   if rtable.detached:
     trace "Kad admission probe abandoned: table detached", peer = peerId.shortLog()
     return
-  if rtable.insert(peerId) and not onAdmit.isNil():
+  if rtable.insert(peerId, probed = true) and not onAdmit.isNil():
     onAdmit(peerId)
 
 proc trackProbe(kad: KadDHT, probeKey: ProbeKey, probe: Future[void]) {.raises: [].} =
