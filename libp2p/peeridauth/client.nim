@@ -276,10 +276,15 @@ proc tryRequestAuthorization*(
   let authenticationInfo = response.headers.getString("authentication-info")
   let bearerExpires = authenticationInfo.extractField("expires").valueOr("")
 
-  let expires = parseRfc3339DateTime(bearerExpires).valueOr:
-    if bearerExpires.len > 0:
-      debug "Ignoring invalid bearer expiry", expiry = bearerExpires, msg = error
-    Opt.none(DateTime)
+  let parsedExpires = parseRfc3339DateTime(bearerExpires)
+  let expires =
+    if parsedExpires.isOk:
+      Opt.some(parsedExpires.get())
+    else:
+      if bearerExpires.len > 0:
+        debug "Ignoring invalid bearer expiry", expiry = bearerExpires,
+          msg = parsedExpires.error
+      Opt.none(DateTime)
 
   ok(
     PeerIDAuthAuthorizationResponse(
