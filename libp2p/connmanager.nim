@@ -4,9 +4,11 @@
 {.push raises: [].}
 
 import std/[algorithm, tables, sets, sequtils]
-import pkg/[chronos, chronicles, metrics]
+import pkg/[chronos, chronicles, metrics, results]
 import peerinfo, peerstore, stream/connection, muxers/muxer, errors, muxer_store
 import utils/future
+
+export results
 
 logScope:
   topics = "libp2p connection-manager"
