@@ -80,6 +80,7 @@ proc sendChallenge*(
     (bearer, response) =
       await self.peerIdAuthClient.send(self.registrationURL, peerInfo, payload)
 
+  # remember the latest bearer in case the broker rotated it
   self.bearer =
     if response.status == HttpUnauthorized:
       Opt.none(BearerToken)
