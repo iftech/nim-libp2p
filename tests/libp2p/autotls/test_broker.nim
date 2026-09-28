@@ -95,12 +95,26 @@ suite "AutoTLS broker":
       client.authHeaders.len == 2
       client.authHeaders[1] == PeerIDAuthPrefix & " bearer=\"" & client.token & "\""
 
+  asyncTest "a 401 bearer response re-authenticates and retries the registration":
+    # The first call obtains the bearer. The next call rejects it, then accepts
+    # the retried request after the mutual-auth handshake.
+    client.statuses = @[200, 401, 200]
+
+    await broker.sendChallenge(peerInfo, addrs, KeyAuth)
+    await broker.sendChallenge(peerInfo, addrs, KeyAuth)
+
+    check:
+      client.requestedUris.len == 5
+      client.authHeaders.len == 3
+      client.authHeaders[1] == PeerIDAuthPrefix & " bearer=\"" & client.token & "\""
+      client.authHeaders[2].startsWith(PeerIDAuthPrefix & " public-key=")
+
   asyncTest "a bearer obtained during a rejected registration is kept":
     client.status = 500
 
-    expect(AutoTLSError):
+    expect AutoTLSError:
       await broker.sendChallenge(peerInfo, addrs, KeyAuth)
-    expect(AutoTLSError):
+    expect AutoTLSError:
       await broker.sendChallenge(peerInfo, addrs, KeyAuth)
 
     check client.authHeaders[1] == PeerIDAuthPrefix & " bearer=\"" & client.token & "\""
@@ -108,9 +122,9 @@ suite "AutoTLS broker":
   asyncTest "a 401 clears the bearer for the next registration":
     client.status = 401
 
-    expect(AutoTLSError):
+    expect AutoTLSError:
       await broker.sendChallenge(peerInfo, addrs, KeyAuth)
-    expect(AutoTLSError):
+    expect AutoTLSError:
       await broker.sendChallenge(peerInfo, addrs, KeyAuth)
 
     check:
