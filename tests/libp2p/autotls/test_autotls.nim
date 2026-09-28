@@ -422,6 +422,13 @@ suite "AutoTLS ACME API":
 
     check expiry == dateTime(2026, mNov, 2, 14, 30, zone = utc())
 
+  asyncTest "a malformed expires is rejected":
+    let response = await downloadWithExpires("not-a-date")
+
+    check response.isErr()
+    check response.error.startsWith("Invalid certificate expiry: ")
+    check response.error.contains("not-a-date")
+
   asyncTest "an order whose certificate url is off the directory origin is refused":
     api.queueGetOrder("", "2026-11-02T14:30:00Z")
     api.queueGetOrder("https://elsewhere.example/cert/1", "2026-11-02T14:30:00Z")
