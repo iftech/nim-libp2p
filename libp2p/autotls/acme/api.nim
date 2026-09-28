@@ -411,7 +411,8 @@ func parseCheck(
 
 proc parseExpiry(expires: string): Result[DateTime, string] =
   parseRfc3339DateTime(expires).mapErr(
-    proc(error: string): string = "Invalid certificate expiry: " & error
+    proc(error: string): string =
+      "Invalid certificate expiry: " & error
   )
 
 proc requestRegister*(
