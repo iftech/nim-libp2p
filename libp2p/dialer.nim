@@ -3,7 +3,8 @@
 
 import std/[sequtils, tables]
 
-import pkg/[chronos, chronicles, metrics, results]
+import pkg/[chronos, chronicles, metrics]
+import ./results
 
 import
   dial,

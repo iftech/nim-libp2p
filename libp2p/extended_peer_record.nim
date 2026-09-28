@@ -6,7 +6,7 @@
 {.push raises: [].}
 
 import std/[sequtils, times, hashes]
-import pkg/results
+import ./results
 import protobuf_serialization, protobuf_serialization/pkg/results
 import multiaddress, multicodec, peerid, signed_envelope, routing_record, utils/protobuf
 

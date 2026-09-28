@@ -4,7 +4,8 @@
 {.push raises: [].}
 
 import std/[algorithm, sequtils]
-import pkg/[chronos, chronicles, results]
+import pkg/[chronos, chronicles]
+import ./results
 import
   peerid,
   multiaddress,

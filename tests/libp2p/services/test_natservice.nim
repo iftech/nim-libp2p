@@ -4,7 +4,8 @@
 {.used.}
 
 import std/[net, sequtils]
-import chronos, results
+import chronos
+import ../../../libp2p/results
 import ../../../libp2p/[builders, switch, multiaddress, multicodec, peerinfo, wire]
 import ../../../libp2p/services/natservice
 import ../../../libp2p/services/nat/portmapper

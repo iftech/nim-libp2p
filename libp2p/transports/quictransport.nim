@@ -4,7 +4,8 @@
 {.push raises: [].}
 
 import std/[hashes, sets, sequtils]
-import chronos, chronicles, metrics, results
+import chronos, chronicles, metrics
+import ../results
 import lsquic
 import
   ../crypto/rng,

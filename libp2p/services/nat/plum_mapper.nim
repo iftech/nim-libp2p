@@ -13,7 +13,7 @@
 import std/[net, tables]
 import chronos, chronicles
 import libplum/plum
-import ./portmapper, ../../errors
+import ./portmapper, ../../results
 
 export ProtocolFilter
 

@@ -7,7 +7,8 @@
 
 import ../logging
 import std/[sequtils, oserrors]
-import chronos, chronicles, results
+import chronos, chronicles
+import ../results
 import
   ./transport,
   ../wire,

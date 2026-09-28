@@ -5,7 +5,8 @@
 {.push raises: [].}
 
 import std/oserrors
-import chronos, chronicles, results
+import chronos, chronicles
+import ../results
 import
   ../stream/connection,
   ../multiaddress,

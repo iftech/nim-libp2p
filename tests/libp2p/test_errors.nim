@@ -3,8 +3,7 @@
 
 {.used.}
 
-import results
-import ../../libp2p/errors
+import ../../libp2p/[errors, results]
 import ../tools/unittest
 
 type

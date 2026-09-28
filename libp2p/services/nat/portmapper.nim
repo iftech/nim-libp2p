@@ -5,7 +5,7 @@
 
 import std/net
 import chronos
-import ../../errors
+import ../../results
 
 type
   MapProto* = enum

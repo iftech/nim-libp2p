@@ -7,7 +7,8 @@
 
 import ../logging
 import std/[sequtils]
-import chronos, chronicles, results, metrics, stew/byteutils
+import chronos, chronicles, metrics, stew/byteutils
+import ../results
 import
   transport,
   ../autotls/service,

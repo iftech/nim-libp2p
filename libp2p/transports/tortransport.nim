@@ -5,7 +5,8 @@
 
 {.push raises: [].}
 
-import chronos, chronicles, strutils, results
+import chronos, chronicles, strutils
+import ../results
 import stew/[byteutils, endians2, objects]
 import ../multicodec
 import

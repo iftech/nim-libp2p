@@ -10,7 +10,7 @@
 {.push raises: [].}
 
 import tables
-import errors
+import ./results
 import stew/[base32, base58, base64]
 
 type

@@ -15,7 +15,7 @@ import
   ../multistream,
   ../connmanager,
   ../errors,
-  results
+  ../results
 
 export connmanager, connection, identify, secure, multistream
 
