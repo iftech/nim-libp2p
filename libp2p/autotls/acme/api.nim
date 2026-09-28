@@ -2,13 +2,14 @@
 # Copyright (c) Status Research & Development GmbH
 
 import json, parseutils, sequtils, strutils, uri
-from times import DateTime, parse
+from times import DateTime
 import chronos/apps/http/httpclient, results
 
 import ./jws
 import ./utils
 import ../../crypto/rsa
 import ../../utils/opt
+import ../../utils/rfc3339
 
 const
   LetsEncryptDirectoryURL* = parseUri("https://acme-v02.api.letsencrypt.org/directory")
@@ -409,10 +410,10 @@ func parseCheck(
     )
 
 proc parseExpiry(expires: string): Result[DateTime, string] =
-  try:
-    ok(parse(expires, "yyyy-MM-dd'T'HH:mm:ss'Z'"))
-  except ValueError as e:
-    err("Invalid certificate expiry " & expires & ": " & e.msg)
+  parseRfc3339DateTime(expires).mapErr(
+    proc(error: string): string =
+      "Invalid certificate expiry " & expires & ": " & error
+  )
 
 proc requestRegister*(
     self: ACMEApi, key: RsaPrivateKey

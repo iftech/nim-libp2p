@@ -133,9 +133,12 @@ suite "PeerID Auth Client":
     let base = dateTime(2026, mAug, 21, 11, 36, 41, zone = utc())
     let nanos =
       (await requestWithExpires("2026-08-21T11:36:41.621940726Z")).bearer.expires.get()
+    let subNanos =
+      (await requestWithExpires("2026-08-21T11:36:41.6219407265Z")).bearer.expires.get()
     let tenths =
       (await requestWithExpires("2026-08-21T11:36:41.1Z")).bearer.expires.get()
     check nanos - base == initDuration(nanoseconds = 621_940_726)
+    check subNanos == nanos
     check tenths - base == initDuration(milliseconds = 100)
 
   asyncTest "bearer expiry accepts whole seconds and timezone offsets":
@@ -144,9 +147,16 @@ suite "PeerID Auth Client":
       expected
     check (await requestWithExpires("2026-08-21T14:00:00+02:00")).bearer.expires.get() ==
       expected
+    check (await requestWithExpires("2016-12-31T23:59:60Z")).bearer.expires.get() ==
+      dateTime(2017, mJan, 1, zone = utc())
 
   asyncTest "malformed bearer expiry is dropped":
-    for expires in ["2026-08-21T12:00:00", "2026-08-21T12:00:00.Z", "invalid"]:
+    for expires in [
+      "2026-08-21T12:00:00", "2026-08-21T12:00:00.Z", "2026-08-21T12:00:00+12",
+      "2026-02-30T12:00:00Z", "2026-08-21T24:00:00Z", "2026-08-21T12:60:00Z",
+      "2026-08-21T12:00:61Z", "2026-08-21T12:00:00+24:00", "2026-08-21T12:00:00+12:60",
+      "invalid",
+    ]:
       check (await requestWithExpires(expires)).bearer.expires.isNone()
 
   asyncTest "authentication field without a value is rejected":
