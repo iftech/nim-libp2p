@@ -4,7 +4,7 @@
 {.used.}
 
 import base64, sequtils, json, strutils, uri, chronos, chronos/apps/http/httpclient
-from times import format, local, timezone, `==`
+from times import dateTime, format, initDuration, mNov, timezone, utc, `-`, `==`
 import
   ../../../libp2p/
     [stream/connection, upgrademngrs/upgrade, autotls/acme/client, crypto/rsa, wire]
@@ -402,21 +402,32 @@ suite "AutoTLS ACME API":
     let response = await api.downloadCertificate(parseUri(OrderURL), key, AccountURL)
     response
 
-  asyncTest "the order's expires is parsed in local time":
-    # TODO: vacp2p/nim-libp2p#2975
+  asyncTest "the order's expires is parsed in UTC":
     let expiry =
       (await downloadWithExpires("2026-11-02T14:30:00Z")).get().certificateExpiry
 
-    check expiry.timezone == local()
+    check expiry.timezone == utc()
     check expiry.format("yyyy-MM-dd'T'HH:mm:ss") == "2026-11-02T14:30:00"
 
-  asyncTest "an expires with a fractional second is rejected":
-    # TODO: vacp2p/nim-libp2p#2975
-    check (await downloadWithExpires("2026-11-02T14:30:00.000Z")).isErr()
+  asyncTest "an expires with a fractional second is accepted":
+    let expiry =
+      (await downloadWithExpires("2026-11-02T14:30:00.125Z")).get().certificateExpiry
 
-  asyncTest "an expires with a numeric UTC offset is rejected":
-    # TODO: vacp2p/nim-libp2p#2975
-    check (await downloadWithExpires("2026-11-02T14:30:00+00:00")).isErr()
+    check expiry - dateTime(2026, mNov, 2, 14, 30, zone = utc()) ==
+      initDuration(milliseconds = 125)
+
+  asyncTest "an expires with a numeric UTC offset is accepted":
+    let expiry =
+      (await downloadWithExpires("2026-11-02T16:30:00+02:00")).get().certificateExpiry
+
+    check expiry == dateTime(2026, mNov, 2, 14, 30, zone = utc())
+
+  asyncTest "a malformed expires is rejected":
+    let response = await downloadWithExpires("not-a-date")
+
+    check response.isErr()
+    check response.error.startsWith("Invalid certificate expiry: ")
+    check response.error.contains("not-a-date")
 
   asyncTest "an order whose certificate url is off the directory origin is refused":
     api.queueGetOrder("", "2026-11-02T14:30:00Z")

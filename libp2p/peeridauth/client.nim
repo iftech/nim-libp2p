@@ -6,6 +6,7 @@
 import base64, json, strutils, uri, times, stew/byteutils
 import chronos, chronos/apps/http/httpclient, results, chronicles
 import ../peerinfo, ../crypto/crypto, ../varint.nim
+import ../utils/rfc3339
 
 logScope:
   topics = "libp2p peer-id-auth"
@@ -250,26 +251,12 @@ proc pubkeyBytes*(pubkey: PublicKey): seq[byte] {.raises: [PeerIDAuthError].} =
       PeerIDAuthError, "Failed to get bytes from PeerInfo's publicKey: " & $error
     )
 
-proc tryParseDateTime(timeStr, format: string): Result[DateTime, string] =
-  try:
-    ok(parse(timeStr, format, utc()))
-  except ValueError as e:
-    err(e.msg)
-
-proc parse3339DateTime(timeStr: string): Opt[DateTime] =
-  if timeStr.len <= 19 or timeStr[19] != '.':
-    return timeStr.tryParseDateTime("yyyy-MM-dd'T'HH:mm:sszzz").optValue()
-
-  var fractionEnd = 20
-  while fractionEnd < timeStr.len and timeStr[fractionEnd] in {'0' .. '9'}:
-    inc fractionEnd
-  let digits = fractionEnd - 20
-  if digits < 1 or digits > 9:
+proc parseBearerExpiry(value: string): Opt[DateTime] =
+  let expires = parseRfc3339DateTime(value).valueOr:
+    if value.len > 0:
+      debug "Ignoring invalid bearer expiry", expiry = value
     return Opt.none(DateTime)
-
-  let normalized =
-    timeStr[0 ..< fractionEnd] & repeat('0', 9 - digits) & timeStr[fractionEnd .. ^1]
-  normalized.tryParseDateTime("yyyy-MM-dd'T'HH:mm:ss'.'fffffffffzzz").optValue()
+  Opt.some(expires)
 
 proc tryRequestAuthorization*(
     self: PeerIDAuthClient,
@@ -295,14 +282,13 @@ proc tryRequestAuthorization*(
 
   let authenticationInfo = response.headers.getString("authentication-info")
   let bearerExpires = authenticationInfo.extractField("expires").valueOr("")
+  let expires = parseBearerExpiry(bearerExpires)
 
   ok(
     PeerIDAuthAuthorizationResponse(
       sig: PeerIDAuthSignature(?authenticationInfo.extractField("sig")),
-      bearer: BearerToken(
-        token: ?authenticationInfo.extractField("bearer"),
-        expires: parse3339DateTime(bearerExpires),
-      ),
+      bearer:
+        BearerToken(token: ?authenticationInfo.extractField("bearer"), expires: expires),
       response: response,
     )
   )
