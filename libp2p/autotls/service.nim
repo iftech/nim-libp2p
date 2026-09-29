@@ -180,11 +180,11 @@ proc publishChallenge(
 ): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
   # broker encapsulates request construction, bearer handling and response
   # validation: it either registers the challenge or raises on failure
+  if self.config.ipAddress.isNone():
+    return err("Cannot issue new certificate: IP address not configured")
   let dnsSet =
     try:
       await self.broker.sendChallenge(self.peerInfo, addrs, keyAuth)
-      if self.config.ipAddress.isNone():
-        return err("Cannot issue new certificate: IP address not configured")
       await checkDNSRecords(
         self.config.nameResolver,
         self.config.ipAddress.get(),
