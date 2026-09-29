@@ -496,17 +496,17 @@ suite "GossipSub":
   asyncTest "rpcHandler - extensions only see accepted subscriptions":
     proc unionPartsMetadata(
         a, b: PartsMetadata
-    ): Result[PartsMetadata, string] {.gcsafe, raises: [].} =
+    ): LPResult[PartsMetadata] {.gcsafe, raises: [].} =
       ok(a & b)
 
     proc materializeParts(
         topic: string, groupId: GroupId, metadata: PartsMetadata
-    ): Result[PartsData, string] {.gcsafe, raises: [].} =
+    ): LPResult[PartsData] {.gcsafe, raises: [].} =
       ok(newSeq[byte]())
 
     proc validateRPC(
         rpc: PartialMessageExtensionRPC
-    ): Result[void, string] {.gcsafe, raises: [].} =
+    ): LPResult[void] {.gcsafe, raises: [].} =
       ok()
 
     proc onIncomingRPC(

@@ -40,7 +40,7 @@ proc recordingDispatch(
   let held = new(Table[PeerId, DialGate])
   proc(
       kad: KadDHT, peer: PeerId, target: Key
-  ): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+  ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
     queried[].add(peer)
     if peer in undialable:
       if holdDials:

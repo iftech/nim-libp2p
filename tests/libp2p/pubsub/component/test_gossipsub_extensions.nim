@@ -290,7 +290,7 @@ suite "GossipSub Component - Extensions":
 
     proc validateRPC(
         rpc: PartialMessageExtensionRPC
-    ): Result[void, string] {.gcsafe, raises: [].} =
+    ): LPResult[void] {.gcsafe, raises: [].} =
       checkLen(rpc.partsMetadata)
       return ok()
 
@@ -382,7 +382,7 @@ suite "GossipSub Component - Extensions":
 
     proc validateRPC(
         rpc: PartialMessageExtensionRPC
-    ): Result[void, string] {.gcsafe, raises: [].} =
+    ): LPResult[void] {.gcsafe, raises: [].} =
       checkLen(rpc.partsMetadata)
       return ok()
 

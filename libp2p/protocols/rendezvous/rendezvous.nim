@@ -44,7 +44,7 @@ const
   SemaphoreDefaultSize* = 5
 
 type PeerRecordValidator*[E] =
-  proc(_: E, spr: seq[byte], peerId: PeerId): Result[void, string] {.gcsafe.}
+  proc(_: E, spr: seq[byte], peerId: PeerId): LPResult[void] {.gcsafe.}
 
 type RendezVousConfig* = object
   minDuration*: Duration
@@ -121,7 +121,7 @@ type
 
   RendezVous* = GenericRendezVous[PeerRecord]
 
-func checkNamespace(ns: string): Result[void, string] =
+func checkNamespace(ns: string): LPResult[void] =
   if ns.len < MinimumNamespaceLen:
     return err(
       "namespace length " & $ns.len & " is shorter than minimum " & $MinimumNamespaceLen
@@ -132,7 +132,7 @@ func checkNamespace(ns: string): Result[void, string] =
     )
   ok()
 
-func checkTtl(config: RendezVousConfig, ttl: Duration): Result[void, string] =
+func checkTtl(config: RendezVousConfig, ttl: Duration): LPResult[void] =
   if ttl < config.minDuration or ttl > config.maxDuration:
     return err(
       "time to live " & $ttl & " is not in valid range [" & $config.minDuration & "-" &
@@ -140,16 +140,14 @@ func checkTtl(config: RendezVousConfig, ttl: Duration): Result[void, string] =
     )
   ok()
 
-func checkRequest(ns: Opt[string], limit: int): Result[void, string] =
+func checkRequest(ns: Opt[string], limit: int): LPResult[void] =
   if limit <= 0 or limit > DiscoverLimit.int:
     return err("Invalid limit")
   if ns.isSome():
     ?ns.get().checkNamespace()
   ok()
 
-proc checkPeerRecord*(
-    _: PeerRecord, spr: seq[byte], peerId: PeerId
-): Result[void, string] =
+proc checkPeerRecord*(_: PeerRecord, spr: seq[byte], peerId: PeerId): LPResult[void] =
   if spr.len == 0:
     return err("Empty peer record")
   let signedEnv = ?SignedPeerRecord.decode(spr).mapErr(x => $x)
@@ -217,7 +215,7 @@ proc save*[E](
     peerId: PeerId,
     r: Register,
     update: bool = true,
-): Result[void, string] =
+): LPResult[void] =
   let nsSalted = ns & rdv.salt
   if not rdv.namespaces.hasKey(nsSalted) and
       rdv.namespaces.len >= rdv.config.namespaceLimit():
@@ -341,7 +339,7 @@ proc discover*[E](
 
 proc sendRegister[E](
     rdv: GenericRendezVous[E], peer: PeerId, msg: seq[byte]
-): Future[Result[RegisterResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[RegisterResponse]] {.async: (raises: [CancelledError]).} =
   let stream =
     try:
       await rdv.switch.dial(peer, rdv.codec)
@@ -443,7 +441,7 @@ proc requestLocally*[E](rdv: GenericRendezVous[E], ns: string): seq[E] =
 
 proc requestPeer[E](
     rdv: GenericRendezVous[E], limit: uint64, ns: Opt[string], peer: PeerId
-): Future[Result[seq[Register], string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[seq[Register]]] {.async: (raises: [CancelledError]).} =
   let stream =
     try:
       await rdv.switch.dial(peer, rdv.codec)
@@ -543,7 +541,7 @@ proc unsubscribe*[E](
 
   proc sendUnregister(
       peerId: PeerId
-  ): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+  ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
     let stream =
       try:
         await rdv.switch.dial(peerId, RendezVousCodec)

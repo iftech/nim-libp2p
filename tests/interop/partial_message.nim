@@ -52,7 +52,7 @@ proc partialMessageInteropTest*(
 
   proc validateRPC(
       rpc: PartialMessageExtensionRPC
-  ): Result[void, string] {.gcsafe, raises: [].} =
+  ): LPResult[void] {.gcsafe, raises: [].} =
     return ok()
 
   var requestFulfilled = newFuture[bool]()

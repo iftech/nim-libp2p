@@ -294,7 +294,7 @@ proc seedAds*(
     reg.seedAd(serviceId, ad, now)
 
 proc containsPeer*(
-    response: Result[seq[Advertisement], string], node: ServiceDiscovery
+    response: LPResult[seq[Advertisement]], node: ServiceDiscovery
 ): bool =
   response.isOk() and response.get().anyIt(
     it.data.peerId == node.switch.peerInfo.peerId

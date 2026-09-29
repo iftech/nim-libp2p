@@ -13,13 +13,13 @@ logScope:
 
 proc dispatchGetVal*(
     kad: KadDHT, peer: PeerId, key: Key
-): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   let msg = Message(msgType: Opt.some(MessageType.getValue), key: Opt.some(key))
   await kad.dispatchRpc(peer, msg)
 
 proc bestValidRecord(
     kad: KadDHT, key: Key, received: ReceivedTable, quorum: int
-): Result[EntryRecord, string] =
+): LPResult[EntryRecord] =
   var validRecords: seq[EntryRecord]
   for r in received.values():
     let record = r.valueOr:
@@ -40,7 +40,7 @@ proc bestValidRecord(
 
 proc getValue*(
     kad: KadDHT, key: Key, quorumOverride: Opt[int] = Opt.none(int)
-): Future[Result[EntryRecord, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[EntryRecord]] {.async: (raises: [CancelledError]), gcsafe.} =
   let received = ReceivedTable()
 
   # if locally present and not expired, include our own copy
@@ -110,7 +110,7 @@ proc getValue*(
   # - don't have best value
   # - don't have valid records
   # - don't have the values at all
-  var rpcBatch: seq[Future[Result[void, string]]]
+  var rpcBatch: seq[Future[LPResult[void]]]
   for p, r in received:
     let record = r.valueOr:
       # peer doesn't have value
