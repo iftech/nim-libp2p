@@ -57,29 +57,19 @@ suite "AutoTLS against a local ACME server and broker":
     checkTrackers()
 
   asyncTest "a certificate is issued end to end":
-    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
-    startAndDeferStop(@[switch])
-
-    # TODO: vacp2p/nim-libp2p#2957
-    # The service must be started by hand: it does not issue unless a transport is
-    # already running, and the switch starts its services first.
     let service = newAutotlsService()
-    await service.start(switch)
-    defer:
-      await service.stop(switch)
+    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
+    switch.services.add(service)
+    startAndDeferStop(@[switch])
 
     let cert = await service.getCertWhenReady().wait(IssueTimeout)
     check cert.expiry > now()
 
   asyncTest "the certificate is renewed once it is about to expire":
-    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
-    startAndDeferStop(@[switch])
-
-    # TODO: vacp2p/nim-libp2p#2957
     let service = newAutotlsService()
-    await service.start(switch)
-    defer:
-      await service.stop(switch)
+    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
+    switch.services.add(service)
+    startAndDeferStop(@[switch])
 
     let certBefore = await service.getCertWhenReady().wait(IssueTimeout)
     service.certReady.clear()
@@ -95,17 +85,10 @@ suite "AutoTLS against a local ACME server and broker":
       certAfter.expiry > now()
 
   asyncTest "a switch dials over wss with the issued certificate":
-    let issuer = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
-    startAndDeferStop(@[issuer])
-
-    # TODO: vacp2p/nim-libp2p#2957
-    # One switch cannot both issue and serve: the transport blocks on the certificate
-    # and the service does not issue until a transport runs. The server reuses the
-    # issuer's key because the certificate names that peer.
     let service = newAutotlsService()
-    await service.start(issuer)
-    defer:
-      await service.stop(issuer)
+    let issuer = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
+    issuer.services.add(service)
+    startAndDeferStop(@[issuer])
 
     discard await service.getCertWhenReady().wait(IssueTimeout)
 
