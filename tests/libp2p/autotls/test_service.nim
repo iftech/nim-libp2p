@@ -16,10 +16,8 @@ import
     wire,
   ]
 import
-  ../../tools/[
-    unittest, http_server, crypto, lifecycle, multiaddress, resolver, stall_server,
-    switch_builder,
-  ]
+  ../../tools/
+    [unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder]
 import ../../stubs/[acme_api_stub, peer_id_auth_client_stub]
 
 suite "AutoTLS certificate issuance and renewal":
@@ -241,22 +239,25 @@ suite "AutoTLS on a switch":
   asyncTeardown:
     checkTrackers()
 
-  asyncTest "an ACME request is made when the service starts before its transports":
-    let acmeServer = startStallServer()
-    defer:
-      await acmeServer.stop()
+  asyncTest "issuance publishes a bound TCP address while wss waits for its certificate":
+    let acmeApi = ACMEApiStub.new()
+    let authClient = PeerIDAuthClientStub.new()
+    acmeApi.scriptChallenge("some-token")
 
+    var config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+      issueRetries = 0,
+      dnsRetries = 0,
+    )
+    config.nameResolver = StubNameResolver.new()
     let switch = makeStandardSwitchBuilder(
         @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
       )
-      .withAutotls(
-        AutotlsConfig.new(
-          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
-          acmeDirectoryURL =
-            parseUri("http://" & $acmeServer.address.initTAddress().tryGet()),
-        )
-      )
+      .withAutotls(config)
       .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    service.broker = AutotlsBroker.new(rng(), DefaultRegistrationURL, authClient)
     defer:
       await switch.stop()
 
@@ -264,7 +265,13 @@ suite "AutoTLS on a switch":
     defer:
       await startFut.cancelAndWait()
 
-    check await acmeServer.waitAccepted().withTimeout(1.seconds)
+    checkUntilTimeout:
+      authClient.payloads.len == 1
+
+    let addrs = parseJson(authClient.payloads[0])["addresses"]
+    check addrs.len > 0
+    for addr in addrs:
+      check ma(addr.getStr()).initTAddress().tryGet().port != Port(0)
 
   asyncTest "a switch listening on wss fails to start without a certificate":
     let switch = makeStandardSwitchBuilder(

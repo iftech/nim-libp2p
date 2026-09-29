@@ -173,10 +173,11 @@ proc newAutotlsCert(
     err("Could not parse downloaded certificates: " & e.msg)
 
 proc publishChallenge(
-    self: AutotlsService, baseDomain: api.Domain, keyAuth: KeyAuthorization
+    self: AutotlsService,
+    baseDomain: api.Domain,
+    keyAuth: KeyAuthorization,
+    addrs: seq[MultiAddress],
 ): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
-  let addrs = await self.peerInfo.expandAddrs()
-
   # broker encapsulates request construction, bearer handling and response
   # validation: it either registers the challenge or raises on failure
   let dnsSet =
@@ -197,7 +198,10 @@ proc publishChallenge(
   ok()
 
 proc requestCertificate(
-    self: AutotlsService, baseDomain: api.Domain, certKeyPair: RsaPrivateKey
+    self: AutotlsService,
+    baseDomain: api.Domain,
+    certKeyPair: RsaPrivateKey,
+    addrs: seq[MultiAddress],
 ): Future[Result[ACMECertificateResponse, string]] {.async: (raises: [CancelledError]).} =
   trace "Requesting ACME challenge"
   let dns01Challenge =
@@ -205,7 +209,7 @@ proc requestCertificate(
   trace "Generating key authorization"
   let keyAuth = self.acmeClient.genKeyAuthorization(dns01Challenge.dns01.token)
 
-  ?(await self.publishChallenge(baseDomain, keyAuth))
+  ?(await self.publishChallenge(baseDomain, keyAuth, addrs))
 
   trace "Notifying challenge completion to ACME and downloading cert"
   await self.acmeClient.getCertificate(
@@ -216,8 +220,40 @@ proc requestCertificate(
     self.config.finalizeRetries,
   )
 
+proc brokerAddrs(
+    self: AutotlsService, switch: Switch
+): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+  ## Wait for a TCP listener to bind, then use its concrete addresses instead
+  ## of Switch.peerInfo.listenAddrs, which is populated only after every
+  ## transport has started.
+  let tcpTransports = switch.transports.filterIt(it of TcpTransport)
+
+  while true:
+    var started: seq[Transport]
+    for transport in tcpTransports:
+      if transport.running:
+        started.add(transport)
+        let addrs = await self.peerInfo.expandAddrs(transport.addrs)
+        if addrs.len > 0:
+          return addrs
+
+    # A started TCP transport with no dialable addresses is a dial-only
+    # transport (or its addresses were filtered). It cannot bootstrap AutoTLS.
+    # Wait for another listener, or retry expansion in case an address mapper is
+    # still becoming ready.
+    let pending = tcpTransports.filterIt(not it.running)
+    if pending.len > 0:
+      try:
+        discard await one(pending.mapIt(it.onRunning.wait()))
+      except ValueError:
+        # The list cannot normally be empty after the check above; retain the
+        # guard because a future combinator rejects an empty sequence.
+        discard
+    elif started.len > 0:
+      await sleepAsync(max(self.config.issueRetryTime, 1.milliseconds))
+
 proc issueCertificate(
-    self: AutotlsService
+    self: AutotlsService, switch: Switch
 ): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
   trace "Issuing certificate"
 
@@ -227,13 +263,15 @@ proc issueCertificate(
   if self.config.ipAddress.isNone():
     return err("Cannot issue new certificate: IP address not configured")
 
+  let addrs = await self.brokerAddrs(switch)
+
   let peerLabel = ?encodePeerId(self.peerInfo.peerId)
   let baseDomain = api.Domain(peerLabel & "." & self.config.domainSuffix)
 
   let certKeyPair = RsaPrivateKey.random(self.rng).valueOr:
     return err("Unable to generate certificate key pair")
 
-  let certificate = ?(await self.requestCertificate(baseDomain, certKeyPair))
+  let certificate = ?(await self.requestCertificate(baseDomain, certKeyPair, addrs))
 
   trace "Installing certificate"
   self.cert = Opt.some(?newAutotlsCert(certificate, certKeyPair))
@@ -244,7 +282,9 @@ proc issueCertificate(
 proc hasTcpTransport(switch: Switch): bool =
   switch.transports.anyIt(it of TcpTransport)
 
-proc tryIssueCertificate(self: AutotlsService) {.async: (raises: [CancelledError]).} =
+proc tryIssueCertificate(
+    self: AutotlsService, switch: Switch
+) {.async: (raises: [CancelledError]).} =
   var lastError = ""
   let operation = if self.cert.isSome(): "renewal" else: "initial issuance"
   var attempts = 0
@@ -257,7 +297,7 @@ proc tryIssueCertificate(self: AutotlsService) {.async: (raises: [CancelledError
     if attempt > 0:
       await sleepAsync(self.config.issueRetryTime)
     attempts.inc()
-    let issued = await self.issueCertificate()
+    let issued = await self.issueCertificate(switch)
     if issued.isOk():
       outcome = "issued"
       return
@@ -290,12 +330,12 @@ method start*(
     try:
       heartbeat "Certificate Management", self.config.renewCheckTime:
         if self.cert.isNone():
-          await self.tryIssueCertificate()
+          await self.tryIssueCertificate(switch)
 
         self.cert.ifValue(cert):
           let timeUntilExpiry = seconds(cert.expiry.toTime.toUnix - now().toTime.toUnix)
           if timeUntilExpiry <= self.config.renewBufferTime:
-            await self.tryIssueCertificate()
+            await self.tryIssueCertificate(switch)
     except CancelledError:
       trace "Autotls management cancelled"
 

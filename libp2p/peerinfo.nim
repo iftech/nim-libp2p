@@ -88,9 +88,12 @@ proc notifyObservers*(p: PeerInfo) =
     observer(p)
 
 proc expandAddrs*(
-    p: PeerInfo
+    p: PeerInfo, listenAddrs: seq[MultiAddress]
 ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
-  var addrs = p.listenAddrs
+  ## Resolve a supplied set of bound listen addresses into dialable addresses.
+  ## This lets startup-time users work with transport addresses before the switch
+  ## has published them in ``p.listenAddrs``.
+  var addrs = listenAddrs
   for mapper in p.addressMappers:
     addrs = await mapper(addrs)
 
@@ -100,6 +103,11 @@ proc expandAddrs*(
     addrs = p.announcedAddrs
 
   p.addressPolicy.filterAddrs(addrs)
+
+proc expandAddrs*(
+    p: PeerInfo
+): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+  await p.expandAddrs(p.listenAddrs)
 
 proc update*(p: PeerInfo) {.async: (raises: [CancelledError]).} =
   var hasChanged: bool
