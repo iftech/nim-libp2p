@@ -5,6 +5,7 @@
 
 import sequtils
 import chronos, chronicles, net, results, uri
+import chronos/apps/http/httpclient
 import chronos/streams/tlsstream
 from times import DateTime, now, toTime, toUnix
 
@@ -48,6 +49,7 @@ type AutotlsCert* = ref object
 
 type AutotlsConfig* = object
   acmeDirectoryURL*: Uri
+  acmeHttpFlags*: HttpClientFlags
   nameResolver*: NameResolver
   ipAddress: Opt[IpAddress]
   renewCheckTime*: Duration
@@ -94,6 +96,7 @@ proc new*(
     ipAddress: Opt[IpAddress] = Opt.none(IpAddress),
     nameServers: seq[TransportAddress] = DefaultDnsServers,
     acmeDirectoryURL: Uri = LetsEncryptDirectoryURL,
+    acmeHttpFlags: HttpClientFlags = {},
     renewCheckTime: Duration = DefaultRenewCheckTime,
     renewBufferTime: Duration = DefaultRenewBufferTime,
     initialCertTimeout: Duration = DefaultInitialCertTimeout,
@@ -111,6 +114,7 @@ proc new*(
   T(
     nameResolver: DnsResolver.new(nameServers),
     acmeDirectoryURL: acmeDirectoryURL,
+    acmeHttpFlags: acmeHttpFlags,
     ipAddress: ipAddress,
     renewCheckTime: renewCheckTime,
     renewBufferTime: renewBufferTime,
@@ -131,7 +135,9 @@ proc new*(
     T: typedesc[AutotlsService], rng: Rng, config: AutotlsConfig = AutotlsConfig.new()
 ): T =
   T(
-    acmeClient: ACMEClient.new(api = ACMEApi.new(config.acmeDirectoryURL), rng = rng),
+    acmeClient: ACMEClient.new(
+      api = ACMEApi.new(config.acmeDirectoryURL, config.acmeHttpFlags), rng = rng
+    ),
     broker: AutotlsBroker.new(rng, config.registrationURL),
     cert: Opt.none(AutotlsCert),
     certReady: newAsyncEvent(),

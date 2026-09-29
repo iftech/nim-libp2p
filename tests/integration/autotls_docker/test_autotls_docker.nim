@@ -3,20 +3,10 @@
 
 {.used.}
 
-import net, strutils, uri
+import net, sequtils, strutils, uri
 from times import now, initDuration, `-`, `<`
 import chronos, chronos/apps/http/httpclient
-import
-  ../../../libp2p/[
-    autotls/acme/api,
-    autotls/acme/client,
-    autotls/broker,
-    autotls/service,
-    autotls/utils,
-    nameresolving/dnsresolver,
-    transports/wstransport,
-    wire,
-  ]
+import ../../../libp2p/[autotls/service, autotls/utils, nameresolving/dnsresolver, wire]
 import ../../tools/[unittest, crypto, lifecycle, multiaddress, switch_builder]
 
 const
@@ -27,48 +17,45 @@ const
   RenewCheckTime = 1.seconds
   IssueTimeout = 60.seconds
 
-proc newAutotlsService(): AutotlsService =
-  AutotlsService(
-    acmeClient: ACMEClient.new(
-      rng(),
-      api = ACMEApi.new(
-        directoryURL = parseUri(PebbleDirectoryURL),
-        # Pebble presents a self-signed certificate and chronos cannot be handed a
-        # trust anchor.
-        flags = {HttpClientFlag.NoVerifyHost, HttpClientFlag.NoVerifyServerName},
-      ),
-    ),
-    broker: AutotlsBroker.new(rng(), parseUri(ForgeRegistrationURL)),
-    cert: Opt.none(AutotlsCert),
-    certReady: newAsyncEvent(),
-    running: newAsyncEvent(),
-    config: AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)),
-      nameServers = @[initTAddress(ForgeNameServer)],
-      acmeDirectoryURL = parseUri(PebbleDirectoryURL),
-      registrationURL = parseUri(ForgeRegistrationURL),
-      renewCheckTime = RenewCheckTime,
-    ),
-    rng: rng(),
+proc newAutotlsConfig(): AutotlsConfig =
+  AutotlsConfig.new(
+    ipAddress = Opt.some(parseIpAddress(NodeIP)),
+    nameServers = @[initTAddress(ForgeNameServer)],
+    acmeDirectoryURL = parseUri(PebbleDirectoryURL),
+    # Pebble presents a self-signed certificate and chronos cannot be handed a
+    # trust anchor.
+    acmeHttpFlags = {HttpClientFlag.NoVerifyHost, HttpClientFlag.NoVerifyServerName},
+    registrationURL = parseUri(ForgeRegistrationURL),
+    renewCheckTime = RenewCheckTime,
   )
+
+proc getAutotlsService(switch: Switch): AutotlsService =
+  for service in switch.services:
+    if service of AutotlsService:
+      return AutotlsService(service)
+  raiseAssert "switch has no AutoTLS service"
 
 suite "AutoTLS against a local ACME server and broker":
   asyncTeardown:
     checkTrackers()
 
   asyncTest "a certificate is issued end to end":
-    let service = newAutotlsService()
-    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
-    switch.services.add(service)
+    let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withYamux()
+      .withAutotls(newAutotlsConfig())
+      .build()
+    let service = switch.getAutotlsService()
     startAndDeferStop(@[switch])
 
     let cert = await service.getCertWhenReady().wait(IssueTimeout)
     check cert.expiry > now()
 
   asyncTest "the certificate is renewed once it is about to expire":
-    let service = newAutotlsService()
-    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
-    switch.services.add(service)
+    let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withYamux()
+      .withAutotls(newAutotlsConfig())
+      .build()
+    let service = switch.getAutotlsService()
     startAndDeferStop(@[switch])
 
     let certBefore = await service.getCertWhenReady().wait(IssueTimeout)
@@ -85,25 +72,25 @@ suite "AutoTLS against a local ACME server and broker":
       certAfter.expiry > now()
 
   asyncTest "a switch dials over wss with the issued certificate":
-    let service = newAutotlsService()
-    let issuer = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
-    issuer.services.add(service)
+    let issuer = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withYamux()
+      .withAutotls(newAutotlsConfig())
+      .build()
+    let issuerService = issuer.getAutotlsService()
     startAndDeferStop(@[issuer])
 
-    discard await service.getCertWhenReady().wait(IssueTimeout)
+    let cert = await issuerService.getCertWhenReady().wait(IssueTimeout)
 
-    let server = SwitchBuilder
-      .new()
-      .withRng(rng())
-      .withPrivateKey(issuer.peerInfo.privateKey)
-      .withAddress(ma("/ip4/127.0.0.1/tcp/0/wss"))
-      .withTransport(
-        proc(config: TransportConfig): Transport =
-          WsTransport.new(config.upgr, nil, nil, Opt.some(service), rng = config.rng)
+    let server = makeStandardSwitchBuilder(
+        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
       )
+      .withPrivateKey(issuer.peerInfo.privateKey)
+      .withAutotls(newAutotlsConfig())
       .withYamux()
-      .withNoise()
       .build()
+    let serverService = server.getAutotlsService()
+    serverService.cert = Opt.some(cert)
+    serverService.certReady.fire()
 
     let client = SwitchBuilder
       .new()
@@ -118,7 +105,9 @@ suite "AutoTLS against a local ACME server and broker":
 
     startAndDeferStop(@[server, client])
 
-    let port = server.peerInfo.listenAddrs[0].initTAddress().tryGet().port
+    let port = server.peerInfo.listenAddrs.filterIt(WSS.match(it))[0]
+      .initTAddress()
+      .tryGet().port
     let serverDomain =
       NodeIP.replace('.', '-') & "." & encodePeerId(server.peerInfo.peerId).get() & "." &
       DefaultDomainSuffix
