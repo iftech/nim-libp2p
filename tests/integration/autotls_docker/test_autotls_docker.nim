@@ -72,6 +72,9 @@ suite "AutoTLS against a local ACME server and broker":
       certAfter.expiry > now()
 
   asyncTest "a switch dials over wss with the issued certificate":
+    # Keep issuance and serving on separate switches: WsTransport.start waits
+    # for the certificate during the switch start window. The server reuses
+    # the issuer's key because the issued certificate names that peer.
     let issuer = makeStandardSwitchBuilder(TcpAutoAddress)
       .withYamux()
       .withAutotls(newAutotlsConfig())
