@@ -399,6 +399,7 @@ proc loadAutotlsCertificate(
   try:
     return ok(await certFut.wait(deadlineFut))
   except AsyncTimeoutError:
+    certFut.cancelSoon()
     return err("autotls certificate was not available before the certificate deadline")
   except AutoTLSError as e:
     return err("failed to load autotls certificate: " & e.msg)
