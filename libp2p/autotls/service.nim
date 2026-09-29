@@ -183,6 +183,8 @@ proc publishChallenge(
   let dnsSet =
     try:
       await self.broker.sendChallenge(self.peerInfo, addrs, keyAuth)
+      if self.config.ipAddress.isNone():
+        return err("Cannot issue new certificate: IP address not configured")
       await checkDNSRecords(
         self.config.nameResolver,
         self.config.ipAddress.get(),
@@ -267,9 +269,6 @@ proc issueCertificate(
 
   if self.peerInfo.isNil():
     return err("Cannot issue new certificate: peerInfo not set")
-
-  if self.config.ipAddress.isNone():
-    return err("Cannot issue new certificate: IP address not configured")
 
   let addrs = await self.brokerAddrs(switch)
 

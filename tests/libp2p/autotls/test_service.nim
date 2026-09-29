@@ -232,7 +232,7 @@ suite "AutoTLS certificate issuance and renewal":
     await sleepAsync(10 * RenewCheckTime)
 
     check:
-      acmeApi.requestedUris.len == 0
+      acmeApi.requestedUris.len > 0
       service.running.isSet
 
 suite "AutoTLS on a switch":
