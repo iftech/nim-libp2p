@@ -218,6 +218,9 @@ proc issueCertificate(
   if self.peerInfo.isNil():
     return err("Cannot issue new certificate: peerInfo not set")
 
+  if self.config.ipAddress.isNone():
+    return err("Cannot issue new certificate: IP address not configured")
+
   let peerLabel = ?encodePeerId(self.peerInfo.peerId)
   let baseDomain = api.Domain(peerLabel & "." & self.config.domainSuffix)
 

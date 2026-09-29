@@ -226,13 +226,12 @@ suite "AutoTLS certificate issuance and renewal":
       service.running.isSet
 
   asyncTest "issuance aborts when no IP address is configured":
-    # TODO: vacp2p/nim-libp2p#2957
-    # tryIssueCertificate catches CatchableError, so a Defect propagates out of start.
-    acmeApi.scriptChallenge(ChallengeToken)
     service = newService(AutotlsConfig.new())
+    await service.start(switch)
 
-    expect(ResultDefect):
-      await service.start(switch)
+    check:
+      acmeApi.requestedUris.len == 0
+      service.running.isSet
 
 suite "AutoTLS on a switch":
   asyncTeardown:
