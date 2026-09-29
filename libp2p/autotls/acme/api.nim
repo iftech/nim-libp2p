@@ -3,13 +3,16 @@
 
 import json, parseutils, sequtils, strutils, uri
 from times import DateTime
-import chronos/apps/http/httpclient, results
+import chronos/apps/http/httpclient
 
 import ./jws
 import ./utils
 import ../../crypto/rsa
 import ../../utils/opt
+import ../../results
 import ../../utils/rfc3339
+
+export results
 
 const
   LetsEncryptDirectoryURL* = parseUri("https://acme-v02.api.letsencrypt.org/directory")
@@ -177,7 +180,7 @@ func origin(uri: Uri): string =
       "443"
   scheme & "://" & uri.hostname.toLowerAscii() & ":" & port
 
-func checkOrigin*(self: ACMEApi, uri: Uri): Result[void, string] =
+func checkOrigin*(self: ACMEApi, uri: Uri): Result[void, LPResultError] =
   ## The directory is the only URL the caller chooses; the rest come from the server.
   if uri.origin != self.directoryURL.origin:
     return err(
@@ -185,7 +188,7 @@ func checkOrigin*(self: ACMEApi, uri: Uri): Result[void, string] =
     )
   ok()
 
-func checkAPIError(resp: HTTPResponse): Result[void, string] =
+func checkAPIError(resp: HTTPResponse): Result[void, LPResultError] =
   let respType = resp.body{"type"}.getStr()
   if not respType.contains("acme:error"):
     return ok()
@@ -196,7 +199,7 @@ func checkAPIError(resp: HTTPResponse): Result[void, string] =
 
 proc toHTTPResponse(
     raw: HttpClientResponseRef
-): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[HTTPResponse, LPResultError]] {.async: (raises: [CancelledError]).} =
   let body = ?(await raw.getResponseBody())
   let resp = HTTPResponse(body: body, headers: raw.headers)
   ?resp.checkAPIError()
@@ -204,27 +207,33 @@ proc toHTTPResponse(
 
 proc trySend(
     request: HttpClientRequestRef
-): Future[Result[HttpClientResponseRef, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[HttpClientResponseRef, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   try:
     ok(await request.send())
   except HttpError as e:
-    err("Failed to connect to ACME server: " & e.msg)
+    err(e, "Failed to connect to ACME server")
 
 proc tryGetBodyBytes(
     response: HttpClientResponseRef
-): Future[Result[seq[byte], string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[seq[byte], LPResultError]] {.async: (raises: [CancelledError]).} =
   try:
     ok(await response.getBodyBytes())
   except HttpError as e:
-    err("Failed to read response from ACME server: " & e.msg)
+    err(e, "Failed to read response from ACME server")
 
 method post*(
   self: ACMEApi, uri: Uri, payload: string
-): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]), base.}
+): Future[Result[HTTPResponse, LPResultError]] {.
+  async: (raises: [CancelledError]), base
+.}
 
 method get*(
   self: ACMEApi, uri: Uri
-): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]), base.}
+): Future[Result[HTTPResponse, LPResultError]] {.
+  async: (raises: [CancelledError]), base
+.}
 
 proc new*(
     T: typedesc[ACMEApi],
@@ -239,7 +248,7 @@ proc new*(
 
 proc getDirectory(
     self: ACMEApi
-): Future[Result[ACMEDirectory, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMEDirectory, LPResultError]] {.async: (raises: [CancelledError]).} =
   if self.directory.isSome():
     return ok(self.directory.get())
 
@@ -250,7 +259,7 @@ proc getDirectory(
 
 method requestNonce*(
     self: ACMEApi
-): Future[Result[Nonce, string]] {.async: (raises: [CancelledError]), base.} =
+): Future[Result[Nonce, LPResultError]] {.async: (raises: [CancelledError]), base.} =
   let directory = ?(await self.getDirectory())
   let acmeResponse = ?(await self.get(parseUri(directory.newNonce)))
   acmeResponse.headers.header("Replay-Nonce")
@@ -283,7 +292,9 @@ func acmeHeader(
 
 proc sendPost(
     self: ACMEApi, uri: Uri, payload: string
-): Future[Result[HttpClientResponseRef, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[HttpClientResponseRef, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   ?self.checkOrigin(uri)
   let request = ?HttpClientRequestRef.post(
     self.session, $uri, body = payload, headers = ACMEHttpHeaders
@@ -292,13 +303,17 @@ proc sendPost(
 
 method post*(
     self: ACMEApi, uri: Uri, payload: string
-): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]), base.} =
+): Future[Result[HTTPResponse, LPResultError]] {.
+    async: (raises: [CancelledError]), base
+.} =
   let rawResponse = ?(await self.sendPost(uri, payload))
   await rawResponse.toHTTPResponse()
 
 method get*(
     self: ACMEApi, uri: Uri
-): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]), base.} =
+): Future[Result[HTTPResponse, LPResultError]] {.
+    async: (raises: [CancelledError]), base
+.} =
   ?self.checkOrigin(uri)
   let request = ?HttpClientRequestRef.get(self.session, $uri)
   let rawResponse = ?(await request.trySend())
@@ -306,35 +321,35 @@ method get*(
 
 proc createSignedAcmeRequest(
     self: ACMEApi, uri: Uri, payload: string, key: RsaPrivateKey, kid: Opt[Kid]
-): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[string, LPResultError]] {.async: (raises: [CancelledError]).} =
   let nonce = ?(await self.requestNonce())
   let header = acmeHeader(uri, key, nonce, kid)
   ok($(?toFlattenedJws(%*header, payload, key)))
 
 proc createPostAsGetRequest(
     self: ACMEApi, uri: Uri, key: RsaPrivateKey, kid: Kid
-): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[string, LPResultError]] {.async: (raises: [CancelledError]).} =
   ## RFC 8555 section 6.3: a POST-as-GET is a signed POST with a zero-length payload.
   await self.createSignedAcmeRequest(uri, "", key, Opt.some(kid))
 
 proc postAsGet(
     self: ACMEApi, uri: Uri, key: RsaPrivateKey, kid: Kid
-): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[HTTPResponse, LPResultError]] {.async: (raises: [CancelledError]).} =
   let payload = ?(await self.createPostAsGetRequest(uri, key, kid))
   await self.post(uri, payload)
 
 proc postSigned(
     self: ACMEApi, uri: Uri, payload: string, key: RsaPrivateKey, kid: Opt[Kid]
-): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[HTTPResponse, LPResultError]] {.async: (raises: [CancelledError]).} =
   let signed = ?(await self.createSignedAcmeRequest(uri, payload, key, kid))
   await self.post(uri, signed)
 
-func parseRegister(resp: HTTPResponse): Result[ACMERegisterResponse, string] =
+func parseRegister(resp: HTTPResponse): Result[ACMERegisterResponse, LPResultError] =
   let body = ?resp.body.tryTo(ACMERegisterResponseBody)
   let kid = ?resp.headers.header("location")
   ok(ACMERegisterResponse(status: body.status, kid: kid))
 
-func parseNewOrder(resp: HTTPResponse): Result[ACMEChallengeResponse, string] =
+func parseNewOrder(resp: HTTPResponse): Result[ACMEChallengeResponse, LPResultError] =
   let body = ?resp.body.tryTo(ACMEChallengeResponseBody)
   if body.authorizations.len == 0:
     return err("Authorizations field is empty")
@@ -351,9 +366,9 @@ func parseNewOrder(resp: HTTPResponse): Result[ACMEChallengeResponse, string] =
 
 func parseAuthorizations(
     resp: HTTPResponse
-): Result[ACMEAuthorizationsResponse, string] =
+): Result[ACMEAuthorizationsResponse, LPResultError] =
   var challenges: seq[ACMEChallenge]
-  var decodeErrors: seq[string]
+  var decodeErrors: seq[LPResultError]
   for node in resp.body.getOrDefault("challenges").getElems():
     let challenge = node.tryTo(ACMEChallenge).valueOr:
       decodeErrors.add(error)
@@ -368,7 +383,7 @@ func parseAuthorizations(
 
 func dns01Challenge(
     order: ACMEChallengeResponse, auth: ACMEAuthorizationsResponse
-): Result[ACMEChallengeDns01Response, string] =
+): Result[ACMEChallengeDns01Response, LPResultError] =
   let challenges = auth.challenges.filterIt(it.`type` == ACMEChallengeType.DNS01)
   if challenges.len == 0:
     return err("Could not find supported DNS challenge type (dns-01)")
@@ -388,7 +403,7 @@ func retryAfter(headers: HttpTable): Duration =
 
 func parseCheck(
     resp: HTTPResponse, checkKind: ACMECheckKind
-): Result[ACMECheckResponse, string] =
+): Result[ACMECheckResponse, LPResultError] =
   let status = ?resp.body.tryGetStr("status")
   let retryAfter = resp.headers.retryAfter()
   case checkKind
@@ -409,15 +424,18 @@ func parseCheck(
       )
     )
 
-proc parseExpiry(expires: string): Result[DateTime, string] =
-  parseRfc3339DateTime(expires).mapErr(
-    proc(error: string): string =
-      "Invalid certificate expiry: " & error
-  )
+const InvalidCertificateExpiry* = LPResultError.init("Invalid certificate expiry")
+
+proc parseExpiry(expires: string): Result[DateTime, LPResultError] =
+  let expiry = parseRfc3339DateTime(expires).valueOr:
+    return err(error, InvalidCertificateExpiry)
+  ok(expiry)
 
 proc requestRegister*(
     self: ACMEApi, key: RsaPrivateKey
-): Future[Result[ACMERegisterResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMERegisterResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let registerRequest = ACMERegisterRequest(termsOfServiceAgreed: true)
   let directory = ?(await self.getDirectory())
   let acmeResponse = ?(
@@ -429,7 +447,9 @@ proc requestRegister*(
 
 proc requestNewOrder*(
     self: ACMEApi, domains: seq[Domain], key: RsaPrivateKey, kid: Kid
-): Future[Result[ACMEChallengeResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMEChallengeResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let orderRequest = ACMEChallengeRequest(
     identifiers: domains.mapIt(ACMEChallengeIdentifier(`type`: "dns", value: it))
   )
@@ -443,7 +463,7 @@ proc requestNewOrder*(
 
 proc requestAuthorizations*(
     self: ACMEApi, authorizations: seq[Authorization], key: RsaPrivateKey, kid: Kid
-): Future[Result[ACMEAuthorizationsResponse, string]] {.
+): Future[Result[ACMEAuthorizationsResponse, LPResultError]] {.
     async: (raises: [CancelledError])
 .} =
   if authorizations.len == 0:
@@ -454,7 +474,7 @@ proc requestAuthorizations*(
 
 proc requestChallenge*(
     self: ACMEApi, domains: seq[Domain], key: RsaPrivateKey, kid: Kid
-): Future[Result[ACMEChallengeDns01Response, string]] {.
+): Future[Result[ACMEChallengeDns01Response, LPResultError]] {.
     async: (raises: [CancelledError])
 .} =
   let orderResp = ?(await self.requestNewOrder(domains, key, kid))
@@ -466,13 +486,17 @@ proc requestChallenge*(
 
 proc requestCheck*(
     self: ACMEApi, checkURL: Uri, checkKind: ACMECheckKind, key: RsaPrivateKey, kid: Kid
-): Future[Result[ACMECheckResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMECheckResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let acmeResponse = ?(await self.postAsGet(checkURL, key, kid))
   acmeResponse.parseCheck(checkKind)
 
 proc sendChallengeCompleted*(
     self: ACMEApi, chalURL: Uri, key: RsaPrivateKey, kid: Kid
-): Future[Result[ACMECompletedResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMECompletedResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let acmeResponse = ?(await self.postSigned(chalURL, "{}", key, Opt.some(kid)))
   acmeResponse.body.tryTo(ACMECompletedResponse)
 
@@ -482,7 +506,7 @@ proc checkChallengeCompleted*(
     key: RsaPrivateKey,
     kid: Kid,
     retries: int = DefaultChalCompletedRetries,
-): Future[Result[bool, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[bool, LPResultError]] {.async: (raises: [CancelledError]).} =
   for i in 0 .. retries:
     let checkResponse =
       ?(await self.requestCheck(checkURL, ACMEChallengeCheck, key, kid))
@@ -504,7 +528,7 @@ proc completeChallenge*(
     key: RsaPrivateKey,
     kid: Kid,
     retries: int = DefaultChalCompletedRetries,
-): Future[Result[bool, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[bool, LPResultError]] {.async: (raises: [CancelledError]).} =
   discard ?(await self.sendChallengeCompleted(chalURL, key, kid))
   # check until acme server is done (poll validation)
   await self.checkChallengeCompleted(chalURL, key, kid, retries = retries)
@@ -516,7 +540,9 @@ proc requestFinalize*(
     certKeyPair: RsaPrivateKey,
     key: RsaPrivateKey,
     kid: Kid,
-): Future[Result[ACMEFinalizeResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMEFinalizeResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let csr = ?createCSR(domain, certKeyPair)
   let acmeResponse =
     ?(await self.postSigned(finalize, $(%*{"csr": csr}), key, Opt.some(kid)))
@@ -529,7 +555,7 @@ proc checkCertFinalized*(
     key: RsaPrivateKey,
     kid: Kid,
     retries: int = DefaultChalCompletedRetries,
-): Future[Result[bool, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[bool, LPResultError]] {.async: (raises: [CancelledError]).} =
   for i in 0 .. retries:
     let checkResponse = ?(await self.requestCheck(order, ACMEOrderCheck, key, kid))
     case checkResponse.orderStatus
@@ -553,20 +579,24 @@ proc certificateFinalized*(
     key: RsaPrivateKey,
     kid: Kid,
     retries: int = DefaultFinalizeRetries,
-): Future[Result[bool, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[bool, LPResultError]] {.async: (raises: [CancelledError]).} =
   discard ?(await self.requestFinalize(domain, finalize, certKeyPair, key, kid))
   # keep checking order until cert is valid (done)
   await self.checkCertFinalized(order, key, kid, retries = retries)
 
 proc requestGetOrder*(
     self: ACMEApi, order: Uri, key: RsaPrivateKey, kid: Kid
-): Future[Result[ACMEOrderResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMEOrderResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let acmeResponse = ?(await self.postAsGet(order, key, kid))
   acmeResponse.body.tryTo(ACMEOrderResponse)
 
 proc downloadCertificate*(
     self: ACMEApi, order: Uri, key: RsaPrivateKey, kid: Kid
-): Future[Result[ACMECertificateResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMECertificateResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let orderResponse = ?(await self.requestGetOrder(order, key, kid))
   let expiry = ?parseExpiry(orderResponse.expires)
 

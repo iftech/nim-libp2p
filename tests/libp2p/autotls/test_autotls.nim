@@ -6,8 +6,14 @@
 import base64, sequtils, json, strutils, uri, chronos, chronos/apps/http/httpclient
 from times import dateTime, format, initDuration, mNov, timezone, utc, `-`, `==`
 import
-  ../../../libp2p/
-    [stream/connection, upgrademngrs/upgrade, autotls/acme/client, crypto/rsa, wire]
+  ../../../libp2p/[
+    stream/connection,
+    upgrademngrs/upgrade,
+    autotls/acme/client,
+    crypto/rsa,
+    utils/rfc3339,
+    wire,
+  ]
 import ../../tools/[unittest, http_server, crypto]
 import ../../stubs/acme_api_stub
 import ./rfc_vectors
@@ -391,7 +397,7 @@ suite "AutoTLS ACME API":
 
   proc downloadWithExpires(
       expires: string
-  ): Future[Result[ACMECertificateResponse, string]] {.async.} =
+  ): Future[Result[ACMECertificateResponse, LPResultError]] {.async.} =
     let certServer = startTestHttpServer(certPem)
     defer:
       await certServer.stop()
@@ -425,9 +431,11 @@ suite "AutoTLS ACME API":
   asyncTest "a malformed expires is rejected":
     let response = await downloadWithExpires("not-a-date")
 
-    check response.isErr()
-    check response.error.startsWith("Invalid certificate expiry: ")
-    check response.error.contains("not-a-date")
+    check:
+      response.isOfError(InvalidCertificateExpiry)
+      response.isOfError(InvalidRfc3339DateTime)
+      response.error ==
+        "Invalid certificate expiry: Invalid RFC 3339 date-time (not-a-date)"
 
   asyncTest "an order whose certificate url is off the directory origin is refused":
     api.queueGetOrder("", "2026-11-02T14:30:00Z")

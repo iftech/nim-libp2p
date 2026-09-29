@@ -2,29 +2,32 @@
 # Copyright (c) Status Research & Development GmbH
 
 import base64, strutils, json
-import chronos/apps/http/httpclient, results, json_serialization
+import chronos/apps/http/httpclient, json_serialization
 import nimcrypto/sha2
 import ../../transports/tls/certificate_ffi
 import ../../crypto/rsa
+import ../../results
 
-func header*(table: HttpTable, key: string): Result[string, string] {.raises: [].} =
+func header*(
+    table: HttpTable, key: string
+): Result[string, LPResultError] {.raises: [].} =
   if not table.contains(key):
     return err("key " & key & " not present in headers")
   ok(table.getString(key))
 
-func tryGetStr*(node: JsonNode, key: string): Result[string, string] =
+func tryGetStr*(node: JsonNode, key: string): Result[string, LPResultError] =
   let field = node{key}
   if field.isNil() or field.kind != JString:
     return err("missing string field: " & key)
   ok(field.getStr())
 
-proc tryTo*[T](node: JsonNode, _: typedesc[T]): Result[T, string] =
+proc tryTo*[T](node: JsonNode, _: typedesc[T]): Result[T, LPResultError] =
   try:
     ok(node.to(T))
   except CatchableError as e:
-    err("failed to decode " & $T & ": " & e.msg)
+    err(e, "failed to decode " & $T)
 
-func tryParseEnum*[T: enum](s: string): Result[T, string] =
+func tryParseEnum*[T: enum](s: string): Result[T, LPResultError] =
   for v in T:
     if $v == s:
       return ok(v)
@@ -50,7 +53,7 @@ proc thumbprint*(key: RsaPrivateKey): string =
 
 proc getResponseBody*(
     response: HttpClientResponseRef
-): Future[Result[JsonNode, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[JsonNode, LPResultError]] {.async: (raises: [CancelledError]).} =
   try:
     let bodyBytes = await response.getBodyBytes()
     if bodyBytes.len == 0:
@@ -59,9 +62,11 @@ proc getResponseBody*(
   except CancelledError as e:
     raise e
   except CatchableError as e:
-    err("Failed to read response body: " & e.msg)
+    err(e, "Failed to read response body")
 
-proc createCSR*(domain: string, certKeyPair: RsaPrivateKey): Result[string, string] =
+proc createCSR*(
+    domain: string, certKeyPair: RsaPrivateKey
+): Result[string, LPResultError] =
   let rawSeckey = certKeyPair.getBytes().valueOr:
     return err("Failed to get RSA private key bytes (DER)")
   let certKey = cert_new_key_t(rawSeckey).valueOr:

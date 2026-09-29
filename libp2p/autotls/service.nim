@@ -4,7 +4,7 @@
 {.push raises: [].}
 
 import sequtils
-import chronos, chronicles, net, results, uri
+import chronos, chronicles, net, uri
 import chronos/apps/http/httpclient
 import chronos/streams/tlsstream
 from times import DateTime, now, toTime, toUnix
@@ -158,7 +158,7 @@ method setup*(self: AutotlsService, switch: Switch) {.raises: [ServiceSetupError
 
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
-): Result[AutotlsCert, string] =
+): Result[AutotlsCert, LPResultError] =
   let derPrivKey = certKeyPair.getBytes().valueOr:
     return err("Unable to get TLS private key")
 
@@ -171,14 +171,14 @@ proc newAutotlsCert(
       )
     )
   except TLSStreamProtocolError as e:
-    err("Could not parse downloaded certificates: " & e.msg)
+    err(e, "Could not parse downloaded certificates")
 
 proc publishChallenge(
     self: AutotlsService,
     baseDomain: api.Domain,
     keyAuth: KeyAuthorization,
     addrs: seq[MultiAddress],
-): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[void, LPResultError]] {.async: (raises: [CancelledError]).} =
   # broker encapsulates request construction, bearer handling and response
   # validation: it either registers the challenge or raises on failure
   if self.config.ipAddress.isNone():
@@ -195,7 +195,7 @@ proc publishChallenge(
         self.config.dnsRetryTime,
       )
     except LPError as e:
-      return err($e.name & ": " & e.msg)
+      return err(e, $e.name)
   if not dnsSet:
     return err("DNS records not set")
   ok()
@@ -205,7 +205,9 @@ proc requestCertificate(
     baseDomain: api.Domain,
     certKeyPair: RsaPrivateKey,
     addrs: seq[MultiAddress],
-): Future[Result[ACMECertificateResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMECertificateResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   trace "Requesting ACME challenge"
   let dns01Challenge =
     ?(await self.acmeClient.getChallenge(@[api.Domain("*." & baseDomain)]))
@@ -305,7 +307,7 @@ proc brokerAddrs(
 
 proc issueCertificate(
     self: AutotlsService, switch: Switch
-): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[void, LPResultError]] {.async: (raises: [CancelledError]).} =
   trace "Issuing certificate"
 
   if self.peerInfo.isNil():
@@ -336,7 +338,7 @@ proc hasTcpTransport(switch: Switch): bool =
 proc tryIssueCertificate(
     self: AutotlsService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
-  var lastError = ""
+  var lastError: LPResultError
   let operation = if self.cert.isSome(): "renewal" else: "initial issuance"
   var attempts = 0
   var outcome = "cancelled"
