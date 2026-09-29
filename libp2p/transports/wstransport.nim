@@ -393,27 +393,28 @@ method start*(
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
 
   if not self.secure and self.autotls.isSome():
-    self.autotls.ifValue(autotls):
-      if not await autotls.running.wait().withTimeout(autotls.config.initialCertTimeout):
-        error "Unable to upgrade, autotls not running"
-        await self.stop()
-        return
+    let autotls = self.autotls.get()
 
-      trace "Waiting for autotls certificate"
-      let certFut = autotls.getCertWhenReady()
-      if not await certFut.withTimeout(autotls.config.initialCertTimeout):
-        raise newException(
-          TransportStartError,
-          "Unable to start WebSocket transport: autotls certificate was not available in time",
-        )
+    if not await autotls.running.wait().withTimeout(autotls.config.initialCertTimeout):
+      error "Unable to upgrade, autotls not running"
+      await self.stop()
+      return
 
-      let autotlsCert =
-        try:
-          await certFut
-        except AutoTLSError as e:
-          raise newException(LPError, e.msg, e)
-      self.tlsCertificate = autotlsCert.cert
-      self.tlsPrivateKey = autotlsCert.privkey
+    trace "Waiting for autotls certificate"
+    let certFut = autotls.getCertWhenReady()
+    if not await certFut.withTimeout(autotls.config.initialCertTimeout):
+      raise newException(
+        TransportStartError,
+        "Unable to start WebSocket transport: autotls certificate was not available in time",
+      )
+
+    let autotlsCert =
+      try:
+        await certFut
+      except AutoTLSError as e:
+        raise newException(LPError, e.msg, e)
+    self.tlsCertificate = autotlsCert.cert
+    self.tlsPrivateKey = autotlsCert.privkey
 
   self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
 
