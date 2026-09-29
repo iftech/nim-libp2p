@@ -327,7 +327,11 @@ suite "WebSocket transport with autotls":
       not WSS.match(wstransport.addrs[0])
 
   asyncTest "start fails when the autotls service never runs":
-    let autotls = AutotlsService(certReady: newAsyncEvent(), running: newAsyncEvent())
+    let autotls = AutotlsService(
+      certReady: newAsyncEvent(),
+      running: newAsyncEvent(),
+      config: AutotlsConfig.new(initialCertTimeout = 100.milliseconds),
+    )
     let wstransport = WsTransport.new(
       Upgrade(),
       nil, # TLSPrivateKey
@@ -344,7 +348,11 @@ suite "WebSocket transport with autotls":
     check "autotls service did not start before the certificate deadline" in errorMsg
 
   asyncTest "start fails when the autotls certificate never arrives":
-    let autotls = AutotlsService(certReady: newAsyncEvent(), running: newAsyncEvent())
+    let autotls = AutotlsService(
+      certReady: newAsyncEvent(),
+      running: newAsyncEvent(),
+      config: AutotlsConfig.new(initialCertTimeout = 100.milliseconds),
+    )
     autotls.running.fire()
     let wstransport = WsTransport.new(
       Upgrade(),
@@ -368,6 +376,7 @@ suite "WebSocket transport with autotls":
       cert: Opt.some(AutotlsCert.new(secureCert, secureKey, now())),
       certReady: newAsyncEvent(),
       running: newAsyncEvent(),
+      config: AutotlsConfig.new(),
     )
     autotls.running.fire()
     autotls.certReady.fire()
