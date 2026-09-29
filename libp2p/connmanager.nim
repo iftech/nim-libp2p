@@ -29,6 +29,7 @@ const
   DefaultMaxConnections = 50
   DefaultMaxConnectionsPerPeer = 2
   ConnectionsUnlimited = high(int)
+  TrimLoopMinInterval = 100.millis ## keeps a zero silence period from a busy loop
 
 type
   DecayFn* = proc(value: int, elapsed: Duration): int {.gcsafe, raises: [].}
@@ -117,6 +118,7 @@ type
     readyEvents: Table[PeerId, Future[void].Raising([CancelledError])]
     readyWaiters: Table[PeerId, int]
     readyPeers: HashSet[PeerId]
+    joinedPeers: HashSet[PeerId]
     expectedConnectionsOverLimit*: Table[(PeerId, Direction), Future[Muxer]]
     peerStore*: PeerStore
     watermark: Opt[WatermarkPolicy]
@@ -128,6 +130,7 @@ type
     staticTags: Table[PeerId, Table[string, int]]
     decayingTags: Table[PeerId, Table[string, DecayingTagValue]]
     decayLoopFut: Future[void]
+    trimLoopFut: Future[void]
     onCloseFuts: seq[Future[void]]
     peerEventFuts: seq[Future[void]]
     slotMonitorFuts: seq[Future[void]]
@@ -452,6 +455,9 @@ proc onPeerDisconnected(c: ConnManager, peerId: PeerId) {.async: (raises: []).} 
     c.peerStore.markPeerDisconnected(peerId)
     c.peerStore.cleanup(peerId)
   libp2p_peers.set(c.muxerStore.countPeers.int64)
+  if c.joinedPeers.missingOrExcl(peerId):
+    return
+
   await noCancel c.triggerPeerEvents(peerId, PeerEvent(kind: PeerEventKind.Left))
 
 proc onClose(c: ConnManager, mux: Muxer) {.async: (raises: []).} =
@@ -499,6 +505,19 @@ proc triggerTrimAfter(
   except CancelledError:
     return
   c.triggerTrim()
+
+proc runTrimLoop(
+    c: ConnManager, interval: Duration
+) {.async: (raises: [CancelledError]).} =
+  ## Retries trims that the grace or silence period skipped.
+  while c.running:
+    await sleepAsync(interval)
+    c.triggerTrim()
+
+proc startTrimLoop(c: ConnManager) =
+  c.watermark.ifValue(wm):
+    if c.running and (c.trimLoopFut.isNil() or c.trimLoopFut.finished()):
+      c.trimLoopFut = c.runTrimLoop(max(wm.silencePeriod, TrimLoopMinInterval))
 
 proc storeMuxer*(
     c: ConnManager, muxer: Muxer
@@ -556,12 +575,14 @@ proc storeMuxer*(
 
   var joinedEvent: Future[void].Raising([CancelledError])
   if isNewPeer:
+    c.joinedPeers.incl(peerId)
     joinedEvent = c.triggerPeerEvents(
       peerId, PeerEvent(kind: PeerEventKind.Joined, initiator: dir == Direction.Out)
     )
     c.peerEventFuts.trackFut(joinedEvent)
 
   if c.watermark.isSome:
+    c.startTrimLoop()
     if isNewPeer:
       c.connectedAt[peerId] = Moment.now()
     if c.muxerStore.countPeers() > c.watermark.get().highWater:
@@ -748,6 +769,7 @@ proc start*(c: ConnManager) =
     return
   c.running = true
   c.decayLoopFut = c.runDecayLoop()
+  c.startTrimLoop()
 
 proc tagPeerDecaying*(
     c: ConnManager,
@@ -791,6 +813,7 @@ proc trimConnections(c: ConnManager) {.async: (raises: []).} =
   libp2p_connmgr_trim_total.inc()
   let wm = c.watermark.get()
   let now = Moment.now()
+  c.lastTrim = Opt.some(now)
 
   var candidates: seq[(int, Moment, PeerId)]
   for peerId in c.muxerStore.getPeers():
@@ -824,8 +847,6 @@ proc trimConnections(c: ConnManager) {.async: (raises: []).} =
   except CancelledError:
     trace "Watermark trim connection was cancelled"
 
-  c.lastTrim = Opt.some(Moment.now())
-
 proc triggerTrim*(c: ConnManager) {.gcsafe, raises: [].} =
   ## Schedules a trim cycle if none is running and the silence period has elapsed.
   if not c.trimFut.isNil and not c.trimFut.finished:
@@ -853,6 +874,9 @@ proc stop*(c: ConnManager) {.async: (raises: [CancelledError]).} =
 
   if not c.decayLoopFut.isNil:
     await c.decayLoopFut.cancelAndWait()
+
+  if not c.trimLoopFut.isNil():
+    await c.trimLoopFut.cancelAndWait()
 
   if not c.trimFut.isNil:
     await c.trimFut.cancelAndWait()

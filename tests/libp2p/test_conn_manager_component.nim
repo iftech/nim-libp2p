@@ -485,9 +485,7 @@ suite "Connection Manager Watermark/Scoring Component":
     expect DialFailedError:
       await connect(peers[2], node)
 
-  asyncTest "gossipsub drops peers pruned after Joined is emitted":
-    # When the trim prunes a just-stored connection, gossipsub must observe Joined
-    # before Left so it does not keep a pruned peer subscribed.
+  asyncTest "gossipsub does not keep a peer pruned before Joined":
     const
       lowWater = 1
       highWater = 2
@@ -505,7 +503,7 @@ suite "Connection Manager Watermark/Scoring Component":
     proc connectedHandler(
         peerId: PeerId, event: ConnEvent
     ) {.async: (raises: [CancelledError]).} =
-      # Simulates a Connected handler with I/O that used to delay Joined past the prune.
+      # holds Joined back past a periodic trim tick
       if peerId == prunedId:
         await sleepAsync(connectedHandlerDelay)
 
@@ -516,10 +514,12 @@ suite "Connection Manager Watermark/Scoring Component":
     await connect(peers[1], node)
     node.connManager.protect(peers[0].peerInfo.peerId, "keep")
 
-    # peers[2] triggers the trim, which prunes its own just-stored connection.
-    await connect(peers[2], node)
+    # the prune can land before the dialer finishes identify
+    try:
+      await connect(peers[2], node)
+    except DialFailedError:
+      discard
 
-    # Joined is handled before Left, so the prune removes the peer from gossipsub.
     checkUntilTimeout:
       not node.isConnected(prunedId)
       prunedId notin gossip.peers
