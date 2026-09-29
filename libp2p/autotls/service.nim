@@ -227,6 +227,8 @@ proc brokerAddrs(
   ## of Switch.peerInfo.listenAddrs, which is populated only after every
   ## transport has started.
   let tcpTransports = switch.transports.filterIt(it of TcpTransport)
+  if tcpTransports.len == 0:
+    return @[]
 
   while true:
     var started: seq[Transport]
