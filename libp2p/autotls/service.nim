@@ -270,8 +270,9 @@ method start*(
   self.running.fire()
   self.peerInfo = switch.peerInfo
 
-  # Issuance starts concurrently with the transports. Requiring the TCP transport
-  # to be running here would always fail because Switch.start starts services first.
+  # The switch starts services concurrently with transports. Requiring the TCP
+  # transport to be running here could fail when the service starts first, so
+  # AutotlsService should only check whether a transport exists.
   if not switch.hasTcpTransport():
     error "Could not find a TcpTransport in switch"
     return
