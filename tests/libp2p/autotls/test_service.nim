@@ -228,8 +228,8 @@ suite "AutoTLS certificate issuance and renewal":
       newService(AutotlsConfig.new(renewCheckTime = RenewCheckTime, issueRetries = 0))
     await service.start(switch)
 
-    # Wait out several heartbeats to exercise the missing-IP abort path.
-    await sleepAsync(10 * RenewCheckTime)
+    checkUntilTimeout:
+      acmeApi.requestedUris.len > 0
 
     check:
       acmeApi.requestedUris.len > 0
