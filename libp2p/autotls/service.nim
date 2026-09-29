@@ -245,14 +245,20 @@ proc brokerAddrs(
     # still becoming ready.
     let pending = tcpTransports.filterIt(not it.running)
     if pending.len > 0:
-      try:
-        discard await one(pending.mapIt(it.onRunning.wait()))
-      except ValueError:
-        # The list cannot normally be empty after the check above; retain the
-        # guard because a future combinator rejects an empty sequence.
-        discard
+      let notStarted = pending.filterIt(not it.onRunning.isSet)
+      if notStarted.len > 0:
+        try:
+          discard await one(notStarted.mapIt(it.onRunning.wait()))
+        except ValueError:
+          # The list cannot normally be empty after the check above; retain the
+          # guard because a future combinator rejects an empty sequence.
+          discard
+      else:
+        # AsyncEvent is sticky: a stopped transport's onRunning event remains
+        # set from an earlier start, so awaiting it would spin immediately.
+        await sleepAsync(self.config.issueRetryTime)
     elif started.len > 0:
-      await sleepAsync(max(self.config.issueRetryTime, 1.milliseconds))
+      await sleepAsync(self.config.issueRetryTime)
 
 proc issueCertificate(
     self: AutotlsService, switch: Switch

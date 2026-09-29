@@ -91,7 +91,7 @@ suite "AutoTLS certificate issuance and renewal":
   asyncTest "issuance is retried issueRetries times":
     # renewCheckTime is left at its 1 hour default, so a second round won't start
     service =
-      newService(AutotlsConfig.new(issueRetries = 3, issueRetryTime = 0.seconds))
+      newService(AutotlsConfig.new(issueRetries = 3, issueRetryTime = 1.milliseconds))
     await service.start(switch)
 
     # Every attempt fails on its first ACME request, so a request is an attempt.
@@ -176,7 +176,7 @@ suite "AutoTLS certificate issuance and renewal":
         ipAddress = Opt.some(parseIpAddress(NodeIP)),
         domainSuffix = DomainSuffix,
         issueRetries = 3,
-        issueRetryTime = 0.seconds,
+        issueRetryTime = 1.milliseconds,
       )
     )
     let keyAuth = service.acmeClient.genKeyAuthorization(ChallengeToken)
