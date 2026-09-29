@@ -33,7 +33,6 @@ const
   DefaultHeadersTimeout = 3.seconds
   DefaultConcurrentAccepts = 200
   DefaultAcceptFailureBackoff = 100.millis
-  DefaultAutotlsWaitTimeout = 3.seconds
 
 type
   WsStream = ref object of Connection
@@ -382,6 +381,28 @@ proc listen(
 
   ok(resolved)
 
+proc loadAutotlsCertificate(
+    autotls: AutotlsService
+): Future[LPResult[AutotlsCert]] {.async: (raises: [CancelledError]).} =
+  let deadlineFut = sleepAsync(autotls.config.initialCertTimeout)
+  defer:
+    deadlineFut.cancelSoon()
+
+  trace "Waiting for autotls service"
+  try:
+    await autotls.running.wait().wait(deadlineFut)
+  except AsyncTimeoutError:
+    return err("autotls service did not start before the certificate deadline")
+
+  trace "Waiting for autotls certificate"
+  let certFut = autotls.getCertWhenReady()
+  try:
+    return ok(await certFut.wait(deadlineFut))
+  except AsyncTimeoutError:
+    return err("autotls certificate was not available before the certificate deadline")
+  except AutoTLSError as e:
+    return err("failed to load autotls certificate: " & e.msg)
+
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]
 ) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
@@ -394,29 +415,14 @@ method start*(
 
   if not self.secure and self.autotls.isSome():
     let autotls = self.autotls.get()
-
-    if not await autotls.running.wait().withTimeout(autotls.config.initialCertTimeout):
-      error "Unable to upgrade, autotls not running"
+    let autotlsCert = (await loadAutotlsCertificate(autotls)).valueOr:
       await self.stop()
-      return
-
-    trace "Waiting for autotls certificate"
-    let certFut = autotls.getCertWhenReady()
-    if not await certFut.withTimeout(autotls.config.initialCertTimeout):
       raise newException(
         TransportStartError,
-        "Unable to start WebSocket transport: autotls certificate was not available in time",
+        "Unable to start WebSocket transport: failed to load autotls certificate. " &
+          $error,
       )
 
-    let autotlsCert =
-      try:
-        await certFut
-      except AutoTLSError as e:
-        raise newException(
-          TransportStartError,
-          "Unable to start WebSocket transport: failed to load autotls certificate. " &
-            $e.msg,
-        )
     self.tlsCertificate = autotlsCert.cert
     self.tlsPrivateKey = autotlsCert.privkey
 

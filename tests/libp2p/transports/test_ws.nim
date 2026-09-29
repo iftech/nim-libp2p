@@ -326,7 +326,7 @@ suite "WebSocket transport with autotls":
       WS.match(wstransport.addrs[0])
       not WSS.match(wstransport.addrs[0])
 
-  asyncTest "the transport stops when the autotls service never runs":
+  asyncTest "start fails when the autotls service never runs":
     let autotls = AutotlsService(certReady: newAsyncEvent(), running: newAsyncEvent())
     let wstransport = WsTransport.new(
       Upgrade(),
@@ -336,17 +336,12 @@ suite "WebSocket transport with autotls":
       rng(),
     )
 
-    # The wait for a running service is bounded by DefaultAutotlsWaitTimeout, 3 seconds.
-    await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(5.seconds)
-
-    check:
-      not wstransport.running
-      wstransport.addrs.len == 0
-
-    let acceptFut = wstransport.accept()
-    check await acceptFut.withTimeout(200.milliseconds)
-    expect TransportClosedError:
-      discard await acceptFut
+    var errorMsg = ""
+    try:
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
+    except TransportStartError as exc:
+      errorMsg = exc.msg
+    check "certificate" in errorMsg
 
   asyncTest "start fails when the autotls certificate never arrives":
     let autotls = AutotlsService(certReady: newAsyncEvent(), running: newAsyncEvent())
@@ -361,7 +356,7 @@ suite "WebSocket transport with autotls":
 
     var errorMsg = ""
     try:
-      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(5.seconds)
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
     except TransportStartError as exc:
       errorMsg = exc.msg
     check "certificate" in errorMsg
