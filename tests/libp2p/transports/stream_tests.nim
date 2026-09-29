@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, std/random, nimcrypto/utils as ncrutils
+import chronos, stew/byteutils, std/random, nimcrypto/utils as ncrutils
 import
   ../../../libp2p/[stream/connection, transports/transport, muxers/muxer, multiaddress]
 import ../../tools/[stream, sync]
