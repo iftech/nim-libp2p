@@ -102,7 +102,7 @@ proc expandAddrs*(
   if p.announcedAddrs.len > 0:
     addrs = p.announcedAddrs
 
-  p.addressPolicy.filterAddrs(addrs)
+  return p.addressPolicy.filterAddrs(addrs)
 
 proc expandAddrs*(
     p: PeerInfo
