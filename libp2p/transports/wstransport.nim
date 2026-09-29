@@ -412,7 +412,11 @@ method start*(
       try:
         await certFut
       except AutoTLSError as e:
-        raise newException(LPError, e.msg, e)
+        raise newException(
+          TransportStartError,
+          "Unable to start WebSocket transport: failed to load autotls certificate. " &
+            $e.msg,
+        )
     self.tlsCertificate = autotlsCert.cert
     self.tlsPrivateKey = autotlsCert.privkey
 
