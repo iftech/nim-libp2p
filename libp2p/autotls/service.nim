@@ -35,6 +35,7 @@ export
 const
   DefaultRenewCheckTime* = 1.hours
   DefaultRenewBufferTime* = 1.hours
+  DefaultInitialCertTimeout* = 2.minutes
   DefaultIssueRetries = 3
   DefaultIssueRetryTime = 1.seconds
 
@@ -51,6 +52,7 @@ type AutotlsConfig* = object
   ipAddress: Opt[IpAddress]
   renewCheckTime*: Duration
   renewBufferTime*: Duration
+  initialCertTimeout*: Duration
   issueRetries*: int
   issueRetryTime*: Duration
   registrationURL*: Uri
@@ -94,6 +96,7 @@ proc new*(
     acmeDirectoryURL: Uri = LetsEncryptDirectoryURL,
     renewCheckTime: Duration = DefaultRenewCheckTime,
     renewBufferTime: Duration = DefaultRenewBufferTime,
+    initialCertTimeout: Duration = DefaultInitialCertTimeout,
     issueRetries: int = DefaultIssueRetries,
     issueRetryTime: Duration = DefaultIssueRetryTime,
     registrationURL: Uri = DefaultRegistrationURL,
@@ -111,6 +114,7 @@ proc new*(
     ipAddress: ipAddress,
     renewCheckTime: renewCheckTime,
     renewBufferTime: renewBufferTime,
+    initialCertTimeout: initialCertTimeout,
     issueRetries: issueRetries,
     issueRetryTime: issueRetryTime,
     registrationURL: registrationURL,

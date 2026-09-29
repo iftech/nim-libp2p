@@ -394,14 +394,14 @@ method start*(
 
   if not self.secure and self.autotls.isSome():
     self.autotls.ifValue(autotls):
-      if not await autotls.running.wait().withTimeout(DefaultAutotlsWaitTimeout):
+      if not await autotls.running.wait().withTimeout(autotls.config.initialCertTimeout):
         error "Unable to upgrade, autotls not running"
         await self.stop()
         return
 
       trace "Waiting for autotls certificate"
       let certFut = autotls.getCertWhenReady()
-      if not await certFut.withTimeout(DefaultAutotlsWaitTimeout):
+      if not await certFut.withTimeout(autotls.config.initialCertTimeout):
         raise newException(
           TransportStartError,
           "Unable to start WebSocket transport: autotls certificate was not available in time",

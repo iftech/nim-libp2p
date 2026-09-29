@@ -273,6 +273,7 @@ suite "AutoTLS on a switch":
           # A refused connection fails issuance at once, leaving the certificate
           # wait as the only thing that can hang.
           acmeDirectoryURL = parseUri("http://127.0.0.1:1"),
+          initialCertTimeout = 100.milliseconds,
         )
       )
       .build()
@@ -281,7 +282,7 @@ suite "AutoTLS on a switch":
 
     var errorMsg = ""
     try:
-      await switch.start().wait(5.seconds)
+      await switch.start()
     except LPError as exc:
       errorMsg = exc.msg
-    check "certificate" in errorMsg
+    check "autotls certificate was not available in time" in errorMsg
