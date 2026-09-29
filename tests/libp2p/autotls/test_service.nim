@@ -284,4 +284,5 @@ suite "AutoTLS on a switch":
       await switch.start()
     except LPError as exc:
       errorMsg = exc.msg
-    check "autotls certificate was not available before the certificate deadline" in errorMsg
+    check "autotls certificate was not available before the certificate deadline" in
+      errorMsg
