@@ -226,9 +226,8 @@ suite "AutoTLS certificate issuance and renewal":
       service.running.isSet
 
   asyncTest "issuance aborts when no IP address is configured":
-    service = newService(
-      AutotlsConfig.new(renewCheckTime = RenewCheckTime, issueRetries = 0)
-    )
+    service =
+      newService(AutotlsConfig.new(renewCheckTime = RenewCheckTime, issueRetries = 0))
     await service.start(switch)
 
     # Wait out several heartbeats to exercise the missing-IP abort path.
