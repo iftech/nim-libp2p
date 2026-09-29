@@ -3,7 +3,10 @@
 
 {.push raises: [].}
 
-import results, times
+import times
+import ../results
+
+const InvalidRfc3339DateTime* = "Invalid RFC 3339 date-time"
 
 func digit(value: string, index: int): int =
   ord(value[index]) - ord('0')
@@ -14,11 +17,11 @@ func decimal(value: string, first, last: int): int =
     acc = acc * 10 + value.digit(index)
   acc
 
-proc parseRfc3339DateTime*(value: string): Result[DateTime, string] =
+proc parseRfc3339DateTime*(value: string): Result[DateTime, LPResultError] =
   ## Parses an RFC 3339 timestamp and normalizes it to UTC. Fractions more precise
   ## than Nim's nanosecond-resolution DateTime are truncated.
   template invalid(): untyped =
-    return err("Invalid RFC 3339 date-time: " & value)
+    return err(LPResultError.init(InvalidRfc3339DateTime, value))
 
   if value.len < 20:
     invalid()
