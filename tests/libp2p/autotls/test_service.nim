@@ -286,3 +286,18 @@ suite "AutoTLS on a switch":
       errorMsg = exc.msg
     check "autotls certificate was not available before the certificate deadline" in
       errorMsg
+
+  asyncTest "a switch listening only on ws starts without an autotls certificate":
+    let switch = makeStandardSwitchBuilder(@[WsAutoAddress])
+      .withAutotls(
+        AutotlsConfig.new(
+          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+          acmeDirectoryURL = parseUri("http://127.0.0.1:1"),
+          initialCertTimeout = 100.milliseconds,
+        )
+      )
+      .build()
+    defer:
+      await switch.stop()
+
+    await switch.start()
