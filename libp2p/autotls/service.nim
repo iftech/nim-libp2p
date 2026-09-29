@@ -266,8 +266,7 @@ proc brokerAddrs(
   try:
     return await discoverAddrs().wait(self.config.initialCertTimeout)
   except AsyncTimeoutError:
-    warn "TCP address discovery timed out",
-      timeout = self.config.initialCertTimeout
+    warn "TCP address discovery timed out", timeout = self.config.initialCertTimeout
     return @[]
 
 proc issueCertificate(
