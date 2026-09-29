@@ -232,35 +232,43 @@ proc brokerAddrs(
   if tcpTransports.len == 0:
     return @[]
 
-  while true:
-    var started: seq[Transport]
-    for transport in tcpTransports:
-      if transport.running:
-        started.add(transport)
-        let addrs = await self.peerInfo.expandAddrs(transport.addrs)
-        if addrs.len > 0:
-          return addrs
+  proc discoverAddrs(): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+    while true:
+      var started: seq[Transport]
+      for transport in tcpTransports:
+        if transport.running:
+          started.add(transport)
+          let addrs = await self.peerInfo.expandAddrs(transport.addrs)
+          if addrs.len > 0:
+            return addrs
 
-    # A started TCP transport with no dialable addresses is a dial-only
-    # transport (or its addresses were filtered). It cannot bootstrap AutoTLS.
-    # Wait for another listener, or retry expansion in case an address mapper is
-    # still becoming ready.
-    let pending = tcpTransports.filterIt(not it.running)
-    if pending.len > 0:
-      let notStarted = pending.filterIt(not it.onRunning.isSet)
-      if notStarted.len > 0:
-        try:
-          discard await one(notStarted.mapIt(it.onRunning.wait()))
-        except ValueError:
-          # The list cannot normally be empty after the check above; retain the
-          # guard because a future combinator rejects an empty sequence.
-          discard
-      else:
-        # AsyncEvent is sticky: a stopped transport's onRunning event remains
-        # set from an earlier start, so awaiting it would spin immediately.
+      # A started TCP transport with no dialable addresses is a dial-only
+      # transport (or its addresses were filtered). It cannot bootstrap AutoTLS.
+      # Wait for another listener, or retry expansion in case an address mapper is
+      # still becoming ready. The enclosing wait bounds both cases.
+      let pending = tcpTransports.filterIt(not it.running)
+      if pending.len > 0:
+        let notStarted = pending.filterIt(not it.onRunning.isSet)
+        if notStarted.len > 0:
+          try:
+            discard await one(notStarted.mapIt(it.onRunning.wait()))
+          except ValueError:
+            # The list cannot normally be empty after the check above; retain the
+            # guard because a future combinator rejects an empty sequence.
+            discard
+        else:
+          # AsyncEvent is sticky: a stopped transport's onRunning event remains
+          # set from an earlier start, so awaiting it would spin immediately.
+          await sleepAsync(self.config.issueRetryTime)
+      elif started.len > 0:
         await sleepAsync(self.config.issueRetryTime)
-    elif started.len > 0:
-      await sleepAsync(self.config.issueRetryTime)
+
+  try:
+    return await discoverAddrs().wait(self.config.initialCertTimeout)
+  except AsyncTimeoutError:
+    warn "TCP address discovery timed out",
+      timeout = self.config.initialCertTimeout
+    return @[]
 
 proc issueCertificate(
     self: AutotlsService, switch: Switch
@@ -271,6 +279,9 @@ proc issueCertificate(
     return err("Cannot issue new certificate: peerInfo not set")
 
   let addrs = await self.brokerAddrs(switch)
+  if addrs.len == 0:
+    return
+      err("No dialable TCP address available before the address discovery deadline")
 
   let peerLabel = ?encodePeerId(self.peerInfo.peerId)
   let baseDomain = api.Domain(peerLabel & "." & self.config.domainSuffix)
