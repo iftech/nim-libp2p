@@ -430,6 +430,8 @@ proc shutdownSwitch(lib: LibP2P) {.async.} =
 
 proc libp2pStart*(lib: LibP2P): Future[Result[bool, string]] {.ffi.} =
   ## Starts the switch so it listens and accepts connections. Idempotent.
+  ## Returns before the DHT bootstrap ends; `libp2p_ctx_kad_wait_bootstrap`
+  ## waits for it.
   if lib.running:
     return ok(true)
   try:
@@ -517,10 +519,9 @@ proc libp2pPublicKey*(lib: LibP2P): Future[Result[seq[byte], string]] {.ffi.} =
     return err("could not serialize public key: " & $error)
   ok(rawBytes)
 
-func dialTimeout(timeoutMs: int64): Duration =
-  ## The caller-supplied bound on a single dial. `<= 0` opts out
-  ## (`InfiniteDuration`), deferring to libp2p's own dial timeout. nim-ffi never
-  ## cancels a handler, so nothing else bounds the call.
+func callTimeout(timeoutMs: int64): Duration =
+  ## The caller's limit on one call; `<= 0` leaves only libp2p's own timeouts.
+  ## nim-ffi never cancels a handler, so nothing else limits the call.
   if timeoutMs <= 0:
     InfiniteDuration
   else:
@@ -538,7 +539,7 @@ proc libp2pConnect*(
     return err($error)
 
   try:
-    await lib.switch.connect(peerId, multiaddresses).wait(dialTimeout(req.timeoutMs))
+    await lib.switch.connect(peerId, multiaddresses).wait(callTimeout(req.timeoutMs))
   except AsyncTimeoutError:
     return err("dial timeout")
   except DialFailedError as e:
@@ -604,7 +605,7 @@ proc libp2pDial*(
       lib.switch.dial(peerId, multiaddresses, @[req.proto], req.forceDial)
   let stream =
     try:
-      await dialing.wait(dialTimeout(req.timeoutMs))
+      await dialing.wait(callTimeout(req.timeoutMs))
     except AsyncTimeoutError:
       return err("dial timeout")
     except DialFailedError as e:
@@ -623,7 +624,7 @@ proc libp2pDialCircuitRelay*(
   let stream =
     try:
       await lib.switch.dial(dstPeerId, @[relayCircuitAddr], req.proto).wait(
-        dialTimeout(req.timeoutMs)
+        callTimeout(req.timeoutMs)
       )
     except AsyncTimeoutError:
       return err("dial timeout")
@@ -822,6 +823,22 @@ proc libp2pKadFindNode*(
     except LPError as e:
       return err(e.msg)
   ok(PeersResponse(peerIds: peers.mapIt($it)))
+
+proc libp2pKadWaitBootstrap*(
+    lib: LibP2P, timeoutMs: int64
+): Future[Result[bool, string]] {.ffi.} =
+  ## Waits for the DHT bootstrap that `libp2p_ctx_start` launched; `timeoutMs <= 0`
+  ## waits until it ends. A timeout leaves the bootstrap running. `true` means the
+  ## bootstrap ended, also when it gave up on its own `bootstrapTimeout`.
+  let kad = lib.kad.valueOr:
+    return err("kad-dht not initialized")
+  if not lib.running:
+    return err("switch not started")
+  if not await kad.waitBootstrap().withTimeout(callTimeout(timeoutMs)):
+    return err("bootstrap wait timeout")
+  if not kad.started:
+    return err("switch stopped")
+  ok(true)
 
 proc libp2pKadPutValue*(
     lib: LibP2P, req: KadPutValueRequest
