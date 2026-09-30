@@ -538,7 +538,7 @@ proc libp2pConnect*(
     return err(error)
 
   let peerId = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
 
   try:
     await lib.switch.connect(peerId, multiaddresses).wait(callTimeout(req.timeoutMs))
@@ -554,7 +554,7 @@ proc libp2pDisconnect*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Closes every connection to `peerId`.
   let pid = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   await lib.switch.disconnect(pid)
   ok(true)
 
@@ -590,7 +590,7 @@ proc libp2pDial*(
   ## Opens a stream to `peerId` speaking `proto`, returning its stream id.
   ## `timeoutMs <= 0` defers to libp2p's own dial timeout.
   let peerId = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   let multiaddresses = parseMultiaddrs(req.multiaddrs).valueOr:
     return err(error)
   if req.forceDial and multiaddresses.len == 0:
@@ -620,9 +620,9 @@ proc libp2pDialCircuitRelay*(
   ## Opens a stream to `peerId` over the circuit-relay address `multiaddr`.
   ## `timeoutMs <= 0` defers to libp2p's own dial timeout.
   let dstPeerId = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   let relayCircuitAddr = MultiAddress.init(req.multiaddr).valueOr:
-    return err($error)
+    return err(error)
   let stream =
     try:
       await lib.switch.dial(dstPeerId, @[relayCircuitAddr], req.proto).wait(
@@ -818,7 +818,7 @@ proc libp2pKadFindNode*(
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
   let target = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   let peers =
     try:
       await kad.findNode(target.toKey())
@@ -850,9 +850,8 @@ proc libp2pKadPutValue*(
     return err("kad-dht not initialized")
   let key = Key.fromBytes(req.key)
   let value = Value.fromBytes(req.value)
-  let res = await kad.putValue(key, value)
-  if res.isErr():
-    return err(res.error)
+  (await kad.putValue(key, value)).isOkOr:
+    return err(error)
   ok(true)
 
 proc libp2pKadGetValue*(
@@ -876,7 +875,7 @@ proc libp2pKadGetValue*(
     except LPError as e:
       return err(e.msg)
   let entry = res.valueOr:
-    return err(res.error)
+    return err(error)
   ok(ReadResponse(data: entry.value.toBytes()))
 
 proc kadAndCid(lib: LibP2P, cid: string): Result[(KadDHT, Cid), string] =
@@ -1020,7 +1019,7 @@ proc libp2pServiceDiscoLookup*(
   let service = ServiceInfo(id: req.serviceId, data: Opt.some(req.serviceData))
   let res = await disco.lookup(service)
   let ads = res.valueOr:
-    return err($error)
+    return err(error)
   ok(toExtendedRecordsResponse(ads.mapIt(it.data)))
 
 proc libp2pServiceDiscoRandomLookup*(
@@ -1083,13 +1082,13 @@ proc libp2pCircuitRelayReserve*(
     return err("relay client is not mounted (set circuitRelayClient=true in config)")
 
   let peerId = PeerId.init(req.relayPeerId).valueOr:
-    return err($error)
+    return err(error)
 
   let multiaddresses = parseMultiaddrs(req.relayAddrs).valueOr:
     return err(error)
 
   let rsvp = (await cl.tryReserve(peerId, multiaddresses)).valueOr:
-    return err("reservation failed: " & error)
+    return err("reservation failed: " & $error)
 
   ok(ReservationResponse(addrs: rsvp.addrs.mapIt($it), expireTime: rsvp.expire))
 
@@ -1110,7 +1109,7 @@ proc libp2pPeerstoreGetPeerInfo*(
 ): Future[Result[PeerStoreEntryResponse, string]] {.ffi.} =
   ## Everything the peer store holds for `peerId`; absent books come back empty.
   let pid = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   let peerStore = lib.switch.peerStore
   try:
     var entry = PeerStoreEntryResponse(peerId: $pid)
@@ -1130,7 +1129,7 @@ proc libp2pPeerstoreAddPeer*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Adds `peerId` to the peer store, extending its addresses and protocols.
   let pid = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   if req.addrs.len == 0:
     return err("at least one address is required")
 
@@ -1148,7 +1147,7 @@ proc libp2pPeerstoreSetPeerAddresses*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Replaces the peer store's addresses for `peerId`.
   let pid = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
 
   let addrs = parseMultiaddrs(req.addrs).valueOr:
     return err(error)
@@ -1161,7 +1160,7 @@ proc libp2pPeerstoreSetPeerProtocols*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Replaces the peer store's protocol list for `peerId`.
   let pid = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   lib.switch.peerStore[ProtoBook][pid] = req.protocols
   ok(true)
 
@@ -1170,7 +1169,7 @@ proc libp2pPeerstoreDeletePeer*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Drops every peer-store entry for `peerId`.
   let pid = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   lib.switch.peerStore.del(pid)
   ok(true)
 

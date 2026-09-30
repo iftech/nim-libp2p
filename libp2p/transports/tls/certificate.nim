@@ -106,25 +106,22 @@ proc makeExtValues(
   ## - `IdentityPubKeySerializationError` if serialization of identity public key fails.
 
   let certificatePubKeyDer = cert_serialize_pubk(certKey, DER.cert_format_t()).valueOr:
-    raise newException(
-      CertificatePubKeySerializationError,
-      "Failed to serialize the certificate pubkey: " & $error,
+    raise error.toException(
+      CertificatePubKeySerializationError, "Failed to serialize the certificate pubkey"
     )
 
   let msg = makeSignatureMessage(certificatePubKeyDer)
 
   # Sign the message with the Identity Key
   let signature = identityKeypair.seckey.sign(msg).valueOr:
-    raise newException(
-      IdentitySigningError,
-      "Failed to sign the message with the identity key: " & $error,
+    raise error.toException(
+      IdentitySigningError, "Failed to sign the message with the identity key"
     )
 
   # Get the public key bytes
   let pubKeyBytes = identityKeypair.pubkey.getBytes().valueOr:
-    raise newException(
-      IdentityPubKeySerializationError,
-      "Failed to get identity public key bytes: " & $error,
+    raise error.toException(
+      IdentityPubKeySerializationError, "Failed to get identity public key bytes"
     )
 
   return (signature.data, pubKeyBytes)
@@ -156,8 +153,7 @@ proc generateX509*(
   ## - `CertificateCreationError` if certificate creation fails.
 
   var certKey = cert_generate_key().valueOr:
-    raise
-      newException(KeyGenerationError, "Failed to generate certificate key: " & $error)
+    raise error.toException(KeyGenerationError, "Failed to generate certificate key")
   defer:
     cert_free_key(certKey)
 
@@ -170,12 +166,10 @@ proc generateX509*(
     certKey, libp2pExtension.signature, libp2pExtension.pubkey, issuerDN,
     validFromAsn1.cstring, validToAsn1.cstring, encodingFormat.cert_format_t,
   ).valueOr:
-    raise newException(
-      CertificateCreationError, "Failed to generate certificate: " & $error
-    )
+    raise error.toException(CertificateCreationError, "Failed to generate certificate")
 
   let privKDer = cert_serialize_privk(certKey, encodingFormat.cert_format_t).valueOr:
-    raise newException(KeyGenerationError, "Failed to serialize privK: " & $error)
+    raise error.toException(KeyGenerationError, "Failed to serialize privK")
 
   return CertificateX509(certificate: certificate, privateKey: privKDer)
 
@@ -206,8 +200,7 @@ proc parse*(
   ## - `CertificateParsingError` if certificate parsing fails.
 
   let certParsed = cert_parse(certificateDer, DER.cert_format_t()).valueOr:
-    raise
-      newException(CertificateParsingError, "Failed to parse certificate: " & $error)
+    raise error.toException(CertificateParsingError, "Failed to parse certificate")
 
   var validFrom, validTo: Time
   try:

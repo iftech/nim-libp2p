@@ -445,16 +445,16 @@ proc dispatchPeer(
   let res = await dispatch(kad, peerId, target)
   if res.isErr():
     let err = res.error()
-    if err.startsWith($refusedStage):
+    if res.isOfError($refusedStage):
       trace "Kademlia RPC dial failed", err, peerId, protocol = kad.codec
       return DispatchResult(peer: peerId, outcome: Unreachable)
 
-    if err.startsWith($dialStage):
+    if res.isOfError($dialStage):
       trace "Kademlia RPC stream establishment failed",
         err, peerId, protocol = kad.codec
-    elif err.startsWith($waitStage):
+    elif res.isOfError($waitStage):
       trace "Kademlia RPC stream wait timed out", err, peerId, protocol = kad.codec
-    elif err.startsWith($writeStage):
+    elif res.isOfError($writeStage):
       trace "Kademlia RPC write failed", err, peerId, protocol = kad.codec
     else:
       trace "Kademlia RPC read failed", err, peerId, protocol = kad.codec

@@ -271,7 +271,7 @@ proc sendRegister*(
       await disco.send(peerId, msg)
 
   let reply = replyRes.valueOr:
-    return err($error)
+    return err(error)
 
   let registerMsg = reply.register.valueOr:
     return err("register reply not found")
@@ -368,7 +368,7 @@ proc validateAdvert(advert: seq[byte], service: ServiceInfo): LPResult[PeerId] =
     )
 
   let ad = Advertisement.decode(advert).valueOr:
-    return err("cannot decode advertisement: " & $error)
+    return err(error, "cannot decode advertisement")
 
   if not ad.isValid():
     return err(

@@ -157,7 +157,7 @@ suite "LPResultError":
       parse(DemoResult[int]).isOfError("parse failed")
       parse(LPResult[int]).error == "parse failed: bad digit"
 
-  test "err with an exception or cstring gives its message to a string error":
+  test "err with an exception, cstring or LPResultError gives its message to a string error":
     proc fromException(): LPResult[int] =
       try:
         raise newException(ValueError, "bad digit")
@@ -182,12 +182,20 @@ suite "LPResultError":
     proc keepsCString(): Result[int, cstring] =
       err(cstring("bad peer"))
 
+    proc fromLPResultError(): Result[int, string] =
+      err(NotEnoughMemory.withDetail("missing: 2MB"))
+
+    proc keepsLPResultError(): DemoResult[int] =
+      err(PeerGone)
+
     check:
       fromException().error == "bad digit"
       fromExceptionToError().error == "bad digit"
       keepsException().error.msg == "bad digit"
       fromCString().error == "bad peer"
       keepsCString().error == "bad peer"
+      fromLPResultError().error == "not enough memory (missing: 2MB)"
+      keepsLPResultError().isOfError(PeerGone)
 
   test "isOfError matches every error of the chain":
     let r = DemoResult[int].err(NotEnoughMemory.withDetail("missing: 2MB"), PeerGone)
