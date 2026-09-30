@@ -28,15 +28,15 @@ type
     extIp: IpAddress
     extPortQueue: seq[Port] ## ports handed out in order; once empty, echo request
     extPortIdx: int
-    mapErr: Opt[string]
+    mappingError: Opt[string]
     calls: seq[MockCall]
 
 proc newMock(
     extIp = parseIpAddress("203.0.113.7"),
     extPorts: seq[Port] = @[],
-    mapErr = Opt.none(string),
+    mappingError = Opt.none(string),
 ): MockPortMapper =
-  MockPortMapper(extIp: extIp, mapErr: mapErr, extPortQueue: extPorts)
+  MockPortMapper(extIp: extIp, mappingError: mappingError, extPortQueue: extPorts)
 
 proc mapperFactory(m: MockPortMapper): PortMapperFactory =
   proc(mode: PortMappingMode): Opt[PortMapper] {.gcsafe, raises: [].} =
@@ -57,8 +57,8 @@ method map*(
       kind: mckMap, internalPort: internalPort, externalPort: assigned, proto: proto
     )
   )
-  if self.mapErr.isSome:
-    return err(self.mapErr.get())
+  if self.mappingError.isSome():
+    return err(self.mappingError.get())
   ok(MappedPort(externalIp: self.extIp, externalPort: assigned))
 
 method unmap*(
@@ -299,7 +299,8 @@ suite "NATService":
     check seenMode == NatPmp
 
   asyncTest "map failure leaves no stale entry; announced falls through":
-    let mock = newMock(extPorts = @[Port(8000)], mapErr = Opt.some("mapping refused"))
+    let mock =
+      newMock(extPorts = @[Port(8000)], mappingError = Opt.some("mapping refused"))
     let factory = mapperFactory(mock)
 
     let switch = makeSwitch(upnpConfig(), @[TcpAutoAddress], factory)
@@ -640,7 +641,7 @@ suite "NATService (setupMappings)":
   asyncTest "NatPmp mapping failure leaves announced empty":
     let
       cfg = natPmpConfig()
-      mapper = newMock(mapErr = Opt.some("mock no IGD"))
+      mapper = newMock(mappingError = Opt.some("mock no IGD"))
       switch = makeSwitch(cfg, @[TcpAutoAddress], mapperFactory(mapper))
       svc = findNatService(switch)
 
