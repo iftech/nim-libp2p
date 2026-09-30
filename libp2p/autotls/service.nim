@@ -260,7 +260,7 @@ proc brokerAddrs(
           # AsyncEvent is sticky: a stopped transport's onRunning event remains
           # set from an earlier start, so awaiting it would spin immediately.
           await sleepAsync(self.config.issueRetryTime)
-      elif started.len > 0:
+      else:
         await sleepAsync(self.config.issueRetryTime)
 
   try:
