@@ -65,7 +65,7 @@ proc randomChallenge(
 
 proc tryDecode(encoded: string): LPResult[seq[byte]] =
   let bytes = catch(base64.decode(encoded).toBytes()).valueOr:
-    return err(error.msg)
+    return err(error)
   ok(bytes)
 
 func extractField(data, key: string): LPResult[string] =
