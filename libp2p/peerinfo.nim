@@ -14,6 +14,7 @@ import
   routing_record,
   peeraddrpolicy,
   errors,
+  utils/lock,
   utils/shortlog
 
 export peerid, multiaddress, crypto, routing_record, peeraddrpolicy, errors, results
@@ -61,6 +62,8 @@ type
     publicKey*: PublicKey
     signedPeerRecord*: SignedPeerRecord
     observers: seq[PeerInfoObserver]
+    expandAddrsLock: AsyncLock
+    ## serializes address-mapper passes, which can mutate mapper state
 
 func shortLog*(p: PeerInfo): auto =
   (
@@ -97,16 +100,17 @@ proc expandAddrs*(
   ##
   ## Mappers may maintain state based on the supplied set, so callers must not
   ## pass only a subset of addresses that remain bound.
-  var addrs = listenAddrs
-  for mapper in p.addressMappers:
-    addrs = await mapper(addrs)
+  withLock p.expandAddrsLock:
+    var addrs = listenAddrs
+    for mapper in p.addressMappers:
+      addrs = await mapper(addrs)
 
-  # a port mapper maps the bound ports even when the operator picks
-  # what is announced, so the chain runs first
-  if p.announcedAddrs.len > 0:
-    addrs = p.announcedAddrs
+    # a port mapper maps the bound ports even when the operator picks
+    # what is announced, so the chain runs first
+    if p.announcedAddrs.len > 0:
+      addrs = p.announcedAddrs
 
-  return p.addressPolicy.filterAddrs(addrs)
+    return p.addressPolicy.filterAddrs(addrs)
 
 proc expandAddrs*(
     p: PeerInfo
@@ -209,6 +213,7 @@ proc tryNew*(
     protocols: @protocols,
     addressMappers: addressMappers,
     addressPolicy: addressPolicy,
+    expandAddrsLock: newAsyncLock(),
   )
 
 proc new*(
