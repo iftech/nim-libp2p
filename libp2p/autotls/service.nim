@@ -258,7 +258,6 @@ proc brokerAddrs(
         # addresses. In particular, passing only one TCP transport would make
         # them withdraw mappings and candidates belonging to other transports.
         let boundAddrs = switch.boundAddrs()
-
         if boundAddrs.len > 0:
           let addrs = await self.peerInfo.expandAddrs(boundAddrs)
           # Explicit announcements are an operator-selected broker payload and
@@ -307,7 +306,7 @@ proc issueCertificate(
 
   if self.peerInfo.isNil():
     return err("Cannot issue new certificate: peerInfo not set")
-
+    
   let addrs = await self.brokerAddrs(switch)
   if addrs.len == 0:
     return
