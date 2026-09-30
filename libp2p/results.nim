@@ -9,15 +9,16 @@ export results
 
 {.push raises: [].}
 
-type LPResultError* = object
+# ref, not object: refc corrupts an error wider than a pointer when T has a RootObj field
+type LPResultError* = ref object
   cause*: string
   detail*: string
   wrapped: seq[LPResultError] # underlying errors, nearest first, each one unwrapped
 
 type LPResult*[T] = Result[T, string]
 
-func init*(T: type LPResultError, cause: string): T =
-  T(cause: cause)
+func init*(T: type LPResultError, cause: string, detail = ""): T =
+  T(cause: cause, detail: detail)
 
 func withDetail*(e: LPResultError, detail: string): LPResultError =
   LPResultError(cause: e.cause, detail: detail, wrapped: e.wrapped)
@@ -70,6 +71,18 @@ func err*[T](R: type Result[T, string], e: ref CatchableError, msg: string): R =
 
 template err*(e: ref CatchableError, msg: string): auto =
   err(typeof(result), e, msg)
+
+template errAsString(e: untyped, msg: string): auto =
+  when typeof(result.error) is string:
+    err(typeof(result), msg)
+  else:
+    err(typeof(result), e)
+
+template err*[X: CatchableError](e: ref X): auto =
+  errAsString(e, e.msg)
+
+template err*(e: enum | cstring): auto =
+  errAsString(e, $e)
 
 func hasCause(e: LPResultError, cause: string): bool =
   e.cause == cause or e.wrapped.anyIt(it.cause == cause)
