@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, stew/byteutils, std/random
+import chronos, stew/byteutils, std/random, nimcrypto/utils as ncrutils
 import
   ../../../libp2p/[stream/connection, transports/transport, muxers/muxer, multiaddress]
 import ../../tools/[stream, sync]
@@ -189,13 +189,13 @@ template streamTransportTest*(
   asyncTest "read/write Lp":
     proc serverStreamHandler(stream: MuxedStream) {.async: (raises: []).} =
       noExceptionWithStreamClose(stream):
-        check (await stream.readLp(100)) == fromHex("1234")
-        await stream.writeLp(fromHex("5678"))
+        check (await stream.readLp(100)) == ncrutils.fromHex("1234")
+        await stream.writeLp(ncrutils.fromHex("5678"))
 
     proc clientStreamHandler(stream: MuxedStream) {.async: (raises: []).} =
       noExceptionWithStreamClose(stream):
-        await stream.writeLp(fromHex("1234"))
-        check (await stream.readLp(100)) == fromHex("5678")
+        await stream.writeLp(ncrutils.fromHex("1234"))
+        check (await stream.readLp(100)) == ncrutils.fromHex("5678")
 
     await runSingleStreamScenario(
       @[addressIP4],
@@ -211,12 +211,12 @@ template streamTransportTest*(
     proc serverStreamHandler(stream: MuxedStream) {.async: (raises: []).} =
       noExceptionWithStreamClose(stream, serverResetDone):
         let msg = await stream.readLp(100)
-        check msg == fromHex("1234")
+        check msg == ncrutils.fromHex("1234")
         await stream.reset()
 
     proc clientStreamHandler(stream: MuxedStream) {.async: (raises: []).} =
       noExceptionWithStreamClose(stream):
-        await stream.writeLp(fromHex("1234"))
+        await stream.writeLp(ncrutils.fromHex("1234"))
         await serverResetDone
 
         var buffer: array[1, byte]
@@ -227,7 +227,7 @@ template streamTransportTest*(
           discard
 
         expect LPStreamResetError:
-          await stream.writeLp(fromHex("1234"))
+          await stream.writeLp(ncrutils.fromHex("1234"))
 
     await runSingleStreamScenario(
       @[addressIP4],

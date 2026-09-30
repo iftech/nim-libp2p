@@ -79,6 +79,26 @@ suite "PeerInfo":
     waitFor peerInfo.update()
     check peerInfo.addrs == multiAddresses2
 
+  asyncTest "Address mapper passes are serialized":
+    let
+      seckey = PrivateKey.random(ECDSA, rng()).get()
+      listenAddrs = @[ma("/ip4/0.0.0.0/tcp/24")]
+    var active, maxActive: int
+
+    proc addressMapper(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc active
+      maxActive = max(maxActive, active)
+      defer:
+        dec active
+      await sleepAsync(10.milliseconds)
+      return input
+
+    let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[addressMapper])
+    await allFutures(peerInfo.expandAddrs(), peerInfo.expandAddrs(listenAddrs))
+    check maxActive == 1
+
   test "Announced addresses win over the mapper chain":
     let
       seckey = PrivateKey.random(ECDSA, rng()).get()

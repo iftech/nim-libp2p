@@ -14,6 +14,7 @@ import
   routing_record,
   peeraddrpolicy,
   errors,
+  utils/lock,
   utils/shortlog
 
 export peerid, multiaddress, crypto, routing_record, peeraddrpolicy, errors, results
@@ -61,6 +62,8 @@ type
     publicKey*: PublicKey
     signedPeerRecord*: SignedPeerRecord
     observers: seq[PeerInfoObserver]
+    expandAddrsLock: AsyncLock
+    ## serializes address-mapper passes, which can mutate mapper state
 
 func shortLog*(p: PeerInfo): auto =
   (
@@ -88,18 +91,31 @@ proc notifyObservers*(p: PeerInfo) =
     observer(p)
 
 proc expandAddrs*(
+    p: PeerInfo, listenAddrs: seq[MultiAddress]
+): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+  ## Resolve the complete supplied set of bound listen addresses into dialable
+  ## addresses.
+  ## This lets startup-time users work with transport addresses before the switch
+  ## has published them in ``p.listenAddrs``.
+  ##
+  ## Mappers may maintain state based on the supplied set, so callers must not
+  ## pass only a subset of addresses that remain bound.
+  withLock p.expandAddrsLock:
+    var addrs = listenAddrs
+    for mapper in p.addressMappers:
+      addrs = await mapper(addrs)
+
+    # a port mapper maps the bound ports even when the operator picks
+    # what is announced, so the chain runs first
+    if p.announcedAddrs.len > 0:
+      addrs = p.announcedAddrs
+
+    return p.addressPolicy.filterAddrs(addrs)
+
+proc expandAddrs*(
     p: PeerInfo
 ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
-  var addrs = p.listenAddrs
-  for mapper in p.addressMappers:
-    addrs = await mapper(addrs)
-
-  # a port mapper maps the bound ports even when the operator picks
-  # what is announced, so the chain runs first
-  if p.announcedAddrs.len > 0:
-    addrs = p.announcedAddrs
-
-  p.addressPolicy.filterAddrs(addrs)
+  await p.expandAddrs(p.listenAddrs)
 
 proc update*(p: PeerInfo) {.async: (raises: [CancelledError]).} =
   var hasChanged: bool
@@ -197,6 +213,7 @@ proc tryNew*(
     protocols: @protocols,
     addressMappers: addressMappers,
     addressPolicy: addressPolicy,
+    expandAddrsLock: newAsyncLock(),
   )
 
 proc new*(

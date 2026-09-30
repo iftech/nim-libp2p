@@ -3,20 +3,10 @@
 
 {.used.}
 
-import net, strutils, uri
+import net, sequtils, strutils, uri
 from times import now, initDuration, `-`, `<`
 import chronos, chronos/apps/http/httpclient
-import
-  ../../../libp2p/[
-    autotls/acme/api,
-    autotls/acme/client,
-    autotls/broker,
-    autotls/service,
-    autotls/utils,
-    nameresolving/dnsresolver,
-    transports/wstransport,
-    wire,
-  ]
+import ../../../libp2p/[autotls/service, autotls/utils, nameresolving/dnsresolver, wire]
 import ../../tools/[unittest, crypto, lifecycle, multiaddress, switch_builder]
 
 const
@@ -27,59 +17,46 @@ const
   RenewCheckTime = 1.seconds
   IssueTimeout = 60.seconds
 
-proc newAutotlsService(): AutotlsService =
-  AutotlsService(
-    acmeClient: ACMEClient.new(
-      rng(),
-      api = ACMEApi.new(
-        directoryURL = parseUri(PebbleDirectoryURL),
-        # Pebble presents a self-signed certificate and chronos cannot be handed a
-        # trust anchor.
-        flags = {HttpClientFlag.NoVerifyHost, HttpClientFlag.NoVerifyServerName},
-      ),
-    ),
-    broker: AutotlsBroker.new(rng(), parseUri(ForgeRegistrationURL)),
-    cert: Opt.none(AutotlsCert),
-    certReady: newAsyncEvent(),
-    running: newAsyncEvent(),
-    config: AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)),
-      nameServers = @[initTAddress(ForgeNameServer)],
-      acmeDirectoryURL = parseUri(PebbleDirectoryURL),
-      registrationURL = parseUri(ForgeRegistrationURL),
-      renewCheckTime = RenewCheckTime,
-    ),
-    rng: rng(),
+proc newAutotlsConfig(): AutotlsConfig =
+  AutotlsConfig.new(
+    ipAddress = Opt.some(parseIpAddress(NodeIP)),
+    nameServers = @[initTAddress(ForgeNameServer)],
+    acmeDirectoryURL = parseUri(PebbleDirectoryURL),
+    # Pebble presents a self-signed certificate and chronos cannot be handed a
+    # trust anchor.
+    acmeHttpFlags = {HttpClientFlag.NoVerifyHost, HttpClientFlag.NoVerifyServerName},
+    registrationURL = parseUri(ForgeRegistrationURL),
+    renewCheckTime = RenewCheckTime,
   )
+
+proc getAutotlsService(switch: Switch): AutotlsService =
+  for service in switch.services:
+    if service of AutotlsService:
+      return AutotlsService(service)
+  raiseAssert "switch has no AutoTLS service"
 
 suite "AutoTLS against a local ACME server and broker":
   asyncTeardown:
     checkTrackers()
 
   asyncTest "a certificate is issued end to end":
-    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
+    let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withYamux()
+      .withAutotls(newAutotlsConfig())
+      .build()
+    let service = switch.getAutotlsService()
     startAndDeferStop(@[switch])
-
-    # TODO: vacp2p/nim-libp2p#2957
-    # The service must be started by hand: it does not issue unless a transport is
-    # already running, and the switch starts its services first.
-    let service = newAutotlsService()
-    await service.start(switch)
-    defer:
-      await service.stop(switch)
 
     let cert = await service.getCertWhenReady().wait(IssueTimeout)
     check cert.expiry > now()
 
   asyncTest "the certificate is renewed once it is about to expire":
-    let switch = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
+    let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withYamux()
+      .withAutotls(newAutotlsConfig())
+      .build()
+    let service = switch.getAutotlsService()
     startAndDeferStop(@[switch])
-
-    # TODO: vacp2p/nim-libp2p#2957
-    let service = newAutotlsService()
-    await service.start(switch)
-    defer:
-      await service.stop(switch)
 
     let certBefore = await service.getCertWhenReady().wait(IssueTimeout)
     service.certReady.clear()
@@ -95,32 +72,28 @@ suite "AutoTLS against a local ACME server and broker":
       certAfter.expiry > now()
 
   asyncTest "a switch dials over wss with the issued certificate":
-    let issuer = makeStandardSwitchBuilder(TcpAutoAddress).withYamux().build()
+    # Keep issuance and serving on separate switches: WsTransport.start waits
+    # for the certificate during the switch start window. The server reuses
+    # the issuer's key because the issued certificate names that peer.
+    let issuer = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withYamux()
+      .withAutotls(newAutotlsConfig())
+      .build()
+    let issuerService = issuer.getAutotlsService()
     startAndDeferStop(@[issuer])
 
-    # TODO: vacp2p/nim-libp2p#2957
-    # One switch cannot both issue and serve: the transport blocks on the certificate
-    # and the service does not issue until a transport runs. The server reuses the
-    # issuer's key because the certificate names that peer.
-    let service = newAutotlsService()
-    await service.start(issuer)
-    defer:
-      await service.stop(issuer)
+    let cert = await issuerService.getCertWhenReady().wait(IssueTimeout)
 
-    discard await service.getCertWhenReady().wait(IssueTimeout)
-
-    let server = SwitchBuilder
-      .new()
-      .withRng(rng())
-      .withPrivateKey(issuer.peerInfo.privateKey)
-      .withAddress(ma("/ip4/127.0.0.1/tcp/0/wss"))
-      .withTransport(
-        proc(config: TransportConfig): Transport =
-          WsTransport.new(config.upgr, nil, nil, Opt.some(service), rng = config.rng)
+    let server = makeStandardSwitchBuilder(
+        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
       )
+      .withPrivateKey(issuer.peerInfo.privateKey)
+      .withAutotls(newAutotlsConfig())
       .withYamux()
-      .withNoise()
       .build()
+    let serverService = server.getAutotlsService()
+    serverService.cert = Opt.some(cert)
+    serverService.certReady.fire()
 
     let client = SwitchBuilder
       .new()
@@ -135,7 +108,9 @@ suite "AutoTLS against a local ACME server and broker":
 
     startAndDeferStop(@[server, client])
 
-    let port = server.peerInfo.listenAddrs[0].initTAddress().tryGet().port
+    let port = server.peerInfo.listenAddrs.filterIt(WSS.match(it))[0]
+      .initTAddress()
+      .tryGet().port
     let serverDomain =
       NodeIP.replace('.', '-') & "." & encodePeerId(server.peerInfo.peerId).get() & "." &
       DefaultDomainSuffix

@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, stew/byteutils
+import chronos, std/strutils, stew/byteutils
 from times import now
 import
   ../../../libp2p/[
@@ -326,8 +326,15 @@ suite "WebSocket transport with autotls":
       WS.match(wstransport.addrs[0])
       not WSS.match(wstransport.addrs[0])
 
-  asyncTest "the transport stops when the autotls service never runs":
-    let autotls = AutotlsService(certReady: newAsyncEvent(), running: newAsyncEvent())
+  asyncTest "plain WebSocket start does not wait for autotls":
+    let autotls = AutotlsService(
+      certReady: newAsyncEvent(),
+      running: newAsyncEvent(),
+      config: AutotlsConfig.new(
+        initialCertTimeout = 30.seconds
+          # intentionally very large, so loading certifacte is not stopped early by this timeout
+      ),
+    )
     let wstransport = WsTransport.new(
       Upgrade(),
       nil, # TLSPrivateKey
@@ -336,21 +343,50 @@ suite "WebSocket transport with autotls":
       rng(),
     )
 
-    # The wait for a running service is bounded by DefaultAutotlsWaitTimeout, 3 seconds.
-    await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(5.seconds)
+    let startFut = wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/ws")])
+    defer:
+      if not startFut.finished:
+        startFut.cancelSoon()
+      await wstransport.stop()
+
+    await startFut.wait(5.seconds)
+
+    check:
+      not wstransport.secure
+      wstransport.running
+      wstransport.addrs.len == 1
+
+  asyncTest "start fails when the autotls service never runs":
+    let autotls = AutotlsService(
+      certReady: newAsyncEvent(),
+      running: newAsyncEvent(),
+      config: AutotlsConfig.new(initialCertTimeout = 100.milliseconds),
+    )
+    let wstransport = WsTransport.new(
+      Upgrade(),
+      nil, # TLSPrivateKey
+      nil, # TLSCertificate
+      Opt.some(autotls),
+      rng(),
+    )
+
+    var errorMsg = ""
+    try:
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
+    except TransportStartError as exc:
+      errorMsg = exc.msg
+    check "autotls service did not start before the certificate deadline" in errorMsg
 
     check:
       not wstransport.running
       wstransport.addrs.len == 0
 
-    let acceptFut = wstransport.accept()
-    check await acceptFut.withTimeout(200.milliseconds)
-    expect TransportClosedError:
-      discard await acceptFut
-
-  asyncTest "start never returns when the autotls certificate never arrives":
-    # TODO: vacp2p/nim-libp2p#2957
-    let autotls = AutotlsService(certReady: newAsyncEvent(), running: newAsyncEvent())
+  asyncTest "start fails when the autotls certificate never arrives":
+    let autotls = AutotlsService(
+      certReady: newAsyncEvent(),
+      running: newAsyncEvent(),
+      config: AutotlsConfig.new(initialCertTimeout = 100.milliseconds),
+    )
     autotls.running.fire()
     let wstransport = WsTransport.new(
       Upgrade(),
@@ -360,8 +396,17 @@ suite "WebSocket transport with autotls":
       rng(),
     )
 
-    let startFut = wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
-    check not (await startFut.withTimeout(200.milliseconds))
+    var errorMsg = ""
+    try:
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
+    except TransportStartError as exc:
+      errorMsg = exc.msg
+    check "autotls certificate was not available before the certificate deadline" in
+      errorMsg
+
+    check:
+      not wstransport.running
+      wstransport.addrs.len == 0
 
   asyncTest "a renewed certificate does not reach a running transport":
     # TODO: vacp2p/nim-libp2p#2994
@@ -369,6 +414,7 @@ suite "WebSocket transport with autotls":
       cert: Opt.some(AutotlsCert.new(secureCert, secureKey, now())),
       certReady: newAsyncEvent(),
       running: newAsyncEvent(),
+      config: AutotlsConfig.new(),
     )
     autotls.running.fire()
     autotls.certReady.fire()

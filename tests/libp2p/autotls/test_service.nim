@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, json, net, results, sequtils, uri
+import chronos, json, net, results, sequtils, strutils, uri
 from times import now, format, initDuration, `+`
 import
   ../../../libp2p/[
@@ -16,10 +16,8 @@ import
     wire,
   ]
 import
-  ../../tools/[
-    unittest, http_server, crypto, lifecycle, multiaddress, resolver, stall_server,
-    switch_builder,
-  ]
+  ../../tools/
+    [unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder]
 import ../../stubs/[acme_api_stub, peer_id_auth_client_stub]
 
 suite "AutoTLS certificate issuance and renewal":
@@ -93,7 +91,7 @@ suite "AutoTLS certificate issuance and renewal":
   asyncTest "issuance is retried issueRetries times":
     # renewCheckTime is left at its 1 hour default, so a second round won't start
     service =
-      newService(AutotlsConfig.new(issueRetries = 3, issueRetryTime = 0.seconds))
+      newService(AutotlsConfig.new(issueRetries = 3, issueRetryTime = 1.milliseconds))
     await service.start(switch)
 
     # Every attempt fails on its first ACME request, so a request is an attempt.
@@ -178,7 +176,7 @@ suite "AutoTLS certificate issuance and renewal":
         ipAddress = Opt.some(parseIpAddress(NodeIP)),
         domainSuffix = DomainSuffix,
         issueRetries = 3,
-        issueRetryTime = 0.seconds,
+        issueRetryTime = 1.milliseconds,
       )
     )
     let keyAuth = service.acmeClient.genKeyAuthorization(ChallengeToken)
@@ -226,36 +224,45 @@ suite "AutoTLS certificate issuance and renewal":
       service.running.isSet
 
   asyncTest "issuance aborts when no IP address is configured":
-    # TODO: vacp2p/nim-libp2p#2957
-    # tryIssueCertificate catches CatchableError, so a Defect propagates out of start.
     acmeApi.scriptChallenge(ChallengeToken)
-    service = newService(AutotlsConfig.new())
+    service =
+      newService(AutotlsConfig.new(renewCheckTime = RenewCheckTime, issueRetries = 0))
+    await service.start(switch)
 
-    expect(ResultDefect):
-      await service.start(switch)
+    # getChallenge succeeds, so issuance reaches the ipAddress guard in publishChallenge.
+    checkUntilTimeout:
+      acmeApi.requestedUris.len > 0
+
+    check:
+      acmeApi.requestedUris.len == 3
+      # The guard aborts before the broker is contacted, so no payload is sent.
+      authClient.payloads.len == 0
+      service.cert.isNone
+      service.running.isSet
 
 suite "AutoTLS on a switch":
   asyncTeardown:
     checkTrackers()
 
-  asyncTest "no ACME request is made, the service starts before its transports":
-    # TODO: vacp2p/nim-libp2p#2957
-    # The service never begins issuance: no TcpTransport is running when it starts.
-    let acmeServer = startStallServer()
-    defer:
-      await acmeServer.stop()
+  asyncTest "issuance publishes a bound TCP address while wss waits for its certificate":
+    let acmeApi = ACMEApiStub.new()
+    let authClient = PeerIDAuthClientStub.new()
+    acmeApi.scriptChallenge("some-token")
 
+    var config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+      issueRetries = 0,
+      dnsRetries = 0,
+    )
+    config.nameResolver = StubNameResolver.new()
     let switch = makeStandardSwitchBuilder(
         @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
       )
-      .withAutotls(
-        AutotlsConfig.new(
-          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
-          acmeDirectoryURL =
-            parseUri("http://" & $acmeServer.address.initTAddress().tryGet()),
-        )
-      )
+      .withAutotls(config)
       .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    service.broker = AutotlsBroker.new(rng(), DefaultRegistrationURL, authClient)
     defer:
       await switch.stop()
 
@@ -263,12 +270,48 @@ suite "AutoTLS on a switch":
     defer:
       await startFut.cancelAndWait()
 
-    # Issuance would connect to acmeDirectoryURL, so no connection means no attempt.
-    check not (await acmeServer.waitAccepted().withTimeout(200.milliseconds))
+    checkUntilTimeout:
+      authClient.payloads.len == 1
 
-  asyncTest "a switch listening on wss never finishes starting without a certificate":
-    # TODO: vacp2p/nim-libp2p#2957
-    # The transport waits for a certificate with no timeout, so start never returns.
+    let addrs = parseJson(authClient.payloads[0])["addresses"]
+    check addrs.len > 0
+    for addr in addrs:
+      check ma(addr.getStr()).initTAddress().tryGet().port != Port(0)
+
+  asyncTest "certificate renewal preserves non-TCP address candidates":
+    let acmeApi = ACMEApiStub.new()
+    let authClient = PeerIDAuthClientStub.new()
+    let (certKey, cert) = tlsCertGenerator()
+    let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WsAutoAddress])
+      .withAutotls(
+        AutotlsConfig.new(
+          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+          renewCheckTime = 20.milliseconds,
+          issueRetries = 0,
+        )
+      )
+      .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    service.broker = AutotlsBroker.new(rng(), DefaultRegistrationURL, authClient)
+    let installedCert = AutotlsCert.new(cert, certKey, now() + initDuration(hours = 2))
+    service.cert = Opt.some(installedCert)
+    service.certReady.fire()
+    defer:
+      await switch.stop()
+
+    await switch.start()
+
+    let wsAddr = switch.peerInfo.listenAddrs.filterIt(WS.match(it))[0]
+    check switch.addressManager.candidates.anyIt(it.address == wsAddr)
+
+    installedCert.expiry = now()
+    checkUntilTimeout:
+      acmeApi.requestedUris.len > 0
+
+    check switch.addressManager.candidates.anyIt(it.address == wsAddr)
+
+  asyncTest "a switch listening on wss fails to start without a certificate":
     let switch = makeStandardSwitchBuilder(
         @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
       )
@@ -278,11 +321,32 @@ suite "AutoTLS on a switch":
           # A refused connection fails issuance at once, leaving the certificate
           # wait as the only thing that can hang.
           acmeDirectoryURL = parseUri("http://127.0.0.1:1"),
+          initialCertTimeout = 100.milliseconds,
         )
       )
       .build()
     defer:
       await switch.stop()
 
-    let startFut = switch.start()
-    check not (await startFut.withTimeout(500.milliseconds))
+    var errorMsg = ""
+    try:
+      await switch.start()
+    except LPError as exc:
+      errorMsg = exc.msg
+    check "autotls certificate was not available before the certificate deadline" in
+      errorMsg
+
+  asyncTest "a switch listening only on ws starts without an autotls certificate":
+    let switch = makeStandardSwitchBuilder(@[WsAutoAddress])
+      .withAutotls(
+        AutotlsConfig.new(
+          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+          acmeDirectoryURL = parseUri("http://127.0.0.1:1"),
+          initialCertTimeout = 100.milliseconds,
+        )
+      )
+      .build()
+    defer:
+      await switch.stop()
+
+    await switch.start()
