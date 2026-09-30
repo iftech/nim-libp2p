@@ -390,18 +390,20 @@ proc loadAutotlsCertificate(
 
   trace "Waiting for autotls service"
   let runningFut = autotls.running.wait()
+  defer:
+    runningFut.cancelSoon()
   try:
     await runningFut.wait(deadlineFut)
   except AsyncTimeoutError:
-    runningFut.cancelSoon()
     return err("autotls service did not start before the certificate deadline")
 
   trace "Waiting for autotls certificate"
   let certFut = autotls.getCertWhenReady()
+  defer:
+    certFut.cancelSoon()
   try:
     return ok(await certFut.wait(deadlineFut))
   except AsyncTimeoutError:
-    certFut.cancelSoon()
     return err("autotls certificate was not available before the certificate deadline")
   except AutoTLSError as e:
     return err("failed to load autotls certificate: " & e.msg)
