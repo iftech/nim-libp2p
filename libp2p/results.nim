@@ -9,15 +9,16 @@ export results
 
 {.push raises: [].}
 
-type LPResultError* = object
+# ref, not object: refc corrupts an error wider than a pointer when T has a RootObj field
+type LPResultError* = ref object
   cause*: string
   detail*: string
   wrapped: seq[LPResultError] # underlying errors, nearest first, each one unwrapped
 
 type LPResult*[T] = Result[T, string]
 
-func init*(T: type LPResultError, cause: string): T =
-  T(cause: cause)
+func init*(T: type LPResultError, cause: string, detail = ""): T =
+  T(cause: cause, detail: detail)
 
 func withDetail*(e: LPResultError, detail: string): LPResultError =
   LPResultError(cause: e.cause, detail: detail, wrapped: e.wrapped)

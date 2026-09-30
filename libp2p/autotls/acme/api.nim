@@ -424,7 +424,7 @@ func parseCheck(
       )
     )
 
-const InvalidCertificateExpiry* = LPResultError.init("Invalid certificate expiry")
+const InvalidCertificateExpiry* = "Invalid certificate expiry"
 
 proc parseExpiry(expires: string): Result[DateTime, LPResultError] =
   let expiry = parseRfc3339DateTime(expires).valueOr:

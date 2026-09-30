@@ -216,21 +216,21 @@ proc init*(t: typedesc[PeerId], data: string): Result[PeerId, cstring] =
 proc toCid*(pid: PeerId): Result[Cid, cstring] =
   ## Return ``pid`` as a CIDv1 ``libp2p-key`` content identifier.
   let mh = ?MultiHash.init(pid.data)
-  Cid.init(CIDv1, multiCodec("libp2p-key"), mh).orError(
-    cstring("peerid: could not create CID")
-  )
+  let cid = Cid.init(CIDv1, multiCodec("libp2p-key"), mh).valueOr:
+    return err("peerid: could not create CID")
+  ok(cid)
 
 proc toCidString*(pid: PeerId, encoding = "base32"): Result[string, cstring] =
   ## Return ``pid`` as CIDv1 ``libp2p-key`` text using multibase ``encoding``.
   let cid = ?pid.toCid()
-  MultiBase.encode(encoding, cid.data.buffer).orError(
-    cstring("peerid: could not encode CID")
-  )
+  let encoded = MultiBase.encode(encoding, cid.data.buffer).valueOr:
+    return err("peerid: could not encode CID")
+  ok(encoded)
 
 func init*(t: typedesc[PeerId], pubkey: PublicKey): Result[PeerId, cstring] =
   ## Create new peer id from public key ``pubkey``.
-  var pubraw =
-    ?pubkey.getBytes().orError(cstring("peerid: failed to get bytes from given key"))
+  let pubraw = pubkey.getBytes().valueOr:
+    return err("peerid: failed to get bytes from given key")
   var mh: MultiHash
   if len(pubraw) <= maxInlineKeyLength:
     mh = ?MultiHash.digest("identity", pubraw)
@@ -240,12 +240,16 @@ func init*(t: typedesc[PeerId], pubkey: PublicKey): Result[PeerId, cstring] =
 
 func init*(t: typedesc[PeerId], seckey: PrivateKey): Result[PeerId, cstring] =
   ## Create new peer id from private key ``seckey``.
-  PeerId.init(?seckey.getPublicKey().orError(cstring("invalid private key")))
+  let pubkey = seckey.getPublicKey().valueOr:
+    return err("invalid private key")
+  PeerId.init(pubkey)
 
 proc random*(t: typedesc[PeerId], rng: Rng): Result[PeerId, cstring] =
   ## Create new peer id with random public key.
   let randomKey = PrivateKey.random(Secp256k1, rng)[]
-  PeerId.init(randomKey).orError(cstring("failed to generate random key"))
+  let peerId = PeerId.init(randomKey).valueOr:
+    return err("failed to generate random key")
+  ok(peerId)
 
 proc random*(t: typedesc[PeerId], count: uint, rng: Rng): Result[seq[PeerId], cstring] =
   ## Create `count` peer ids with random public keys.

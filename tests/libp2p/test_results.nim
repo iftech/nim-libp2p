@@ -11,7 +11,7 @@ type DemoError = object of LPError
 
 type DemoResult[T] = Result[T, LPResultError]
 
-const
+let
   NotEnoughMemory = LPResultError.init("not enough memory")
   PeerGone = LPResultError.init("peer gone")
 
