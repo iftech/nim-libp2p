@@ -224,15 +224,20 @@ suite "AutoTLS certificate issuance and renewal":
       service.running.isSet
 
   asyncTest "issuance aborts when no IP address is configured":
+    acmeApi.scriptChallenge(ChallengeToken)
     service =
       newService(AutotlsConfig.new(renewCheckTime = RenewCheckTime, issueRetries = 0))
     await service.start(switch)
 
+    # getChallenge succeeds, so issuance reaches the ipAddress guard in publishChallenge.
     checkUntilTimeout:
       acmeApi.requestedUris.len > 0
 
     check:
-      acmeApi.requestedUris.len > 0
+      acmeApi.requestedUris.len == 3
+      # The guard aborts before the broker is contacted, so no payload is sent.
+      authClient.payloads.len == 0
+      service.cert.isNone
       service.running.isSet
 
 suite "AutoTLS on a switch":
