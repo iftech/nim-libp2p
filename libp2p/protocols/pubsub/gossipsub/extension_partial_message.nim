@@ -48,19 +48,19 @@ type
 
     # configuration set by application (user)
     unionPartsMetadata*:
-      proc(a, b: PartsMetadata): Result[PartsMetadata, string] {.gcsafe, raises: [].}
+      proc(a, b: PartsMetadata): LPResult[PartsMetadata] {.gcsafe, raises: [].}
       # creates union of two PartsMetadata and returns it.
       # needs to be implemented by application.
     materializeParts*: proc(
       topic: string, groupId: GroupId, metadata: PartsMetadata
-    ): Result[PartsData, string] {.gcsafe, raises: [].}
+    ): LPResult[PartsData] {.gcsafe, raises: [].}
       # produces encoded message data for the parts of (topic, groupId) specified by
       # metadata. it should return as many of the requested parts as are available.
       # empty metadata must be treated as a request for all available parts.
       # returns error if metadata is invalid or the request cannot be satisfied.
       # needs to be implemented by application.
     validateRPC*:
-      proc(rpc: PartialMessageExtensionRPC): Result[void, string] {.gcsafe, raises: [].}
+      proc(rpc: PartialMessageExtensionRPC): LPResult[void] {.gcsafe, raises: [].}
       # implements logic for performing sanity checks on PartialMessageExtensionRPC.
       # when error is returned extension will not process PartialMessageExtensionRPC.
       # needs to be implemented by application.

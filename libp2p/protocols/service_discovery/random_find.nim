@@ -13,7 +13,7 @@ logScope:
 
 type PendingGetVal = object
   key: Key
-  fut: Future[Result[Message, string]].Raising([CancelledError])
+  fut: Future[LPResult[Message]].Raising([CancelledError])
 
 proc replyXpr*(key: Key, reply: Message): Opt[SignedExtendedPeerRecord] =
   let record = reply.record.valueOr:

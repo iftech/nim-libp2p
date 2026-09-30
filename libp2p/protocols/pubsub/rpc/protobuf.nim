@@ -14,7 +14,7 @@ proc encode*(msg: Message, anonymize: bool): seq[byte] =
 proc decodeMessage(buf: seq[byte]): Message {.raises: [SerializationError].} =
   decode(Protobuf, buf, Message)
 
-proc decode*(_: type Message, buf: seq[byte]): Result[Message, string] =
+proc decode*(_: type Message, buf: seq[byte]): LPResult[Message] =
   try:
     ok(decodeMessage(buf))
   except SerializationError as e:
@@ -29,7 +29,7 @@ proc decodeRPCMessage(buf: seq[byte]): RPCMsg {.raises: [SerializationError].} =
   trackDecodeBytes(buf.len, RPCMsg, "gossipsub")
   decode(Protobuf, buf, RPCMsg)
 
-proc decode*(_: type RPCMsg, buf: seq[byte]): Result[RPCMsg, string] =
+proc decode*(_: type RPCMsg, buf: seq[byte]): LPResult[RPCMsg] =
   try:
     let msg = decodeRPCMessage(buf)
     ?msg.validate()

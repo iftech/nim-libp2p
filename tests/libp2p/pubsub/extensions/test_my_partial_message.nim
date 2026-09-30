@@ -3,7 +3,8 @@
 
 {.used.}
 
-import tables, results, stew/byteutils
+import tables, stew/byteutils
+import ../../../../libp2p/results
 import ../../../../libp2p/protocols/pubsub/[gossipsub/partial_message]
 import ../../../tools/[unittest]
 import ./my_partial_message
@@ -21,7 +22,7 @@ suite "MyPartialMessage":
     var pm = MyPartialMessage(
       data: {1: "one".toBytes, 2: "two".toBytes, 3: "three".toBytes}.toTable
     )
-    var dataRes: Result[PartsData, string]
+    var dataRes: LPResult[PartsData]
 
     # exists: 1
     dataRes = pm.materializeParts(MyPartsMetadata.want(@[1]))
@@ -57,7 +58,7 @@ suite "MyPartialMessage":
     check store.materializeParts("t", "other".toBytes, MyPartsMetadata.want(@[1])).isErr()
 
   test "unionPartsMetadata":
-    var res: Result[PartsData, string]
+    var res: LPResult[PartsData]
 
     res = unionPartsMetadata(
       MyPartsMetadata.want(@[1]), #

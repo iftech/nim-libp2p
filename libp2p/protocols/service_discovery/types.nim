@@ -274,7 +274,7 @@ method isValid*(
 type ExtEntrySelector* = ref object of EntrySelector
 method select*(
     self: ExtEntrySelector, key: Key, records: seq[EntryRecord]
-): Result[int, string] {.raises: [], gcsafe.} =
+): LPResult[int] {.raises: [], gcsafe.} =
   if records.len == 0:
     return err("No records to choose from")
 
@@ -295,7 +295,7 @@ method select*(
 
   return ok(bestIdx)
 
-proc record*(disco: ServiceDiscovery): Result[SignedExtendedPeerRecord, string] =
+proc record*(disco: ServiceDiscovery): LPResult[SignedExtendedPeerRecord] =
   let peerInfo = disco.switch.peerInfo
   let filteredAddresses = disco.config.addressPolicy.dialableAddrs(
     peerInfo.addrs, disco.switch.peerStore.allowUndialableAddrs

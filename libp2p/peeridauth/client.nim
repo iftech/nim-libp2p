@@ -63,13 +63,13 @@ proc randomChallenge(
     c = ChallengeCharset[rng.rand(0, ChallengeCharset.high)]
   PeerIDAuthChallenge(challenge)
 
-proc tryDecode(encoded: string): Result[seq[byte], string] =
+proc tryDecode(encoded: string): LPResult[seq[byte]] =
   catch(base64.decode(encoded).toBytes()).mapErr(
     proc(e: ref CatchableError): string =
       e.msg
   )
 
-func extractField(data, key: string): Result[string, string] =
+func extractField(data, key: string): LPResult[string] =
   var fields = data
   fields.removePrefix(PeerIDAuthPrefix & " ")
   for segment in fields.split(","):
@@ -80,7 +80,7 @@ func extractField(data, key: string): Result[string, string] =
 
 func genDataToSign(
     parts: seq[SigParam], prefix: string = PeerIDAuthPrefix
-): Result[seq[byte], string] =
+): LPResult[seq[byte]] =
   var buf: seq[byte] = prefix.toBytes()
   for p in parts:
     let varintLen = PB.encodeVarint(hint(p.k.len + p.v.len + 1)).valueOr:
@@ -92,7 +92,7 @@ func genDataToSign(
 
 proc getSigParams(
     clientSender: bool, hostname: string, challenge: string, publicKey: PublicKey
-): Result[seq[SigParam], string] =
+): LPResult[seq[SigParam]] =
   let keyBytes = publicKey.getBytes().valueOr:
     return err("Failed to get public key bytes: " & $error)
   if clientSender:
@@ -118,7 +118,7 @@ proc sign(
     publicKey: PublicKey,
     hostname: string,
     clientSender: bool = true,
-): Result[PeerIDAuthSignature, string] =
+): LPResult[PeerIDAuthSignature] =
   let params = ?getSigParams(clientSender, hostname, challenge, publicKey)
   let bytesToSign = ?params.genDataToSign()
   let sig = privateKey.sign(bytesToSign).valueOr:
@@ -131,7 +131,7 @@ proc tryCheckSignature*(
     challengeServer: PeerIDAuthChallenge,
     clientPublicKey: PublicKey,
     hostname: string,
-): Result[bool, string] =
+): LPResult[bool] =
   let params = ?getSigParams(false, hostname, challengeServer, clientPublicKey)
   let bytesToSign = ?params.genDataToSign()
   let sigBytes = serverSig.tryDecode().valueOr:
@@ -195,7 +195,7 @@ method get*(
 
 proc tryGet(
     self: PeerIDAuthClient, uri: Uri
-): Future[Result[PeerIDAuthResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[PeerIDAuthResponse]] {.async: (raises: [CancelledError]).} =
   try:
     ok(await self.get(uri))
   except HttpError as e:
@@ -205,7 +205,7 @@ proc tryGet(
 
 proc tryPost(
     self: PeerIDAuthClient, uri: Uri, payload: string, authHeader: string
-): Future[Result[PeerIDAuthResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[PeerIDAuthResponse]] {.async: (raises: [CancelledError]).} =
   try:
     ok(await self.post(uri, payload, authHeader))
   except HttpError as e:
@@ -213,7 +213,7 @@ proc tryPost(
 
 proc tryRequestAuthentication*(
     self: PeerIDAuthClient, uri: Uri
-): Future[Result[PeerIDAuthAuthenticationResponse, string]] {.
+): Future[LPResult[PeerIDAuthAuthenticationResponse]] {.
     async: (raises: [CancelledError])
 .} =
   let response = (await self.tryGet(uri)).valueOr:
@@ -267,7 +267,7 @@ proc tryRequestAuthorization*(
     serverPubkey: PublicKey,
     opaque: PeerIDAuthOpaque,
     payload: auto,
-): Future[Result[PeerIDAuthAuthorizationResponse, string]] {.
+): Future[LPResult[PeerIDAuthAuthorizationResponse]] {.
     async: (raises: [CancelledError])
 .} =
   let clientPubkey = peerInfo.publicKey.getBytes().valueOr:
@@ -312,7 +312,7 @@ proc requestAuthorization*(
 
 proc sendWithoutBearer(
     self: PeerIDAuthClient, uri: Uri, peerInfo: PeerInfo, payload: auto
-): Future[Result[(BearerToken, PeerIDAuthResponse), string]] {.
+): Future[LPResult[(BearerToken, PeerIDAuthResponse)]] {.
     async: (raises: [CancelledError])
 .} =
   # Authenticate in three ways as per the PeerID Auth spec
@@ -339,7 +339,7 @@ proc sendWithoutBearer(
 
 proc sendWithBearer(
     self: PeerIDAuthClient, uri: Uri, payload: auto, bearer: BearerToken
-): Future[Result[(BearerToken, PeerIDAuthResponse), string]] {.
+): Future[LPResult[(BearerToken, PeerIDAuthResponse)]] {.
     async: (raises: [CancelledError])
 .} =
   if bearer.expires.isSome() and bearer.expires.get() <= now():
@@ -357,7 +357,7 @@ proc trySend*(
     peerInfo: PeerInfo,
     payload: auto,
     bearer: Opt[BearerToken] = Opt.none(BearerToken),
-): Future[Result[(BearerToken, PeerIDAuthResponse), string]] {.
+): Future[LPResult[(BearerToken, PeerIDAuthResponse)]] {.
     async: (raises: [CancelledError])
 .} =
   if bearer.isSome():

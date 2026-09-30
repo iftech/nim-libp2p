@@ -107,10 +107,10 @@ proc toKey*(c: Cid): Key =
 proc toKey*(p: PeerId): Key =
   MultiHash.init(p.data).get().toKey()
 
-proc toPeerId*(k: Key): Result[PeerId, string] =
+proc toPeerId*(k: Key): LPResult[PeerId] =
   PeerId.init(k.toBytes()).mapErr(x => $x)
 
-proc toPeer*(k: Key, switch: Switch): Result[Peer, string] =
+proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
   let peer = ?k.toPeerId()
   let addrs = switch.peerStore[AddressBook][peer]
   if addrs.len == 0:
@@ -399,7 +399,7 @@ method isValid*(
 type EntrySelector* = ref object of RootObj
 method select*(
     self: EntrySelector, key: Key, records: seq[EntryRecord]
-): Result[int, string] {.base, raises: [], gcsafe.} =
+): LPResult[int] {.base, raises: [], gcsafe.} =
   doAssert(false, "EntrySelection base not implemented")
 
 type DefaultEntryValidator* = ref object of EntryValidator
@@ -411,7 +411,7 @@ method isValid*(
 type DefaultEntrySelector* = ref object of EntrySelector
 method select*(
     self: DefaultEntrySelector, key: Key, records: seq[EntryRecord]
-): Result[int, string] {.raises: [], gcsafe.} =
+): LPResult[int] {.raises: [], gcsafe.} =
   if records.len == 0:
     return err("No records to choose from")
 

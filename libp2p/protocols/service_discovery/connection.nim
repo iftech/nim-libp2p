@@ -35,7 +35,7 @@ proc evictOnReset(disco: ServiceDiscovery, peerId: PeerId, e: ref CatchableError
 
 proc send*(
     disco: ServiceDiscovery, peerId: PeerId, msg: Message
-): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   let addrs = disco.switch.peerStore[AddressBook][peerId]
   if addrs.len == 0:
     return err("no address found for peer: " & $peerId)

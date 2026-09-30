@@ -56,7 +56,7 @@ proc sendStopError(
 
 proc handleRelayedConnect(
     cl: RelayClient, stream: Stream, msg: StopMessage
-): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let
     # TODO: check the go version to see in which way this could fail
     # it's unclear in the spec
@@ -90,7 +90,7 @@ proc handleRelayedConnect(
     await cl.onNewConnection(stream, limitDuration, limitData)
   ok()
 
-proc toRsvp(msg: HopMessage, relayPeerId: PeerId): Result[Rsvp, string] =
+proc toRsvp(msg: HopMessage, relayPeerId: PeerId): LPResult[Rsvp] =
   if msg.msgType != Opt.some(HopMessageType.Status):
     return err("Unexpected relay response type")
   if msg.status.get(UnexpectedMessage) != Ok:
@@ -124,7 +124,7 @@ proc toRsvp(msg: HopMessage, relayPeerId: PeerId): Result[Rsvp, string] =
 
 proc tryReserve*(
     cl: RelayClient, peerId: PeerId, addrs: seq[MultiAddress] = @[]
-): Future[Result[Rsvp, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[Rsvp]] {.async: (raises: [CancelledError]).} =
   let stream =
     try:
       await cl.switch.dial(peerId, addrs, RelayV2HopCodec)
@@ -151,7 +151,7 @@ proc reserve*(
 ): Future[Rsvp] {.async: (raises: [ReservationError, CancelledError]).} =
   (await cl.tryReserve(peerId, addrs)).valueOrRaise(ReservationError)
 
-func checkHopResponse(msg: Result[RelayMessage, string]): Result[void, string] =
+func checkHopResponse(msg: LPResult[RelayMessage]): LPResult[void] =
   let response = msg.valueOr:
     return err("Hop can't open destination stream: " & error)
   if response.msgType != Opt.some(RelayType.Status):
@@ -162,7 +162,7 @@ func checkHopResponse(msg: Result[RelayMessage, string]): Result[void, string] =
 
 proc tryDialPeerV1*(
     cl: RelayClient, stream: Stream, dstPeerId: PeerId, dstAddrs: seq[MultiAddress]
-): Future[Result[RawConn, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[RawConn]] {.async: (raises: [CancelledError]).} =
   let msg = RelayMessage(
     msgType: Opt.some(RelayType.Hop),
     srcPeer: Opt.some(
@@ -198,7 +198,7 @@ proc dialPeerV1*(
 ): Future[RawConn] {.async: (raises: [CancelledError, RelayV1DialError]).} =
   (await cl.tryDialPeerV1(stream, dstPeerId, dstAddrs)).valueOrRaise(RelayV1DialError)
 
-func checkStopResponse(msg: HopMessage): Result[void, string] =
+func checkStopResponse(msg: HopMessage): LPResult[void] =
   if msg.msgType != Opt.some(HopMessageType.Status):
     return err("Unexpected stop response")
   if msg.status.get(UnexpectedMessage) != Ok:
@@ -210,7 +210,7 @@ proc tryDialPeerV2*(
     relayConn: RelayConnection,
     dstPeerId: PeerId,
     dstAddrs: seq[MultiAddress],
-): Future[Result[RawConn, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[RawConn]] {.async: (raises: [CancelledError]).} =
   let p = Peer(peerId: Opt.some(dstPeerId), addrs: dstAddrs)
 
   trace "Dial peer", peer = p
@@ -246,7 +246,7 @@ proc dialPeerV2*(
 
 proc handleStopStreamV2(
     cl: RelayClient, stream: Stream
-): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let decoded =
     try:
       StopMessage.decode(await stream.readLp(RelayClientMsgSize))
@@ -298,7 +298,7 @@ proc handleStop(
 
 proc handleStreamV1(
     cl: RelayClient, stream: Stream
-): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let decoded =
     try:
       RelayMessage.decode(await stream.readLp(RelayClientMsgSize))
@@ -356,7 +356,7 @@ proc new*(
   )
   proc dispatch(
       stream: Stream, proto: string
-  ): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+  ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
     case proto
     of RelayV1Codec:
       await cl.handleStreamV1(stream)

@@ -33,7 +33,7 @@ proc createOtherPeer(): tuple[
 
   proc validateRPC(
       rpc: PartialMessageExtensionRPC
-  ): Result[void, string] {.gcsafe, raises: [].} =
+  ): LPResult[void] {.gcsafe, raises: [].} =
     return ok()
 
   proc onIncomingRPC(

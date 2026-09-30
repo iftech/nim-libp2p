@@ -220,7 +220,7 @@ proc maintainAdvertiser*(
     disco.config.bucketRefreshTime, sleepFirst = true:
     await disco.maintainRegistrations()
 
-proc localRegister(disco: ServiceDiscovery, msg: Message): Result[Message, string] =
+proc localRegister(disco: ServiceDiscovery, msg: Message): LPResult[Message] =
   return ok(disco.registration(disco.switch.peerInfo.peerId, msg))
 
 proc sendRegister*(
@@ -229,7 +229,7 @@ proc sendRegister*(
     serviceId: ServiceId,
     ad: seq[byte],
     ticket: Opt[Ticket] = Opt.none(Ticket),
-): Future[Result[RegistrationResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[RegistrationResponse]] {.async: (raises: [CancelledError]).} =
   let msg = Message(
     msgType: Opt.some(MessageType.register),
     key: Opt.some(serviceId),
@@ -335,7 +335,7 @@ proc advertiseToRegistrar*(
       trace "Registrar rejection, aborting", serviceId, registrar
       return
 
-proc validateAdvert(advert: seq[byte], service: ServiceInfo): Result[void, string] =
+proc validateAdvert(advert: seq[byte], service: ServiceInfo): LPResult[void] =
   ## Applies the checks a registrar applies in `isValidAdvertisement`, so a bad
   ## record fails here instead of being republished on every rotation.
 
@@ -393,7 +393,7 @@ proc addProvidedService*(
     disco: ServiceDiscovery,
     service: ServiceInfo,
     advert: Opt[seq[byte]] = Opt.none(seq[byte]),
-): Result[void, string] =
+): LPResult[void] =
   if not disco.isServer:
     return err("cannot advertise in client mode")
 
@@ -471,7 +471,7 @@ proc startAdvertising*(
     disco: ServiceDiscovery,
     service: ServiceInfo,
     advert: Opt[seq[byte]] = Opt.none(seq[byte]),
-): Result[void, string] =
+): LPResult[void] =
   disco.addProvidedService(service, advert = advert)
 
 proc stopAdvertising*(

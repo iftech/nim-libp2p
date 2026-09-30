@@ -26,9 +26,7 @@ type LookupState* = ref object
 
 type DispatchProc* = proc(
   kad: KadDHT, peer: PeerId, target: Key
-): Future[Result[Message, string]] {.
-  async: (raises: [CancelledError]), gcsafe, closure
-.}
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe, closure.}
 
 type ReplyHandler* = proc(
   peer: PeerId, msg: Opt[Message], state: LookupState
@@ -240,7 +238,7 @@ proc dispatchFindNode*(
     peer: PeerId,
     target: Key,
     addrs: Opt[seq[MultiAddress]] = Opt.none(seq[MultiAddress]),
-): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   let msg = Message(msgType: Opt.some(MessageType.findNode), key: Opt.some(target))
   await kad.dispatchRpc(peer, msg, addrs)
 
@@ -418,7 +416,7 @@ proc noEarlyExit*(state: LookupState): bool {.raises: [], gcsafe.} =
 
 proc findNodeDispatch*(
     kad: KadDHT, peer: PeerId, target: Key
-): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   return await dispatchFindNode(kad, peer, target)
 
 type DispatchOutcome = enum
@@ -742,7 +740,7 @@ method findNode*(
 
 proc findPeer*(
     kad: KadDHT, target: PeerId
-): Future[Result[PeerInfo, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[PeerInfo]] {.async: (raises: [CancelledError]).} =
   ## Walks the key space until it finds candidate addresses for a `target` peer Id
 
   if kad.switch.peerInfo.peerId == target:

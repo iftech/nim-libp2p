@@ -52,7 +52,7 @@ iterator iterChunkMeta(m: PartsMetadata): (Chunk, Meta) =
 
 proc unionPartsMetadata*(
     a, b: PartsMetadata
-): Result[PartsMetadata, string] {.gcsafe, raises: [].} =
+): LPResult[PartsMetadata] {.gcsafe, raises: [].} =
   checkLen(a)
   checkLen(b)
 
@@ -93,7 +93,7 @@ proc partsMetadata*(m: MyPartialMessage): PartsMetadata =
 
 proc materializeParts*(
     pm: MyPartialMessage, metadata: PartsMetadata
-): Result[PartsData, string] {.gcsafe, raises: [].} =
+): LPResult[PartsData] {.gcsafe, raises: [].} =
   checkLen(metadata)
 
   var data: seq[byte]
@@ -115,7 +115,7 @@ proc materializeParts*(
     topic: string,
     groupId: GroupId,
     metadata: PartsMetadata,
-): Result[PartsData, string] {.gcsafe, raises: [].} =
+): LPResult[PartsData] {.gcsafe, raises: [].} =
   let pm = store.messages.getOrDefault(groupId)
   if pm.isNil:
     return err("unknown groupId")
@@ -131,10 +131,10 @@ proc materializeParts*(
 
 proc materializePartsFn*(
     store: MyPartialMessageStore
-): proc(
-  topic: string, groupId: GroupId, metadata: PartsMetadata
-): Result[PartsData, string] {.gcsafe, raises: [].} =
+): proc(topic: string, groupId: GroupId, metadata: PartsMetadata): LPResult[PartsData] {.
+  gcsafe, raises: []
+.} =
   return proc(
       topic: string, groupId: GroupId, metadata: PartsMetadata
-  ): Result[PartsData, string] {.gcsafe, raises: [].} =
+  ): LPResult[PartsData] {.gcsafe, raises: [].} =
     store.materializeParts(topic, groupId, metadata)
