@@ -40,7 +40,9 @@ suite "AutoTLS certificate issuance and renewal":
 
   proc newService(
       config: AutotlsConfig = AutotlsConfig.new(
-        renewCheckTime = RenewCheckTime, renewBufferTime = RenewBufferTime
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        renewCheckTime = RenewCheckTime,
+        renewBufferTime = RenewBufferTime,
       )
   ): AutotlsService =
     AutotlsService(
@@ -90,8 +92,13 @@ suite "AutoTLS certificate issuance and renewal":
 
   asyncTest "issuance is retried issueRetries times":
     # renewCheckTime is left at its 1 hour default, so a second round won't start
-    service =
-      newService(AutotlsConfig.new(issueRetries = 3, issueRetryTime = 1.milliseconds))
+    service = newService(
+      AutotlsConfig.new(
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        issueRetries = 3,
+        issueRetryTime = 1.milliseconds,
+      )
+    )
     await service.start(switch)
 
     # Every attempt fails on its first ACME request, so a request is an attempt.
@@ -100,8 +107,13 @@ suite "AutoTLS certificate issuance and renewal":
 
   asyncTest "a failed round is retried on the next heartbeat":
     # No retries, so a round is one request.
-    service =
-      newService(AutotlsConfig.new(issueRetries = 0, renewCheckTime = RenewCheckTime))
+    service = newService(
+      AutotlsConfig.new(
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        issueRetries = 0,
+        renewCheckTime = RenewCheckTime,
+      )
+    )
     await service.start(switch)
 
     checkUntilTimeout:
@@ -109,7 +121,9 @@ suite "AutoTLS certificate issuance and renewal":
 
   asyncTest "a service stopped during issuance makes no further attempt":
     acmeApi.stalls = true
-    service = newService(AutotlsConfig.new(issueRetries = 3))
+    service = newService(
+      AutotlsConfig.new(ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 3)
+    )
     await service.start(switch)
 
     check acmeApi.requestedUris.len == 1
@@ -223,19 +237,17 @@ suite "AutoTLS certificate issuance and renewal":
       acmeApi.requestedUris.len == 0
       service.running.isSet
 
-  asyncTest "issuance aborts when no IP address is configured":
+  asyncTest "issuance aborts when no public IP address can be determined":
     acmeApi.scriptChallenge(ChallengeToken)
     service =
-      newService(AutotlsConfig.new(renewCheckTime = RenewCheckTime, issueRetries = 0))
+      newService(AutotlsConfig.new(issueRetries = 0))
     await service.start(switch)
 
-    # getChallenge succeeds, so issuance reaches the ipAddress guard in publishChallenge.
-    checkUntilTimeout:
-      acmeApi.requestedUris.len > 0
+    let issued = await service.issueCertificateForTest(switch)
 
     check:
-      acmeApi.requestedUris.len == 3
-      # The guard aborts before the broker is contacted, so no payload is sent.
+      issued.isErr
+      acmeApi.requestedUris.len == 0
       authClient.payloads.len == 0
       service.cert.isNone
       service.running.isSet

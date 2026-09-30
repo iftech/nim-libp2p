@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import net, chronicles, results
+import net, chronicles, results, strutils
 import chronos
 
 import ../multiaddress, ../multicodec
@@ -21,18 +21,16 @@ proc isGlobalIP*(ip: IpAddress): bool {.raises: [].} =
   ## Globally routable address of either family, so an IPv6 ULA is not global.
   initTAddress(ip, Port(0)).isGlobal()
 
-proc primaryIPAddrTo(probe: IpAddress): Opt[IpAddress] {.raises: [].} =
+proc primaryIPAddrTo(probe: IpAddress): Result[IpAddress, string] {.raises: [].} =
   ## Source address the routing table picks for ``probe``. No traffic is sent.
   try:
-    Opt.some(getPrimaryIPAddr(probe))
+    ok(getPrimaryIPAddr(probe))
   except CatchableError as e:
-    trace "Primary IP address lookup failed", err = e.msg, probe
-    Opt.none(IpAddress)
+    err(e.msg)
   except Defect as e:
     raise e
   except Exception as e: # on windows getPrimaryIPAddr has untracked effects
-    trace "Primary IP address lookup failed", err = e.msg, probe
-    Opt.none(IpAddress)
+    err(e.msg)
 
 func firstGlobalIP*(candidates: openArray[IpAddress]): Opt[IpAddress] =
   for ip in candidates:
@@ -40,13 +38,14 @@ func firstGlobalIP*(candidates: openArray[IpAddress]): Opt[IpAddress] =
       return Opt.some(ip)
   Opt.none(IpAddress)
 
-proc getPublicIPAddress*(): Opt[IpAddress] {.raises: [].} =
+proc getPublicIPAddress*(): Result[IpAddress, string] {.raises: [].} =
   ## Public address of the host, IPv4 first. A v6-only host reaches the v6 probe only.
   var candidates: seq[IpAddress]
+  var failures: seq[string]
   for probe in RouteProbes:
     let ip = primaryIPAddrTo(probe).valueOr:
+      failures.add($probe & ": " & error)
       continue
-    trace "Primary IP address", ip, global = ip.isGlobalIP()
     candidates.add(ip)
 
   let address = firstGlobalIP(candidates)
@@ -57,7 +56,11 @@ proc getPublicIPAddress*(): Opt[IpAddress] {.raises: [].} =
     failed = RouteProbes.len - candidates.len,
     address
 
-  return address
+  let globalIp = address.valueOr:
+    if candidates.len == 0:
+      return err("could not determine a source IP address: " & failures.join("; "))
+    return err("no globally routable source IP address found")
+  ok(globalIp)
 
 func ipAddrMatches*(lookup: MultiAddress, addrs: openArray[MultiAddress]): bool =
   ## Returns true when the ip4 or ip6 component of ``lookup`` equals that of any addr
