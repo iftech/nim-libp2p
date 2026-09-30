@@ -278,6 +278,39 @@ suite "AutoTLS on a switch":
     for addr in addrs:
       check ma(addr.getStr()).initTAddress().tryGet().port != Port(0)
 
+  asyncTest "certificate renewal preserves non-TCP address candidates":
+    let acmeApi = ACMEApiStub.new()
+    let authClient = PeerIDAuthClientStub.new()
+    let (certKey, cert) = tlsCertGenerator()
+    let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WsAutoAddress])
+      .withAutotls(
+        AutotlsConfig.new(
+          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+          renewCheckTime = 20.milliseconds,
+          issueRetries = 0,
+        )
+      )
+      .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    service.broker = AutotlsBroker.new(rng(), DefaultRegistrationURL, authClient)
+    let installedCert = AutotlsCert.new(cert, certKey, now() + initDuration(hours = 2))
+    service.cert = Opt.some(installedCert)
+    service.certReady.fire()
+    defer:
+      await switch.stop()
+
+    await switch.start()
+
+    let wsAddr = switch.peerInfo.listenAddrs.filterIt(WS.match(it))[0]
+    check switch.addressManager.candidates.anyIt(it.address == wsAddr)
+
+    installedCert.expiry = now()
+    checkUntilTimeout:
+      acmeApi.requestedUris.len > 0
+
+    check switch.addressManager.candidates.anyIt(it.address == wsAddr)
+
   asyncTest "a switch listening on wss fails to start without a certificate":
     let switch = makeStandardSwitchBuilder(
         @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]

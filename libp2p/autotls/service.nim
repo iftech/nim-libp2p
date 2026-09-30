@@ -24,6 +24,7 @@ import
   ../utils/heartbeat,
   ../utils/ipaddr,
   ../utils/tlsredact,
+  ../utils/future,
   ../wire
 
 logScope:
@@ -222,6 +223,13 @@ proc requestCertificate(
     self.config.finalizeRetries,
   )
 
+proc boundAddrs(switch: Switch): seq[MultiAddress] =
+  var boundAddrs: seq[MultiAddress]
+  for transport in switch.transports:
+    if transport.running:
+      boundAddrs &= transport.addrs
+  return boundAddrs
+
 proc brokerAddrs(
     self: AutotlsService, switch: Switch
 ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
@@ -233,14 +241,33 @@ proc brokerAddrs(
     return @[]
 
   proc discoverAddrs(): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+    proc isTcpAddress(address: MultiAddress): bool =
+      for transport in tcpTransports:
+        if transport.handles(address):
+          return true
+      false
+
     while true:
       var started: seq[Transport]
       for transport in tcpTransports:
         if transport.running:
           started.add(transport)
-          let addrs = await self.peerInfo.expandAddrs(transport.addrs)
-          if addrs.len > 0:
-            return addrs
+
+      if started.len > 0:
+        # Address mappers maintain state for the complete set of bound
+        # addresses. In particular, passing only one TCP transport would make
+        # them withdraw mappings and candidates belonging to other transports.
+        let boundAddrs = switch.boundAddrs()
+
+        let addrs = await self.peerInfo.expandAddrs(boundAddrs)
+        # Explicit announcements are an operator-selected broker payload and
+        # historically were forwarded as a whole, even when they include a
+        # non-TCP address.
+        if self.peerInfo.announcedAddrs.len > 0 and addrs.len > 0:
+          return addrs
+        let tcpAddrs = addrs.filterIt(isTcpAddress(it))
+        if tcpAddrs.len > 0:
+          return tcpAddrs
 
       # A started TCP transport with no dialable addresses is a dial-only
       # transport (or its addresses were filtered). It cannot bootstrap AutoTLS.
@@ -250,12 +277,15 @@ proc brokerAddrs(
       if pending.len > 0:
         let notStarted = pending.filterIt(not it.onRunning.isSet)
         if notStarted.len > 0:
+          let waits = notStarted.mapIt(it.onRunning.wait())
           try:
-            discard await one(notStarted.mapIt(it.onRunning.wait()))
+            discard await one(waits)
           except ValueError:
             # The list cannot normally be empty after the check above; retain the
             # guard because a future combinator rejects an empty sequence.
             discard
+          finally:
+            waits.cancelSoon()
         else:
           # AsyncEvent is sticky: a stopped transport's onRunning event remains
           # set from an earlier start, so awaiting it would spin immediately.

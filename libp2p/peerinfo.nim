@@ -90,9 +90,13 @@ proc notifyObservers*(p: PeerInfo) =
 proc expandAddrs*(
     p: PeerInfo, listenAddrs: seq[MultiAddress]
 ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
-  ## Resolve a supplied set of bound listen addresses into dialable addresses.
+  ## Resolve the complete supplied set of bound listen addresses into dialable
+  ## addresses.
   ## This lets startup-time users work with transport addresses before the switch
   ## has published them in ``p.listenAddrs``.
+  ##
+  ## Mappers may maintain state based on the supplied set, so callers must not
+  ## pass only a subset of addresses that remain bound.
   var addrs = listenAddrs
   for mapper in p.addressMappers:
     addrs = await mapper(addrs)
