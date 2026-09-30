@@ -90,7 +90,8 @@ suite "PeerInfo":
     ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
       inc active
       maxActive = max(maxActive, active)
-      defer: dec active
+      defer:
+        dec active
       await sleepAsync(10.milliseconds)
       return input
 
