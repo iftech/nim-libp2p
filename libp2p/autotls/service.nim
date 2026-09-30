@@ -15,6 +15,7 @@ import
   ./utils,
   ../crypto/rsa,
   ../crypto/rng,
+  ../logging,
   ../nameresolving/nameresolver,
   ../nameresolving/dnsresolver,
   ../switch,
@@ -77,6 +78,7 @@ type AutotlsService* = ref object of Service
   managerFut: Future[void]
   peerInfo: PeerInfo
   rng*: Rng
+  publicIpWarnings: LogRateLimit
 
 proc new*(
     T: typedesc[AutotlsCert],
@@ -150,11 +152,7 @@ proc new*(
   )
 
 method setup*(self: AutotlsService, switch: Switch) {.raises: [ServiceSetupError].} =
-  if self.config.ipAddress.isSome():
-    return
-  let ip = getPublicIPAddress().valueOr:
-    raise newException(ServiceSetupError, "Host does not have a public IP address")
-  self.config.ipAddress = Opt.some(ip)
+  discard
 
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
@@ -181,8 +179,6 @@ proc publishChallenge(
 ): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
   # broker encapsulates request construction, bearer handling and response
   # validation: it either registers the challenge or raises on failure
-  if self.config.ipAddress.isNone():
-    return err("Cannot issue new certificate: IP address not configured")
   let dnsSet =
     try:
       await self.broker.sendChallenge(self.peerInfo, addrs, keyAuth)
@@ -311,6 +307,17 @@ proc issueCertificate(
   if self.peerInfo.isNil():
     return err("Cannot issue new certificate: peerInfo not set")
 
+  if self.config.ipAddress.isNone():
+    let ip = getPublicIPAddress().valueOr:
+      let ipLookupError = error
+      if self.publicIpWarnings.allowLog():
+        warn "Certificate issuance failed: unable to determine public IP address",
+          err = ipLookupError,
+          hint =
+            "Set AutotlsConfig.ipAddress or ensure the node is reachable from the public internet"
+      return err("Unable to determine public IP address: " & ipLookupError)
+    self.config.ipAddress = Opt.some(ip)
+
   let addrs = await self.brokerAddrs(switch)
   if addrs.len == 0:
     return
@@ -407,3 +414,8 @@ method stop*(
 when defined(libp2p_testing):
   func ipAddress*(config: AutotlsConfig): Opt[IpAddress] =
     config.ipAddress
+
+  proc issueCertificateForTest*(
+      self: AutotlsService, switch: Switch
+  ): Future[Result[void, string]] =
+    self.issueCertificate(switch)
