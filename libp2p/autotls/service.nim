@@ -269,10 +269,6 @@ proc brokerAddrs(
           if tcpAddrs.len > 0:
             return tcpAddrs
 
-      # A started TCP transport with no dialable addresses is a dial-only
-      # transport (or its addresses were filtered). It cannot bootstrap AutoTLS.
-      # Wait for another listener, or retry expansion in case an address mapper is
-      # still becoming ready. The enclosing wait bounds both cases.
       let pending = tcpTransports.filterIt(not it.running)
       if pending.len > 0:
         let notStarted = pending.filterIt(not it.onRunning.isSet)
@@ -291,6 +287,14 @@ proc brokerAddrs(
           # set from an earlier start, so awaiting it would spin immediately.
           await sleepAsync(self.config.issueRetryTime)
       else:
+        # Every TCP transport has started. If none bound a listener, they are all
+        # dial-only (or their listen addresses were filtered before startup), so
+        # no future address discovery can make this issuance attempt viable.
+        if tcpTransports.allIt(it.addrs.len == 0):
+          return @[]
+
+        # At least one transport has a bound address, but its mapper may still
+        # be becoming ready. Keep retrying until the discovery deadline.
         await sleepAsync(self.config.issueRetryTime)
 
   try:
