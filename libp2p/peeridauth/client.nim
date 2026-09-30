@@ -64,10 +64,9 @@ proc randomChallenge(
   PeerIDAuthChallenge(challenge)
 
 proc tryDecode(encoded: string): LPResult[seq[byte]] =
-  catch(base64.decode(encoded).toBytes()).mapErr(
-    proc(e: ref CatchableError): string =
-      e.msg
-  )
+  let bytes = catch(base64.decode(encoded).toBytes()).valueOr:
+    return err(error.msg)
+  ok(bytes)
 
 func extractField(data, key: string): LPResult[string] =
   var fields = data

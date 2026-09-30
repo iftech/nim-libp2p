@@ -21,7 +21,7 @@ import
   ./multihash,
   ./vbuffer,
   ./protobuf/minprotobuf
-import ./cid except orError
+import ./cid
 
 export results, opt, shortlog, collections
 
@@ -216,14 +216,16 @@ proc init*(t: typedesc[PeerId], data: string): Result[PeerId, cstring] =
 proc toCid*(pid: PeerId): Result[Cid, cstring] =
   ## Return ``pid`` as a CIDv1 ``libp2p-key`` content identifier.
   let mh = ?MultiHash.init(pid.data)
-  Cid.init(CIDv1, multiCodec("libp2p-key"), mh).mapErr do(_: auto) -> cstring:
+  Cid.init(CIDv1, multiCodec("libp2p-key"), mh).orError(
     cstring("peerid: could not create CID")
+  )
 
 proc toCidString*(pid: PeerId, encoding = "base32"): Result[string, cstring] =
   ## Return ``pid`` as CIDv1 ``libp2p-key`` text using multibase ``encoding``.
   let cid = ?pid.toCid()
-  MultiBase.encode(encoding, cid.data.buffer).mapErr do(_: auto) -> cstring:
+  MultiBase.encode(encoding, cid.data.buffer).orError(
     cstring("peerid: could not encode CID")
+  )
 
 func init*(t: typedesc[PeerId], pubkey: PublicKey): Result[PeerId, cstring] =
   ## Create new peer id from public key ``pubkey``.

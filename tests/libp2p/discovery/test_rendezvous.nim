@@ -3,8 +3,7 @@
 
 {.used.}
 
-import
-  sequtils, strformat, sugar, tables, chronos, stew/byteutils, protobuf_serialization
+import sequtils, strformat, tables, chronos, stew/byteutils, protobuf_serialization
 import
   ../../../libp2p/[
     protocols/rendezvous,
@@ -50,7 +49,8 @@ proc checkCustomPeerRecord(
 ): LPResult[void] {.gcsafe.} =
   if spr.len == 0:
     return err("Empty peer record")
-  let signedEnv = ?SignedPayload[CustomPeerRecord].decode(spr).mapErr(x => $x)
+  let signedEnv = SignedPayload[CustomPeerRecord].decode(spr).valueOr:
+    return err($error)
   if signedEnv.data.peerId != peerId:
     return err("Bad Peer ID")
   return ok()

@@ -150,9 +150,13 @@ type
 
   CryptoResult*[T] = Result[T, CryptoError]
 
-template orError*(exp: untyped, err: untyped): untyped =
-  exp.mapErr do(_: auto) -> auto:
-    err
+func orError*[T, E, F](res: Result[T, E], e: F): Result[T, F] =
+  if res.isErr():
+    return err(e)
+  when T is void:
+    ok()
+  else:
+    ok(res.get())
 
 proc random*(
     T: typedesc[PrivateKey], scheme: PKScheme, rng: Rng, bits = RsaDefaultKeySize
