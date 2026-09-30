@@ -259,15 +259,16 @@ proc brokerAddrs(
         # them withdraw mappings and candidates belonging to other transports.
         let boundAddrs = switch.boundAddrs()
 
-        let addrs = await self.peerInfo.expandAddrs(boundAddrs)
-        # Explicit announcements are an operator-selected broker payload and
-        # historically were forwarded as a whole, even when they include a
-        # non-TCP address.
-        if self.peerInfo.announcedAddrs.len > 0 and addrs.len > 0:
-          return addrs
-        let tcpAddrs = addrs.filterIt(isTcpAddress(it))
-        if tcpAddrs.len > 0:
-          return tcpAddrs
+        if boundAddrs.len > 0:
+          let addrs = await self.peerInfo.expandAddrs(boundAddrs)
+          # Explicit announcements are an operator-selected broker payload and
+          # historically were forwarded as a whole, even when they include a
+          # non-TCP address.
+          if self.peerInfo.announcedAddrs.len > 0 and addrs.len > 0:
+            return addrs
+          let tcpAddrs = addrs.filterIt(isTcpAddress(it))
+          if tcpAddrs.len > 0:
+            return tcpAddrs
 
       # A started TCP transport with no dialable addresses is a dial-only
       # transport (or its addresses were filtered). It cannot bootstrap AutoTLS.
