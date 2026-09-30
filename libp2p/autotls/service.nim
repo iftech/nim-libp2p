@@ -15,6 +15,7 @@ import
   ./utils,
   ../crypto/rsa,
   ../crypto/rng,
+  ../logging,
   ../nameresolving/nameresolver,
   ../nameresolving/dnsresolver,
   ../switch,
@@ -77,6 +78,7 @@ type AutotlsService* = ref object of Service
   managerFut: Future[void]
   peerInfo: PeerInfo
   rng*: Rng
+  publicIpWarnings: LogRateLimit
 
 proc new*(
     T: typedesc[AutotlsCert],
@@ -308,10 +310,11 @@ proc issueCertificate(
   if self.config.ipAddress.isNone():
     let ip = getPublicIPAddress().valueOr:
       let ipLookupError = error
-      warn "Certificate issuance failed: unable to determine public IP address",
-        err = ipLookupError,
-        hint =
-          "Set AutotlsConfig.ipAddress or ensure the node is reachable from the public internet"
+      if self.publicIpWarnings.allowLog():
+        warn "Certificate issuance failed: unable to determine public IP address",
+          err = ipLookupError,
+          hint =
+            "Set AutotlsConfig.ipAddress or ensure the node is reachable from the public internet"
       return err("Unable to determine public IP address: " & ipLookupError)
     self.config.ipAddress = Opt.some(ip)
 

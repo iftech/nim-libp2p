@@ -59,7 +59,7 @@ proc getPublicIPAddress*(): Result[IpAddress, string] {.raises: [].} =
   let globalIp = address.valueOr:
     if candidates.len == 0:
       return err("could not determine a source IP address: " & failures.join("; "))
-    return err("no globally routable source IP address found")
+    return err("no globally routable source IP address found" & failures.join("; "))
   ok(globalIp)
 
 func ipAddrMatches*(lookup: MultiAddress, addrs: openArray[MultiAddress]): bool =
