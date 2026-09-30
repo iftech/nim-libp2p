@@ -239,8 +239,7 @@ suite "AutoTLS certificate issuance and renewal":
 
   asyncTest "issuance aborts when no public IP address can be determined":
     acmeApi.scriptChallenge(ChallengeToken)
-    service =
-      newService(AutotlsConfig.new(issueRetries = 0))
+    service = newService(AutotlsConfig.new(issueRetries = 0))
     await service.start(switch)
 
     let issued = await service.issueCertificateForTest(switch)
