@@ -326,6 +326,25 @@ suite "WebSocket transport with autotls":
       WS.match(wstransport.addrs[0])
       not WSS.match(wstransport.addrs[0])
 
+  asyncTest "plain WebSocket start does not wait for autotls":
+    let autotls = AutotlsService(
+      certReady: newAsyncEvent(),
+      running: newAsyncEvent(),
+      config: AutotlsConfig.new(initialCertTimeout = 100.milliseconds),
+    )
+    let wstransport = WsTransport.new(
+      Upgrade(),
+      nil, # TLSPrivateKey
+      nil, # TLSCertificate
+      Opt.some(autotls),
+      rng(),
+    )
+    await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/ws")]).wait(50.milliseconds)
+    defer:
+      await wstransport.stop()
+
+    check not wstransport.secure
+
   asyncTest "start fails when the autotls service never runs":
     let autotls = AutotlsService(
       certReady: newAsyncEvent(),
