@@ -132,8 +132,8 @@ method setup*(p: IdentifyPusher, switch: Switch) {.raises: [ServiceSetupError].}
   p.identifyPush = IdentifyPush.new(onIncomingPush)
 
   switch.tryMount(p.identifyPush).isOkOr:
-    raise newException(
-      ServiceSetupError, "IdentifyPusher could not mount IdentifyPush. Reason: " & error
+    raise error.toException(
+      ServiceSetupError, "IdentifyPusher could not mount IdentifyPush"
     )
 
 method start*(p: IdentifyPusher, switch: Switch) {.async: (raises: [CancelledError]).} =

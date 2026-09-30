@@ -471,7 +471,7 @@ proc withPrivateAddressFilter*(b: SwitchBuilder): SwitchBuilder =
   ## Circuit relay and DNS addresses are never filtered.
   b.withAddressPolicy(publicRoutableAddressPolicy)
 
-proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
+proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   if isNil(b.rng):
     b.rng = newRng()
 

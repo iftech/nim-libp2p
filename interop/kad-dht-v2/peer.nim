@@ -118,7 +118,7 @@ proc runProvider(
   let putRes =
     await kad.putValue(valueKey(testKey), Value.fromBytes(ProviderValue.toBytes()))
   if putRes.isErr:
-    raise newException(ValueError, "putValue failed: " & putRes.error)
+    raise newException(ValueError, "putValue failed: " & $putRes.error)
   info "Provider stored value"
 
   redisClient.publishValue(testKey, ProviderDoneSuffix, "done")

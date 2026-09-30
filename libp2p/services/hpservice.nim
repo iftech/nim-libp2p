@@ -111,9 +111,7 @@ method setup*(self: HPService, switch: Switch) {.raises: [ServiceSetupError].} =
   self.autoRelayService.setup(switch)
 
   switch.tryMount(Dcutr.new(switch)).isOkOr:
-    raise newException(
-      ServiceSetupError, "HPService Failed to mount Dcutr. Reason: " & error
-    )
+    raise error.toException(ServiceSetupError, "HPService Failed to mount Dcutr")
 
   self.newConnectedPeerHandler = proc(
       peerId: PeerId, event: PeerEvent

@@ -101,7 +101,7 @@ proc tryDialMe*(
       return err(AutonatError.new("read Dial response failed", e))
 
   let msg = AutonatMsg.decode(move(respBytes)).valueOr:
-    return err(AutonatError.new($error))
+    return err(error.toException(AutonatError))
   msg.dialedAddr()
 
 method dialMe*(

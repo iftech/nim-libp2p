@@ -850,7 +850,7 @@ proc libp2pKadPutValue*(
   let value = Value.fromBytes(req.value)
   let res = await kad.putValue(key, value)
   if res.isErr():
-    return err(res.error)
+    return err($res.error)
   ok(true)
 
 proc libp2pKadGetValue*(
@@ -874,7 +874,7 @@ proc libp2pKadGetValue*(
     except LPError as e:
       return err(e.msg)
   let entry = res.valueOr:
-    return err(res.error)
+    return err($res.error)
   ok(ReadResponse(data: entry.value.toBytes()))
 
 proc kadAndCid(lib: LibP2P, cid: string): Result[(KadDHT, Cid), string] =
@@ -981,7 +981,7 @@ proc libp2pServiceDiscoStartAdvertising*(
     ServiceInfo(id: req.serviceId, data: Opt.some(req.serviceData)),
     Opt.noneWhenEmpty(req.advertisement),
   ).isOkOr:
-    return err(error)
+    return err($error)
 
   ok(true)
 
@@ -1060,7 +1060,7 @@ proc libp2pCreateXpr*(
   let peerRecord = ExtendedPeerRecord.init(peerInfo.peerId, addresses, seqNo, services)
 
   let xpr = SignedExtendedPeerRecord.build(peerInfo.privateKey, peerRecord).valueOr:
-    return err(error)
+    return err($error)
 
   ok(xpr.encode())
 
@@ -1090,7 +1090,7 @@ proc libp2pCircuitRelayReserve*(
     return err(error)
 
   let rsvp = (await cl.tryReserve(peerId, multiaddresses)).valueOr:
-    return err("reservation failed: " & error)
+    return err("reservation failed: " & $error)
 
   ok(ReservationResponse(addrs: rsvp.addrs.mapIt($it), expireTime: rsvp.expire))
 

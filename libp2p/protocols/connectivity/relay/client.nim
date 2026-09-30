@@ -151,7 +151,7 @@ proc reserve*(
 ): Future[Rsvp] {.async: (raises: [ReservationError, CancelledError]).} =
   (await cl.tryReserve(peerId, addrs)).valueOrRaise(ReservationError)
 
-func checkHopResponse(msg: LPResult[RelayMessage]): LPResult[void] =
+func checkHopResponse(msg: Result[RelayMessage, string]): LPResult[void] =
   let response = msg.valueOr:
     return err("Hop can't open destination stream: " & error)
   if response.msgType != Opt.some(RelayType.Status):
