@@ -77,6 +77,18 @@ func err*[T](R: type Result[T, string], e: ref CatchableError, msg: string): R =
 template err*(e: ref CatchableError, msg: string): auto =
   err(typeof(result), e, msg)
 
+template errAsString(e: untyped, msg: string): auto =
+  when typeof(result.error) is string:
+    err(typeof(result), msg)
+  else:
+    err(typeof(result), e)
+
+template err*[X: CatchableError](e: ref X): auto =
+  errAsString(e, e.msg)
+
+template err*(e: enum | cstring): auto =
+  errAsString(e, $e)
+
 func hasCause(e: LPResultError, cause: string): bool =
   if e.isNil():
     return false

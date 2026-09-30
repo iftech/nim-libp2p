@@ -150,14 +150,6 @@ type
 
   CryptoResult*[T] = Result[T, CryptoError]
 
-func orError*[T, E, F](res: Result[T, E], e: F): Result[T, F] =
-  if res.isErr():
-    return err(e)
-  when T is void:
-    ok()
-  else:
-    ok(res.get())
-
 proc random*(
     T: typedesc[PrivateKey], scheme: PKScheme, rng: Rng, bits = RsaDefaultKeySize
 ): CryptoResult[PrivateKey] =
@@ -168,7 +160,8 @@ proc random*(
   case scheme
   of PKScheme.RSA:
     when supported(PKScheme.RSA):
-      let rsakey = ?RsaPrivateKey.random(rng, bits).orError(CryptoError.KeyError)
+      let rsakey = RsaPrivateKey.random(rng, bits).valueOr:
+        return err(CryptoError.KeyError)
       ok(PrivateKey(scheme: scheme, rsakey: rsakey))
     else:
       err(SchemeError)
@@ -180,8 +173,8 @@ proc random*(
       err(SchemeError)
   of PKScheme.ECDSA:
     when supported(PKScheme.ECDSA):
-      let eckey =
-        ?ecnist.EcPrivateKey.random(Secp256r1, rng).orError(CryptoError.KeyError)
+      let eckey = ecnist.EcPrivateKey.random(Secp256r1, rng).valueOr:
+        return err(CryptoError.KeyError)
       ok(PrivateKey(scheme: scheme, eckey: eckey))
     else:
       err(SchemeError)
@@ -208,11 +201,12 @@ proc random*(
     let skkey = SkPrivateKey.random(rng)
     ok(PrivateKey(scheme: PKScheme.Secp256k1, skkey: skkey))
   elif supported(PKScheme.RSA):
-    let rsakey = ?RsaPrivateKey.random(rng, bits).orError(CryptoError.KeyError)
+    let rsakey = RsaPrivateKey.random(rng, bits).valueOr:
+      return err(CryptoError.KeyError)
     ok(PrivateKey(scheme: PKScheme.RSA, rsakey: rsakey))
   elif supported(PKScheme.ECDSA):
-    let eckey =
-      ?ecnist.EcPrivateKey.random(Secp256r1, rng).orError(CryptoError.KeyError)
+    let eckey = ecnist.EcPrivateKey.random(Secp256r1, rng).valueOr:
+      return err(CryptoError.KeyError)
     ok(PrivateKey(scheme: PKScheme.ECDSA, eckey: eckey))
   else:
     err(SchemeError)
@@ -227,7 +221,8 @@ proc random*(
   case scheme
   of PKScheme.RSA:
     when supported(PKScheme.RSA):
-      let pair = ?RsaKeyPair.random(rng, bits).orError(CryptoError.KeyError)
+      let pair = RsaKeyPair.random(rng, bits).valueOr:
+        return err(CryptoError.KeyError)
       ok(
         KeyPair(
           seckey: PrivateKey(scheme: scheme, rsakey: pair.seckey),
@@ -249,7 +244,8 @@ proc random*(
       err(SchemeError)
   of PKScheme.ECDSA:
     when supported(PKScheme.ECDSA):
-      let pair = ?EcKeyPair.random(Secp256r1, rng).orError(CryptoError.KeyError)
+      let pair = EcKeyPair.random(Secp256r1, rng).valueOr:
+        return err(CryptoError.KeyError)
       ok(
         KeyPair(
           seckey: PrivateKey(scheme: scheme, eckey: pair.seckey),
@@ -297,7 +293,8 @@ proc random*(
       )
     )
   elif supported(PKScheme.RSA):
-    let pair = ?RsaKeyPair.random(rng, bits).orError(KeyError)
+    let pair = RsaKeyPair.random(rng, bits).valueOr:
+      return err(KeyError)
     ok(
       KeyPair(
         seckey: PrivateKey(scheme: PKScheme.RSA, rsakey: pair.seckey),
@@ -305,7 +302,8 @@ proc random*(
       )
     )
   elif supported(PKScheme.ECDSA):
-    let pair = ?EcKeyPair.random(Secp256r1, rng).orError(KeyError)
+    let pair = EcKeyPair.random(Secp256r1, rng).valueOr:
+      return err(KeyError)
     ok(
       KeyPair(
         seckey: PrivateKey(scheme: PKScheme.ECDSA, eckey: pair.seckey),
@@ -332,7 +330,8 @@ proc getPublicKey*(key: PrivateKey): CryptoResult[PublicKey] =
       err(SchemeError)
   of PKScheme.ECDSA:
     when supported(PKScheme.ECDSA):
-      let eckey = ?key.eckey.getPublicKey().orError(KeyError)
+      let eckey = key.eckey.getPublicKey().valueOr:
+        return err(KeyError)
       ok(PublicKey(scheme: ECDSA, eckey: eckey))
     else:
       err(SchemeError)
@@ -353,7 +352,9 @@ proc toRawBytes*(
   case key.scheme
   of PKScheme.RSA:
     when supported(PKScheme.RSA):
-      key.rsakey.toBytes(data).orError(KeyError)
+      let size = key.rsakey.toBytes(data).valueOr:
+        return err(KeyError)
+      ok(size)
     else:
       err(SchemeError)
   of PKScheme.Ed25519:
@@ -363,12 +364,16 @@ proc toRawBytes*(
       err(SchemeError)
   of PKScheme.ECDSA:
     when supported(PKScheme.ECDSA):
-      key.eckey.toBytes(data).orError(KeyError)
+      let size = key.eckey.toBytes(data).valueOr:
+        return err(KeyError)
+      ok(size)
     else:
       err(SchemeError)
   of PKScheme.Secp256k1:
     when supported(PKScheme.Secp256k1):
-      key.skkey.toBytes(data).orError(KeyError)
+      let size = key.skkey.toBytes(data).valueOr:
+        return err(KeyError)
+      ok(size)
     else:
       err(SchemeError)
 
@@ -378,7 +383,9 @@ proc getRawBytes*(key: PrivateKey | PublicKey): CryptoResult[seq[byte]] =
   case key.scheme
   of PKScheme.RSA:
     when supported(PKScheme.RSA):
-      key.rsakey.getBytes().orError(KeyError)
+      let bytes = key.rsakey.getBytes().valueOr:
+        return err(KeyError)
+      ok(bytes)
     else:
       err(SchemeError)
   of PKScheme.Ed25519:
@@ -388,7 +395,9 @@ proc getRawBytes*(key: PrivateKey | PublicKey): CryptoResult[seq[byte]] =
       err(SchemeError)
   of PKScheme.ECDSA:
     when supported(PKScheme.ECDSA):
-      key.eckey.getBytes().orError(KeyError)
+      let bytes = key.eckey.getBytes().valueOr:
+        return err(KeyError)
+      ok(bytes)
     else:
       err(SchemeError)
   of PKScheme.Secp256k1:
@@ -758,8 +767,10 @@ proc sign*(key: PrivateKey, data: openArray[byte]): CryptoResult[Signature] {.gc
   case key.scheme
   of PKScheme.RSA:
     when supported(PKScheme.RSA):
-      let sig = ?key.rsakey.sign(data).orError(SigError)
-      res.data = ?sig.getBytes().orError(SigError)
+      let sig = key.rsakey.sign(data).valueOr:
+        return err(SigError)
+      res.data = sig.getBytes().valueOr:
+        return err(SigError)
       ok(res)
     else:
       err(SchemeError)
@@ -772,8 +783,10 @@ proc sign*(key: PrivateKey, data: openArray[byte]): CryptoResult[Signature] {.gc
       err(SchemeError)
   of PKScheme.ECDSA:
     when supported(PKScheme.ECDSA):
-      let sig = ?key.eckey.sign(data).orError(SigError)
-      res.data = ?sig.getBytes().orError(SigError)
+      let sig = key.eckey.sign(data).valueOr:
+        return err(SigError)
+      res.data = sig.getBytes().valueOr:
+        return err(SigError)
       ok(res)
     else:
       err(SchemeError)
@@ -946,8 +959,10 @@ proc getOrder*(
   ctx.update(localPubkey)
   ctx.update(remoteNonce)
   var digest2 = ctx.finish()
-  var mh1 = ?MultiHash.init(multiCodec("sha2-256"), digest1).orError(HashError)
-  var mh2 = ?MultiHash.init(multiCodec("sha2-256"), digest2).orError(HashError)
+  var mh1 = MultiHash.init(multiCodec("sha2-256"), digest1).valueOr:
+    return err(HashError)
+  var mh2 = MultiHash.init(multiCodec("sha2-256"), digest2).valueOr:
+    return err(HashError)
   var res = 0
   for i in 0 ..< len(mh1.data.buffer):
     res = int(mh1.data.buffer[i]) - int(mh2.data.buffer[i])

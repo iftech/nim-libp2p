@@ -157,6 +157,31 @@ suite "LPResultError":
       parse(DemoResult[int]).isOfError("parse failed")
       parse(LPResult[int]).error == "parse failed: bad digit"
 
+  test "err with an exception, enum or cstring gives its message to a string error":
+    type Color = enum
+      Red
+
+    proc fromException(): LPResult[int] =
+      try:
+        raise newException(ValueError, "bad digit")
+      except ValueError as e:
+        err(e)
+
+    proc fromEnum(): LPResult[int] =
+      err(Red)
+
+    proc fromCString(): LPResult[int] =
+      err(cstring("bad peer"))
+
+    proc keepsEnum(): Result[int, Color] =
+      err(Red)
+
+    check:
+      fromException().error == "bad digit"
+      fromEnum().error == "Red"
+      fromCString().error == "bad peer"
+      keepsEnum().error == Red
+
   test "isOfError matches every error of the chain":
     let r = DemoResult[int].err(NotEnoughMemory.withDetail("missing: 2MB"), PeerGone)
     check:

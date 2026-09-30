@@ -109,7 +109,7 @@ proc toKey*(p: PeerId): Key =
 
 proc toPeerId*(k: Key): LPResult[PeerId] =
   let peerId = PeerId.init(k.toBytes()).valueOr:
-    return err($error)
+    return err(error)
   ok(peerId)
 
 proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
