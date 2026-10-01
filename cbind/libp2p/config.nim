@@ -24,6 +24,10 @@ type MuxerType {.ffi.} = enum
   Mplex = "mplex"
   Yamux = "yamux"
 
+type ServiceDiscoveryMode {.ffi.} = enum
+  Server = "server"
+  Client = "client"
+
 type BootstrapNode {.ffi.} = object
   peerId: string
   multiaddrs: seq[string]
@@ -46,6 +50,10 @@ type Libp2pConfig {.ffi.} = object
   gossipsub: GossipsubConfig ## Mounting and ingress limits for GossipSub.
   mountKad: bool ## Mount the Kademlia DHT service.
   mountServiceDiscovery: bool ## Mount random-find based service discovery.
+  serviceDiscoveryMode: ServiceDiscoveryMode
+    ## A client queries the DHT but serves no requests and registers no adverts.
+  serviceDiscoveryXprPublishing: bool
+    ## Publish this node's own signed peer record in the DHT.
   dnsResolver: string ## DNS server address; empty uses the core defaults.
   addrs: seq[string] ## Listen multiaddresses for the switch.
   muxer: MuxerType ## Type of muxer used for TCP transports.
@@ -120,6 +128,8 @@ type ParsedConfig = object
   gossipsub: ParsedGossipsub
   mountKad: bool
   mountServiceDiscovery: bool
+  serviceDiscoveryMode: ServiceDiscoveryMode
+  serviceDiscoveryXprPublishing: bool
 
 proc parseMultiaddrs(raw: openArray[string]): Result[seq[MultiAddress], string] =
   var addrs: seq[MultiAddress]
@@ -393,5 +403,7 @@ proc parse(config: Libp2pConfig): Result[ParsedConfig, string] =
       gossipsub: ?parseGossipsub(config.gossipsub),
       mountKad: config.mountKad,
       mountServiceDiscovery: config.mountServiceDiscovery,
+      serviceDiscoveryMode: config.serviceDiscoveryMode,
+      serviceDiscoveryXprPublishing: config.serviceDiscoveryXprPublishing,
     )
   )

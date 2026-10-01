@@ -3,7 +3,7 @@
 
 import std/[sets, tables, sequtils]
 import chronos, chronicles, results
-import ../../utils/heartbeat
+import ../../utils/[heartbeat, opt]
 import
   ../../[peerid, switch, multihash, cid, multicodec, multiaddress, extended_peer_record]
 import ../../crypto/crypto
@@ -52,13 +52,6 @@ proc getAdvertBytes(disco: ServiceDiscovery, explicit: Opt[seq[byte]]): Opt[seq[
     return Opt.none(seq[byte])
   Opt.some(extRecord.encode())
 
-proc advertFor(disco: ServiceDiscovery, serviceId: ServiceId): seq[byte] =
-  ## The bytes stored when the service was added, a fresh record only after a clear().
-  disco.advertiser.providedAdverts.withValue(serviceId, stored):
-    return stored[].bytes
-
-  disco.getAdvertBytes(Opt.none(seq[byte])).get(@[])
-
 proc advertiseToRegistrar*(
   disco: ServiceDiscovery,
   serviceId: ServiceId,
@@ -87,18 +80,19 @@ proc startLocalRegistration(disco: ServiceDiscovery) =
   ## Starts (or restarts) the single long-lived local self-registration task.
 
   if not disco.isServer:
-    trace "Not registering locally while in client mode", services = disco.services.len
+    trace "Not registering locally while in client mode",
+      services = disco.advertiser.providedAdverts.len
     return
 
   if not disco.localRegistrationLoop.isNil and not disco.localRegistrationLoop.finished:
     return
-  if disco.services.len == 0:
-    return
 
-  let someService = disco.services.toSeq()[0]
-  let sid = someService.id.hashServiceId()
-
-  let advertBytes = disco.advertFor(sid)
+  var sid: ServiceId
+  var advertBytes: seq[byte]
+  for id, advert in disco.advertiser.providedAdverts:
+    sid = id
+    advertBytes = advert.bytes
+    break
   if advertBytes.len == 0:
     return
 
@@ -115,6 +109,12 @@ proc stopLocalRegistration(
   await disco.localRegistrationLoop.cancelAndWait()
 
   disco.localRegistrationLoop = nil
+
+proc restartLocalRegistration(disco: ServiceDiscovery) =
+  if not disco.localRegistrationLoop.isNil:
+    disco.localRegistrationLoop.cancelSoon()
+    disco.localRegistrationLoop = nil
+  disco.startLocalRegistration()
 
 proc maintainRegistrations*(
     disco: ServiceDiscovery
@@ -133,8 +133,7 @@ proc maintainRegistrations*(
 
   let selfPeer = disco.switch.peerInfo.peerId
 
-  for svc in disco.services:
-    let sid = svc.id.hashServiceId()
+  for sid, advert in disco.advertiser.providedAdverts:
     let table = disco.rtManager.getTable(sid).valueOr:
       continue
 
@@ -175,19 +174,15 @@ proc maintainRegistrations*(
         if pid notin active and pid != selfPeer:
           candidates.add(pid)
 
-      let advertBytes = disco.advertFor(sid)
-      if advertBytes.len == 0:
-        continue
-
       let toAdd = disco.rng.pick(candidates, deficit).valueOr:
         continue
 
       for registrar in toAdd:
-        disco.trackAdvertiseTask(sid, registrar, bucketIdx, advertBytes)
+        disco.trackAdvertiseTask(sid, registrar, bucketIdx, advert.bytes)
 
   # Defensive restart of the local registration loop if it died unexpectedly
   # while we still provide services.
-  if disco.services.len > 0 and
+  if disco.advertiser.providedAdverts.len > 0 and
       (disco.localRegistrationLoop.isNil or disco.localRegistrationLoop.finished):
     disco.startLocalRegistration()
 
@@ -380,20 +375,78 @@ proc scheduleRegistrations(
 
       disco.trackAdvertiseTask(serviceId, registrar, bucketIdx, advertBytes)
 
-proc undoProvidedService(
-    disco: ServiceDiscovery, service: ServiceInfo, serviceId: ServiceId
-) =
-  ## Undoes what `addProvidedService` changed before it failed, so the caller can
-  ## retry instead of meeting "already advertised" on the next attempt.
-  disco.advertiser.providedAdverts.del(serviceId)
-  disco.rtManager.removeService(serviceId, Provided)
-  disco.services.excl(service)
+proc dropOwnService(disco: ServiceDiscovery, serviceId: string): Opt[ServiceInfo] =
+  for s in disco.services:
+    if s.id == serviceId:
+      disco.services.excl(s)
+      return Opt.some(s)
+  Opt.none(ServiceInfo)
+
+proc ownXpr(disco: ServiceDiscovery): Opt[seq[byte]] =
+  let extPeerRecord = disco.record().valueOr:
+    debug "Failed to create signed extended peer record", err = error
+    return Opt.none(seq[byte])
+  Opt.some(extPeerRecord.encode())
+
+proc xprsToPublish(disco: ServiceDiscovery): seq[seq[byte]] =
+  var xprs: seq[seq[byte]]
+  if disco.xprPublishing:
+    disco.ownXpr().ifValue(xpr):
+      xprs.add(xpr)
+
+  for advert in disco.advertiser.providedAdverts.values:
+    if advert.callerSupplied and advert.bytes notin xprs:
+      xprs.add(advert.bytes)
+  xprs
+
+proc publishXpr(
+    disco: ServiceDiscovery, xpr: seq[byte]
+) {.async: (raises: [CancelledError]).} =
+  ## A random walk finds the record only when its signer is a DHT peer.
+  let ad = Advertisement.decode(xpr).valueOr:
+    debug "Cannot decode signed peer record to publish", err = error
+    return
+
+  (await disco.putValue(ad.data.peerId.toKey(), Value.fromBytes(xpr))).isOkOr:
+    debug "Failed to put signed peer record", err = error, peerId = ad.data.peerId
+
+proc publishXprs(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
+  let futs = disco.xprsToPublish().mapIt(disco.publishXpr(it))
+  try:
+    await allFutures(futs)
+  except CancelledError as e:
+    await noCancel futs.cancelAndWait()
+    raise e
+
+proc maintainXprs*(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
+  heartbeat "refresh signed peer records", disco.config.bucketRefreshTime:
+    if not await disco.publishXprs().withTimeout(disco.config.bucketRefreshTime):
+      warn "Signed peer record refresh timed out",
+        timeout = disco.config.bucketRefreshTime
+
+proc restartXprPublishing*(disco: ServiceDiscovery) =
+  ## The heartbeat fires at once, so a new caller XPR reaches the DHT without a wait.
+  if not disco.started:
+    return
+
+  if not disco.xprPublishLoop.isNil:
+    disco.xprPublishLoop.cancelSoon()
+  disco.xprPublishLoop = disco.maintainXprs()
+
+proc cancelServiceTasks(disco: ServiceDiscovery, serviceId: ServiceId) =
+  let tasks = disco.advertiser.running.filterIt(it.serviceId == serviceId)
+  for t in tasks:
+    t.fut.cancelSoon()
+    disco.advertiser.running.excl(t)
+  cd_advertiser_pending_actions.set(disco.advertiser.running.len.float64)
 
 proc addProvidedService*(
     disco: ServiceDiscovery,
     service: ServiceInfo,
     advert: Opt[seq[byte]] = Opt.none(seq[byte]),
 ): LPResult[void] =
+  ## A caller-supplied `advert` is published as is and never enters this node's
+  ## own record. A second call for the same service replaces its advert.
   if not disco.isServer:
     return err("cannot advertise in client mode")
 
@@ -404,36 +457,50 @@ proc addProvidedService*(
     ?validateAdvert(advert.get(), service)
 
   let serviceId = service.id.hashServiceId()
+  let replacing = serviceId in disco.advertiser.providedAdverts
 
-  if not disco.rtManager.addService(
-    serviceId, disco.rtable, disco.config.replication, disco.discoConfig.bucketsCount,
-    Provided,
-  ):
-    return err("service '" & service.id & "' is already advertised, stop it first")
+  if not replacing and
+      not disco.rtManager.addService(
+        serviceId, disco.rtable, disco.config.replication,
+        disco.discoConfig.bucketsCount, Provided,
+      ):
+    return err("service '" & service.id & "' is already advertised")
 
-  disco.services.incl(service)
-
-  let advTable = disco.rtManager.getTable(serviceId).valueOr:
-    disco.undoProvidedService(service, serviceId)
-    return err("routing table missing for service '" & service.id & "'")
+  let previous =
+    if replacing:
+      disco.dropOwnService(service.id)
+    else:
+      Opt.none(ServiceInfo)
+  if advert.isNone():
+    disco.services.incl(service)
 
   let advertBytes = disco.getAdvertBytes(advert).valueOr:
-    disco.undoProvidedService(service, serviceId)
+    discard disco.dropOwnService(service.id)
+    previous.ifValue(p):
+      disco.services.incl(p)
+    if not replacing:
+      disco.rtManager.removeService(serviceId, Provided)
     return err("cannot build the extended peer record to advertise")
+
+  disco.cancelServiceTasks(serviceId)
 
   # Rotations reuse these bytes; a later seqNo would duplicate this node in a lookup.
   disco.advertiser.providedAdverts[serviceId] =
     ProvidedAdvert(bytes: advertBytes, callerSupplied: advert.isSome())
 
-  debug "Added provided service", service = service.id, serviceId
-  cd_advertiser_services_added.inc()
+  debug "Provided service advert stored", service = service.id, serviceId, replacing
+  if not replacing:
+    cd_advertiser_services_added.inc()
 
-  disco.scheduleRegistrations(serviceId, advTable, advertBytes)
+  disco.rtManager.getTable(serviceId).ifValue(table):
+    disco.scheduleRegistrations(serviceId, table, advertBytes)
 
-  # Ensure the single local registration loop is running.
-  # We start it when we add the first provided service.
-  if disco.services.len == 1: # we just added the first one
+  if replacing:
+    disco.restartLocalRegistration()
+  else:
     disco.startLocalRegistration()
+  if advert.isSome():
+    disco.restartXprPublishing()
 
   ok()
 
@@ -454,14 +521,11 @@ proc removeProvidedService*(
   disco.advertiser.providedAdverts.del(sid)
 
   disco.rtManager.removeService(sid, Provided)
-  for s in disco.services:
-    if s.id == serviceId:
-      disco.services.excl(s)
-      break
+  discard disco.dropOwnService(serviceId)
 
-  # If this was the last provided service, stop the unique local registration.
-  if disco.services.len == 0:
-    await disco.stopLocalRegistration()
+  # The local loop may still register the removed advert, so move it to a remaining one.
+  await disco.stopLocalRegistration()
+  disco.startLocalRegistration()
 
   debug "Removed provided service", service = serviceId, serviceId = sid
 

@@ -26,31 +26,8 @@ method maintainableTables*(
     tables.add(table)
   return tables
 
-proc refreshSelfSignedPeerRecord(
-    disco: ServiceDiscovery
-) {.async: (raises: [CancelledError]).} =
-  let extPeerRecord = disco.record().valueOr:
-    debug "Failed to create signed extended peer record", err = error
-    return
-
-  let encodedSR = extPeerRecord.encode()
-  let key = disco.switch.peerInfo.peerId.toKey()
-
-  debug "Publishing Signed XPR", xpr = $extPeerRecord
-
-  (await disco.putValue(key, Value.fromBytes(encodedSR))).isOkOr:
-    debug "Failed to put signed peer record", err = error
-
 template withBucketRefreshTimeout(fut: untyped, disco: ServiceDiscovery): untyped =
   fut.withTimeout(disco.config.bucketRefreshTime)
-
-proc maintainSignedPeerRecord(
-    disco: ServiceDiscovery
-) {.async: (raises: [CancelledError]).} =
-  heartbeat "refresh signed peer record", disco.config.bucketRefreshTime:
-    if not await disco.refreshSelfSignedPeerRecord().withBucketRefreshTimeout(disco):
-      warn "Signed peer record refresh timed out",
-        timeout = disco.config.bucketRefreshTime
 
 proc republishAddresses(
     disco: ServiceDiscovery, previous: Future[void]
@@ -60,8 +37,8 @@ proc republishAddresses(
 
   # A restart publishes the new record at once and keeps one record publisher.
   if disco.xprPublishing:
-    await disco.signedPeerRecordLoop.cancelAndWait()
-    disco.signedPeerRecordLoop = disco.maintainSignedPeerRecord()
+    await disco.xprPublishLoop.cancelAndWait()
+    disco.xprPublishLoop = disco.maintainXprs()
 
   if not await disco.republishProvidedAdverts().withBucketRefreshTimeout(disco):
     warn "Provided advert republish timed out", timeout = disco.config.bucketRefreshTime
@@ -202,8 +179,7 @@ method start*(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
     disco.addProvidedService(serviceInfo).isOkOr:
       warn "Cannot advertise configured service", err = error, service = serviceInfo.id
 
-  if disco.xprPublishing:
-    disco.signedPeerRecordLoop = disco.maintainSignedPeerRecord()
+  disco.xprPublishLoop = disco.maintainXprs()
 
   disco.addressObserver = disco.republishOnAddressChange()
   disco.switch.peerInfo.addObserver(disco.addressObserver)
@@ -227,9 +203,9 @@ method stop*(disco: ServiceDiscovery) {.async: (raises: []).} =
     await disco.addressRepublish.cancelAndWait()
     disco.addressRepublish = nil
 
-  if not disco.signedPeerRecordLoop.isNil():
-    await disco.signedPeerRecordLoop.cancelAndWait()
-    disco.signedPeerRecordLoop = nil
+  if not disco.xprPublishLoop.isNil():
+    await disco.xprPublishLoop.cancelAndWait()
+    disco.xprPublishLoop = nil
 
   if not disco.advertiserMaintenanceLoop.isNil:
     await disco.advertiserMaintenanceLoop.cancelAndWait()

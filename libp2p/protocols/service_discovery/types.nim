@@ -139,7 +139,7 @@ type
     discoConfig*: ServiceDiscoveryConfig
       # can't use name "config", clashes with KadDHT's config
     xprPublishing*: bool
-    signedPeerRecordLoop*: Future[void]
+    xprPublishLoop*: Future[void]
     pruneExpiredAdsLoop*: Future[void]
     refreshServiceTablesLoop*: Future[void]
     advertiserMaintenanceLoop*: Future[void]
