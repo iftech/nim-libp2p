@@ -909,10 +909,10 @@ suite "AddressManager address mapper":
     await peerInfo.update()
     manager.update(mappedAddr, AddrState.Confirmed)
     await peerInfo.update()
-    await handlerStarted.wait().wait(1.seconds)
+    await handlerStarted.wait()
 
     manager.stop()
-    await handlerCancelled.wait().wait(1.seconds)
+    await handlerCancelled.wait()
 
   asyncTest "a candidate a feeder also offers survives the mapper which drops it":
     let
