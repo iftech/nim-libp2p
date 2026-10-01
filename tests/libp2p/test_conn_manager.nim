@@ -36,6 +36,7 @@ proc newWatermark*(
     highWater: int,
     gracePeriod: Duration = 0.seconds,
     silencePeriod: Duration = 0.seconds,
+    periodicTrimInterval: Duration = 100.millis,
     outboundBonus: int = 0,
     decayResolution = 1.minutes,
 ): ConnManager =
@@ -44,6 +45,7 @@ proc newWatermark*(
     highWater: highWater,
     gracePeriod: gracePeriod,
     silencePeriod: silencePeriod,
+    periodicTrimInterval: periodicTrimInterval,
   )
   let scCfg =
     PeerScoring(outboundBonus: outboundBonus, decayResolution: decayResolution)
@@ -361,6 +363,88 @@ suite "Connection Manager":
 
     checkUntilTimeout:
       events == @["Connected", "Disconnected"]
+
+  asyncTest "a second muxer of a joined peer emits no extra Joined or Left":
+    let connMngr = newMaxTotal(maxConnsPerPeer = 2)
+    defer:
+      await connMngr.stop()
+
+    var events: seq[string]
+    proc peerHandler(kind: string): PeerEventHandler =
+      return proc(
+          handlerPeerId: PeerId, event: PeerEvent
+      ) {.async: (raises: [CancelledError]).} =
+        if handlerPeerId == peerId:
+          events.add(kind)
+
+    connMngr.addPeerEventHandler(peerHandler("Joined"), PeerEventKind.Joined)
+    connMngr.addPeerEventHandler(peerHandler("Left"), PeerEventKind.Left)
+
+    let
+      first = makeMuxer(peerId, Direction.In)
+      second = makeMuxer(peerId, Direction.Out)
+    check (await connMngr.storeMuxer(first)).isOk()
+    check (await connMngr.storeMuxer(second)).isOk()
+    check events == @["Joined"]
+
+    await first.close()
+    checkUntilTimeout:
+      first notin connMngr
+    check events == @["Joined"]
+
+    await second.close()
+    checkUntilTimeout:
+      events == @["Joined", "Left"]
+
+  asyncTest "a sibling muxer emits Joined when the first muxer drops before Joined":
+    let connMngr = newMaxTotal(maxConnsPerPeer = 2)
+    defer:
+      await connMngr.stop()
+
+    let unblockFirst = newAsyncEvent()
+    var
+      connectedCalls = 0
+      events: seq[string]
+
+    proc connectedHandler(
+        handlerPeerId: PeerId, event: ConnEvent
+    ) {.async: (raises: [CancelledError]).} =
+      if handlerPeerId == peerId:
+        inc connectedCalls
+        if connectedCalls == 1:
+          await unblockFirst.wait()
+
+    proc peerHandler(kind: string): PeerEventHandler =
+      return proc(
+          handlerPeerId: PeerId, event: PeerEvent
+      ) {.async: (raises: [CancelledError]).} =
+        if handlerPeerId == peerId:
+          events.add(kind)
+
+    connMngr.addConnEventHandler(connectedHandler, ConnEventKind.Connected)
+    connMngr.addPeerEventHandler(peerHandler("Joined"), PeerEventKind.Joined)
+    connMngr.addPeerEventHandler(peerHandler("Left"), PeerEventKind.Left)
+
+    let
+      first = makeMuxer(peerId, Direction.In)
+      second = makeMuxer(peerId, Direction.Out)
+      firstStore = connMngr.storeMuxer(first)
+    checkUntilTimeout:
+      connectedCalls == 1
+
+    check (await connMngr.storeMuxer(second)).isOk()
+    check events == @["Joined"]
+
+    await first.close()
+    checkUntilTimeout:
+      first notin connMngr
+    unblockFirst.fire()
+    check (await firstStore).isOk()
+    check events == @["Joined"]
+
+    await second.close()
+    checkUntilTimeout:
+      events == @["Joined", "Left"]
 
   asyncTest "drop connections for peer":
     let connMngr = newMaxTotal(maxConnsPerPeer = 2)
@@ -781,18 +865,15 @@ suite "Connection Manager Watermark":
 
     let peers = PeerId.random(3, rng()).tryGet()
     let target = peers[2]
-    let
-      handlerStarted = newAsyncEvent()
-      releaseHandler = newAsyncEvent()
     var events: seq[string]
 
-    proc blockConnected(
+    proc slowConnected(
         peerId: PeerId, event: ConnEvent
     ) {.async: (raises: [CancelledError]).} =
       if peerId == target:
         events.add("Connected")
-        handlerStarted.fire()
-        await releaseHandler.wait()
+        # outlasts a trim loop tick
+        await sleepAsync(300.millis)
 
     proc disconnected(
         peerId: PeerId, event: ConnEvent
@@ -807,7 +888,7 @@ suite "Connection Manager Watermark":
         if peerId == target:
           events.add(kind)
 
-    connMngr.addConnEventHandler(blockConnected, ConnEventKind.Connected)
+    connMngr.addConnEventHandler(slowConnected, ConnEventKind.Connected)
     connMngr.addConnEventHandler(disconnected, ConnEventKind.Disconnected)
     connMngr.addPeerEventHandler(peerHandler("Joined"), PeerEventKind.Joined)
     connMngr.addPeerEventHandler(peerHandler("Left"), PeerEventKind.Left)
@@ -817,13 +898,8 @@ suite "Connection Manager Watermark":
     connMngr.protect(peers[0], "keep")
     connMngr.protect(peers[1], "keep")
 
-    let storeFut = connMngr.storeMuxer(makeMuxer(target))
-    await handlerStarted.wait()
-    checkUntilTimeout:
-      target notin connMngr
-
-    releaseHandler.fire()
-    check (await storeFut).isOk()
+    check (await connMngr.storeMuxer(makeMuxer(target))).isOk()
+    check target notin connMngr
     checkUntilTimeout:
       events == @["Connected", "Disconnected"]
 

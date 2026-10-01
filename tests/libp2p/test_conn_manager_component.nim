@@ -20,12 +20,15 @@ proc newWatermarkSwitch(
     highWater: int,
     gracePeriod: Duration = 0.seconds,
     silencePeriod: Duration = 0.seconds,
+    periodicTrimInterval: Duration = 100.millis,
     outboundBonus: int = 0,
     decayResolution: Duration = 1.minutes,
     maxConnections: int = 0,
 ): Switch {.raises: [LPError].} =
   var builder = makeStandardSwitchBuilder()
-    .withWatermarkPolicy(lowWater, highWater, gracePeriod, silencePeriod)
+    .withWatermarkPolicy(
+      lowWater, highWater, gracePeriod, silencePeriod, periodicTrimInterval
+    )
     .withPeerScoring(
       PeerScoring(outboundBonus: outboundBonus, decayResolution: decayResolution)
     )
@@ -507,7 +510,16 @@ suite "Connection Manager Watermark/Scoring Component":
       if peerId == prunedId:
         await sleepAsync(connectedHandlerDelay)
 
+    var peerEvents: seq[PeerEventKind]
+    proc peerHandler(
+        peerId: PeerId, event: PeerEvent
+    ) {.async: (raises: [CancelledError]).} =
+      if peerId == prunedId:
+        peerEvents.add(event.kind)
+
     node.connManager.addConnEventHandler(connectedHandler, ConnEventKind.Connected)
+    node.connManager.addPeerEventHandler(peerHandler, PeerEventKind.Joined)
+    node.connManager.addPeerEventHandler(peerHandler, PeerEventKind.Left)
 
     # protect peers[0] so it is the only peer the trim is allowed to keep
     await connect(peers[0], node)
@@ -523,6 +535,7 @@ suite "Connection Manager Watermark/Scoring Component":
     checkUntilTimeout:
       not node.isConnected(prunedId)
       prunedId notin gossip.peers
+    check peerEvents.len == 0
 
   asyncTest "score and protection are persisted between disconnections":
     let node = newWatermarkSwitch(1, 2)

@@ -310,6 +310,7 @@ proc withWatermarkPolicy*(
     highWater: int,
     gracePeriod: Duration = 0.minutes,
     silencePeriod: Duration = 10.seconds,
+    periodicTrimInterval: Duration = DefaultPeriodicTrimInterval,
 ): SwitchBuilder =
   ## Enable hi/lo watermark connection management.
   ## When connected peers exceed `highWater`, the connection manager trims
@@ -318,12 +319,14 @@ proc withWatermarkPolicy*(
   ## a hard semaphore cap and active trimming simultaneously.
   doAssert lowWater > 0, "lowWater must be > 0"
   doAssert highWater > lowWater, "highWater must be > lowWater"
+  doAssert periodicTrimInterval > ZeroDuration, "periodicTrimInterval must be > 0"
   b.watermark = Opt.some(
     WatermarkPolicy(
       lowWater: lowWater,
       highWater: highWater,
       gracePeriod: gracePeriod,
       silencePeriod: silencePeriod,
+      periodicTrimInterval: periodicTrimInterval,
     )
   )
   b
