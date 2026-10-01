@@ -36,6 +36,7 @@ proc newWatermark*(
     highWater: int,
     gracePeriod: Duration = 0.seconds,
     silencePeriod: Duration = 0.seconds,
+    periodicTrimInterval: Duration = 100.millis,
     outboundBonus: int = 0,
     decayResolution = 1.minutes,
 ): ConnManager =
@@ -44,6 +45,7 @@ proc newWatermark*(
     highWater: highWater,
     gracePeriod: gracePeriod,
     silencePeriod: silencePeriod,
+    periodicTrimInterval: periodicTrimInterval,
   )
   let scCfg =
     PeerScoring(outboundBonus: outboundBonus, decayResolution: decayResolution)
@@ -360,7 +362,89 @@ suite "Connection Manager":
     check (await storeFut).isOk()
 
     checkUntilTimeout:
-      events == @["Connected", "Left", "Disconnected"]
+      events == @["Connected", "Disconnected"]
+
+  asyncTest "a second muxer of a joined peer emits no extra Joined or Left":
+    let connMngr = newMaxTotal(maxConnsPerPeer = 2)
+    defer:
+      await connMngr.stop()
+
+    var events: seq[string]
+    proc peerHandler(kind: string): PeerEventHandler =
+      return proc(
+          handlerPeerId: PeerId, event: PeerEvent
+      ) {.async: (raises: [CancelledError]).} =
+        if handlerPeerId == peerId:
+          events.add(kind)
+
+    connMngr.addPeerEventHandler(peerHandler("Joined"), PeerEventKind.Joined)
+    connMngr.addPeerEventHandler(peerHandler("Left"), PeerEventKind.Left)
+
+    let
+      first = makeMuxer(peerId, Direction.In)
+      second = makeMuxer(peerId, Direction.Out)
+    check (await connMngr.storeMuxer(first)).isOk()
+    check (await connMngr.storeMuxer(second)).isOk()
+    check events == @["Joined"]
+
+    await first.close()
+    checkUntilTimeout:
+      first notin connMngr
+    check events == @["Joined"]
+
+    await second.close()
+    checkUntilTimeout:
+      events == @["Joined", "Left"]
+
+  asyncTest "a sibling muxer emits Joined when the first muxer drops before Joined":
+    let connMngr = newMaxTotal(maxConnsPerPeer = 2)
+    defer:
+      await connMngr.stop()
+
+    let unblockFirst = newAsyncEvent()
+    var
+      connectedCalls = 0
+      events: seq[string]
+
+    proc connectedHandler(
+        handlerPeerId: PeerId, event: ConnEvent
+    ) {.async: (raises: [CancelledError]).} =
+      if handlerPeerId == peerId:
+        inc connectedCalls
+        if connectedCalls == 1:
+          await unblockFirst.wait()
+
+    proc peerHandler(kind: string): PeerEventHandler =
+      return proc(
+          handlerPeerId: PeerId, event: PeerEvent
+      ) {.async: (raises: [CancelledError]).} =
+        if handlerPeerId == peerId:
+          events.add(kind)
+
+    connMngr.addConnEventHandler(connectedHandler, ConnEventKind.Connected)
+    connMngr.addPeerEventHandler(peerHandler("Joined"), PeerEventKind.Joined)
+    connMngr.addPeerEventHandler(peerHandler("Left"), PeerEventKind.Left)
+
+    let
+      first = makeMuxer(peerId, Direction.In)
+      second = makeMuxer(peerId, Direction.Out)
+      firstStore = connMngr.storeMuxer(first)
+    checkUntilTimeout:
+      connectedCalls == 1
+
+    check (await connMngr.storeMuxer(second)).isOk()
+    check events == @["Joined"]
+
+    await first.close()
+    checkUntilTimeout:
+      first notin connMngr
+    unblockFirst.fire()
+    check (await firstStore).isOk()
+    check events == @["Joined"]
+
+    await second.close()
+    checkUntilTimeout:
+      events == @["Joined", "Left"]
 
   asyncTest "drop connections for peer":
     let connMngr = newMaxTotal(maxConnsPerPeer = 2)
@@ -641,6 +725,49 @@ suite "Connection Manager Watermark":
 
     await connMngr.stop()
 
+  asyncTest "peers are trimmed after their grace period ends":
+    let connMngr =
+      newWatermark(1, 2, gracePeriod = 1.seconds, silencePeriod = 50.millis)
+
+    discard await storeMuxers(connMngr, 5)
+    check connMngr.getConnections().len == 5
+
+    checkUntilTimeout:
+      connMngr.getConnections().len == 1
+
+    await connMngr.stop()
+
+  asyncTest "a trim skipped by the silence period runs later":
+    let connMngr = newWatermark(1, 2, silencePeriod = 1.seconds)
+
+    discard await storeMuxers(connMngr, 3)
+    check connMngr.getConnections().len == 1
+
+    discard await storeMuxers(connMngr, 3)
+    check connMngr.getConnections().len == 4
+
+    checkUntilTimeout:
+      connMngr.getConnections().len == 1
+
+    await connMngr.stop()
+
+  asyncTest "trim loop runs again after a restart":
+    let connMngr =
+      newWatermark(1, 2, gracePeriod = 1.seconds, silencePeriod = 50.millis)
+
+    discard await storeMuxers(connMngr, 3)
+    await connMngr.stop()
+    check connMngr.getConnections().len == 0
+
+    connMngr.start()
+    discard await storeMuxers(connMngr, 3)
+    check connMngr.getConnections().len == 3
+
+    checkUntilTimeout:
+      connMngr.getConnections().len == 1
+
+    await connMngr.stop()
+
   asyncTest "getIncomingSlot does not block in watermark mode":
     let connMngr = newWatermark(1, 5)
 
@@ -730,6 +857,51 @@ suite "Connection Manager Watermark":
 
     let readyState = await connMngr.waitForPeerReady(prunedPeer, 50.millis)
     check not readyState
+
+  asyncTest "periodic trim of an unjoined peer emits neither Joined nor Left":
+    let connMngr = newWatermark(1, 2)
+    defer:
+      await connMngr.stop()
+
+    let peers = PeerId.random(3, rng()).tryGet()
+    let target = peers[2]
+    var events: seq[string]
+
+    proc slowConnected(
+        peerId: PeerId, event: ConnEvent
+    ) {.async: (raises: [CancelledError]).} =
+      if peerId == target:
+        events.add("Connected")
+        # outlasts a trim loop tick
+        await sleepAsync(300.millis)
+
+    proc disconnected(
+        peerId: PeerId, event: ConnEvent
+    ) {.async: (raises: [CancelledError]).} =
+      if peerId == target:
+        events.add("Disconnected")
+
+    proc peerHandler(kind: string): PeerEventHandler =
+      return proc(
+          peerId: PeerId, event: PeerEvent
+      ) {.async: (raises: [CancelledError]).} =
+        if peerId == target:
+          events.add(kind)
+
+    connMngr.addConnEventHandler(slowConnected, ConnEventKind.Connected)
+    connMngr.addConnEventHandler(disconnected, ConnEventKind.Disconnected)
+    connMngr.addPeerEventHandler(peerHandler("Joined"), PeerEventKind.Joined)
+    connMngr.addPeerEventHandler(peerHandler("Left"), PeerEventKind.Left)
+
+    check (await connMngr.storeMuxer(makeMuxer(peers[0]))).isOk()
+    check (await connMngr.storeMuxer(makeMuxer(peers[1]))).isOk()
+    connMngr.protect(peers[0], "keep")
+    connMngr.protect(peers[1], "keep")
+
+    check (await connMngr.storeMuxer(makeMuxer(target))).isOk()
+    check target notin connMngr
+    checkUntilTimeout:
+      events == @["Connected", "Disconnected"]
 
 suite "Connection Manager Scoring":
   teardown:

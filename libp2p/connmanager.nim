@@ -29,6 +29,7 @@ const
   DefaultMaxConnections = 50
   DefaultMaxConnectionsPerPeer = 2
   ConnectionsUnlimited = high(int)
+  DefaultPeriodicTrimInterval* = 90.seconds
 
 type
   DecayFn* = proc(value: int, elapsed: Duration): int {.gcsafe, raises: [].}
@@ -57,6 +58,8 @@ type
     highWater*: int ## peer count that triggers a trim cycle
     gracePeriod*: Duration ## newly connected peers are exempt from trimming
     silencePeriod*: Duration ## minimum interval between trim cycles
+    periodicTrimInterval*: Duration = DefaultPeriodicTrimInterval
+      ## how often trims skipped by the grace or silence period are retried
 
   ConnectionLimits* = object
     ## Configuration for connection limits. Construct via `ConnectionLimits.maxTotal`
@@ -117,6 +120,7 @@ type
     readyEvents: Table[PeerId, Future[void].Raising([CancelledError])]
     readyWaiters: Table[PeerId, int]
     readyPeers: HashSet[PeerId]
+    joinedPeers: HashSet[PeerId]
     expectedConnectionsOverLimit*: Table[(PeerId, Direction), Future[Muxer]]
     peerStore*: PeerStore
     watermark: Opt[WatermarkPolicy]
@@ -128,8 +132,9 @@ type
     staticTags: Table[PeerId, Table[string, int]]
     decayingTags: Table[PeerId, Table[string, DecayingTagValue]]
     decayLoopFut: Future[void]
+    trimLoopFut: Future[void]
     onCloseFuts: seq[Future[void]]
-    peerEventFuts: seq[Future[void]]
+    backgroundFuts: seq[Future[void]]
     slotMonitorFuts: seq[Future[void]]
 
   ConnectionSlot* = object
@@ -367,6 +372,16 @@ proc removePeerEventHandler*(
 proc triggerPeerEvents*(
     c: ConnManager, peerId: PeerId, event: PeerEvent
 ) {.async: (raises: [CancelledError]).} =
+  case event.kind
+  of PeerEventKind.Joined:
+    if c.joinedPeers.containsOrIncl(peerId):
+      return
+  of PeerEventKind.Left:
+    if c.joinedPeers.missingOrExcl(peerId):
+      return
+  of PeerEventKind.Identified:
+    discard
+
   if c.peerEvents[event.kind].len == 0:
     return
 
@@ -500,6 +515,19 @@ proc triggerTrimAfter(
     return
   c.triggerTrim()
 
+proc runTrimLoop(
+    c: ConnManager, interval: Duration
+) {.async: (raises: [CancelledError]).} =
+  ## Retries trims that the grace or silence period skipped.
+  while c.running:
+    await sleepAsync(interval)
+    c.triggerTrim()
+
+proc startTrimLoop(c: ConnManager) =
+  c.watermark.ifValue(wm):
+    if c.running and (c.trimLoopFut.isNil() or c.trimLoopFut.finished()):
+      c.trimLoopFut = c.runTrimLoop(wm.periodicTrimInterval)
+
 proc storeMuxer*(
     c: ConnManager, muxer: Muxer
 ): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
@@ -554,18 +582,17 @@ proc storeMuxer*(
     trace "Muxer dropped before peer joined", muxer, peerId
     return ok()
 
-  var joinedEvent: Future[void].Raising([CancelledError])
-  if isNewPeer:
-    joinedEvent = c.triggerPeerEvents(
-      peerId, PeerEvent(kind: PeerEventKind.Joined, initiator: dir == Direction.Out)
-    )
-    c.peerEventFuts.trackFut(joinedEvent)
+  # a sibling muxer of a new peer can be dropped before it emits Joined
+  let joinedEvent = c.triggerPeerEvents(
+    peerId, PeerEvent(kind: PeerEventKind.Joined, initiator: dir == Direction.Out)
+  )
+  c.backgroundFuts.trackFut(joinedEvent)
 
   if c.watermark.isSome:
-    if isNewPeer:
-      c.connectedAt[peerId] = Moment.now()
+    c.startTrimLoop()
+    discard c.connectedAt.hasKeyOrPut(peerId, Moment.now())
     if c.muxerStore.countPeers() > c.watermark.get().highWater:
-      c.peerEventFuts.trackFut(c.triggerTrimAfter(joinedEvent))
+      c.backgroundFuts.trackFut(c.triggerTrimAfter(joinedEvent))
 
   trace "Stored muxer",
     muxer, direction = $muxer.connection.dir, peers = c.muxerStore.countPeers()
@@ -748,6 +775,7 @@ proc start*(c: ConnManager) =
     return
   c.running = true
   c.decayLoopFut = c.runDecayLoop()
+  c.startTrimLoop()
 
 proc tagPeerDecaying*(
     c: ConnManager,
@@ -791,6 +819,7 @@ proc trimConnections(c: ConnManager) {.async: (raises: []).} =
   libp2p_connmgr_trim_total.inc()
   let wm = c.watermark.get()
   let now = Moment.now()
+  c.lastTrim = Opt.some(now)
 
   var candidates: seq[(int, Moment, PeerId)]
   for peerId in c.muxerStore.getPeers():
@@ -824,8 +853,6 @@ proc trimConnections(c: ConnManager) {.async: (raises: []).} =
   except CancelledError:
     trace "Watermark trim connection was cancelled"
 
-  c.lastTrim = Opt.some(Moment.now())
-
 proc triggerTrim*(c: ConnManager) {.gcsafe, raises: [].} =
   ## Schedules a trim cycle if none is running and the silence period has elapsed.
   if not c.trimFut.isNil and not c.trimFut.finished:
@@ -854,11 +881,14 @@ proc stop*(c: ConnManager) {.async: (raises: [CancelledError]).} =
   if not c.decayLoopFut.isNil:
     await c.decayLoopFut.cancelAndWait()
 
+  if not c.trimLoopFut.isNil():
+    await c.trimLoopFut.cancelAndWait()
+
   if not c.trimFut.isNil:
     await c.trimFut.cancelAndWait()
 
-  await c.peerEventFuts.cancelAndWait()
-  c.peerEventFuts = @[]
+  await c.backgroundFuts.cancelAndWait()
+  c.backgroundFuts = @[]
   await c.slotMonitorFuts.cancelAndWait()
   c.slotMonitorFuts = @[]
 
