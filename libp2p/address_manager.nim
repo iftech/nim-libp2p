@@ -10,7 +10,7 @@
 
 import std/[sequtils, tables]
 import chronos, chronos/transports/[osnet, ipnet]
-import multiaddress, multicodec, peerid, peerinfo, wire, utils/heartbeat
+import multiaddress, multicodec, peerid, peerinfo, wire, utils/[future, heartbeat]
 import protocols/connectivity/autonat/types
 
 export NetworkReachability
@@ -89,6 +89,7 @@ type
     verifyInterval: Duration
     verifyTimeout: Duration
     verifyFut: Future[void]
+    reachabilityNotifyFuts: seq[Future[void]]
     onReachabilityChange: ReachabilityChangeHandler
     notifiedReachability: NetworkReachability
     deriveIdentify: bool
@@ -435,22 +436,34 @@ func announceSet(
 
 proc notifyReachability(self: AddressManager) {.async: (raises: [CancelledError]).} =
   let
-    summary = self.reachability()
-    notified = self.notifiedReachability
-  if summary == notified:
-    return
-  info "Network reachability changed", previous = notified, current = summary
-  if self.onReachabilityChange.isNil():
-    self.notifiedReachability = summary
+    currentReachability = self.reachability()
+    previousReachability = self.notifiedReachability
+
+  if currentReachability == previousReachability:
     return
 
-  # the marker moves first: a handler which triggers a mapper pass would notify twice
-  self.notifiedReachability = summary
-  try:
-    await self.onReachabilityChange(summary)
-  except CancelledError as e:
-    self.notifiedReachability = notified
-    raise e
+  info "Network reachability changed",
+    previous = previousReachability, current = currentReachability
+
+  self.notifiedReachability = currentReachability
+
+  if not self.onReachabilityChange.isNil():
+    try:
+      await self.onReachabilityChange(currentReachability)
+    except CancelledError as e:
+      self.notifiedReachability = previousReachability
+      raise e
+
+proc notifyReachabilitySoon(self: AddressManager) =
+  ## resolve can run under PeerInfo's mapper lock. A handler may update
+  ## PeerInfo and acquire that lock again, so the mapper must not await it.
+  proc notify() {.async: (raises: []).} =
+    try:
+      await self.notifyReachability()
+    except CancelledError:
+      self.notifiedReachability = NetworkReachability.Unknown
+
+  self.reachabilityNotifyFuts.trackFut(notify())
 
 func explicitAddrs(self: AddressManager): seq[MultiAddress] =
   if self.peerInfo.isNil():
@@ -479,7 +492,7 @@ proc resolve(
 
   self.track(produced, addrs & announced)
   # a withdrawal changes the summary without a verdict: tell the observers now
-  await self.notifyReachability()
+  self.notifyReachabilitySoon()
 
   # the operator picks what is announced; no mapper rewrites that choice
   if announced.len > 0:
@@ -662,6 +675,8 @@ proc stop*(self: AddressManager) =
   if not self.verifyFut.isNil():
     self.verifyFut.cancelSoon()
     self.verifyFut = nil
+  self.reachabilityNotifyFuts.cancelSoon()
+  self.reachabilityNotifyFuts.setLen(0)
   self.observations.setLen(0)
   self.candidates.clear()
   self.chainAddrs.clear()

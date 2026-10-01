@@ -812,6 +812,61 @@ suite "AddressManager address mapper":
     await peerInfo.update()
     check notified == @[NetworkReachability.Reachable, NetworkReachability.Unknown]
 
+  asyncTest "a reachability handler may update PeerInfo without deadlocking":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      mapper = constantMapper(@[mappedAddr])
+      handlerFinished = newAsyncEvent()
+
+    startAndDeferStop(manager, peerInfo)
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      if reachability == NetworkReachability.Reachable:
+        await peerInfo.update()
+        handlerFinished.fire()
+
+    manager.addMapper(mapper, AddrSource.Upnp)
+    await peerInfo.update()
+    manager.update(mappedAddr, AddrState.Confirmed)
+    await peerInfo.update()
+
+    await handlerFinished.wait().wait(1.seconds)
+    check peerInfo.addrs == @[mappedAddr]
+
+  asyncTest "stopping cancels a pending reachability handler":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      mapper = constantMapper(@[mappedAddr])
+      handlerStarted = newAsyncEvent()
+      handlerCancelled = newAsyncEvent()
+
+    startAndDeferStop(manager, peerInfo)
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      handlerStarted.fire()
+      try:
+        await sleepAsync(1.hours)
+      except CancelledError as exc:
+        handlerCancelled.fire()
+        raise exc
+
+    manager.addMapper(mapper, AddrSource.Upnp)
+    await peerInfo.update()
+    manager.update(mappedAddr, AddrState.Confirmed)
+    await peerInfo.update()
+    await handlerStarted.wait().wait(1.seconds)
+
+    manager.stop()
+    await handlerCancelled.wait().wait(1.seconds)
+
   asyncTest "a candidate a feeder also offers survives the mapper which drops it":
     let
       listenAddr = ma("/ip4/192.168.0.2/tcp/1")
