@@ -25,11 +25,8 @@ suite "Errors":
 
   test "valueOrRaise raises the requested exception with the message":
     let r = LPResult[int].err("bad address")
-    try:
+    expectMsg DemoError, "bad address":
       discard r.valueOrRaise(DemoError)
-      raiseAssert "should not get here"
-    except DemoError as e:
-      check e.msg == "bad address"
 
   test "valueOrRaise evaluates its argument once":
     var calls = 0
@@ -46,11 +43,8 @@ suite "Errors":
 
   test "onErrorRaise raises the requested exception with the message":
     let r = Result[void, cstring].err("invalid parameters")
-    try:
+    expectMsg DemoError, "invalid parameters":
       r.onErrorRaise(DemoError)
-      raiseAssert "should not get here"
-    except DemoError as e:
-      check e.msg == "invalid parameters"
 
   test "onErrorRaise evaluates its argument once":
     var calls = 0
