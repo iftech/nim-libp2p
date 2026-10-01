@@ -70,7 +70,7 @@ macro expectMsgContains*(exception: typed, msg: typed, body: untyped): untyped =
 
   let lineInfo = newLit(body.lineInfo)
 
-  quote do:
+  quote:
     try:
       `body`
       checkpoint(`lineInfo` & ": Expect Failed, no exception was thrown.")
@@ -79,14 +79,14 @@ macro expectMsgContains*(exception: typed, msg: typed, body: untyped): untyped =
       check strutils.contains(exc.msg, `msg`)
     except CatchableError as exc:
       checkpoint(
-        `lineInfo` & ": Expect Failed, unexpected " & $exc.name &
-          " (" & exc.msg & ") was thrown.\n" & exc.getStackTrace()
+        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
+          ") was thrown.\n" & exc.getStackTrace()
       )
       fail()
     except Defect as exc:
       checkpoint(
-        `lineInfo` & ": Expect Failed, unexpected " & $exc.name &
-          " (" & exc.msg & ") was thrown.\n" & exc.getStackTrace()
+        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
+          ") was thrown.\n" & exc.getStackTrace()
       )
       fail()
 
@@ -101,7 +101,7 @@ macro expectMsg*(exception: typed, msg: typed, body: untyped): untyped =
 
   let lineInfo = newLit(body.lineInfo)
 
-  quote do:
+  quote:
     try:
       `body`
       checkpoint(`lineInfo` & ": Expect Failed, no exception was thrown.")
@@ -110,14 +110,14 @@ macro expectMsg*(exception: typed, msg: typed, body: untyped): untyped =
       check exc.msg == `msg`
     except CatchableError as exc:
       checkpoint(
-        `lineInfo` & ": Expect Failed, unexpected " & $exc.name &
-          " (" & exc.msg & ") was thrown.\n" & exc.getStackTrace()
+        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
+          ") was thrown.\n" & exc.getStackTrace()
       )
       fail()
     except Defect as exc:
       checkpoint(
-        `lineInfo` & ": Expect Failed, unexpected " & $exc.name &
-          " (" & exc.msg & ") was thrown.\n" & exc.getStackTrace()
+        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
+          ") was thrown.\n" & exc.getStackTrace()
       )
       fail()
 

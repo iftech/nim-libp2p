@@ -339,7 +339,8 @@ suite "AutoTLS on a switch":
     defer:
       await switch.stop()
 
-    expectMsgContains LPError, "autotls certificate was not available before the certificate deadline":
+    expectMsgContains LPError,
+      "autotls certificate was not available before the certificate deadline":
       await switch.start()
 
   asyncTest "a switch listening only on ws starts without an autotls certificate":
