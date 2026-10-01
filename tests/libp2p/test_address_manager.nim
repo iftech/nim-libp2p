@@ -539,12 +539,14 @@ suite "AddressManager verification":
     await sleepAsync(VerifyInterval * 3)
     check notified == @[NetworkReachability.Reachable]
 
-  asyncTest "a cancelled reachability notification is retried":
+  asyncTest "a cancelled reachability notification is not retried":
     let
       address = ma("/ip4/1.2.3.4/tcp/1")
       verifier = makeStubVerifier(@[verdict(address, AddrState.Confirmed)])
       manager = makeManager(verifyInterval = 1.minutes, verifier = verifier)
       firstCall = newAsyncEvent()
+      handlerCancelled = newAsyncEvent()
+      blockHandler = newAsyncEvent()
 
     var calls = 0
     manager.onReachabilityChange = proc(
@@ -553,7 +555,11 @@ suite "AddressManager verification":
       calls.inc()
       if calls == 1:
         firstCall.fire()
-        await sleepAsync(1.hours)
+        try:
+          await blockHandler.wait()
+        except CancelledError as e:
+          handlerCancelled.fire()
+          raise e
 
     manager.add(address, AddrSource.Listen)
     startAndDeferStop(manager)
@@ -561,9 +567,12 @@ suite "AddressManager verification":
 
     # restarting the heartbeat cancels the pending first invocation
     manager.verifyInterval = VerifyInterval
+    await handlerCancelled.wait()
 
-    checkUntilTimeout:
-      calls == 2
+    verifier.ran.clear()
+    manager.triggerVerification()
+    await verifier.ran.wait()
+    check calls == 1
 
   asyncTest "triggerVerification runs a pass without waiting for the interval":
     let

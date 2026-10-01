@@ -448,11 +448,7 @@ proc notifyReachability(self: AddressManager) {.async: (raises: [CancelledError]
   self.notifiedReachability = currentReachability
 
   if not self.onReachabilityChange.isNil():
-    try:
-      await self.onReachabilityChange(currentReachability)
-    except CancelledError as e:
-      self.notifiedReachability = previousReachability
-      raise e
+    await self.onReachabilityChange(currentReachability)
 
 proc notifyReachabilitySoon(self: AddressManager) =
   ## resolve can run under PeerInfo's mapper lock. A handler may update
@@ -461,7 +457,7 @@ proc notifyReachabilitySoon(self: AddressManager) =
     try:
       await self.notifyReachability()
     except CancelledError:
-      self.notifiedReachability = NetworkReachability.Unknown
+      discard
 
   self.reachabilityNotifyFuts.trackFut(notify())
 
