@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, std/strutils, stew/byteutils
+import chronos, stew/byteutils
 from times import now
 import
   ../../../libp2p/[

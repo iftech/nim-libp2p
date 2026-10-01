@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, json, net, results, sequtils, strutils, uri
+import chronos, json, net, results, sequtils, uri
 from times import now, format, initDuration, `+`
 import
   ../../../libp2p/[
