@@ -844,7 +844,7 @@ suite "AddressManager address mapper":
     manager.update(mappedAddr, AddrState.Confirmed)
     await peerInfo.update()
 
-    await handlerFinished.wait().wait(1.seconds)
+    await handlerFinished.wait()
     check peerInfo.addrs == @[mappedAddr]
 
   asyncTest "reachability handlers are ordered and do not overlap":
