@@ -569,9 +569,10 @@ suite "AddressManager verification":
     manager.verifyInterval = VerifyInterval
     await handlerCancelled.wait()
 
-    verifier.ran.clear()
-    manager.triggerVerification()
-    await verifier.ran.wait()
+    # `verifier.ran` fires before its verdict reaches `notifyReachability`, so
+    # let several full passes finish before checking that cancellation did not
+    # cause the reachability change to be delivered again.
+    await sleepAsync(VerifyInterval * 3)
     check calls == 1
 
   asyncTest "triggerVerification runs a pass without waiting for the interval":
