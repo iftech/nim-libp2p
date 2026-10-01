@@ -900,7 +900,7 @@ suite "AddressManager address mapper":
     ) {.async: (raises: [CancelledError]).} =
       handlerStarted.fire()
       try:
-        await sleepAsync(1.hours)
+        await newAsyncEvent().wait()
       except CancelledError as exc:
         handlerCancelled.fire()
         raise exc
