@@ -846,6 +846,43 @@ suite "AddressManager address mapper":
     await handlerFinished.wait().wait(1.seconds)
     check peerInfo.addrs == @[mappedAddr]
 
+  asyncTest "reachability handlers are ordered and do not overlap":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      mapper = constantMapper(@[mappedAddr])
+      firstStarted = newAsyncEvent()
+      releaseFirst = newAsyncEvent()
+      secondStarted = newAsyncEvent()
+
+    startAndDeferStop(manager, peerInfo)
+    var notified: seq[NetworkReachability]
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      notified.add(reachability)
+      if notified.len == 1:
+        firstStarted.fire()
+        await releaseFirst.wait()
+      else:
+        secondStarted.fire()
+
+    manager.addMapper(mapper, AddrSource.Upnp)
+    await peerInfo.update()
+    manager.update(mappedAddr, AddrState.Confirmed)
+    await peerInfo.update()
+    await firstStarted.wait()
+
+    manager.update(mappedAddr, AddrState.Unreachable)
+    await peerInfo.update()
+    check notified == @[NetworkReachability.Reachable]
+
+    releaseFirst.fire()
+    await secondStarted.wait()
+    check notified == @[NetworkReachability.Reachable, NetworkReachability.NotReachable]
+
   asyncTest "stopping cancels a pending reachability handler":
     let
       listenAddr = ma("/ip4/192.168.0.2/tcp/1")

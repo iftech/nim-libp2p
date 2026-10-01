@@ -89,7 +89,8 @@ type
     verifyInterval: Duration
     verifyTimeout: Duration
     verifyFut: Future[void]
-    reachabilityNotifyFuts: seq[Future[void]]
+    reachabilityNotifyTail: Future[void].Raising([])
+    reachabilityNotifyFuts: seq[Future[void].Raising([])]
     onReachabilityChange: ReachabilityChangeHandler
     notifiedReachability: NetworkReachability
     deriveIdentify: bool
@@ -450,16 +451,30 @@ proc notifyReachability(self: AddressManager) {.async: (raises: [CancelledError]
   if not self.onReachabilityChange.isNil():
     await self.onReachabilityChange(currentReachability)
 
-proc notifyReachabilitySoon(self: AddressManager) =
-  ## resolve can run under PeerInfo's mapper lock. A handler may update
-  ## PeerInfo and acquire that lock again, so the mapper must not await it.
+proc queueReachabilityNotification(self: AddressManager): Future[void].Raising([]) =
+  ## Each notification waits for its predecessor before observing the summary.
+  ## Besides preserving notification order, this keeps handlers from overlapping.
+  let previous = self.reachabilityNotifyTail
+
   proc notify() {.async: (raises: []).} =
     try:
+      if not previous.isNil():
+        await previous
       await self.notifyReachability()
     except CancelledError:
       discard
 
-  self.reachabilityNotifyFuts.trackFut(notify())
+  let current = notify()
+  self.reachabilityNotifyTail = current
+  # Keep every queued future so stop can cancel both the active handler and
+  # notifications still waiting on it.
+  self.reachabilityNotifyFuts.trackFut(current)
+  current
+
+proc notifyReachabilitySoon(self: AddressManager) =
+  ## resolve can run under PeerInfo's mapper lock. A handler may update
+  ## PeerInfo and acquire that lock again, so the mapper must not await it.
+  discard self.queueReachabilityNotification()
 
 func explicitAddrs(self: AddressManager): seq[MultiAddress] =
   if self.peerInfo.isNil():
@@ -624,7 +639,7 @@ proc verifyCandidates(self: AddressManager) {.async: (raises: [CancelledError]).
     self.verifying = false
   await self.runVerifier()
   # a withdrawn candidate changes the summary without a verdict, so reconcile every run
-  await self.notifyReachability()
+  await self.queueReachabilityNotification()
 
 proc verifyHeartbeat(self: AddressManager) {.async: (raises: [CancelledError]).} =
   heartbeat "AddressManager candidate verification", self.verifyInterval:
@@ -673,6 +688,7 @@ proc stop*(self: AddressManager) =
     self.verifyFut = nil
   self.reachabilityNotifyFuts.cancelSoon()
   self.reachabilityNotifyFuts.setLen(0)
+  self.reachabilityNotifyTail = nil
   self.observations.setLen(0)
   self.candidates.clear()
   self.chainAddrs.clear()
