@@ -7,6 +7,20 @@ import chronos
 from std/exitprocs import nil
 import ./[unittest]
 
+type TestException = object of CatchableError
+
+proc raiseTestException(msg: string) =
+  raise newException(TestException, msg)
+
+suite "exception message helpers":
+  test "expectMsgContains accepts an exception message containing the expected text":
+    expectMsgContains TestException, "expected text":
+      raiseTestException("some expected text in the message")
+
+  test "expectMsg accepts an exception message equal to the expected text":
+    expectMsg TestException, "the expected text":
+      raiseTestException("the expected text")
+
 suite "checkUntilTimeout helpers":
   asyncTest "checkUntilTimeout should pass if the condition is true":
     let a = 2

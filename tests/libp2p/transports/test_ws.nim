@@ -370,12 +370,8 @@ suite "WebSocket transport with autotls":
       rng(),
     )
 
-    var errorMsg = ""
-    try:
+    expectMsgContains TransportStartError, "autotls service did not start before the certificate deadline":
       await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
-    except TransportStartError as exc:
-      errorMsg = exc.msg
-    check "autotls service did not start before the certificate deadline" in errorMsg
 
     check:
       not wstransport.running
@@ -396,13 +392,8 @@ suite "WebSocket transport with autotls":
       rng(),
     )
 
-    var errorMsg = ""
-    try:
+    expectMsgContains TransportStartError, "autotls certificate was not available before the certificate deadline":
       await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
-    except TransportStartError as exc:
-      errorMsg = exc.msg
-    check "autotls certificate was not available before the certificate deadline" in
-      errorMsg
 
     check:
       not wstransport.running
