@@ -69,6 +69,7 @@ macro expectMsgContains*(exception: typed, msg: typed, body: untyped): untyped =
       fails()
 
   let lineInfo = newLit(body.lineInfo)
+  let containsSym = bindSym("contains", brForceOpen)
 
   quote:
     try:
@@ -76,14 +77,14 @@ macro expectMsgContains*(exception: typed, msg: typed, body: untyped): untyped =
       checkpoint(`lineInfo` & ": Expect Failed, no exception was thrown.")
       fail()
     except `exception` as exc:
-      check strutils.contains(exc.msg, `msg`)
+      let expectedMsg = `msg`
+      if not `containsSym`(exc.msg, expectedMsg):
+        checkpoint(
+          `lineInfo` & ": Expect Failed, expected message to contain \"" & expectedMsg &
+            "\", got \"" & exc.msg & "\"."
+        )
+        fail()
     except CatchableError as exc:
-      checkpoint(
-        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
-          ") was thrown.\n" & exc.getStackTrace()
-      )
-      fail()
-    except Defect as exc:
       checkpoint(
         `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
           ") was thrown.\n" & exc.getStackTrace()
@@ -107,14 +108,14 @@ macro expectMsg*(exception: typed, msg: typed, body: untyped): untyped =
       checkpoint(`lineInfo` & ": Expect Failed, no exception was thrown.")
       fail()
     except `exception` as exc:
-      check exc.msg == `msg`
+      let expectedMsg = `msg`
+      if exc.msg != expectedMsg:
+        checkpoint(
+          `lineInfo` & ": Expect Failed, expected message \"" & expectedMsg &
+            "\", got \"" & exc.msg & "\"."
+        )
+        fail()
     except CatchableError as exc:
-      checkpoint(
-        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
-          ") was thrown.\n" & exc.getStackTrace()
-      )
-      fail()
-    except Defect as exc:
       checkpoint(
         `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
           ") was thrown.\n" & exc.getStackTrace()
