@@ -13,6 +13,7 @@ import
   ../../peerinfo,
   ../../stream/connection,
   ../../crypto/crypto,
+  ../../logging,
   ../../utils/shortlog,
   ../../utils/future
 
@@ -76,6 +77,9 @@ const
   DefaultMaxHighPriorityQueueLen* = 256
   DefaultMaxMediumPriorityQueueLen* = 512
   DefaultMaxLowPriorityQueueLen* = 1024
+  DefaultSendStreamRetryBaseDelay* = 1.seconds
+  DefaultSendStreamRetryMaxDelay* = 16.seconds
+  SendStreamRetryJitter = 0.2
 
 type
   PeerRateLimitError* = object of CatchableError
@@ -187,6 +191,10 @@ type
     maxHighPriorityQueueLen*: int
     maxMediumPriorityQueueLen*: int
     maxLowPriorityQueueLen*: int
+    sendStreamRetryBaseDelay*: Duration
+    sendStreamRetryMaxDelay*: Duration
+    sendStreamWarnings: LogRateLimit
+    rng: Rng
     stopped: bool
     customStreamCallbacks*: Opt[CustomStreamCallbacks]
     connectFut: Future[void]
@@ -388,6 +396,7 @@ proc closeSendStream(
 proc connectOnce(
     p: PubSubPeer
 ): Future[void] {.async: (raises: [CancelledError, GetStreamDialError]).} =
+  var opened = false
   try:
     if p.connectedFut.finished:
       p.connectedFut = newFuture[void]()
@@ -410,6 +419,7 @@ proc connectOnce(
     # Topic subscription relies on either connectedFut
     # to be completed, or onEvent to be called later
     p.sendStream = newStream
+    opened = true
     p.address =
       if p.sendStream.observedAddr.isSome:
         Opt.some(p.sendStream.observedAddr.get)
@@ -427,23 +437,42 @@ proc connectOnce(
 
     await p.runHandleLoop(newStream)
   finally:
-    await p.closeSendStream(PubSubPeerEventKind.StreamClosed)
+    if opened:
+      await p.closeSendStream(PubSubPeerEventKind.StreamClosed)
+    else:
+      p.connectedFut.completeOnce()
+
+proc jittered(p: PubSubPeer, delay: Duration): Duration =
+  ## Spread the retries of the peers that lost the same remote together.
+  if delay <= ZeroDuration:
+    return delay
+
+  let span = uint64(float(delay.nanoseconds) * SendStreamRetryJitter)
+  delay - nanoseconds(int64(p.rng.generate(uint64) mod (span + 1)))
+
+func doubled(delay, maxDelay: Duration): Duration =
+  if delay > maxDelay div 2:
+    maxDelay
+  else:
+    delay * 2
 
 proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
+  ## Keeps a send stream open; a failed open retries with capped exponential backoff.
+  var delay = p.sendStreamRetryBaseDelay
   try:
-    # Keep trying to establish a stream while it's possible to do so - the
-    # send stream might get disconnected due to a timeout or an unrelated
-    # issue so we try to get a new one
-    while true:
-      if p.stopped:
-        p.connectedFut.completeOnce()
-        return
-      await connectOnce(p)
+    while not p.stopped:
+      try:
+        await p.connectOnce()
+        delay = p.sendStreamRetryBaseDelay
+      except GetStreamDialError as e:
+        libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
+        if p.sendStreamWarnings.allowLog():
+          debug "Could not establish send stream, retrying",
+            peer = p, err = e.msg, delay
+        await sleepAsync(p.jittered(delay))
+        delay = delay.doubled(p.sendStreamRetryMaxDelay)
   except CancelledError:
     discard
-  except GetStreamDialError as exc:
-    libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
-    trace "Could not establish send stream", err = exc.msg
 
 proc connect*(p: PubSubPeer) =
   if p.stopped or p.connected:
@@ -876,8 +905,15 @@ proc new*(
     maxLowPriorityQueueLen: int = DefaultMaxLowPriorityQueueLen,
     overheadRateLimitOpt: Opt[TokenBucket] = Opt.none(TokenBucket),
     customStreamCallbacks: Opt[CustomStreamCallbacks] = Opt.none(CustomStreamCallbacks),
+    sendStreamRetryBaseDelay: Duration = DefaultSendStreamRetryBaseDelay,
+    sendStreamRetryMaxDelay: Duration = DefaultSendStreamRetryMaxDelay,
+    rng: Rng = newRng(),
 ): T =
   doAssert not handler.isNil, "RPC handler must be set"
+  doAssert sendStreamRetryBaseDelay > ZeroDuration,
+    "send stream retry base delay must be positive"
+  doAssert sendStreamRetryMaxDelay >= sendStreamRetryBaseDelay,
+    "send stream retry max delay must not be below the base delay"
   let response = T(
     getStream: getStream,
     onEvent: onEvent,
@@ -893,6 +929,9 @@ proc new*(
     maxMediumPriorityQueueLen: maxMediumPriorityQueueLen,
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
     customStreamCallbacks: customStreamCallbacks,
+    sendStreamRetryBaseDelay: sendStreamRetryBaseDelay,
+    sendStreamRetryMaxDelay: sendStreamRetryMaxDelay,
+    rng: rng,
   )
   response.sentIHaves.addFirst(default(HashSet[MessageId]))
   response.iDontWants.addFirst(default(HashSet[SaltedId]))
