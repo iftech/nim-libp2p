@@ -429,15 +429,17 @@ proc validateNATConfig*(config: NATConfig): Result[void, string] =
       "NATService: holePunching and reachability are mutually exclusive; " &
         "holePunching already runs AutoNAT v1."
     )
+
+  config.holePunching.ifValue(hp):
+    if hp.maxNumRelays < 1:
+      return err(
+        "NATService: holePunching maxNumRelays must be >= 1; use holePunchingConfig"
+      )
   ok()
 
 proc setupHolePunching(
     self: NATService, switch: Switch, hp: HolePunchingConfig
 ): Result[void, string] =
-  if hp.maxNumRelays < 1:
-    return
-      err("NATService: holePunching maxNumRelays must be >= 1; use holePunchingConfig")
-
   let
     autonatService = AutonatService.new(
       AutonatClient(), self.rng, scheduleInterval = hp.scheduleInterval
