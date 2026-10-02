@@ -86,6 +86,7 @@ type
   ProvidedAdvert* = object
     bytes*: seq[byte]
     callerSupplied*: bool ## Bytes we did not build carry addresses we cannot refresh.
+    signer*: PeerId
 
   Advertiser* = ref object
     running*: HashSet[AdvertiseTask]
@@ -139,7 +140,7 @@ type
     discoConfig*: ServiceDiscoveryConfig
       # can't use name "config", clashes with KadDHT's config
     xprPublishing*: bool
-    signedPeerRecordLoop*: Future[void]
+    xprPublishLoop*: Future[void]
     pruneExpiredAdsLoop*: Future[void]
     refreshServiceTablesLoop*: Future[void]
     advertiserMaintenanceLoop*: Future[void]
