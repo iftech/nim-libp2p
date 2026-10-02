@@ -86,6 +86,7 @@ type
   ProvidedAdvert* = object
     bytes*: seq[byte]
     callerSupplied*: bool ## Bytes we did not build carry addresses we cannot refresh.
+    signer*: PeerId
 
   Advertiser* = ref object
     running*: HashSet[AdvertiseTask]

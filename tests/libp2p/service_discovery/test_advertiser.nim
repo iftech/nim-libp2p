@@ -26,9 +26,7 @@ proc settleStartupRepublish(disco: ServiceDiscovery) {.async.} =
   await disco.addressRepublish
 
 proc cancelRegistrations(disco: ServiceDiscovery) {.async.} =
-  let running = move disco.advertiser.running
-  for task in running:
-    await task.fut.cancelAndWait()
+  await disco.advertiser.cancelRunningTasks()
   await disco.localRegistrationLoop.cancelAndWait()
 
 proc dropCachedAds(disco: ServiceDiscovery) =
@@ -365,6 +363,40 @@ suite "Advertiser - caller-supplied advertisement":
     check:
       disco.advertiser.running.len() == disco.discoConfig.kRegister
       not disco.localRegistrationLoop.finished()
+
+  asyncTest "an advertisement set before start replaces the configured service":
+    let service = makeServiceInfo()
+    let disco = setupServiceDiscoveryNode(services = @[service])
+    let advert = makeAdvertisement(service.id).encode()
+
+    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.services.len == 0
+
+    startAndDeferStop(@[disco])
+    check disco.advertiser.providedAdverts[service.id.hashServiceId()].bytes == advert
+
+  test "an advertisement signed with this node's key replaces the own XPR":
+    let key = PrivateKey.random(rng()).get()
+    let disco = setupServiceDiscoveryNode(privateKey = Opt.some(key))
+    let service = makeServiceInfo()
+    let advert = makeAdvertisement(service.id, key).encode()
+
+    check disco.xprsToPublish().len == 1
+    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.xprsToPublish().mapIt(it.bytes) == @[advert]
+
+  asyncTest "an advert change restarts XPR publishing after the old loop stops":
+    let disco = setupServiceDiscoveryNode()
+    startAndDeferStop(@[disco])
+    let before = disco.xprPublishLoop
+
+    check disco.startAdvertising(makeServiceInfo()).isOk()
+    check disco.xprPublishLoop != before
+
+    discard await before.join().withTimeout(1.seconds)
+    check:
+      before.cancelled()
+      not disco.xprPublishLoop.finished()
 
 suite "Advertiser - maintainRegistrations":
   teardown:

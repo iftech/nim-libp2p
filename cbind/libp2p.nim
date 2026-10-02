@@ -309,7 +309,7 @@ proc mountServiceDiscovery(lib: LibP2P, cfg: ParsedConfig): Result[void, string]
       rng = lib.rng,
       client = cfg.serviceDiscoveryMode == ServiceDiscoveryMode.Client,
       codec = ExtendedServiceDiscoveryCodec,
-      xprPublishing = cfg.serviceDiscoveryXprPublishing,
+      xprPublishing = not cfg.serviceDiscoveryDisableXprPublishing,
     )
     lib.switch.mount(sd)
     lib.kad = Opt.some(KadDHT(sd))
@@ -473,7 +473,7 @@ type CLibp2pConfig {.exportc: "libp2p_config", bycopy.} = object
   mountKad: cint
   mountServiceDiscovery: cint
   serviceDiscoveryMode: cint
-  serviceDiscoveryXprPublishing: cint
+  serviceDiscoveryDisableXprPublishing: cint
   dnsResolver: cstring
   addrs: ptr cstring
   addrsLen: csize_t

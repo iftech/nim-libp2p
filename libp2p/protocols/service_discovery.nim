@@ -37,8 +37,7 @@ proc republishAddresses(
 
   # A restart publishes the new record at once and keeps one record publisher.
   if disco.xprPublishing:
-    await disco.xprPublishLoop.cancelAndWait()
-    disco.xprPublishLoop = disco.maintainXprs()
+    disco.restartXprPublishing()
 
   if not await disco.republishProvidedAdverts().withBucketRefreshTimeout(disco):
     warn "Provided advert republish timed out", timeout = disco.config.bucketRefreshTime
@@ -204,8 +203,9 @@ method stop*(disco: ServiceDiscovery) {.async: (raises: []).} =
     disco.addressRepublish = nil
 
   if not disco.xprPublishLoop.isNil():
-    await disco.xprPublishLoop.cancelAndWait()
+    let loop = disco.xprPublishLoop
     disco.xprPublishLoop = nil
+    await loop.cancelAndWait()
 
   if not disco.advertiserMaintenanceLoop.isNil:
     await disco.advertiserMaintenanceLoop.cancelAndWait()
