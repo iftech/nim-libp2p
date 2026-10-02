@@ -97,7 +97,7 @@ proc configure(self: AutonatV2Service, switch: Switch) =
 
 method start*(
     self: AutonatV2Service, switch: Switch
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: [CancelledError, LPError]).} =
   self.configure(switch)
   let manager = switch.addressManager
   self.config.scheduleInterval.ifValue(interval):

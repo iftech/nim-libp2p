@@ -240,7 +240,7 @@ proc configure(self: AutonatService, switch: Switch) =
 
 method start*(
     self: AutonatService, switch: Switch
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: [CancelledError, LPError]).} =
   self.configure(switch)
   if not self.newConnectedPeerHandler.isNil:
     switch.connManager.addPeerEventHandler(

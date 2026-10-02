@@ -120,7 +120,10 @@ proc configure(self: HPService, switch: Switch) {.raises: [LPError].} =
   ) {.async: (raises: [CancelledError]).} =
     if networkReachability == NetworkReachability.NotReachable and
         not self.autoRelayService.isRunning():
-      await self.autoRelayService.start(switch)
+      try:
+        await self.autoRelayService.start(switch)
+      except LPError as e:
+        error "Unable to start auto-relay service", err = e.msg
     elif networkReachability == NetworkReachability.Reachable and
         self.autoRelayService.isRunning():
       await self.autoRelayService.stop(switch)

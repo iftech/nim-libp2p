@@ -152,7 +152,7 @@ proc innerRun(
 
 method start*(
     self: AutoRelayService, switch: Switch
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: [CancelledError, LPError]).} =
   if self.running:
     return
   self.configure(switch)
