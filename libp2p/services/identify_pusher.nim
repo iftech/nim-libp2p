@@ -153,6 +153,7 @@ method start*(
     p: IdentifyPusher, switch: Switch
 ) {.async: (raises: [CancelledError, LPError]).} =
   if p.started:
+    warn "Identify push service is already started"
     return
 
   switch.tryMount(p.identifyPush).isOkOr:
@@ -168,7 +169,9 @@ method start*(
 
 method stop*(p: IdentifyPusher, switch: Switch) {.async: (raises: [CancelledError]).} =
   if not p.started:
+    warn "Identify push service is already stopped"
     return
+  p.started = false
 
   p.connManager.removePeerEventHandler(p.onLeftHandler, PeerEventKind.Left)
   p.connManager.removePeerEventHandler(p.onIdentifiedHandler, PeerEventKind.Identified)
@@ -179,5 +182,4 @@ method stop*(p: IdentifyPusher, switch: Switch) {.async: (raises: [CancelledErro
 
   p.pushPeers.clear()
 
-  p.started = false
   info "Identify push service stopped"
