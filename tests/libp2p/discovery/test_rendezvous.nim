@@ -96,7 +96,7 @@ proc new*(
     except CancelledError as e:
       raise e
     except CatchableError as e:
-      raiseAssert "exception in rendezvous handler: " & e.msg
+      raiseAssert "Unexpected exception in rendezvous handler: " & e.msg
     finally:
       await stream.close()
 
