@@ -38,8 +38,11 @@ func hash*(a: TimedEntry): Hash =
 
 func expire*(t: var TimedCache, now: Moment = Moment.now()) =
   while t.head != nil and t.head.expiresAt < now:
-    t.entries.excl(t.head)
-    t.head = t.head.next
+    let removed = t.head
+    t.entries.excl(removed)
+    t.head = removed.next
+    removed.next = nil
+    removed.prev = nil
     if t.head != nil:
       t.head.prev = nil
     else:
@@ -78,8 +81,11 @@ func put*[K](cache: var TimedCache[K], key: K, now = Moment.now()): bool =
   func ensureSizeBound(cache: var TimedCache[K]) =
     if cache.maxSize > 0 and cache.entries.len() >= cache.maxSize and key notin cache:
       if cache.head != nil:
-        cache.entries.excl(cache.head)
-        cache.head = cache.head.next
+        let removed = cache.head
+        cache.entries.excl(removed)
+        cache.head = removed.next
+        removed.next = nil
+        removed.prev = nil
         if cache.head != nil:
           cache.head.prev = nil
         else:

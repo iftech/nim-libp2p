@@ -9,7 +9,7 @@ import ../../../libp2p/protocols/pubsub/timedcache
 import ../../tools/unittest
 
 suite "TimedCache":
-  test "expiration clears the new head's backward link":
+  test "expiration detaches removed entries":
     privateAccess(TimedCache[int])
     privateAccess(TimedEntry[int])
     var cache = TimedCache[int].init(5.seconds)
@@ -19,8 +19,14 @@ suite "TimedCache":
       not cache.put(0, now)
       not cache.put(1, now + 1.seconds)
 
+    let
+      first = cache.head
+      last = cache.tail
+
     cache.expire(now + 5.seconds + 1.nanoseconds)
     check:
+      first.next.isNil
+      first.prev.isNil
       cache.len == 1
       0 notin cache
       1 in cache
@@ -32,6 +38,37 @@ suite "TimedCache":
       cache.len == 0
       cache.head.isNil
       cache.tail.isNil
+      last.next.isNil
+      last.prev.isNil
+
+    discard cache.put(2, now + 7.seconds)
+    check:
+      first.next.isNil
+      first.prev.isNil
+      last.next.isNil
+      last.prev.isNil
+
+  test "size eviction detaches removed entries":
+    privateAccess(TimedCache[int])
+    privateAccess(TimedEntry[int])
+    let now = Moment.now()
+
+    for capacity in [1, 3]:
+      var cache = TimedCache[int].init(1.hours, maxSize = capacity)
+      for id in 0 ..< capacity:
+        discard cache.put(id, now)
+      let removed = cache.head
+
+      for id in capacity ..< capacity + 5:
+        discard cache.put(id, now)
+        check:
+          cache.len == capacity
+          0 notin cache
+          id in cache
+          removed.next.isNil
+          removed.prev.isNil
+          cache.head.prev.isNil
+          cache.tail.next.isNil
 
   test "middle insertion preserves expiration order":
     var cache = TimedCache[int].init(5.seconds)
