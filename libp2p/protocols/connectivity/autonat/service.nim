@@ -42,6 +42,7 @@ type
     minConfidence: float
     dialTimeout: Duration
     enableAddressMapper: bool
+    configured: bool
 
   StatusAndConfidenceHandler* = proc(
     networkReachability: NetworkReachability, confidence: Opt[float]
@@ -241,7 +242,9 @@ proc configure(self: AutonatService, switch: Switch) =
 method start*(
     self: AutonatService, switch: Switch
 ) {.async: (raises: [CancelledError, LPError]).} =
-  self.configure(switch)
+  if not self.configured:
+    self.configure(switch)
+    self.configured = true
   if not self.newConnectedPeerHandler.isNil:
     switch.connManager.addPeerEventHandler(
       self.newConnectedPeerHandler, PeerEventKind.Joined

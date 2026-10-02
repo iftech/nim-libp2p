@@ -37,6 +37,7 @@ type
     peerHandler: PeerEventHandler
     client*: AutonatV2Client
     rng: Rng
+    configured: bool
 
   StatusAndConfidenceHandler* = ReachabilityHandler
     ## The name of the replaced single-subscriber API; use `ReachabilityHandler`.
@@ -98,7 +99,9 @@ proc configure(self: AutonatV2Service, switch: Switch) =
 method start*(
     self: AutonatV2Service, switch: Switch
 ) {.async: (raises: [CancelledError, LPError]).} =
-  self.configure(switch)
+  if not self.configured:
+    self.configure(switch)
+    self.configured = true
   let manager = switch.addressManager
   self.config.scheduleInterval.ifValue(interval):
     manager.verifyInterval = interval
