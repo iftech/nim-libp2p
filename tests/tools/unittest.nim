@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import chronos, unittest2, macros
+import chronos, unittest2, std/[macros, strutils]
 import ./trackers
 
 export checkTrackers # TODO: maybe consider importing it on demand?
@@ -58,6 +58,69 @@ template isErrOf*(res: untyped, T: typedesc): bool =
 
 template isParentErrOf*(res: untyped, T: typedesc): bool =
   res.isErr() and res.error.parent of T
+
+macro expectMsgContains*(exception: typed, msg: typed, body: untyped): untyped =
+  ## Test that `body` raises `exception` and its message contains `msg`.
+  runnableExamples:
+    proc fails() =
+      raise newException(ValueError, "invalid value: 42")
+
+    expectMsgContains ValueError, "invalid value":
+      fails()
+
+  let lineInfo = newLit(body.lineInfo)
+  let containsSym = bindSym("contains", brForceOpen)
+
+  quote:
+    try:
+      `body`
+      checkpoint(`lineInfo` & ": Expect Failed, no exception was thrown.")
+      fail()
+    except `exception` as exc:
+      let expectedMsg = `msg`
+      if not `containsSym`(exc.msg, expectedMsg):
+        checkpoint(
+          `lineInfo` & ": Expect Failed, expected message to contain \"" & expectedMsg &
+            "\", got \"" & exc.msg & "\"."
+        )
+        fail()
+    except CatchableError as exc:
+      checkpoint(
+        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
+          ") was thrown.\n" & exc.getStackTrace()
+      )
+      fail()
+
+macro expectMsg*(exception: typed, msg: typed, body: untyped): untyped =
+  ## Test that `body` raises `exception` and its message equals `msg`.
+  runnableExamples:
+    proc fails() =
+      raise newException(ValueError, "invalid value")
+
+    expectMsg ValueError, "invalid value":
+      fails()
+
+  let lineInfo = newLit(body.lineInfo)
+
+  quote:
+    try:
+      `body`
+      checkpoint(`lineInfo` & ": Expect Failed, no exception was thrown.")
+      fail()
+    except `exception` as exc:
+      let expectedMsg = `msg`
+      if exc.msg != expectedMsg:
+        checkpoint(
+          `lineInfo` & ": Expect Failed, expected message \"" & expectedMsg &
+            "\", got \"" & exc.msg & "\"."
+        )
+        fail()
+    except CatchableError as exc:
+      checkpoint(
+        `lineInfo` & ": Expect Failed, unexpected " & $exc.name & " (" & exc.msg &
+          ") was thrown.\n" & exc.getStackTrace()
+      )
+      fail()
 
 proc buildAndExpr(n: NimNode): NimNode =
   # Helper proc to recursively build a combined boolean expression
