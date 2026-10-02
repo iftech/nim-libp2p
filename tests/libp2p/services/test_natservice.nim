@@ -373,6 +373,11 @@ suite "NATService":
       nat.autonatV2Service.isNone()
       nat.networkReachability == NetworkReachability.Unknown
 
+  test "build raises when config has less then one maxNumRelays":
+    let cfg = holePunchingConfig(maxNumRelays = 0)
+    expectMsgContains LPError, "maxNumRelays must be >= 1":
+      discard makeSwitch(cfg, @[TcpAutoAddress])
+
   test "hole-punching paired with AutonatV2 reachability is rejected at build":
     # The realistic path: two withNAT calls for the conflicting concerns.
     expectMsgContains LPError, "holePunching and reachability are mutually exclusive":

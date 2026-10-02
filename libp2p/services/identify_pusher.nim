@@ -59,6 +59,7 @@ type
     onIdentifiedHandler: PeerEventHandler
     onLeftHandler: PeerEventHandler
     onPeerInfoUpdated: PeerInfoObserver
+    initialized: bool
 
 proc sendOne(p: IdentifyPusher, peerId: PeerId) {.async: (raises: [CancelledError]).} =
   ## Sends an IdentifyPush message to a single peer.
