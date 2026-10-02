@@ -210,7 +210,7 @@ proc expandDnsAddr(
     let lastPart = ?resolvedAddress[^1]
     if lastPart.protoCode == LPResult[MultiCodec].ok(multiCodec("p2p")):
       let addrPeerId = PeerId.init(?lastPart.protoArgument()).valueOr:
-        return err($error)
+        return err(error)
       addrs.add((?resolvedAddress[0 ..^ 2], Opt.some(addrPeerId)))
     else:
       addrs.add((resolvedAddress, peerId))
@@ -606,9 +606,8 @@ method connect*(
     return
 
   (await self.internalConnect(Opt.some(peerId), addrs, forceDial, reuseConnection, dir)).isOkOr:
-    raise newException(
-      DialFailedError,
-      "failed connect: peer_id=" & $peerId & " addrs=" & $addrs & ": " & error,
+    raise error.toException(
+      DialFailedError, "failed connect: peer_id=" & $peerId & " addrs=" & $addrs
     )
 
 method connect*(
@@ -620,9 +619,7 @@ method connect*(
     let muxed = (
       await self.internalConnect(Opt.some(fullAddress[0]), @[fullAddress[1]], false)
     ).valueOr:
-      raise newException(
-        DialFailedError, "failed connect: address=" & $address & ": " & error
-      )
+      raise error.toException(DialFailedError, "failed connect: address=" & $address)
     return muxed.connection.peerId
 
   if allowUnknownPeerId == false:
@@ -631,9 +628,7 @@ method connect*(
     )
 
   let muxed = (await self.internalConnect(Opt.none(PeerId), @[address], false)).valueOr:
-    raise newException(
-      DialFailedError, "failed connect: address=" & $address & ": " & error
-    )
+    raise error.toException(DialFailedError, "failed connect: address=" & $address)
   return muxed.connection.peerId
 
 proc negotiateStream*(
@@ -697,7 +692,7 @@ proc tryDial*(
       reach = DialReach(),
     )
   ).valueOr:
-    raise newException(DialFailedError, "tryDial failed: " & error)
+    raise error.toException(DialFailedError, "tryDial failed")
   await mux.close()
   mux.connection.observedAddr
 

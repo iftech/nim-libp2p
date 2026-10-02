@@ -67,6 +67,9 @@ type
 func maErr*(msg: string): ref MaError =
   (ref MaError)(msg: msg)
 
+func maErr*(e: LPResultError): ref MaError =
+  maErr($e)
+
 const libp2p_multiaddress_exts* {.strdefine.} = ""
 
 const
@@ -786,11 +789,8 @@ proc toString*(value: MultiAddress): MaResult[string] =
 
 proc `$`*(value: MultiAddress): string =
   ## Return string representation of MultiAddress ``value``.
-  let s = value.toString()
-  if s.isErr:
-    s.error
-  else:
-    s.get()
+  value.toString().valueOr:
+    error.cause
 
 proc protocols*(value: MultiAddress): MaResult[seq[MultiCodec]] =
   ## Returns list of protocol codecs inside of MultiAddress ``value``.

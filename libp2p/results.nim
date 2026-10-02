@@ -15,7 +15,7 @@ type LPResultError* = ref object
   detail*: string
   wrapped: seq[LPResultError] # underlying errors, nearest first, each one unwrapped
 
-type LPResult*[T] = Result[T, string]
+type LPResult*[T] = Result[T, LPResultError]
 
 func init*(T: type LPResultError, cause: string, detail = ""): T =
   T(cause: cause, detail: detail)
@@ -60,7 +60,20 @@ func err*[T](
 ): R =
   R.err(inner.wrapError(outer))
 
-template err*(inner: LPResultError, outer: LPResultError | string): auto =
+func err*[T, E: not LPResultError | string](
+    R: type Result[T, LPResultError], inner: E
+): R =
+  R.err(LPResultError.init($inner))
+
+func err*[T, E: not LPResultError](
+    R: type Result[T, LPResultError], inner: E, outer: string
+): R =
+  R.err(LPResultError.init(outer, $inner))
+
+func err*[T, E](R: type Result[T, string], inner: E, outer: string): R =
+  R.err(outer & ": " & $inner)
+
+template err*[E](inner: E, outer: LPResultError | string): auto =
   err(typeof(result), inner, outer)
 
 func err*[T](R: type Result[T, LPResultError], e: ref CatchableError, msg: string): R =
@@ -96,6 +109,9 @@ func isOfError*[T](r: Result[T, LPResultError], e: LPResultError): bool =
 
 func toException*[E](e: E, X: typedesc): ref X =
   (ref X)(msg: $e)
+
+func toException*[E](e: E, X: typedesc, msg: string): ref X =
+  (ref X)(msg: msg & ": " & $e)
 
 template valueOrRaise*[T: not void, E](r: Result[T, E], X: typedesc): T =
   ## Unwrap `r`, or raise `X` carrying the error message.

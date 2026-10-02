@@ -95,7 +95,7 @@ proc build*(
       )
 
   let signed = SignedExtendedPeerRecord.init(privateKey, record).valueOr:
-    return err("failed to create signed extended peer record: " & $error)
+    return err(error, "failed to create signed extended peer record")
 
   if not signed.isValid():
     return err("encoded XPR exceeds maximum size of " & $MaxXPRSize & " bytes")

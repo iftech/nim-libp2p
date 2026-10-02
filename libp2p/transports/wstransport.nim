@@ -161,7 +161,7 @@ type HostHeaderHook = ref object of Hook
 
 proc hostHeaderHook(host: string): Hook =
   let hook = HostHeaderHook(host: host)
-  hook.append = proc(ctx: Hook, headers: var HttpTable): LPResult[void] =
+  hook.append = proc(ctx: Hook, headers: var HttpTable): Result[void, string] =
     headers.set("Host", HostHeaderHook(ctx).host)
     ok()
   hook
@@ -421,10 +421,9 @@ method start*(
   if not self.secure and self.autotls.isSome() and addrs.anyIt(WSS.match(it)):
     let autotls = self.autotls.get()
     let autotlsCert = (await loadAutotlsCertificate(autotls)).valueOr:
-      raise newException(
+      raise error.toException(
         TransportStartError,
-        "Unable to start WebSocket transport: failed to load autotls certificate. " &
-          $error,
+        "Unable to start WebSocket transport: failed to load autotls certificate",
       )
 
     self.tlsCertificate = autotlsCert.cert
@@ -538,9 +537,9 @@ method dial*(
 
   let secure = WSS.match(address)
   let initAddress = address.initTAddress().valueOr:
-    raise newException(
+    raise error.toException(
       transport.TransportDialError,
-      "WsTransport.dial called with unsupported address " & $address & ". " & error,
+      "WsTransport.dial called with unsupported address " & $address,
     )
   let
     sni = address.getSni()
@@ -583,9 +582,9 @@ method dial*(
 
   let conn = self.connHandler(session, secure, Direction.Out).valueOr:
     safeClose(session)
-    raise newException(
+    raise error.toException(
       transport.TransportDialError,
-      "WsTransport.dial failed to read connection addresses. " & error,
+      "WsTransport.dial failed to read connection addresses",
     )
   conn
 
