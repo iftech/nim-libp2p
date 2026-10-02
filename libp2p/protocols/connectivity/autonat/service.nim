@@ -226,7 +226,7 @@ proc addressMapper(
     addrs.add(processedMA)
   return addrs
 
-method setup*(self: AutonatService, switch: Switch) {.raises: [].} =
+proc configure(self: AutonatService, switch: Switch) =
   self.addressMapper = proc(
       listenAddrs: seq[MultiAddress]
   ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
@@ -241,9 +241,11 @@ method setup*(self: AutonatService, switch: Switch) {.raises: [].} =
 method start*(
     self: AutonatService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
-  switch.connManager.addPeerEventHandler(
-    self.newConnectedPeerHandler, PeerEventKind.Joined
-  )
+  self.configure(switch)
+  if not self.newConnectedPeerHandler.isNil:
+    switch.connManager.addPeerEventHandler(
+      self.newConnectedPeerHandler, PeerEventKind.Joined
+    )
 
   if self.enableAddressMapper:
     switch.addressManager.addMapper(self.addressMapper, AddrSource.Autonat)

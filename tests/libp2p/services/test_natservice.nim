@@ -272,15 +272,17 @@ suite "NATService":
     check Port(5555) in mock.unmappedPorts()
     check mock.countCalls(mckClose) == 1
 
-  asyncTest "setup raises when config has zero discoveryTimeout":
+  asyncTest "start raises when config has zero discoveryTimeout":
     let cfg = natPmpConfig(discoveryTimeout = 0.seconds)
-    expect ServiceSetupError:
-      discard makeSwitch(cfg, @[TcpAutoAddress])
+    let switch = makeSwitch(cfg, @[TcpAutoAddress])
+    expect LPError:
+      await switch.start()
 
-  asyncTest "setup raises when config has zero mappingTimeout":
+  asyncTest "start raises when config has zero mappingTimeout":
     let cfg = upnpConfig(mappingTimeout = 0.seconds)
-    expect ServiceSetupError:
-      discard makeSwitch(cfg, @[TcpAutoAddress])
+    let switch = makeSwitch(cfg, @[TcpAutoAddress])
+    expect LPError:
+      await switch.start()
 
   asyncTest "factory receives the configured mode":
     var seenMode = Upnp
@@ -373,13 +375,14 @@ suite "NATService":
       nat.autonatV2Service.isNone()
       nat.networkReachability == NetworkReachability.Unknown
 
-  test "hole-punching paired with AutonatV2 reachability is rejected at setup":
+  asyncTest "hole-punching paired with AutonatV2 reachability is rejected at start":
     # The realistic path: two withNAT calls for the conflicting concerns.
-    expect ServiceSetupError:
-      discard standardBuilder(@[TcpAutoAddress])
-        .withNAT(holePunchingConfig())
-        .withNAT(autonatConfig(AutonatV2))
-        .build()
+    let switch = standardBuilder(@[TcpAutoAddress])
+      .withNAT(holePunchingConfig())
+      .withNAT(autonatConfig(AutonatV2))
+      .build()
+    expect LPError:
+      await switch.start()
 
   asyncTest "Upnp combined with autonat v1 wires both subsystems":
     # NATConfig keeps mode (port-mapping) and autonat orthogonal: enabling

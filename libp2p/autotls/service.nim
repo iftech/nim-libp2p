@@ -151,9 +151,6 @@ proc new*(
     rng: rng,
   )
 
-method setup*(self: AutotlsService, switch: Switch) {.raises: [ServiceSetupError].} =
-  discard
-
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
 ): Result[AutotlsCert, string] =

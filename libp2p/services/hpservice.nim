@@ -25,6 +25,7 @@ type HPService* = ref object of Service
   onNewStatusHandler: ReachabilityHandler
   autoRelayService: AutoRelayService
   autonatService: AutonatService
+  dcutrMounted: bool
 
 proc new*(
     T: typedesc[HPService],
@@ -106,15 +107,7 @@ proc reachabilityObservers*(self: HPService): ReachabilityObservers =
   ## The observers of the AutoNAT v1 service that drives hole punching.
   self.autonatService.reachabilityObservers
 
-method setup*(self: HPService, switch: Switch) {.raises: [ServiceSetupError].} =
-  self.autonatService.setup(switch)
-  self.autoRelayService.setup(switch)
-
-  switch.tryMount(Dcutr.new(switch)).isOkOr:
-    raise newException(
-      ServiceSetupError, "HPService Failed to mount Dcutr. Reason: " & error
-    )
-
+proc configure(self: HPService, switch: Switch) {.raises: [LPError].} =
   self.newConnectedPeerHandler = proc(
       peerId: PeerId, event: PeerEvent
   ) {.async: (raises: [CancelledError]).} =
@@ -136,7 +129,13 @@ method setup*(self: HPService, switch: Switch) {.raises: [ServiceSetupError].} =
     for t in switch.transports:
       t.networkReachability = networkReachability
 
-method start*(self: HPService, switch: Switch) {.async: (raises: [CancelledError]).} =
+method start*(
+    self: HPService, switch: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  if not self.dcutrMounted:
+    switch.tryMount(Dcutr.new(switch)).onErrorRaise(LPError)
+    self.dcutrMounted = true
+  self.configure(switch)
   switch.connManager.addPeerEventHandler(
     self.newConnectedPeerHandler, PeerEventKind.Identified
   )

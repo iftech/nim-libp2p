@@ -572,7 +572,7 @@ proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
 
   ok(switch)
 
-proc setupServices(b: SwitchBuilder, switch: Switch) {.raises: [ServiceSetupError].} =
+proc setupServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
@@ -581,9 +581,6 @@ proc setupServices(b: SwitchBuilder, switch: Switch) {.raises: [ServiceSetupErro
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new())
-
-  for service in switch.services:
-    service.setup(switch)
 
 proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
   ## Handler for ``KadMode.Auto``: the node serves queries while it is

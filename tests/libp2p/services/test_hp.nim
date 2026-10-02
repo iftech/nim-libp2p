@@ -37,7 +37,7 @@ suite "Hole Punching":
   test "HPService shares the observers of its AutonatService":
     # HPService produces no reachability of its own, so it hands out the
     # observers of the AutoNAT v1 service that it drives.
-    # A nil client and a nil AutoRelayService are safe here: only setup() and
+    # A nil client and a nil AutoRelayService are safe here: only construction and
     # the probe loop dereference them.
     let autonatService = AutonatService.new(nil, rng())
     let hpService = HPService.new(autonatService, nil)
