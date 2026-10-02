@@ -3,7 +3,8 @@
 
 {.used.}
 
-import results, times
+import times
+import ../../../libp2p/results
 import ../../../libp2p/utils/rfc3339
 import ../../tools/unittest
 
@@ -56,7 +57,7 @@ suite "RFC 3339 date-time parser":
       "2026-08-21T1x:00:00Z", "2026-08-21T12:0x:00Z", "2026-08-21T12:00:0xZ",
     ]
     for value in testCase:
-      check parseRfc3339DateTime(value).isErr()
+      check parseRfc3339DateTime(value).isOfError(InvalidRfc3339DateTime)
 
   test "rejects out-of-range calendar and clock fields":
     let testCase = [
@@ -65,7 +66,7 @@ suite "RFC 3339 date-time parser":
       "2026-08-21T12:60:00Z", "2026-08-21T12:00:61Z",
     ]
     for value in testCase:
-      check parseRfc3339DateTime(value).isErr()
+      check parseRfc3339DateTime(value).isOfError(InvalidRfc3339DateTime)
 
   test "rejects leap seconds outside the end of a UTC month":
     let testCase = [
@@ -73,7 +74,7 @@ suite "RFC 3339 date-time parser":
       "2026-06-30T18:58:60-05:00", "2026-07-01T01:58:60+02:00",
     ]
     for value in testCase:
-      check parseRfc3339DateTime(value).isErr()
+      check parseRfc3339DateTime(value).isOfError(InvalidRfc3339DateTime)
 
   test "rejects malformed fractions and trailing data":
     let testCase = [
@@ -81,7 +82,7 @@ suite "RFC 3339 date-time parser":
       "2026-08-21T12:00:00.1Zextra",
     ]
     for value in testCase:
-      check parseRfc3339DateTime(value).isErr()
+      check parseRfc3339DateTime(value).isOfError(InvalidRfc3339DateTime)
 
   test "rejects missing, malformed, and out-of-range offsets":
     let testCase = [
@@ -90,9 +91,11 @@ suite "RFC 3339 date-time parser":
       "2026-08-21T12:00:00+12:60", "2026-08-21T12:00:00X", "2026-08-21T12:00:00ZZ",
     ]
     for value in testCase:
-      check parseRfc3339DateTime(value).isErr()
+      check parseRfc3339DateTime(value).isOfError(InvalidRfc3339DateTime)
 
   test "returns the rejected input in its error":
     let value = "not-a-date"
 
-    check parseRfc3339DateTime(value).error == "Invalid RFC 3339 date-time: " & value
+    check:
+      parseRfc3339DateTime(value).isOfError(InvalidRfc3339DateTime)
+      parseRfc3339DateTime(value).error == "Invalid RFC 3339 date-time (" & value & ")"

@@ -5,6 +5,7 @@
 
 import json, base64, strutils
 import stew/byteutils
+import ../../../libp2p/results
 import ../../../libp2p/crypto/rsa
 import ../../../libp2p/autotls/acme/jws
 import ../../tools/[unittest, crypto]
