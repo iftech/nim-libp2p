@@ -151,9 +151,6 @@ proc new*(
     rng: rng,
   )
 
-method setup*(self: AutotlsService, switch: Switch) {.raises: [ServiceSetupError].} =
-  discard
-
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
 ): Result[AutotlsCert, string] =
@@ -373,7 +370,7 @@ proc tryIssueCertificate(
 
 method start*(
     self: AutotlsService, switch: Switch
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: [CancelledError, LPError]).} =
   self.running.fire()
   self.peerInfo = switch.peerInfo
 
