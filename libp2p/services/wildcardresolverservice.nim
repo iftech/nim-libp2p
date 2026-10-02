@@ -22,12 +22,9 @@ proc new*(
 ): T =
   T(networkInterfaceProvider: networkInterfaceProvider)
 
-method setup*(self: WildcardAddressResolverService, switch: Switch) {.raises: [].} =
-  discard
-
 method start*(
     self: WildcardAddressResolverService, switch: Switch
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: [CancelledError, LPError]).} =
   switch.addressManager.networkInterfaceProvider = self.networkInterfaceProvider
   await switch.peerInfo.update()
   info "Wildcard address resolver service started"

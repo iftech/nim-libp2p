@@ -572,7 +572,7 @@ proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
 
   ok(switch)
 
-proc setupServices(b: SwitchBuilder, switch: Switch) {.raises: [ServiceSetupError].} =
+proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
@@ -581,9 +581,6 @@ proc setupServices(b: SwitchBuilder, switch: Switch) {.raises: [ServiceSetupErro
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new())
-
-  for service in switch.services:
-    service.setup(switch)
 
 proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
   ## Handler for ``KadMode.Auto``: the node serves queries while it is
@@ -646,7 +643,9 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
   ok()
 
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
+  b.natConfig.ifValue(natCfg):
+    validateNATConfig(natCfg).onErrorRaise(LPError)
   let switch = b.buildSwitch().valueOrRaise(LPError)
-  b.setupServices(switch)
+  b.addServices(switch)
   b.mountProtocols(switch).onErrorRaise(LPError)
   switch

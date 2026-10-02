@@ -28,6 +28,8 @@ type
     reservationWarnings: LogRateLimit
     lifetimeWarnings: LogRateLimit
     availabilityWarnings: LogRateLimit
+    onIdentifiedHandler: PeerEventHandler
+    onLeftHandler: PeerEventHandler
 
 proc isRunning*(self: AutoRelayService): bool =
   return self.running
@@ -64,7 +66,7 @@ proc reserveAndUpdate(
         self.onReservation(concat(toSeq(self.relayAddresses.values)))
     await sleepAsync chronos.seconds(ttl - 30)
 
-method setup*(self: AutoRelayService, switch: Switch) {.raises: [].} =
+proc configure(self: AutoRelayService, switch: Switch) =
   self.addressMapper = proc(
       listenAddrs: seq[MultiAddress]
   ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
@@ -84,8 +86,8 @@ method setup*(self: AutoRelayService, switch: Switch) {.raises: [].} =
     self.relayPeers.withValue(peerId, future):
       future[].cancelSoon()
 
-  switch.addPeerEventHandler(handlePeerIdentified, Identified)
-  switch.addPeerEventHandler(handlePeerLeft, Left)
+  self.onIdentifiedHandler = handlePeerIdentified
+  self.onLeftHandler = handlePeerLeft
 
 proc manageBackedOff(
     self: AutoRelayService, pid: PeerId
@@ -150,9 +152,12 @@ proc innerRun(
 
 method start*(
     self: AutoRelayService, switch: Switch
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: [CancelledError, LPError]).} =
   if self.running:
     return
+  self.configure(switch)
+  switch.addPeerEventHandler(self.onIdentifiedHandler, Identified)
+  switch.addPeerEventHandler(self.onLeftHandler, Left)
   self.running = true
   switch.addressManager.addMapper(self.addressMapper, AddrSource.Circuit)
   await switch.peerInfo.update()
@@ -173,6 +178,10 @@ method stop*(
   self.relayPeers.clear()
   self.relayAddresses.clear()
   self.backingOff.clear()
+  switch.removePeerEventHandler(self.onIdentifiedHandler, Identified)
+  switch.removePeerEventHandler(self.onLeftHandler, Left)
+  self.onIdentifiedHandler = nil
+  self.onLeftHandler = nil
   switch.addressManager.removeMapper(self.addressMapper)
   await switch.peerInfo.update()
 
