@@ -226,15 +226,6 @@ proc mergeInto*(dst: var NATConfig, src: NATConfig) =
       "withNAT: holePunching configured more than once"
     dst.holePunching = Opt.some(v)
 
-proc validateNATConfig*(config: NATConfig): Result[void, string] =
-  ## Validates combinations of NAT concerns that are known before startup.
-  if config.holePunching.isSome() and config.reachability.isSome():
-    return err(
-      "NATService: holePunching and reachability are mutually exclusive; " &
-        "holePunching already runs AutoNAT v1."
-    )
-  ok()
-
 proc explicitIpMapped*(
     listenAddrs: seq[MultiAddress], explicitIp: IpAddress
 ): seq[MultiAddress] =
@@ -427,6 +418,19 @@ proc validatePortMapperConfig(cfg: PortMappingConfig): Result[void, string] =
     )
   ok()
 
+proc validateNATConfig*(config: NATConfig): Result[void, string] =
+  ## Validates combinations of NAT concerns that are known before startup.
+  config.portMapping.ifValue(pm):
+    if pm.mode in {Upnp, NatPmp, Auto}:
+      ?validatePortMapperConfig(pm)
+
+  if config.holePunching.isSome() and config.reachability.isSome():
+    return err(
+      "NATService: holePunching and reachability are mutually exclusive; " &
+        "holePunching already runs AutoNAT v1."
+    )
+  ok()
+
 proc setupHolePunching(
     self: NATService, switch: Switch, hp: HolePunchingConfig
 ): Result[void, string] =
@@ -488,10 +492,7 @@ proc setupReachability(self: NATService, switch: Switch): Result[void, string] =
     self.setupAutonatV2(switch, r)
 
 proc configure(self: NATService, switch: Switch): Result[void, string] =
-  self.config.portMapping.ifValue(pm):
-    if pm.mode in {Upnp, NatPmp, Auto}:
-      ?validatePortMapperConfig(pm)
-
+  ?validateNATConfig(self.config)
   self.setupReachability(switch)
 
 proc explicitIpMapper(explicitIp: IpAddress): AddressMapper =

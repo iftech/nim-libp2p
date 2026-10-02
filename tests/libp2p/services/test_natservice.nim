@@ -272,17 +272,15 @@ suite "NATService":
     check Port(5555) in mock.unmappedPorts()
     check mock.countCalls(mckClose) == 1
 
-  asyncTest "start raises when config has zero discoveryTimeout":
+  test "build raises when config has zero discoveryTimeout":
     let cfg = natPmpConfig(discoveryTimeout = 0.seconds)
-    let switch = makeSwitch(cfg, @[TcpAutoAddress])
-    expect LPError:
-      await switch.start()
+    expectMsgContains LPError, "discoveryTimeout must be > 0":
+      discard makeSwitch(cfg, @[TcpAutoAddress])
 
-  asyncTest "start raises when config has zero mappingTimeout":
+  test "build raises when config has zero mappingTimeout":
     let cfg = upnpConfig(mappingTimeout = 0.seconds)
-    let switch = makeSwitch(cfg, @[TcpAutoAddress])
-    expect LPError:
-      await switch.start()
+    expectMsgContains LPError, "mappingTimeout must be > 0":
+      discard makeSwitch(cfg, @[TcpAutoAddress])
 
   asyncTest "factory receives the configured mode":
     var seenMode = Upnp
