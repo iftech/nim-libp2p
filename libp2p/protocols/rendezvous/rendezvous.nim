@@ -150,7 +150,8 @@ func checkRequest(ns: Opt[string], limit: int): LPResult[void] =
 proc checkPeerRecord*(_: PeerRecord, spr: seq[byte], peerId: PeerId): LPResult[void] =
   if spr.len == 0:
     return err("Empty peer record")
-  let signedEnv = ?SignedPeerRecord.decode(spr).mapErr(x => $x)
+  let signedEnv = SignedPeerRecord.decode(spr).valueOr:
+    return err(error)
   if signedEnv.data.peerId != peerId:
     return err("Bad Peer ID")
   return ok()

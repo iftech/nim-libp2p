@@ -5,7 +5,6 @@
 
 {.push raises: [].}
 
-import std/sugar
 import pkg/stew/byteutils, pkg/results
 import multicodec, crypto/crypto, vbuffer
 import protobuf_serialization
@@ -106,9 +105,9 @@ proc decode*[T](
   if not envelope.verify(T.payloadDomain):
     return err(EnvelopeInvalidSignature)
 
-  let
-    data = ?T.decode(envelope.payload).mapErr(x => EnvelopeInvalidProtobuf)
-    signedPayload = SignedPayload[T](envelope: envelope, data: data)
+  let data = T.decode(envelope.payload).valueOr:
+    return err(EnvelopeInvalidProtobuf)
+  let signedPayload = SignedPayload[T](envelope: envelope, data: data)
 
   when compiles(?signedPayload.checkValid()):
     ?signedPayload.checkValid()
