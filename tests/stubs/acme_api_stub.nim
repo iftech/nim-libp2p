@@ -6,8 +6,8 @@
 {.push raises: [].}
 
 import base64, json, uri
-import chronos, chronos/apps/http/httpclient
-import ../../libp2p/autotls/acme/[api, utils]
+import chronos, chronos/apps/http/httpclient, results
+import ../../libp2p/autotls/acme/api
 
 export api
 
@@ -141,30 +141,30 @@ proc scriptCertificate*(self: ACMEApiStub, certificateURL: string, expires: stri
 
 proc respond(
     self: ACMEApiStub, uri: Uri
-): Future[HTTPResponse] {.async: (raises: [ACMEError, CancelledError]).} =
+): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]).} =
   self.requestedUris.add(uri)
   if self.stalls:
     await Future[void].Raising([CancelledError]).init("ACMEApiStub.stall")
   if self.mockedResponses.len == 0:
-    raise newException(ACMEError, "ACMEApiStub refused " & $uri)
+    return err("ACMEApiStub refused " & $uri)
 
   let response = self.mockedResponses[0]
   self.mockedResponses.delete(0)
-  response
+  ok(response)
 
 method requestNonce*(
     self: ACMEApiStub
-): Future[Nonce] {.async: (raises: [ACMEError, CancelledError]).} =
+): Future[Result[Nonce, string]] {.async: (raises: [CancelledError]).} =
   self.nonces += 1
-  $self.directoryURL & "/acme/" & $self.nonces
+  ok($self.directoryURL & "/acme/" & $self.nonces)
 
 method post*(
     self: ACMEApiStub, uri: Uri, payload: string
-): Future[HTTPResponse] {.async: (raises: [ACMEError, HttpError, CancelledError]).} =
+): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]).} =
   self.payloads.add(payload)
   await self.respond(uri)
 
 method get*(
     self: ACMEApiStub, uri: Uri
-): Future[HTTPResponse] {.async: (raises: [ACMEError, HttpError, CancelledError]).} =
+): Future[Result[HTTPResponse, string]] {.async: (raises: [CancelledError]).} =
   await self.respond(uri)

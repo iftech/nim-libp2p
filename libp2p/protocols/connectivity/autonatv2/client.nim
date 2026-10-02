@@ -106,9 +106,7 @@ proc setup*(self: AutonatV2Client, switch: Switch) =
 
 proc tryHandleDialDataRequest*(
     stream: Stream, req: DialDataRequest
-): Future[Result[DialResponse, string]] {.
-    async: (raises: [CancelledError, LPStreamError])
-.} =
+): Future[LPResult[DialResponse]] {.async: (raises: [CancelledError, LPStreamError]).} =
   trace "Received DialDataRequest",
     numBytes = req.numBytes, maxAcceptedNumBytes = MaxAcceptedDialDataRequest
 
@@ -168,7 +166,7 @@ proc checkAddrIdx(
 
 proc trySendDialRequest*(
     self: AutonatV2Client, pid: PeerId, testAddrs: seq[MultiAddress]
-): Future[Result[AutonatV2Response, string]] {.
+): Future[LPResult[AutonatV2Response]] {.
     async: (raises: [CancelledError, DialFailedError, LPStreamError])
 .} =
   ## Dials peer with `pid` and requests that it tries connecting to `testAddrs`

@@ -47,7 +47,7 @@ func calcWeight(
 
 proc track*(
     est: NetworkSizeEstimator, rtable: RoutingTable, target: Key, peers: seq[PeerId]
-): Result[void, string] =
+): LPResult[void] =
   ## Record the `peers` of a converged lookup on `target`, closest first. They
   ## must be exactly ``bucketSize`` many.
   if peers.len != est.bucketSize:
@@ -82,7 +82,7 @@ func weightedStats(obs: seq[NetSizeMeasurement]): (float64, float64) =
   let denom = float64(obs.len - 1) / float64(obs.len) * sumWeights
   (avg, sqrt(sumWeightedDiffs / denom))
 
-proc networkSize*(est: NetworkSizeEstimator): Result[int, string] =
+proc networkSize*(est: NetworkSizeEstimator): LPResult[int] =
   ## Current estimate, or an error while there is not enough data yet.
   # Linear regression through the origin, inverse variances as fit weights: a
   # noisier index pulls the fit less than a stable one.

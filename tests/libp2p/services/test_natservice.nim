@@ -4,7 +4,8 @@
 {.used.}
 
 import std/[net, sequtils]
-import chronos, results
+import chronos
+import ../../../libp2p/results
 import ../../../libp2p/[builders, switch, multiaddress, multicodec, peerinfo, wire]
 import ../../../libp2p/services/natservice
 import ../../../libp2p/services/nat/portmapper
@@ -43,7 +44,7 @@ proc mapperFactory(m: MockPortMapper): PortMapperFactory =
 
 method map*(
     self: MockPortMapper, internalPort: Port, externalPort: Port, proto: MapProto
-): Future[Result[MappedPort, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[MappedPort]] {.async: (raises: [CancelledError]), gcsafe.} =
   let assigned =
     if self.extPortIdx < self.extPortQueue.len:
       let p = self.extPortQueue[self.extPortIdx]
@@ -62,7 +63,7 @@ method map*(
 
 method unmap*(
     self: MockPortMapper, externalPort: Port, proto: MapProto
-): Future[Result[void, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   self.calls.add(MockCall(kind: mckUnmap, externalPort: externalPort, proto: proto))
   ok()
 

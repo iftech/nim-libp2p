@@ -4,6 +4,7 @@
 {.used.}
 
 import chronos, net, uri
+import chronos/apps/http/httpclient
 import
   ../../../libp2p/[
     autotls/service,
@@ -23,10 +24,12 @@ suite "AutoTLS Configuration Tests":
 
     check:
       config.acmeDirectoryURL == LetsEncryptDirectoryURL
+      config.acmeHttpFlags == {}
       config.ipAddress == Opt.none(IpAddress)
       DnsResolver(config.nameResolver).nameServers == DefaultDnsServers
       config.renewCheckTime == DefaultRenewCheckTime
       config.renewBufferTime == DefaultRenewBufferTime
+      config.initialCertTimeout == DefaultInitialCertTimeout
       config.issueRetries == 3
       config.issueRetryTime == 1.seconds
       config.registrationURL == DefaultRegistrationURL
@@ -43,8 +46,10 @@ suite "AutoTLS Configuration Tests":
     let customNameServers =
       @[initTAddress("192.0.2.53:53"), initTAddress("198.51.100.53:53")]
     let customAcmeDirectoryURL = parseUri("https://acme.example.com/dir")
+    let customAcmeHttpFlags = {HttpClientFlag.NoVerifyHost}
     let customRenewCheckTime = 7.minutes
     let customRenewBufferTime = 8.minutes
+    let customInitialCertTimeout = 9.minutes
     let customIssueRetries = 7
     let customIssueRetryTime = 5.seconds
     let customRegistrationURL =
@@ -61,8 +66,10 @@ suite "AutoTLS Configuration Tests":
       ipAddress = Opt.some(customIpAddress),
       nameServers = customNameServers,
       acmeDirectoryURL = customAcmeDirectoryURL,
+      acmeHttpFlags = customAcmeHttpFlags,
       renewCheckTime = customRenewCheckTime,
       renewBufferTime = customRenewBufferTime,
+      initialCertTimeout = customInitialCertTimeout,
       issueRetries = customIssueRetries,
       issueRetryTime = customIssueRetryTime,
       registrationURL = customRegistrationURL,
@@ -80,8 +87,10 @@ suite "AutoTLS Configuration Tests":
       # nameServers reaches the config as the DnsResolver built out of it.
       DnsResolver(config.nameResolver).nameServers == customNameServers
       config.acmeDirectoryURL == customAcmeDirectoryURL
+      config.acmeHttpFlags == customAcmeHttpFlags
       config.renewCheckTime == customRenewCheckTime
       config.renewBufferTime == customRenewBufferTime
+      config.initialCertTimeout == customInitialCertTimeout
       config.issueRetries == customIssueRetries
       config.issueRetryTime == customIssueRetryTime
       config.registrationURL == customRegistrationURL

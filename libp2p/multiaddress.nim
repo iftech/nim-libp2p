@@ -5,7 +5,8 @@
 
 {.push raises: [].}
 
-import pkg/[chronos, chronicles, results, protobuf_serialization]
+import pkg/[chronos, chronicles, protobuf_serialization]
+import ./results
 import std/[nativesockets, net, hashes, unicode]
 import tables, strutils, sets
 import
@@ -54,7 +55,7 @@ type
     flag*: bool
     rem*: seq[MultiCodec]
 
-  MaResult*[T] = Result[T, string]
+  MaResult*[T] = LPResult[T]
 
   MaError* = object of LPError
   MaInvalidAddress* = object of MaError

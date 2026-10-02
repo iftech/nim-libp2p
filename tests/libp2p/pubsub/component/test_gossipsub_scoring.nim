@@ -468,9 +468,11 @@ suite "GossipSub Component - Scoring":
       node2peerId = nodes[2].peerInfo.peerId
 
     nodes.setDefaultTopicParams(topic)
+    # no decay: a scoring heartbeat can run between checkUntilTimeout and the score check
     for node in nodes:
       node.topicParams[topic].invalidMessageDeliveriesWeight = -10.0
-      node.topicParams[topic].invalidMessageDeliveriesDecay = 0.9
+      node.topicParams[topic].invalidMessageDeliveriesDecay = 1.0
+      node.topicParams[topic].firstMessageDeliveriesDecay = 1.0
 
     startAndDeferStop(nodes)
 

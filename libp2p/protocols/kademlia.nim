@@ -127,15 +127,15 @@ proc checkAndEvictPeer(
     peer = peerId, tables = evicted
   kad_routing_table_liveness_probes.inc(labelValues = ["fail"])
 
-proc launchLivenessProbe(kad: KadDHT, peerId: PeerId) {.raises: [].} =
-  ## Starts a liveness probe unless one is already in flight for this peer.
-  if kad.livenessProbes.hasKey(peerId):
-    trace "Liveness probe already in flight", peerId
-    return
-  if kad.stopping:
-    return
-  trace "Launching liveness probe", peerId
-  kad.trackLivenessProbe(peerId, kad.checkAndEvictPeer(peerId))
+proc launchLivenessProbe(kad: KadDHT, peers: openArray[PeerId]): int {.raises: [].} =
+  ## Starts a liveness probe unless one is already in flight
+  var launchedProbesCount = 0
+  for peerId in peers:
+    if not kad.livenessProbes.hasKey(peerId):
+      trace "Launching liveness probe", peerId
+      launchedProbesCount.inc
+      kad.trackLivenessProbe(peerId, kad.checkAndEvictPeer(peerId))
+  launchedProbesCount
 
 proc probeAndEvictPeers*(
     kad: KadDHT, rtable: RoutingTable
@@ -185,36 +185,29 @@ proc maintainLiveness(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   ## bucket refresh so dead peers are not held until the next refresh tick.
   ## At most one probe is in flight per peer across all maintainable tables.
 
-  var idle = true
   while not kad.stopping:
-    if idle:
-      await sleepAsync(kad.config.livenessIdleInterval)
-
-    let grace = kad.config.livenessGracePeriod
-
+    var launchedProbesCount = 0
     for rtable in kad.maintainableTables():
-      if kad.stopping:
-        return
-      let peers = rtable.peersPastGracePeriod(grace)
-      if peers.len > 0:
-        trace "Liveness scan found replaceable peers", peers = peers.len
-      for peerId in peers:
-        kad.launchLivenessProbe(peerId)
+      let peers = rtable.peersPastGracePeriod(kad.config.livenessGracePeriod)
+      launchedProbesCount += kad.launchLivenessProbe(peers)
 
-    if kad.livenessProbes.len > 0:
-      trace "Waiting for in-flight liveness probes", inFlight = kad.livenessProbes.len
-      let inFlight = kad.livenessProbes.values.toSeq()
-      try:
-        discard await one(inFlight)
-      except ValueError:
-        # All futures already finished between the snapshot and the wait.
-        discard
-      except CancelledError as exc:
-        await noCancel inFlight.cancelAndWait()
-        raise exc
-      idle = false
-    else:
-      idle = true
+    if launchedProbesCount > 0:
+      trace "Liveness scan found replaceable peers", launchedProbesCount
+
+    # one() on a finished future completes without a yield, so the loop spins.
+    let inFlight = kad.livenessProbes.values.toSeq().filterIt(not it.finished())
+    if inFlight.len == 0:
+      await sleepAsync(kad.config.livenessIdleInterval)
+      continue
+
+    trace "Waiting for in-flight liveness probes", inFlight = inFlight.len
+    try:
+      discard await one(inFlight)
+    except ValueError:
+      raiseAssert "inFlight is not empty"
+    except CancelledError as exc:
+      await noCancel inFlight.cancelAndWait()
+      raise exc
 
 proc centerTarget(kad: KadDHT, rtable: RoutingTable): Opt[Key] {.raises: [].} =
   ## A table with no peers of its own borrows the main table's peers to start the walk.

@@ -21,7 +21,7 @@ const SupportedAlg = "RS256"
 
 proc toFlattenedJws*(
     protectedHeader: JsonNode, payload: string, key: rsa.RsaPrivateKey
-): JsonNode {.raises: [ACMEError].} =
+): Result[JsonNode, string] {.raises: [].} =
   ## Signs `protectedHeader` and the already-serialized `payload` with `key` (RS256)
   ## and returns the flattened JWS JSON serialization: the base64url-encoded
   ## `protected`, `payload` and `signature` members.
@@ -31,7 +31,7 @@ proc toFlattenedJws*(
   ## affect verification.
   let alg = protectedHeader{"alg"}.getStr()
   if alg != SupportedAlg:
-    raise newException(ACMEError, "Unsupported JWS algorithm: " & alg)
+    return err("Unsupported JWS algorithm: " & alg)
 
   let
     protectedB64 = base64UrlEncode(($protectedHeader).toBytes)
@@ -39,17 +39,19 @@ proc toFlattenedJws*(
     signingInput = protectedB64 & "." & payloadB64
 
   let signature = key.sign(signingInput).valueOr:
-    raise newException(ACMEError, "Failed to create JWS signature")
+    return err("Failed to create JWS signature")
   let signatureBytes = signature.getBytes().valueOr:
-    raise newException(ACMEError, "Failed to encode JWS signature bytes")
+    return err("Failed to encode JWS signature bytes")
 
-  %*{
-    "payload": payloadB64,
-    "protected": protectedB64,
-    "signature": base64UrlEncode(signatureBytes),
-  }
+  ok(
+    %*{
+      "payload": payloadB64,
+      "protected": protectedB64,
+      "signature": base64UrlEncode(signatureBytes),
+    }
+  )
 
 proc toFlattenedJws*(
     protectedHeader: JsonNode, payload: JsonNode, key: rsa.RsaPrivateKey
-): JsonNode {.raises: [ACMEError].} =
+): Result[JsonNode, string] {.raises: [].} =
   toFlattenedJws(protectedHeader, $payload, key)

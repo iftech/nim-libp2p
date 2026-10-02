@@ -49,7 +49,7 @@ proc manageExpiredRecords*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
 
 proc dispatchPutVal*(
     kad: KadDHT, peer: PeerId, key: Key, value: Value
-): Future[Result[void, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let msg = Message(
     msgType: Opt.some(MessageType.putValue),
     key: Opt.some(key),
@@ -75,7 +75,7 @@ proc canStoreLocalRecord*(kad: KadDHT, key: Key): bool {.raises: [].} =
 
 proc putValue*(
     kad: KadDHT, key: Key, value: Value
-): Future[Result[void, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   if value.len > kad.config.limits.maxValueSize:
     return err(
       "value exceeds maxValueSize (" & $value.len & " > " &

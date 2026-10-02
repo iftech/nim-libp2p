@@ -4,7 +4,7 @@
 {.used.}
 
 import json, uri
-import chronos
+import chronos, chronos/apps/http/httptable
 import ../../../libp2p/crypto/rsa
 import ../../../libp2p/autotls/acme/[api, utils]
 import ../../tools/[unittest, http_server]
@@ -30,6 +30,21 @@ suite "ACME utils":
   test "the thumbprint is the RFC 7638 canonical form":
     check thumbprint(rfc7517Key()) == Rfc7638Thumbprint
 
+  test "a header lookup returns the value or an error":
+    var headers = HttpTable.init()
+    headers.add("Replay-Nonce", "abc")
+
+    check:
+      headers.header("Replay-Nonce").get() == "abc"
+      headers.header("Location").isErr()
+
+  test "a CSR for a domain is base64url":
+    let csr = createCSR("example.com", rfc7517Key()).get()
+
+    check:
+      csr.len > 0
+      not csr.contains('=')
+
   asyncTest "an empty response body reads as an empty object":
     # The response to `newNonce` carries the nonce in a header and no body at all.
     let server = startTestHttpServer("")
@@ -39,7 +54,7 @@ suite "ACME utils":
     defer:
       await acmeApi.close()
 
-    check (await acmeApi.get(parseUri(server.url))).body == %*{}
+    check (await acmeApi.get(parseUri(server.url))).get().body == %*{}
 
   asyncTest "a response body that is not JSON is refused":
     let server = startTestHttpServer("<html>not json</html>")
@@ -49,5 +64,24 @@ suite "ACME utils":
     defer:
       await acmeApi.close()
 
-    expect(ACMEError):
-      discard await acmeApi.get(parseUri(server.url))
+    check (await acmeApi.get(parseUri(server.url))).isErr()
+
+  test "tryGetStr returns the string field or an error":
+    let node = %*{"status": "valid", "n": 1}
+    check:
+      node.tryGetStr("status").get() == "valid"
+      node.tryGetStr("n").error == "missing string field: n"
+      node.tryGetStr("absent").error == "missing string field: absent"
+
+  test "tryTo decodes the object or returns an error":
+    check:
+      (%*{"token": "t", "url": "u", "type": "dns-01", "status": "valid"})
+        .tryTo(ACMEChallenge)
+        .get().token == "t"
+      (%*{"token": 1}).tryTo(ACMEChallenge).isErr()
+
+  test "tryParseEnum matches the enum string value":
+    check:
+      tryParseEnum[ACMEChallengeStatus]("valid").get() == ACMEChallengeStatus.VALID
+      tryParseEnum[ACMEChallengeStatus]("bogus").error ==
+        "invalid ACMEChallengeStatus: bogus"

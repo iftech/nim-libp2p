@@ -65,12 +65,12 @@ proc atMostOnePerBucket(
     capped.add(peer)
   return capped
 
-proc localGetAds(disco: ServiceDiscovery, msg: Message): Result[Message, string] =
+proc localGetAds(disco: ServiceDiscovery, msg: Message): LPResult[Message] =
   return ok(disco.getAdvertisements(disco.switch.peerInfo.peerId, msg))
 
 proc dispatchGetAds(
     disco: ServiceDiscovery, peerId: PeerId, serviceId: ServiceId
-): Future[Result[GetAdsResult, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[GetAdsResult]] {.async: (raises: [CancelledError]), gcsafe.} =
   trace "Getting adverts", serviceId, registrar = peerId
 
   let msg = Message(msgType: Opt.some(MessageType.getAds), key: Opt.some(serviceId))
@@ -131,7 +131,7 @@ proc drainCompletedPeers(
     disco: ServiceDiscovery,
     serviceId: ServiceId,
     searchTable: RoutingTable,
-    pending: seq[Future[Result[GetAdsResult, string]]],
+    pending: seq[Future[LPResult[GetAdsResult]]],
 ) =
   for fut in pending.filterIt(it.completed()):
     let res = fut.value()
@@ -151,9 +151,8 @@ proc collectBucketAds(
     stats: LookupLog,
 ): Future[BucketAds] {.async: (raises: [CancelledError]).} =
   var bucketAds = BucketAds(found: known)
-  var pending: seq[Future[Result[GetAdsResult, string]]] = peers.mapIt(
-    Future[Result[GetAdsResult, string]](dispatchGetAds(disco, it, serviceId))
-  )
+  var pending: seq[Future[LPResult[GetAdsResult]]] =
+    peers.mapIt(Future[LPResult[GetAdsResult]](dispatchGetAds(disco, it, serviceId)))
   let queries = pending
   stats.queried += queries.len
   defer:
@@ -241,7 +240,7 @@ proc recordCloserPeers(
 
 proc lookup*(
     disco: ServiceDiscovery, serviceId: ServiceId
-): Future[Result[seq[Advertisement], string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[seq[Advertisement]]] {.async: (raises: [CancelledError]).} =
   ## Look up providers for a specific service id.
   cd_lookup_requests.inc()
 

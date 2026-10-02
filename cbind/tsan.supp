@@ -1,3 +1,6 @@
 # nimcrypto picks its SHA-2 compress function on first use and caches it in a
 # global, so every thread writes the same pointer at once.
 race:default_sha*_compress_func
+# chronicles formats timestamps with times.local(), which calls glibc's
+# localtime(): a static struct tm plus a strdup/free of the TZ name.
+race:*getLocalOffsetAndDst*

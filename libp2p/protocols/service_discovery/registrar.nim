@@ -165,7 +165,7 @@ proc updateLowerBounds*(
 
 proc isValidAdvertisement*(
     regMsg: RegisterMessage, serviceId: ServiceId
-): Result[Advertisement, string] =
+): LPResult[Advertisement] =
   let advertisment = regMsg.advertisement.valueOr:
     return err("advertisement not set")
 
@@ -196,7 +196,7 @@ proc updateWaitAfterRetry*(
 
 proc isValidTicket(
     disco: ServiceDiscovery, regMsg: RegisterMessage, now: UnixTimestamp
-): Result[Opt[Ticket], string] {.raises: [].} =
+): LPResult[Opt[Ticket]] {.raises: [].} =
   let ticket = regMsg.ticket.valueOr:
     return ok(Opt.none(Ticket))
 

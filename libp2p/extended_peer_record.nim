@@ -6,7 +6,7 @@
 {.push raises: [].}
 
 import std/[sequtils, times, hashes]
-import pkg/results
+import ./results
 import protobuf_serialization, protobuf_serialization/pkg/results
 import multiaddress, multicodec, peerid, signed_envelope, routing_record, utils/protobuf
 
@@ -34,7 +34,7 @@ type
 
 proc validateDecoded(
     T: typedesc[ExtendedPeerRecord], xpr: ExtendedPeerRecord
-): Result[void, string] =
+): LPResult[void] =
   if xpr.peerId.len == 0:
     return err("missing peer id")
 
@@ -87,7 +87,7 @@ proc build*(
     T: typedesc[SignedExtendedPeerRecord],
     privateKey: PrivateKey,
     record: ExtendedPeerRecord,
-): Result[SignedExtendedPeerRecord, string] =
+): LPResult[SignedExtendedPeerRecord] =
   for svc in record.services:
     if not svc.isValid():
       return err(

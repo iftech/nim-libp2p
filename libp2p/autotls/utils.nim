@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 {.push raises: [].}
 
-import chronos, chronicles, strutils
+import chronos, chronicles, results, strutils
 import stew/[base36, base64]
 import
   ../errors,
@@ -22,18 +22,16 @@ const
   DefaultDnsRetries = 3
   DefaultDnsRetryTime = 1.seconds
 
-proc encodePeerId*(peerId: PeerId): string {.raises: [AutoTLSError].} =
+proc encodePeerId*(peerId: PeerId): Result[string, string] =
   var mh: MultiHash
-  let decodeResult = MultiHash.decode(peerId.data, mh)
-  if decodeResult.isErr() or decodeResult.get() == -1:
-    raise
-      newException(AutoTLSError, "Failed to decode PeerId: invalid multihash format")
+  let decoded = MultiHash.decode(peerId.data, mh)
+  if decoded.isErr() or decoded.get() == -1:
+    return err("Failed to decode PeerId: invalid multihash format")
 
-  let cidResult = Cid.init(CIDv1, multiCodec("libp2p-key"), mh)
-  if cidResult.isErr():
-    raise newException(AutoTLSError, "Failed to initialize CID from multihash")
+  let cid = Cid.init(CIDv1, multiCodec("libp2p-key"), mh).valueOr:
+    return err("Failed to initialize CID from multihash")
 
-  return Base36.encode(cidResult.get().data.buffer)
+  ok(Base36.encode(cid.data.buffer))
 
 const PemLineWidth = 64
 

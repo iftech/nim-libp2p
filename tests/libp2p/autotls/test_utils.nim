@@ -199,7 +199,7 @@ suite "AutoTLS peer ID label":
 
   test "the label is the peer ID as a CIDv1 libp2p-key CID":
     for peerId in peerIds:
-      let cid = Cid.init(Base36.decode(encodePeerId(peerId))).get()
+      let cid = Cid.init(Base36.decode(encodePeerId(peerId).get())).get()
 
       check:
         cid.version == CIDv1
@@ -208,12 +208,15 @@ suite "AutoTLS peer ID label":
 
   test "every key type gives a legal DNS label":
     for peerId in peerIds:
-      let label = encodePeerId(peerId)
+      let label = encodePeerId(peerId).get()
 
       check:
         # RFC 1035 caps a DNS label at 63 octets.
         label.len <= 63
         label.allIt(it in {'0' .. '9', 'a' .. 'z'})
+
+  test "a peer ID that is not a multihash gives an error":
+    check encodePeerId(PeerId(data: @[byte 0xff])).isErr()
 
 suite "AutoTLS PEM":
   test "the body wraps at 64 columns between the banners":

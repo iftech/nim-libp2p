@@ -56,12 +56,12 @@ type RelayAddr = object
   relayPeerId: PeerId
   dstPeerId: PeerId
 
-proc peerIdOf(part: MultiAddress): Result[PeerId, string] =
+proc peerIdOf(part: MultiAddress): LPResult[PeerId] =
   let peerId = PeerId.init(?part.protoAddress()).valueOr:
     return err($error)
   ok(peerId)
 
-proc parseRelayAddr(ma: MultiAddress): Result[RelayAddr, string] =
+proc parseRelayAddr(ma: MultiAddress): LPResult[RelayAddr] =
   let parts = ?ma.len()
   if parts < 4:
     return err("too few parts in " & $ma)
@@ -81,7 +81,7 @@ proc parseRelayAddr(ma: MultiAddress): Result[RelayAddr, string] =
 
 proc tryDial*(
     self: RelayTransport, ma: MultiAddress
-): Future[Result[RawConn, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[RawConn]] {.async: (raises: [CancelledError]).} =
   let address = parseRelayAddr(ma).valueOr:
     return err("dial address not valid: " & error)
 
@@ -107,7 +107,7 @@ proc tryDial*(
         dialedConn = rc
         await self.client.tryDialPeerV2(rc, address.dstPeerId, @[])
       else:
-        Result[RawConn, string].err("unexpected relay protocol")
+        LPResult[RawConn].err("unexpected relay protocol")
     except CancelledError as e:
       safeClose(dialedConn)
       raise e

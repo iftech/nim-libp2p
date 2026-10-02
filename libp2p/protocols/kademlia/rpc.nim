@@ -27,7 +27,7 @@ proc dispatchRpc*(
     peer: PeerId,
     msg: Message,
     addrs: Opt[seq[MultiAddress]] = Opt.none(seq[MultiAddress]),
-): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Addresses default to the peer store; `addrs` overrides them for a peer the
   ## caller learned about elsewhere.
   let msgType = msg.msgType.valueOr:

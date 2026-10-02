@@ -54,7 +54,7 @@ proc config(c: CallbackRecorder): PartialMessageExtensionConfig =
 
   proc validateRPC(
       rpc: PartialMessageExtensionRPC
-  ): Result[void, string] {.gcsafe, raises: [].} =
+  ): LPResult[void] {.gcsafe, raises: [].} =
     checkLen(rpc.partsMetadata)
     return ok()
 
@@ -430,7 +430,7 @@ suite "GossipSub Extensions :: Partial Message Extension":
     var requested: seq[(string, GroupId, PartsMetadata)]
     config.materializeParts = proc(
         topic: string, groupId: GroupId, metadata: PartsMetadata
-    ): Result[PartsData, string] {.gcsafe, raises: [].} =
+    ): LPResult[PartsData] {.gcsafe, raises: [].} =
       requested.add((topic, groupId, metadata))
       cr.store.materializeParts(topic, groupId, metadata)
     var ext = PartialMessageExtension.new(config)

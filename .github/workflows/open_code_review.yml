@@ -13,7 +13,7 @@ permissions:
 # authorization, model selection, concurrency, and review behavior is shared.
 jobs:
   review:
-    uses: vacp2p/common-open-code-review/.github/workflows/open_code_review.yml@main
+    uses: iftech/common-open-code-review/.github/workflows/open_code_review.yml@main
     secrets:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}

@@ -6,7 +6,7 @@
 import json, base64, strutils
 import stew/byteutils
 import ../../../libp2p/crypto/rsa
-import ../../../libp2p/autotls/acme/[jws, utils]
+import ../../../libp2p/autotls/acme/jws
 import ../../tools/[unittest, crypto]
 
 proc b64UrlDecode(s: string): seq[byte] {.raises: [ValueError].} =
@@ -22,7 +22,7 @@ suite "ACME JWS":
     let header = %*{"alg": "RS256", "typ": "JWT", "nonce": "abc", "url": "https://e"}
     let payload = %*{"termsOfServiceAgreed": true}
 
-    let jws = toFlattenedJws(header, payload, key)
+    let jws = toFlattenedJws(header, payload, key).get()
 
     # Flattened JWS has exactly the three members (no unprotected header).
     check jws.kind == JObject
@@ -40,27 +40,27 @@ suite "ACME JWS":
     check rsa.verify(sig, signingInput, key.getPublicKey())
 
   test "base64url members carry no padding":
-    let jws = toFlattenedJws(%*{"alg": "RS256"}, %*{"a": 1}, key)
+    let jws = toFlattenedJws(%*{"alg": "RS256"}, %*{"a": 1}, key).get()
     for field in ["protected", "payload", "signature"]:
       check not jws[field].getStr.contains('=')
       check not jws[field].getStr.contains('+')
       check not jws[field].getStr.contains('/')
 
   test "an empty JSON payload still signs and verifies":
-    let jws = toFlattenedJws(%*{"alg": "RS256"}, %*{}, key)
+    let jws = toFlattenedJws(%*{"alg": "RS256"}, %*{}, key).get()
     let signingInput = jws["protected"].getStr & "." & jws["payload"].getStr
     let sig = RsaSignature.init(b64UrlDecode(jws["signature"].getStr)).get()
     check rsa.verify(sig, signingInput, key.getPublicKey())
 
   test "a zero-length payload still signs and verifies":
-    let jws = toFlattenedJws(%*{"alg": "RS256"}, "", key)
+    let jws = toFlattenedJws(%*{"alg": "RS256"}, "", key).get()
     check jws["payload"].getStr == ""
     let signingInput = jws["protected"].getStr & "." & jws["payload"].getStr
     let sig = RsaSignature.init(b64UrlDecode(jws["signature"].getStr)).get()
     check rsa.verify(sig, signingInput, key.getPublicKey())
 
   test "rejects an unsupported algorithm":
-    expect(ACMEError):
-      discard toFlattenedJws(%*{"alg": "ES256"}, %*{"a": 1}, key)
-    expect(ACMEError):
-      discard toFlattenedJws(%*{"typ": "JWT"}, %*{"a": 1}, key)
+    check toFlattenedJws(%*{"alg": "ES256"}, %*{"a": 1}, key).error ==
+      "Unsupported JWS algorithm: ES256"
+    check toFlattenedJws(%*{"typ": "JWT"}, %*{"a": 1}, key).error ==
+      "Unsupported JWS algorithm: "

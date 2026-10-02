@@ -7,7 +7,8 @@
 
 import ../logging
 import std/[sequtils]
-import chronos, chronicles, results, metrics, stew/byteutils
+import chronos, chronicles, metrics, stew/byteutils
+import ../results
 import
   transport,
   ../autotls/service,
@@ -32,7 +33,6 @@ const
   DefaultHeadersTimeout = 3.seconds
   DefaultConcurrentAccepts = 200
   DefaultAcceptFailureBackoff = 100.millis
-  DefaultAutotlsWaitTimeout = 3.seconds
 
 type
   WsStream = ref object of Connection
@@ -161,7 +161,7 @@ type HostHeaderHook = ref object of Hook
 
 proc hostHeaderHook(host: string): Hook =
   let hook = HostHeaderHook(host: host)
-  hook.append = proc(ctx: Hook, headers: var HttpTable): Result[void, string] =
+  hook.append = proc(ctx: Hook, headers: var HttpTable): LPResult[void] =
     headers.set("Host", HostHeaderHook(ctx).host)
     ok()
   hook
@@ -203,7 +203,7 @@ proc closeHttpStream(stream: AsyncStream) {.async: (raises: []).} =
 
 proc connHandler(
   self: WsTransport, stream: WSSession, secure: bool, dir: Direction
-): Result[WsStream, string] {.gcsafe.}
+): LPResult[WsStream] {.gcsafe.}
 
 proc wsHandshakeWorker(
     self: WsTransport, server: HttpServer, stream: AsyncStream
@@ -345,7 +345,7 @@ proc listen(
     self: WsTransport,
     addrs: openArray[MultiAddress],
     addrsTa: openArray[TransportAddress],
-): Result[seq[MultiAddress], string] =
+): LPResult[seq[MultiAddress]] =
   ## Servers created before a failure stay in `self.httpservers` for the caller to close.
   var resolved: seq[MultiAddress]
   for i, ma in addrs:
@@ -381,6 +381,33 @@ proc listen(
 
   ok(resolved)
 
+proc loadAutotlsCertificate(
+    autotls: AutotlsService
+): Future[LPResult[AutotlsCert]] {.async: (raises: [CancelledError]).} =
+  let deadlineFut = sleepAsync(autotls.config.initialCertTimeout)
+  defer:
+    deadlineFut.cancelSoon()
+
+  trace "Waiting for autotls service"
+  let runningFut = autotls.running.wait()
+  defer:
+    runningFut.cancelSoon()
+  try:
+    await runningFut.wait(deadlineFut)
+  except AsyncTimeoutError:
+    return err("autotls service did not start before the certificate deadline")
+
+  trace "Waiting for autotls certificate"
+  let certFut = autotls.getCertWhenReady()
+  defer:
+    certFut.cancelSoon()
+  try:
+    return ok(await certFut.wait(deadlineFut))
+  except AsyncTimeoutError:
+    return err("autotls certificate was not available before the certificate deadline")
+  except AutoTLSError as e:
+    return err("failed to load autotls certificate: " & e.msg)
+
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]
 ) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
@@ -391,21 +418,22 @@ method start*(
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
 
-  if not self.secure and self.autotls.isSome():
-    self.autotls.ifValue(autotls):
-      if not await autotls.running.wait().withTimeout(DefaultAutotlsWaitTimeout):
-        error "Unable to upgrade, autotls not running"
-        await self.stop()
-        return
+  if not self.secure and addrs.anyIt(WSS.match(it)):
+    if self.autotls.isNone():
+      raise newException(
+        TransportStartError,
+        "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
+      )
 
-      trace "Waiting for autotls certificate"
-      let autotlsCert =
-        try:
-          await autotls.getCertWhenReady()
-        except AutoTLSError as e:
-          raise newException(LPError, e.msg, e)
-      self.tlsCertificate = autotlsCert.cert
-      self.tlsPrivateKey = autotlsCert.privkey
+    let autotlsCert = (await loadAutotlsCertificate(self.autotls.get())).valueOr:
+      raise newException(
+        TransportStartError,
+        "Unable to start WebSocket transport: failed to load autotls certificate. " &
+          $error,
+      )
+
+    self.tlsCertificate = autotlsCert.cert
+    self.tlsPrivateKey = autotlsCert.privkey
 
   self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
 
@@ -469,7 +497,7 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
 
 proc connHandler(
     self: WsTransport, stream: WSSession, secure: bool, dir: Direction
-): Result[WsStream, string] =
+): LPResult[WsStream] =
   let codec = ?MultiAddress.init(if secure: "/wss" else: "/ws")
   let addrs = ?stream.stream.reader.tsource.connAddrs()
   let conn = WsStream.new(
