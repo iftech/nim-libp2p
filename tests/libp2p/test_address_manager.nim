@@ -539,12 +539,14 @@ suite "AddressManager verification":
     await sleepAsync(VerifyInterval * 3)
     check notified == @[NetworkReachability.Reachable]
 
-  asyncTest "a cancelled reachability notification is retried":
+  asyncTest "a cancelled reachability notification is not retried":
     let
       address = ma("/ip4/1.2.3.4/tcp/1")
       verifier = makeStubVerifier(@[verdict(address, AddrState.Confirmed)])
       manager = makeManager(verifyInterval = 1.minutes, verifier = verifier)
       firstCall = newAsyncEvent()
+      handlerCancelled = newAsyncEvent()
+      blockHandler = newAsyncEvent()
 
     var calls = 0
     manager.onReachabilityChange = proc(
@@ -553,7 +555,11 @@ suite "AddressManager verification":
       calls.inc()
       if calls == 1:
         firstCall.fire()
-        await sleepAsync(1.hours)
+        try:
+          await blockHandler.wait()
+        except CancelledError as e:
+          handlerCancelled.fire()
+          raise e
 
     manager.add(address, AddrSource.Listen)
     startAndDeferStop(manager)
@@ -561,9 +567,13 @@ suite "AddressManager verification":
 
     # restarting the heartbeat cancels the pending first invocation
     manager.verifyInterval = VerifyInterval
+    await handlerCancelled.wait()
 
-    checkUntilTimeout:
-      calls == 2
+    # `verifier.ran` fires before its verdict reaches `notifyReachability`, so
+    # let several full passes finish before checking that cancellation did not
+    # cause the reachability change to be delivered again.
+    await sleepAsync(VerifyInterval * 3)
+    check calls == 1
 
   asyncTest "triggerVerification runs a pass without waiting for the interval":
     let
@@ -811,6 +821,98 @@ suite "AddressManager address mapper":
     manager.removeMapper(mapper)
     await peerInfo.update()
     check notified == @[NetworkReachability.Reachable, NetworkReachability.Unknown]
+
+  asyncTest "a reachability handler may update PeerInfo without deadlocking":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      mapper = constantMapper(@[mappedAddr])
+      handlerFinished = newAsyncEvent()
+
+    startAndDeferStop(manager, peerInfo)
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      if reachability == NetworkReachability.Reachable:
+        await peerInfo.update()
+        handlerFinished.fire()
+
+    manager.addMapper(mapper, AddrSource.Upnp)
+    await peerInfo.update()
+    manager.update(mappedAddr, AddrState.Confirmed)
+    await peerInfo.update()
+
+    await handlerFinished.wait()
+    check peerInfo.addrs == @[mappedAddr]
+
+  asyncTest "reachability handlers are ordered and do not overlap":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      mapper = constantMapper(@[mappedAddr])
+      firstStarted = newAsyncEvent()
+      releaseFirst = newAsyncEvent()
+      secondStarted = newAsyncEvent()
+
+    startAndDeferStop(manager, peerInfo)
+    var notified: seq[NetworkReachability]
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      notified.add(reachability)
+      if notified.len == 1:
+        firstStarted.fire()
+        await releaseFirst.wait()
+      else:
+        secondStarted.fire()
+
+    manager.addMapper(mapper, AddrSource.Upnp)
+    await peerInfo.update()
+    manager.update(mappedAddr, AddrState.Confirmed)
+    await peerInfo.update()
+    await firstStarted.wait()
+
+    manager.update(mappedAddr, AddrState.Unreachable)
+    await peerInfo.update()
+    check notified == @[NetworkReachability.Reachable]
+
+    releaseFirst.fire()
+    await secondStarted.wait()
+    check notified == @[NetworkReachability.Reachable, NetworkReachability.NotReachable]
+
+  asyncTest "stopping cancels a pending reachability handler":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      mapper = constantMapper(@[mappedAddr])
+      handlerStarted = newAsyncEvent()
+      handlerCancelled = newAsyncEvent()
+
+    startAndDeferStop(manager, peerInfo)
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      handlerStarted.fire()
+      try:
+        await newAsyncEvent().wait()
+      except CancelledError as exc:
+        handlerCancelled.fire()
+        raise exc
+
+    manager.addMapper(mapper, AddrSource.Upnp)
+    await peerInfo.update()
+    manager.update(mappedAddr, AddrState.Confirmed)
+    await peerInfo.update()
+    await handlerStarted.wait()
+
+    manager.stop()
+    await handlerCancelled.wait()
 
   asyncTest "a candidate a feeder also offers survives the mapper which drops it":
     let

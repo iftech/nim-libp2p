@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, json, net, results, sequtils, strutils, uri
+import chronos, json, net, results, sequtils, uri
 from times import now, format, initDuration, `+`
 import
   ../../../libp2p/[
@@ -339,13 +339,9 @@ suite "AutoTLS on a switch":
     defer:
       await switch.stop()
 
-    var errorMsg = ""
-    try:
+    expectMsgContains LPError,
+      "autotls certificate was not available before the certificate deadline":
       await switch.start()
-    except LPError as exc:
-      errorMsg = exc.msg
-    check "autotls certificate was not available before the certificate deadline" in
-      errorMsg
 
   asyncTest "a switch listening only on ws starts without an autotls certificate":
     let switch = makeStandardSwitchBuilder(@[WsAutoAddress])

@@ -7,6 +7,62 @@ import chronos
 from std/exitprocs import nil
 import ./[unittest]
 
+type
+  TestException = object of CatchableError
+  UnexpectedTestException = object of CatchableError
+
+proc raiseTestException(msg: string) =
+  raise newException(TestException, msg)
+
+proc raiseUnexpectedTestException() =
+  raise newException(UnexpectedTestException, "unexpected exception")
+
+suite "exception message helpers":
+  test "expectMsgContains accepts an exception message containing the expected text":
+    expectMsgContains TestException, "expected text":
+      raiseTestException("some expected text in the message")
+
+  test "expectMsg accepts an exception message equal to the expected text":
+    expectMsg TestException, "the expected text":
+      raiseTestException("the expected text")
+
+suite "exception message helpers - failed":
+  var programResultBefore {.threadvar.}: int
+
+  setup:
+    programResultBefore = exitProcs.getProgramResult()
+
+  teardown:
+    require testStatusIMPL == TestStatus.Failed
+    testStatusIMPL = TestStatus.OK
+    if programResultBefore == QuitSuccess:
+      # If before our test the program result was not success, leave it as failed.
+      exitProcs.setProgramResult(QuitSuccess)
+
+  test "expectMsgContains fails when no exception is thrown":
+    expectMsgContains TestException, "expected text":
+      discard
+
+  test "expectMsgContains fails for an unexpected exception":
+    expectMsgContains TestException, "expected text":
+      raiseUnexpectedTestException()
+
+  test "expectMsgContains fails when the message does not contain the expected text":
+    expectMsgContains TestException, "expected text":
+      raiseTestException("different text")
+
+  test "expectMsg fails when no exception is thrown":
+    expectMsg TestException, "expected text":
+      discard
+
+  test "expectMsg fails for an unexpected exception":
+    expectMsg TestException, "expected text":
+      raiseUnexpectedTestException()
+
+  test "expectMsg fails when the message differs from the expected text":
+    expectMsg TestException, "expected text":
+      raiseTestException("different text")
+
 suite "checkUntilTimeout helpers":
   asyncTest "checkUntilTimeout should pass if the condition is true":
     let a = 2
