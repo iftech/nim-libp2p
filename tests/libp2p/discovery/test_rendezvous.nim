@@ -74,8 +74,7 @@ proc new*(
   let pr = CustomPeerRecord.init(
     PeerId.init(PrivateKey.random(ECDSA, rng()).get()).tryGet(), 0
   )
-  logScope:
-    topics = "libp2p discovery rendezvous"
+
   proc handleStream(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
@@ -87,18 +86,17 @@ proc new*(
       of MessageType.Register:
         await rdv.register(stream, msg.register.tryGet(), pr)
       of MessageType.RegisterResponse:
-        trace "Got an unexpected Register Response", response = msg.registerResponse
+        raiseAssert "Got an unexpected Register Response"
       of MessageType.Unregister:
         rdv.unregister(stream, msg.unregister.tryGet())
       of MessageType.Discover:
         await rdv.discover(stream, msg.discover.tryGet())
       of MessageType.DiscoverResponse:
-        trace "Got an unexpected Discover Response", response = msg.discoverResponse
-    except CancelledError as exc:
-      trace "cancelled rendezvous handler"
-      raise exc
-    except CatchableError as exc:
-      trace "exception in rendezvous handler", err = exc.msg
+        raiseAssert "Got an unexpected Discover Response"
+    except CancelledError as e:
+      raise e
+    except CatchableError as e:
+      raiseAssert "exception in rendezvous handler: " & e.msg
     finally:
       await stream.close()
 
