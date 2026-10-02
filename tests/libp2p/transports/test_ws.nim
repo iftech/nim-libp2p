@@ -315,14 +315,11 @@ suite "WebSocket transport with autotls":
       Opt.none(AutotlsService),
       rng(),
     )
-    var errorMsg = ""
-    try:
+
+    expectMsgContains TransportStartError, "WSS requires TLS credentials or AutoTLS":
       await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
-    except TransportStartError as exc:
-      errorMsg = exc.msg
 
     check:
-      "WSS requires TLS credentials or AutoTLS" in errorMsg
       not wstransport.running
       wstransport.addrs.len == 0
 
