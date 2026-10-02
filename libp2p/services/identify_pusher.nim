@@ -59,7 +59,13 @@ type
     onIdentifiedHandler: PeerEventHandler
     onLeftHandler: PeerEventHandler
     onPeerInfoUpdated: PeerInfoObserver
-    initialized: bool
+
+proc new*(T: type IdentifyPusher, switch: Switch): T =
+  T(
+    connManager: switch.connManager,
+    peerStore: switch.peerStore,
+    peerInfo: switch.peerInfo,
+  )
 
 proc sendOne(p: IdentifyPusher, peerId: PeerId) {.async: (raises: [CancelledError]).} =
   ## Sends an IdentifyPush message to a single peer.
@@ -112,14 +118,17 @@ proc broadcast(p: IdentifyPusher) =
       if idx >= 0:
         p.ongoingSend.del(idx)
 
-proc new*(T: type IdentifyPusher, switch: Switch): T =
-  ## Creates the service and all of its local handlers. `start` only attaches
-  ## those handlers and the protocol to the switch.
-  let p = T(
-    connManager: switch.connManager,
-    peerStore: switch.peerStore,
-    peerInfo: switch.peerInfo,
-  )
+proc clearRuntime(p: IdentifyPusher) =
+  ## Releases local handlers after they have been detached from the switch.
+  p.onPeerInfoUpdated = nil
+  p.onIdentifiedHandler = nil
+  p.onLeftHandler = nil
+  p.identifyPush = nil
+
+proc initRuntime(p: IdentifyPusher) =
+  ## Creates the local handlers and protocol callback for a service run.
+
+  p.clearRuntime() # ensure old references are cleared
 
   p.onPeerInfoUpdated = proc(_: PeerInfo) {.gcsafe, raises: [].} =
     p.broadcast()
@@ -148,7 +157,6 @@ proc new*(T: type IdentifyPusher, switch: Switch): T =
       else:
         p.pushPeers.excl(info.peerId)
   )
-  p
 
 method start*(
     p: IdentifyPusher, switch: Switch
@@ -156,6 +164,8 @@ method start*(
   if p.started:
     warn "Identify push service is already started"
     return
+
+  p.initRuntime()
 
   switch.tryMount(p.identifyPush).isOkOr:
     raise newException(
@@ -178,9 +188,9 @@ method stop*(p: IdentifyPusher, switch: Switch) {.async: (raises: [CancelledErro
   p.connManager.removePeerEventHandler(p.onIdentifiedHandler, PeerEventKind.Identified)
   p.peerInfo.removeObserver(p.onPeerInfoUpdated)
   discard switch.unmount(p.identifyPush)
-
-  await (move(p.ongoingSend)).cancelAndWait()
+  p.clearRuntime()
 
   p.pushPeers.clear()
+  await (move(p.ongoingSend)).cancelAndWait()
 
   info "Identify push service stopped"
