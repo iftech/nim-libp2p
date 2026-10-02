@@ -314,7 +314,6 @@ suite "KadDHT message sender":
 
     await sender.stop()
     sender.start()
-    check not sender.stopped
 
     let reply = await sender.sendRequest(
       server.peerInfo.peerId, server.peerInfo.addrs, @[byte 1], 1.seconds

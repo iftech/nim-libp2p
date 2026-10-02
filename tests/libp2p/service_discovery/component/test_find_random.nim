@@ -5,6 +5,7 @@
 
 import chronos, sequtils
 import ../../../../libp2p/protocols/service_discovery
+import ../../../../libp2p/protocols/kademlia/ping
 import ../../../tools/[lifecycle, topology, unittest]
 import ../utils
 

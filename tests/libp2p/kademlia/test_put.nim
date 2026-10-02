@@ -275,7 +275,7 @@ suite "KadDHT Put":
       await conn.close()
 
     let key = kads[0].rtable.selfId
-    let record = Record(key: key, value: Value.init([1.byte, 2, 3]))
+    let record = Record(key: key, value: @[1.byte, 2, 3])
 
     await kads[0].handlePutValue(
       conn, Message(msgType: MessageType.putValue, record: record)
@@ -309,7 +309,7 @@ suite "KadDHT Put":
       Message(
         msgType: MessageType.putValue,
         key: key,
-        record: Record(key: key, value: Value.init(value)),
+        record: Record(key: key, value: value),
       ),
     )
     check kads[0].containsData(key, value)
