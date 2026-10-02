@@ -10,7 +10,7 @@
 
 import std/[sequtils, tables]
 import chronos, chronos/transports/[osnet, ipnet]
-import multiaddress, multicodec, peerid, peerinfo, wire, utils/heartbeat
+import multiaddress, multicodec, peerid, peerinfo, wire, utils/[future, heartbeat]
 import protocols/connectivity/autonat/types
 
 export NetworkReachability
@@ -89,6 +89,8 @@ type
     verifyInterval: Duration
     verifyTimeout: Duration
     verifyFut: Future[void]
+    reachabilityNotifyTail: Future[void].Raising([])
+    reachabilityNotifyFuts: seq[Future[void].Raising([])]
     onReachabilityChange: ReachabilityChangeHandler
     notifiedReachability: NetworkReachability
     deriveIdentify: bool
@@ -435,22 +437,44 @@ func announceSet(
 
 proc notifyReachability(self: AddressManager) {.async: (raises: [CancelledError]).} =
   let
-    summary = self.reachability()
-    notified = self.notifiedReachability
-  if summary == notified:
-    return
-  info "Network reachability changed", previous = notified, current = summary
-  if self.onReachabilityChange.isNil():
-    self.notifiedReachability = summary
+    currentReachability = self.reachability()
+    previousReachability = self.notifiedReachability
+
+  if currentReachability == previousReachability:
     return
 
-  # the marker moves first: a handler which triggers a mapper pass would notify twice
-  self.notifiedReachability = summary
-  try:
-    await self.onReachabilityChange(summary)
-  except CancelledError as e:
-    self.notifiedReachability = notified
-    raise e
+  info "Network reachability changed",
+    previous = previousReachability, current = currentReachability
+
+  self.notifiedReachability = currentReachability
+
+  if not self.onReachabilityChange.isNil():
+    await self.onReachabilityChange(currentReachability)
+
+proc queueReachabilityNotification(self: AddressManager): Future[void].Raising([]) =
+  ## Each notification waits for its predecessor before observing the summary.
+  ## Besides preserving notification order, this keeps handlers from overlapping.
+  let previous = self.reachabilityNotifyTail
+
+  proc notify() {.async: (raises: []).} =
+    try:
+      if not previous.isNil():
+        await previous
+      await self.notifyReachability()
+    except CancelledError:
+      discard
+
+  let current = notify()
+  self.reachabilityNotifyTail = current
+  # Keep every queued future so stop can cancel both the active handler and
+  # notifications still waiting on it.
+  self.reachabilityNotifyFuts.trackFut(current)
+  current
+
+proc notifyReachabilitySoon(self: AddressManager) =
+  ## resolve can run under PeerInfo's mapper lock. A handler may update
+  ## PeerInfo and acquire that lock again, so the mapper must not await it.
+  discard self.queueReachabilityNotification()
 
 func explicitAddrs(self: AddressManager): seq[MultiAddress] =
   if self.peerInfo.isNil():
@@ -479,7 +503,7 @@ proc resolve(
 
   self.track(produced, addrs & announced)
   # a withdrawal changes the summary without a verdict: tell the observers now
-  await self.notifyReachability()
+  self.notifyReachabilitySoon()
 
   # the operator picks what is announced; no mapper rewrites that choice
   if announced.len > 0:
@@ -615,7 +639,7 @@ proc verifyCandidates(self: AddressManager) {.async: (raises: [CancelledError]).
     self.verifying = false
   await self.runVerifier()
   # a withdrawn candidate changes the summary without a verdict, so reconcile every run
-  await self.notifyReachability()
+  await self.queueReachabilityNotification()
 
 proc verifyHeartbeat(self: AddressManager) {.async: (raises: [CancelledError]).} =
   heartbeat "AddressManager candidate verification", self.verifyInterval:
@@ -662,6 +686,9 @@ proc stop*(self: AddressManager) =
   if not self.verifyFut.isNil():
     self.verifyFut.cancelSoon()
     self.verifyFut = nil
+  self.reachabilityNotifyFuts.cancelSoon()
+  self.reachabilityNotifyFuts.setLen(0)
+  self.reachabilityNotifyTail = nil
   self.observations.setLen(0)
   self.candidates.clear()
   self.chainAddrs.clear()
