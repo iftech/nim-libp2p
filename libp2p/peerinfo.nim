@@ -90,6 +90,12 @@ proc notifyObservers*(p: PeerInfo) =
   for observer in p.observers:
     observer(p)
 
+proc ensureExpandAddrsLock(p: PeerInfo): AsyncLock =
+  ## `PeerInfo` is public and can be constructed directly, bypassing `tryNew`.
+  if p.expandAddrsLock.isNil:
+    p.expandAddrsLock = newAsyncLock()
+  p.expandAddrsLock
+
 proc expandAddrs*(
     p: PeerInfo, listenAddrs: seq[MultiAddress]
 ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
@@ -100,7 +106,7 @@ proc expandAddrs*(
   ##
   ## Mappers may maintain state based on the supplied set, so callers must not
   ## pass only a subset of addresses that remain bound.
-  withLock p.expandAddrsLock:
+  withLock p.ensureExpandAddrsLock():
     var addrs = listenAddrs
     for mapper in p.addressMappers:
       addrs = await mapper(addrs)
