@@ -286,11 +286,8 @@ suite "Tor CONNECT reply":
     discard await peer.write(response)
     # Signal EOF while keeping the read side open to observe client cleanup.
     await peer.shutdownWait()
-    try:
+    expectMsgContains TransportDialError, reason:
       discard await dialing
-      fail()
-    except TransportDialError as e:
-      check reason in e.msg
     var reply: array[1, byte]
     check (await peer.readOnce(addr reply[0], 1).wait(100.millis)) == 0
 
