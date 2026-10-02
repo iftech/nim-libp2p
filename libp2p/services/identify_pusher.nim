@@ -9,8 +9,8 @@
 ##
 ## ### Lifecycle
 ##
-## - **start**: Initializes and mounts the IdentifyPush protocol, registers event
-##   handlers for peer connect/disconnect, and enables
+## - **start**: Mounts the IdentifyPush protocol, registers event handlers for
+##   peer connect/disconnect, and enables
 ##   automatic broadcasting when peer info changes. Called by the switch after
 ##   it has been fully started.
 ## - **stop**: Cleans up event handlers and cancels any pending broadcasts.
@@ -59,10 +59,6 @@ type
     onIdentifiedHandler: PeerEventHandler
     onLeftHandler: PeerEventHandler
     onPeerInfoUpdated: PeerInfoObserver
-    initialized: bool
-
-proc new*(T: type IdentifyPusher): T =
-  T()
 
 proc sendOne(p: IdentifyPusher, peerId: PeerId) {.async: (raises: [CancelledError]).} =
   ## Sends an IdentifyPush message to a single peer.
@@ -115,47 +111,19 @@ proc broadcast(p: IdentifyPusher) =
       if idx >= 0:
         p.ongoingSend.del(idx)
 
-proc configure(p: IdentifyPusher, switch: Switch) {.raises: [LPError].} =
-  p.peerStore = switch.peerStore
-  p.connManager = switch.connManager
-  p.peerInfo = switch.peerInfo
+proc new*(T: type IdentifyPusher, switch: Switch): T =
+  ## Creates the service and all of its local handlers. `start` only attaches
+  ## those handlers and the protocol to the switch.
+  let p = T(
+    connManager: switch.connManager,
+    peerStore: switch.peerStore,
+    peerInfo: switch.peerInfo,
+  )
 
-  proc onIncomingPush(info: IdentifyInfo) {.async.} =
-    if not p.started:
-      return
-
-    p.peerStore.updatePeerInfo(info)
-    if IdentifyPushCodec in info.protos:
-      p.pushPeers.incl(info.peerId)
-    else:
-      p.pushPeers.excl(info.peerId)
-
-  p.identifyPush = IdentifyPush.new(onIncomingPush)
-
-  switch.tryMount(p.identifyPush).isOkOr:
-    raise newException(
-      LPError, "IdentifyPusher could not mount IdentifyPush. Reason: " & error
-    )
-
-method start*(
-    p: IdentifyPusher, switch: Switch
-) {.async: (raises: [CancelledError, LPError]).} =
-  if p.started:
-    return
-
-  if not p.initialized:
-    p.configure(switch)
-    p.initialized = true
-
-  p.started = true
-
-  proc onPeerInfoUpdated(_: PeerInfo) {.gcsafe, raises: [].} =
+  p.onPeerInfoUpdated = proc(_: PeerInfo) {.gcsafe, raises: [].} =
     p.broadcast()
 
-  p.onPeerInfoUpdated = onPeerInfoUpdated
-  p.peerInfo.addObserver(p.onPeerInfoUpdated)
-
-  proc onIdentified(
+  p.onIdentifiedHandler = proc(
       peerId: PeerId, _: PeerEvent
   ) {.async: (raises: [CancelledError]).} =
     if IdentifyPushCodec in p.peerStore[ProtoBook][peerId]:
@@ -163,35 +131,53 @@ method start*(
     else:
       p.pushPeers.excl(peerId)
 
-  proc onLeft(peerId: PeerId, _: PeerEvent) {.async: (raises: [CancelledError]).} =
+  p.onLeftHandler = proc(
+      peerId: PeerId, _: PeerEvent
+  ) {.async: (raises: [CancelledError]).} =
     p.pushPeers.excl(peerId)
 
-  p.onIdentifiedHandler = onIdentified
-  p.onLeftHandler = onLeft
-  p.connManager.addPeerEventHandler(onIdentified, PeerEventKind.Identified)
-  p.connManager.addPeerEventHandler(onLeft, PeerEventKind.Left)
+  p.identifyPush = IdentifyPush.new(
+    proc(info: IdentifyInfo) {.async.} =
+      if not p.started:
+        return
+
+      p.peerStore.updatePeerInfo(info)
+      if IdentifyPushCodec in info.protos:
+        p.pushPeers.incl(info.peerId)
+      else:
+        p.pushPeers.excl(info.peerId)
+  )
+  p
+
+method start*(
+    p: IdentifyPusher, switch: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  if p.started:
+    return
+
+  switch.tryMount(p.identifyPush).isOkOr:
+    raise newException(
+      LPError, "IdentifyPusher could not mount IdentifyPush. Reason: " & error
+    )
+  p.peerInfo.addObserver(p.onPeerInfoUpdated)
+  p.connManager.addPeerEventHandler(p.onIdentifiedHandler, PeerEventKind.Identified)
+  p.connManager.addPeerEventHandler(p.onLeftHandler, PeerEventKind.Left)
+
+  p.started = true
   info "Identify push service started"
 
 method stop*(p: IdentifyPusher, switch: Switch) {.async: (raises: [CancelledError]).} =
   if not p.started:
     return
 
-  info "Stopping identify push service"
-  p.started = false
+  p.connManager.removePeerEventHandler(p.onLeftHandler, PeerEventKind.Left)
+  p.connManager.removePeerEventHandler(p.onIdentifiedHandler, PeerEventKind.Identified)
+  p.peerInfo.removeObserver(p.onPeerInfoUpdated)
+  discard switch.unmount(p.identifyPush)
 
-  if not p.onIdentifiedHandler.isNil:
-    p.connManager.removePeerEventHandler(
-      p.onIdentifiedHandler, PeerEventKind.Identified
-    )
-    p.onIdentifiedHandler = nil
-  if not p.onLeftHandler.isNil:
-    p.connManager.removePeerEventHandler(p.onLeftHandler, PeerEventKind.Left)
-    p.onLeftHandler = nil
-  if not p.onPeerInfoUpdated.isNil:
-    p.peerInfo.removeObserver(p.onPeerInfoUpdated)
-    p.onPeerInfoUpdated = nil
-
-  let pending = move(p.ongoingSend)
-  await pending.cancelAndWait()
+  await (move(p.ongoingSend)).cancelAndWait()
 
   p.pushPeers.clear()
+
+  p.started = false
+  info "Identify push service stopped"

@@ -229,6 +229,16 @@ proc mount*[T: LPProtocol](
   ## mount a protocol to the switch
   s.tryMount(proto, matcher).onErrorRaise(LPError)
 
+proc unmount*(s: Switch, proto: LPProtocol): bool =
+  ## Unregister a protocol handler and stop advertising its primary codec.
+  if not s.ms.removeHandler(proto):
+    return false
+
+  if s.ms.lookupProtocol(proto.codec).isNone:
+    s.peerInfo.protocols.keepItIf(it != proto.codec)
+  s.peerInfo.notifyObservers()
+  true
+
 proc upgrader(
     switch: Switch, trans: Transport, conn: RawConn
 ) {.async: (raises: [CancelledError, UpgradeError]).} =
