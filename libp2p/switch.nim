@@ -73,24 +73,13 @@ type
 
   UpgradeError* = object of LPError
 
-  ServiceSetupError* = object of LPError
-
   Service* = ref object of RootObj
     ## Service is internal component of Switch. Service is automatically started and stopped
     ## when the Switch starts and stops.
 
-{.push hint[XCannotRaiseY]: off.}
-  # Base setup keeps `raises: [ServiceSetupError]` to match overrides.
-method setup*(
-    self: Service, switch: Switch
-) {.base, gcsafe, raises: [ServiceSetupError].} =
-  raiseAssert "[Service.setup] abstract method not implemented!"
-
-{.pop.}
-
 method start*(
     self: Service, switch: Switch
-) {.base, async: (raises: [CancelledError]).} =
+) {.base, async: (raises: [CancelledError, LPError]).} =
   raiseAssert "[Service.start] abstract method not implemented!"
 
 method stop*(
@@ -209,15 +198,11 @@ proc dial*(
 
 proc add*(
     s: Switch, service: Service
-) {.
-    raises: [ServiceSetupError],
-    deprecated: "externally created services should not be added to Switch"
-.} =
+) {.deprecated: "externally created services should not be added to Switch".} =
   if service.isNil:
     return
 
   s.services.add(service)
-  service.setup(s)
 
 proc tryMount*[T: LPProtocol](
     s: Switch, proto: T, matcher: Matcher = nil

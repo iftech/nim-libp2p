@@ -5,7 +5,8 @@
 
 import uri
 import nimcrypto/sha2
-import chronos, chronicles, results, stew/byteutils
+import chronos, chronicles, stew/byteutils
+import ../../results
 import ../../crypto/rsa
 import ../../crypto/rng
 import ../../utils/opt
@@ -37,7 +38,7 @@ proc new*(
 
 proc getOrInitKid*(
     self: ACMEClient
-): Future[Result[Kid, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[Kid, LPResultError]] {.async: (raises: [CancelledError]).} =
   if self.kid.len == 0:
     let registerResponse = ?(await self.api.requestRegister(self.key))
     self.kid = registerResponse.kid
@@ -48,7 +49,7 @@ proc genKeyAuthorization*(self: ACMEClient, token: string): KeyAuthorization =
 
 proc getChallenge*(
     self: ACMEClient, domains: seq[api.Domain]
-): Future[Result[ACMEChallengeDns01Response, string]] {.
+): Future[Result[ACMEChallengeDns01Response, LPResultError]] {.
     async: (raises: [CancelledError])
 .} =
   let kid = ?(await self.getOrInitKid())
@@ -61,7 +62,9 @@ proc getCertificate*(
     challenge: ACMEChallengeDns01Response,
     acmeRetries: int = 10,
     finalizeRetries: int = 10,
-): Future[Result[ACMECertificateResponse, string]] {.async: (raises: [CancelledError]).} =
+): Future[Result[ACMECertificateResponse, LPResultError]] {.
+    async: (raises: [CancelledError])
+.} =
   let chalURL = parseUri(challenge.dns01.url)
   let orderURL = parseUri(challenge.order)
   let finalizeURL = parseUri(challenge.finalize)

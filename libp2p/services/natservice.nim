@@ -54,7 +54,7 @@ type
 
   NATConfig* = object
     ## ``portMapping`` is independent; ``reachability`` and ``holePunching`` are
-    ## mutually exclusive (HP drives its own AutoNAT v1) and rejected at setup.
+    ## mutually exclusive (HP drives its own AutoNAT v1).
     portMapping*: Opt[PortMappingConfig]
     reachability*: Opt[ReachabilityConfig]
     holePunching*: Opt[HolePunchingConfig]
@@ -71,7 +71,8 @@ type
     mappedPorts: seq[(Port, MapProto)]
     externalIp*: Opt[IpAddress]
     reachability: Service # active AutoNAT v1 / v2 / HP, started/stopped polymorphically
-    observers: ReachabilityObservers # shared with the active service at setup
+    observers: ReachabilityObservers # shared with the active service
+    configured: bool
 
 const
   DefaultDiscoveryTimeout* = 10.seconds
@@ -417,13 +418,28 @@ proc validatePortMapperConfig(cfg: PortMappingConfig): Result[void, string] =
     )
   ok()
 
+proc validateNATConfig*(config: NATConfig): Result[void, string] =
+  ## Validates combinations of NAT concerns that are known before startup.
+  config.portMapping.ifValue(pm):
+    if pm.mode in {Upnp, NatPmp, Auto}:
+      ?validatePortMapperConfig(pm)
+
+  if config.holePunching.isSome() and config.reachability.isSome():
+    return err(
+      "NATService: holePunching and reachability are mutually exclusive; " &
+        "holePunching already runs AutoNAT v1."
+    )
+
+  config.holePunching.ifValue(hp):
+    if hp.maxNumRelays < 1:
+      return err(
+        "NATService: holePunching maxNumRelays must be >= 1; use holePunchingConfig"
+      )
+  ok()
+
 proc setupHolePunching(
     self: NATService, switch: Switch, hp: HolePunchingConfig
 ): Result[void, string] =
-  if hp.maxNumRelays < 1:
-    return
-      err("NATService: holePunching maxNumRelays must be >= 1; use holePunchingConfig")
-
   let
     autonatService = AutonatService.new(
       AutonatClient(), self.rng, scheduleInterval = hp.scheduleInterval
@@ -434,10 +450,6 @@ proc setupHolePunching(
     hpService = HPService.new(autonatService, autoRelayService)
   # Share observers before constructing the hole-punching service.
   autonatService.reachabilityObservers = self.observers
-  try:
-    hpService.setup(switch)
-  except ServiceSetupError as e:
-    return err("NATService failed to set up hole punching: " & e.msg)
   self.reachability = hpService
   ok()
 
@@ -445,7 +457,6 @@ proc setupAutonatV1(self: NATService, switch: Switch, r: ReachabilityConfig) =
   let autonatService =
     AutonatService.new(AutonatClient(), self.rng, scheduleInterval = r.scheduleInterval)
   autonatService.reachabilityObservers = self.observers
-  autonatService.setup(switch)
   self.reachability = autonatService
 
 proc setupAutonatV2(
@@ -461,7 +472,6 @@ proc setupAutonatV2(
   switch.tryMount(autonatV2Client).isOkOr:
     return err("NATService failed to mount AutonatV2Client: " & error)
   autonatV2Service.reachabilityObservers = self.observers
-  autonatV2Service.setup(switch)
   self.reachability = autonatV2Service
   ok()
 
@@ -470,11 +480,7 @@ proc setupReachability(self: NATService, switch: Switch): Result[void, string] =
     return ok()
 
   # HP already drives its own AutoNAT v1, so pairing it with reachability is contradictory.
-  if self.config.holePunching.isSome() and self.config.reachability.isSome():
-    return err(
-      "NATService: holePunching and reachability are mutually exclusive; " &
-        "holePunching already runs AutoNAT v1."
-    )
+  ?validateNATConfig(self.config)
 
   self.config.holePunching.ifValue(hp):
     return self.setupHolePunching(switch, hp)
@@ -487,15 +493,9 @@ proc setupReachability(self: NATService, switch: Switch): Result[void, string] =
   of AutonatV2:
     self.setupAutonatV2(switch, r)
 
-proc trySetup(self: NATService, switch: Switch): Result[void, string] =
-  self.config.portMapping.ifValue(pm):
-    if pm.mode in {Upnp, NatPmp, Auto}:
-      ?validatePortMapperConfig(pm)
-
+proc configure(self: NATService, switch: Switch): Result[void, string] =
+  ?validateNATConfig(self.config)
   self.setupReachability(switch)
-
-method setup*(self: NATService, switch: Switch) {.raises: [ServiceSetupError].} =
-  self.trySetup(switch).onErrorRaise(ServiceSetupError)
 
 proc explicitIpMapper(explicitIp: IpAddress): AddressMapper =
   proc(
@@ -533,7 +533,7 @@ func portMappingSource(mode: PortMappingMode): AddrSource =
   of Auto: AddrSource.PortMapped
 
 proc startPortMapping(self: NATService, switch: Switch) =
-  ## (Re)build the addressMapper here, not in setup, so a stop/start cycle
+  ## (Re)build the addressMapper here so a stop/start cycle
   ## re-creates it after stop() tears it down.
   self.config.portMapping.ifValue(pm):
     case pm.mode
@@ -550,11 +550,16 @@ proc startPortMapping(self: NATService, switch: Switch) =
 
 proc startReachability(
     self: NATService, switch: Switch
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: [CancelledError, LPError]).} =
   if not self.reachability.isNil():
     await self.reachability.start(switch)
 
-method start*(self: NATService, switch: Switch) {.async: (raises: [CancelledError]).} =
+method start*(
+    self: NATService, switch: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  if not self.configured:
+    self.configure(switch).onErrorRaise(LPError)
+    self.configured = true
   self.startPortMapping(switch)
   await self.startReachability(switch)
 

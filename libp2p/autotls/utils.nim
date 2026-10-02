@@ -2,7 +2,8 @@
 # Copyright (c) Status Research & Development GmbH
 {.push raises: [].}
 
-import chronos, chronicles, results, strutils
+import chronos, chronicles, strutils
+import ../results
 import stew/[base36, base64]
 import
   ../errors,
@@ -22,7 +23,7 @@ const
   DefaultDnsRetries = 3
   DefaultDnsRetryTime = 1.seconds
 
-proc encodePeerId*(peerId: PeerId): Result[string, string] =
+proc encodePeerId*(peerId: PeerId): Result[string, LPResultError] =
   var mh: MultiHash
   let decoded = MultiHash.decode(peerId.data, mh)
   if decoded.isErr() or decoded.get() == -1:

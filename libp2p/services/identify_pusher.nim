@@ -9,8 +9,8 @@
 ##
 ## ### Lifecycle
 ##
-## - **setup**: Initializes the identify push protocol and mounts it to the switch.
-## - **start**: Registers event handlers for peer connect/disconnect and enables
+## - **start**: Initializes and mounts the IdentifyPush protocol, registers event
+##   handlers for peer connect/disconnect, and enables
 ##   automatic broadcasting when peer info changes. Called by the switch after
 ##   it has been fully started.
 ## - **stop**: Cleans up event handlers and cancels any pending broadcasts.
@@ -59,6 +59,7 @@ type
     onIdentifiedHandler: PeerEventHandler
     onLeftHandler: PeerEventHandler
     onPeerInfoUpdated: PeerInfoObserver
+    initialized: bool
 
 proc new*(T: type IdentifyPusher): T =
   T()
@@ -114,7 +115,7 @@ proc broadcast(p: IdentifyPusher) =
       if idx >= 0:
         p.ongoingSend.del(idx)
 
-method setup*(p: IdentifyPusher, switch: Switch) {.raises: [ServiceSetupError].} =
+proc configure(p: IdentifyPusher, switch: Switch) {.raises: [LPError].} =
   p.peerStore = switch.peerStore
   p.connManager = switch.connManager
   p.peerInfo = switch.peerInfo
@@ -133,12 +134,18 @@ method setup*(p: IdentifyPusher, switch: Switch) {.raises: [ServiceSetupError].}
 
   switch.tryMount(p.identifyPush).isOkOr:
     raise newException(
-      ServiceSetupError, "IdentifyPusher could not mount IdentifyPush. Reason: " & error
+      LPError, "IdentifyPusher could not mount IdentifyPush. Reason: " & error
     )
 
-method start*(p: IdentifyPusher, switch: Switch) {.async: (raises: [CancelledError]).} =
+method start*(
+    p: IdentifyPusher, switch: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
   if p.started:
     return
+
+  if not p.initialized:
+    p.configure(switch)
+    p.initialized = true
 
   p.started = true
 

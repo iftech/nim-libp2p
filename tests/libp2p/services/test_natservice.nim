@@ -272,14 +272,14 @@ suite "NATService":
     check Port(5555) in mock.unmappedPorts()
     check mock.countCalls(mckClose) == 1
 
-  asyncTest "setup raises when config has zero discoveryTimeout":
+  test "build raises when config has zero discoveryTimeout":
     let cfg = natPmpConfig(discoveryTimeout = 0.seconds)
-    expect ServiceSetupError:
+    expectMsgContains LPError, "discoveryTimeout must be > 0":
       discard makeSwitch(cfg, @[TcpAutoAddress])
 
-  asyncTest "setup raises when config has zero mappingTimeout":
+  test "build raises when config has zero mappingTimeout":
     let cfg = upnpConfig(mappingTimeout = 0.seconds)
-    expect ServiceSetupError:
+    expectMsgContains LPError, "mappingTimeout must be > 0":
       discard makeSwitch(cfg, @[TcpAutoAddress])
 
   asyncTest "factory receives the configured mode":
@@ -373,9 +373,14 @@ suite "NATService":
       nat.autonatV2Service.isNone()
       nat.networkReachability == NetworkReachability.Unknown
 
-  test "hole-punching paired with AutonatV2 reachability is rejected at setup":
+  test "build raises when config has less then one maxNumRelays":
+    let cfg = holePunchingConfig(maxNumRelays = 0)
+    expectMsgContains LPError, "maxNumRelays must be >= 1":
+      discard makeSwitch(cfg, @[TcpAutoAddress])
+
+  test "hole-punching paired with AutonatV2 reachability is rejected at build":
     # The realistic path: two withNAT calls for the conflicting concerns.
-    expect ServiceSetupError:
+    expectMsgContains LPError, "holePunching and reachability are mutually exclusive":
       discard standardBuilder(@[TcpAutoAddress])
         .withNAT(holePunchingConfig())
         .withNAT(autonatConfig(AutonatV2))
