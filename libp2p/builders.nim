@@ -643,6 +643,8 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
   ok()
 
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
+  b.natConfig.ifValue(natCfg):
+    validateNATConfig(natCfg).onErrorRaise(LPError)
   let switch = b.buildSwitch().valueOrRaise(LPError)
   b.setupServices(switch)
   b.mountProtocols(switch).onErrorRaise(LPError)

@@ -226,6 +226,15 @@ proc mergeInto*(dst: var NATConfig, src: NATConfig) =
       "withNAT: holePunching configured more than once"
     dst.holePunching = Opt.some(v)
 
+proc validateNATConfig*(config: NATConfig): Result[void, string] =
+  ## Validates combinations of NAT concerns that are known before startup.
+  if config.holePunching.isSome() and config.reachability.isSome():
+    return err(
+      "NATService: holePunching and reachability are mutually exclusive; " &
+        "holePunching already runs AutoNAT v1."
+    )
+  ok()
+
 proc explicitIpMapped*(
     listenAddrs: seq[MultiAddress], explicitIp: IpAddress
 ): seq[MultiAddress] =
@@ -465,11 +474,7 @@ proc setupReachability(self: NATService, switch: Switch): Result[void, string] =
     return ok()
 
   # HP already drives its own AutoNAT v1, so pairing it with reachability is contradictory.
-  if self.config.holePunching.isSome() and self.config.reachability.isSome():
-    return err(
-      "NATService: holePunching and reachability are mutually exclusive; " &
-        "holePunching already runs AutoNAT v1."
-    )
+  ?validateNATConfig(self.config)
 
   self.config.holePunching.ifValue(hp):
     return self.setupHolePunching(switch, hp)

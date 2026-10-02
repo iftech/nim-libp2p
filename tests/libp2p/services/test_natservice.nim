@@ -375,14 +375,13 @@ suite "NATService":
       nat.autonatV2Service.isNone()
       nat.networkReachability == NetworkReachability.Unknown
 
-  asyncTest "hole-punching paired with AutonatV2 reachability is rejected at start":
+  test "hole-punching paired with AutonatV2 reachability is rejected at build":
     # The realistic path: two withNAT calls for the conflicting concerns.
-    let switch = standardBuilder(@[TcpAutoAddress])
-      .withNAT(holePunchingConfig())
-      .withNAT(autonatConfig(AutonatV2))
-      .build()
-    expect LPError:
-      await switch.start()
+    expectMsgContains LPError, "holePunching and reachability are mutually exclusive":
+      discard standardBuilder(@[TcpAutoAddress])
+        .withNAT(holePunchingConfig())
+        .withNAT(autonatConfig(AutonatV2))
+        .build()
 
   asyncTest "Upnp combined with autonat v1 wires both subsystems":
     # NATConfig keeps mode (port-mapping) and autonat orthogonal: enabling
