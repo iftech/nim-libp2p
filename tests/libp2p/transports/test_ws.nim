@@ -52,6 +52,7 @@ proc streamProvider(conn: RawConn, handle: bool = true): Muxer =
 const
   wsAddress = "/ip4/127.0.0.1/tcp/0/ws"
   wsSecureAddress = "/ip4/127.0.0.1/tcp/0/wss"
+  validPlainWireAddresses = @["/ip4/127.0.0.1/tcp/1234/ws", "/ip6/::1/tcp/1234/ws"]
   validWireAddresses = @[
     # Plain WebSocket
     "/ip4/127.0.0.1/tcp/1234/ws",
@@ -87,7 +88,7 @@ suite "WebSocket transport":
     checkTrackers()
 
   basicTransportTest(
-    wsTransProvider, wsAddress, validWireAddresses, validNonWireAddresses,
+    wsTransProvider, wsAddress, validPlainWireAddresses, validNonWireAddresses,
     invalidAddresses,
   )
   basicTransportTest(
@@ -306,7 +307,7 @@ suite "WebSocket transport with autotls":
     check wstransport.tlsCertificate == manualCert
     check wstransport.tlsPrivateKey == manualKey
 
-  asyncTest "wstransport is not secure when both manual tlscertificate and autotls are not specified":
+  asyncTest "start fails for WSS without manual TLS credentials or autotls":
     let wstransport = WsTransport.new(
       Upgrade(),
       nil, # TLSPrivateKey
@@ -314,17 +315,16 @@ suite "WebSocket transport with autotls":
       Opt.none(AutotlsService),
       rng(),
     )
-    await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
-    defer:
-      await wstransport.stop()
+    var errorMsg = ""
+    try:
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
+    except TransportStartError as exc:
+      errorMsg = exc.msg
 
-    # TLSPrivateKey and TLSCertificate should not be set
-    check not wstransport.secure
-
-    # the address it listens on and advertises drops to /ws
     check:
-      WS.match(wstransport.addrs[0])
-      not WSS.match(wstransport.addrs[0])
+      "WSS requires TLS credentials or AutoTLS" in errorMsg
+      not wstransport.running
+      wstransport.addrs.len == 0
 
   asyncTest "plain WebSocket start does not wait for autotls":
     let autotls = AutotlsService(
