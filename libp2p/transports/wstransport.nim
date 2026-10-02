@@ -418,9 +418,14 @@ method start*(
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
 
-  if not self.secure and self.autotls.isSome() and addrs.anyIt(WSS.match(it)):
-    let autotls = self.autotls.get()
-    let autotlsCert = (await loadAutotlsCertificate(autotls)).valueOr:
+  if not self.secure and addrs.anyIt(WSS.match(it)):
+    if self.autotls.isNone():
+      raise newException(
+        TransportStartError,
+        "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
+      )
+
+    let autotlsCert = (await loadAutotlsCertificate(self.autotls.get())).valueOr:
       raise newException(
         TransportStartError,
         "Unable to start WebSocket transport: failed to load autotls certificate. " &
