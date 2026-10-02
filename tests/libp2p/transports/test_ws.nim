@@ -149,7 +149,7 @@ suite "WebSocket transport":
     wsTransProvider, ma(wsAddress), Opt.none(MultiAddress), streamProvider
   )
   streamTransportTest(
-    wsTransProvider, ma(wsSecureAddress), Opt.none(MultiAddress), streamProvider
+    wsSecureTransProvider, ma(wsSecureAddress), Opt.none(MultiAddress), streamProvider
   )
 
   asyncTest "Hostname verification":
