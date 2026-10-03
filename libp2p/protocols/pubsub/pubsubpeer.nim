@@ -126,6 +126,8 @@ type
     # separate routine.
     data: seq[byte]
     useCustomStream: bool
+    relayedSaltedId: Opt[SaltedId]
+      ## Id of the one relayed message this RPC carries, when it was not split.
 
   RpcMessageQueue* = ref object
     # Tracks async tasks for sending high-priority peer-published messages.
@@ -569,9 +571,15 @@ proc sendHighPriorityMessage(
   return newFutureCompleted[void]()
 
 proc enqueueNonHighPriorityMessage(
-    p: PubSubPeer, msg: sink seq[byte], useCustomStream: bool, priority: MessagePriority
+    p: PubSubPeer,
+    msg: sink seq[byte],
+    useCustomStream: bool,
+    priority: MessagePriority,
+    relayedSaltedId: Opt[SaltedId],
 ): Future[void] =
-  let queuedMsg = QueuedMessage(data: move(msg), useCustomStream: useCustomStream)
+  let queuedMsg = QueuedMessage(
+    data: move(msg), useCustomStream: useCustomStream, relayedSaltedId: relayedSaltedId
+  )
   case priority
   of MessagePriority.Medium:
     p.rpcmessagequeue.mediumPriorityQueue.addLast(queuedMsg)
@@ -604,11 +612,41 @@ proc dropNonHighPriorityMessage(
     raiseAssert "high-priority messages are not dropped via queue overflow scoring"
   return newFutureCompleted[void]()
 
+func holdsIDontWant*(p: PubSubPeer, id: SaltedId): bool =
+  ## True when the peer sent an IDONTWANT for `id` within the kept history.
+  for iDontWant in p.iDontWants:
+    if id in iDontWant:
+      return true
+
+  false
+
+proc cancelQueuedRelays*(p: PubSubPeer, duplicates: openArray[SaltedId]): int =
+  ## Drops every queued relay the peer already holds and counts the saved bytes.
+  var savedBytes = 0
+
+  for _ in 0 ..< p.rpcmessagequeue.lowPriorityQueue.len:
+    let queued = p.rpcmessagequeue.lowPriorityQueue.popFirst()
+
+    var cancel = false
+    queued.relayedSaltedId.withValue(id):
+      cancel = id in duplicates or p.holdsIDontWant(id)
+
+    if not cancel:
+      p.rpcmessagequeue.lowPriorityQueue.addLast(queued)
+      continue
+
+    savedBytes += queued.data.len
+    when defined(pubsubpeer_queue_metrics):
+      libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
+
+  savedBytes
+
 proc sendEncoded*(
     p: PubSubPeer,
     msg: sink seq[byte],
     priority: MessagePriority,
     useCustomStream: bool = false,
+    relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
 ): Future[void] =
   ## Asynchronously sends an encoded message to a specified `PubSubPeer` according to its priority.
   ##
@@ -621,6 +659,7 @@ proc sendEncoded*(
   ##   - `Low`: queued in `lowPriorityQueue`. Dropped when full.
   ## - `useCustomStream`: boolean used to indicate if a custom stream is going to
   ##   be used for sending this message
+  ## - `relayedSaltedId`: id that lets `cancelQueuedRelays` drop this queued send.
   ## Low and medium priority messages are queued and sent only after all high
   ## priority messages have been sent.
   doAssert(not isNil(p), "pubsubpeer nil!")
@@ -651,7 +690,9 @@ proc sendEncoded*(
         p.disconnectPeer()
     of Medium, Low:
       if action.send:
-        p.enqueueNonHighPriorityMessage(move(msg), useCustomStream, action.priority)
+        p.enqueueNonHighPriorityMessage(
+          move(msg), useCustomStream, action.priority, relayedSaltedId
+        )
       else:
         p.dropNonHighPriorityMessage(action.slowPeerPenaltyDelta, action.priority)
 
@@ -705,6 +746,7 @@ proc sendResponse*(
     anonymize: bool,
     priority: MessagePriority,
     useCustomStream: bool = false,
+    relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
 ) {.raises: [].} =
   ## Sends a protocol response `RPCMsg` to this peer, batching multi-message
   ## responses together so that none exceed `maxMessageSize`.
@@ -716,18 +758,24 @@ proc sendResponse*(
   ## `maxMessageSize`, and individual messages that still exceed
   ## `maxMessageSize`, are dropped with a warning.
 
-  proc send(toSendMsg: RPCMsg) =
+  proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =
     var encoded = encodeRpcMsg(p, toSendMsg, anonymize)
     trace "Sending PubSub RPC response",
       peerId = p.peerId, messageType = "rpc", messageSize = encoded.len
-    p.trackSend(p.sendEncoded(move(encoded), priority, useCustomStream))
+    p.trackSend(p.sendEncoded(move(encoded), priority, useCustomStream, saltedId))
 
   template wireSize(toSizeMsg: RPCMsg): int =
     toSizeMsg.anonymize(anonymize).encodedSize()
 
   let msgSize = wireSize(msg)
   if msgSize <= p.maxMessageSize:
-    send(msg) # The whole RPC fits the limits, send it as-is.
+    # A cancel drops the whole RPC, so tag it only when it carries that one message.
+    let saltedId =
+      if msg.messages.len == 1:
+        relayedSaltedId
+      else:
+        Opt.none(SaltedId)
+    send(msg, saltedId) # The whole RPC fits the limits, send it as-is.
     return
 
   if msg.messages.len == 0:
@@ -793,6 +841,14 @@ proc sendNonHighPriorityTask(p: PubSubPeer) {.async: (raises: [CancelledError]).
       await p.rpcmessagequeue.dataAvailableEvent.wait()
       p.rpcmessagequeue.dataAvailableEvent.clear()
 
+    while p.rpcmessagequeue.sendPriorityQueue.len > 0:
+      p.clearSendPriorityQueue()
+      # One wait on the last future costs less than one wait per future.
+      if p.rpcmessagequeue.sendPriorityQueue.len > 0:
+        # `race` keeps the awaited future alive when this task is cancelled.
+        discard await race(p.rpcmessagequeue.sendPriorityQueue[^1])
+
+    # Pop after the wait above, so a message that waits stays cancellable.
     var priority = MessagePriority.Low
     var msg =
       if p.rpcmessagequeue.mediumPriorityQueue.len != 0:
@@ -803,16 +859,6 @@ proc sendNonHighPriorityTask(p: PubSubPeer) {.async: (raises: [CancelledError]).
       else:
         continue
 
-    while p.rpcmessagequeue.sendPriorityQueue.len > 0:
-      p.clearSendPriorityQueue()
-      # waiting for the last future minimizes the number of times we have to
-      # wait for something (each wait = performance cost) -
-      # clearSendPriorityQueue ensures we're not waiting for an already-finished
-      # future
-      if p.rpcmessagequeue.sendPriorityQueue.len > 0:
-        # `race` prevents `p.rpcmessagequeue.sendPriorityQueue[^1]` from being
-        # cancelled when this task is cancelled
-        discard await race(p.rpcmessagequeue.sendPriorityQueue[^1])
     when defined(pubsubpeer_queue_metrics):
       if priority == MessagePriority.Medium:
         libp2p_gossipsub_medium_priority_queue_size.dec(labelValues = [$p.peerId])

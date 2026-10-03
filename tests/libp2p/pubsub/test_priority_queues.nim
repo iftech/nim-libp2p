@@ -4,6 +4,8 @@
 {.used.}
 
 import chronos
+import std/[deques, sets]
+import nimcrypto/sha2
 import ../../../libp2p/protocols/pubsub/pubsubpeer
 import ../../../libp2p/protocols/pubsub/gossipsub/types
 import ../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
@@ -134,6 +136,9 @@ proc createTestPeer(
     maxLowPriorityQueueLen = maxLow,
   )
 
+func testSaltedId(seed: byte): SaltedId =
+  SaltedId(data: sha256.digest([seed]))
+
 suite "Priority queue behavior":
   teardown:
     checkTrackers()
@@ -252,6 +257,83 @@ suite "Priority queue behavior":
     check:
       not disconnectRequestedForTest[]
       peer.hasSendStream()
+
+  asyncTest "Cancelling a queued relay drops it and leaves the other queued messages":
+    let peer = createTestPeer(maxLow = 4)
+    let conn = createRecorderConnection()
+    defer:
+      peer.stopTasks()
+
+    peer.sendStream = conn
+
+    let
+      highMsg = @[1'u8, 2, 3]
+      cancelledMsg = @[30'u8, 0, 0]
+      keptMsg = @[31'u8, 0, 0]
+      cancelledId = testSaltedId(1)
+      keptId = testSaltedId(2)
+
+    var queuedHighMsg = highMsg
+    let highFut = peer.sendEncoded(move(queuedHighMsg), MessagePriority.High)
+    check highFut.finished
+
+    var queuedCancelledMsg = cancelledMsg
+    let cancelledFut = peer.sendEncoded(
+      move(queuedCancelledMsg),
+      MessagePriority.Low,
+      relayedSaltedId = Opt.some(cancelledId),
+    )
+    var queuedKeptMsg = keptMsg
+    let keptFut = peer.sendEncoded(
+      move(queuedKeptMsg), MessagePriority.Low, relayedSaltedId = Opt.some(keptId)
+    )
+
+    check:
+      cancelledFut.finished
+      keptFut.finished
+      conn.writes == @[highMsg]
+      peer.cancelQueuedRelays([cancelledId]) == cancelledMsg.len
+      peer.cancelQueuedRelays([cancelledId]) == 0
+
+    conn.releaseFirstWrite()
+
+    checkUntilTimeout:
+      conn.writes == @[highMsg, keptMsg]
+
+  asyncTest "An IDONTWANT in the peer history cancels a queued relay":
+    let peer = createTestPeer(maxLow = 4)
+    let conn = createRecorderConnection()
+    defer:
+      peer.stopTasks()
+
+    peer.sendStream = conn
+
+    let
+      highMsg = @[1'u8, 2, 3]
+      unwantedMsg = @[30'u8, 0, 0]
+      unwantedId = testSaltedId(3)
+
+    var queuedHighMsg = highMsg
+    check peer.sendEncoded(move(queuedHighMsg), MessagePriority.High).finished
+
+    var queuedUnwantedMsg = unwantedMsg
+    check peer.sendEncoded(
+      move(queuedUnwantedMsg),
+      MessagePriority.Low,
+      relayedSaltedId = Opt.some(unwantedId),
+    ).finished
+
+    # The whole history counts, not only the current heartbeat slot.
+    peer.iDontWants.addFirst(default(HashSet[SaltedId]))
+    peer.iDontWants[1].incl(unwantedId)
+
+    let noDuplicates: seq[SaltedId] = @[]
+    check peer.cancelQueuedRelays(noDuplicates) == unwantedMsg.len
+
+    conn.releaseFirstWrite()
+
+    checkUntilTimeout:
+      conn.writes == @[highMsg]
 
   asyncTest "Empty queues fast-path medium and low sends while returning completed futures":
     let mediumPeer = createTestPeer()
