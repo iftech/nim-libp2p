@@ -103,8 +103,10 @@ suite "WebSocket transport":
   cancellationTransportTest(wsSecureTransProvider, wsSecureAddress)
 
   asyncTest "slow WebSocket headers do not block valid accepts":
+    let headersTimeout = 3.seconds
+    let acceptTimeout = headersTimeout div 3
     let server = WsTransport.new(
-      Upgrade(), rng(), headersTimeout = 3.seconds, concurrentAccepts = 2
+      Upgrade(), rng(), headersTimeout = headersTimeout, concurrentAccepts = 2
     )
     await server.start(@[ma(wsAddress)])
     defer:
@@ -136,7 +138,9 @@ suite "WebSocket transport":
 
     # The valid WebSocket handshake must not wait for the slow one to time out.
     let outboundFut = client.dial(server.addrs[0])
-    let inbound = await server.accept()
+    # Keep accept() future bounded so a serialized accept 
+    # cannot hide behind headersTimeout
+    let inbound = await server.accept().wait(acceptTimeout)
     let outbound = await outboundFut
 
     await closeSlow()
@@ -324,11 +328,12 @@ suite "WebSocket transport with autotls":
       wstransport.addrs.len == 0
 
   asyncTest "plain WebSocket start does not wait for autotls":
+    let certTimeout = 30.seconds
     let autotls = AutotlsService(
       certReady: newAsyncEvent(),
       running: newAsyncEvent(),
       config: AutotlsConfig.new(
-        initialCertTimeout = 30.seconds
+        initialCertTimeout = certTimeout
           # intentionally very large, so loading certifacte is not stopped early by this timeout
       ),
     )
@@ -346,7 +351,8 @@ suite "WebSocket transport with autotls":
         startFut.cancelSoon()
       await wstransport.stop()
 
-    await startFut
+    # A plain /ws listener must start well before AutoTLS gives up on its certificate.
+    await startFut.wait(certTimeout div / 2)
 
     check:
       not wstransport.secure
