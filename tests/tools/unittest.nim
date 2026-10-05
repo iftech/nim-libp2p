@@ -80,6 +80,7 @@ template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
     try:
       waitFor testFut.wait(timeout)
     except AsyncTimeoutError as exc:
+      checkpoint "[TEST TIMEOUT] Test body exceeded its configured timeout of " & $timeout & "."
       try:
         waitFor testFut.cancelAndWait().wait(asyncTestCleanupTimeout)
       except AsyncTimeoutError:
