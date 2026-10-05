@@ -529,7 +529,7 @@ suite "Multistream :: stream limits":
     for _ in 0 ..< maxTotalStreams:
       dialers.add(connector())
 
-    await reserved
+    await reserved.wait()
 
     expect LPStreamEOFError:
       await connector()
@@ -568,7 +568,7 @@ suite "Multistream :: stream limits":
     var d1 = connector("/test/proto1/1.0.0")
     var d2 = connector("/test/proto2/1.0.0")
 
-    await reserved
+    await reserved.wait()
 
     expect LPStreamEOFError:
       await connector("/test/proto1/1.0.0")
@@ -654,7 +654,7 @@ suite "Multistream :: stream limits":
     for _ in 0 ..< 2:
       dialers.add(connector())
 
-    await reserved
+    await reserved.wait()
 
     expect LPStreamEOFError:
       await connector()

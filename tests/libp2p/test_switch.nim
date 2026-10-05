@@ -74,7 +74,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -119,7 +119,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -159,7 +159,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -619,13 +619,13 @@ suite "Switch":
       await switches[i].connect(switches[0].peerInfo.peerId, switches[0].peerInfo.addrs)
 
     # Wait until all 5 are connected
-    await allConnected
+    await allConnected.wait()
 
     # Trigger disconnect safely
     await switches[0].disconnect(peerInfo.peerId)
 
     # Wait until all disconnected
-    await allDisconnected
+    await allDisconnected.wait()
     check not switches[0].isConnected(peerInfo.peerId)
 
     checkUntilTimeout:
@@ -676,7 +676,7 @@ suite "Switch":
     futSwitch1Connected.done()
 
     # with the deadlock, the disconnect never completes and this times out
-    await disconnected
+    await disconnected.wait()
 
     checkUntilTimeout:
       not switch1.isConnected(switch2.peerInfo.peerId)
@@ -903,7 +903,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -953,7 +953,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     # Switch2 dialed switch1, so switch2 should have switch1 in LastSeenOutboundBook
     check:
@@ -1154,7 +1154,7 @@ suite "Switch":
     await stream.writeLp("test123")
     check "test456" == string.fromBytes(await stream.readLp(1024))
     await stream.close()
-    await handleFinished
+    await handleFinished.wait()
 
   test "tryMount rejects a protocol with no handler or codec":
     let switch = makeStandardSwitch()
