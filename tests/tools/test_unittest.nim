@@ -136,11 +136,11 @@ suite "asyncTest suite timeout - failed", timeout = 50.milliseconds:
     cleanupRan = false
 
   teardown:
-    check cleanupRan
     require testStatusIMPL == TestStatus.Failed
     testStatusIMPL = TestStatus.OK
     if programResultBefore == QuitSuccess:
       exitProcs.setProgramResult(QuitSuccess)
+    check cleanupRan
 
   generatedAsyncTimeoutTest(cleanupRan)
 
