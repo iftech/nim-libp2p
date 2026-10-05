@@ -1,5 +1,6 @@
 .PHONY: all build deps cbind clean test \
         test_multiformat_exts test_integration test_autotls_docker_integration \
+        bench_dial \
         setup lock gen_multicodec format clean-nim
 
 NIM_VERSION  ?= 2.2.10
@@ -115,6 +116,17 @@ test_integration: nimble.paths tests/nimble.paths
 	  $(if $(CICOV),--nimcache:nimcache/integration,) \
 	  tests/integration/test_all.nim
 	./tests/integration/test_all $(RUNNER_FLAGS) --xml:tests/results_integration.xml
+
+BENCH_LOG_LEVEL ?= WARN
+
+bench_dial: nimble.paths tests/nimble.paths
+	mkdir -p $(CURDIR)/build
+	$(NIMC) c $(NIM_FLAGS) \
+	  --nimcache:nimcache/bench_dial \
+	  -d:chronicles_log_level=$(BENCH_LOG_LEVEL) \
+	  -o:$(CURDIR)/build/bench_dial \
+	  tests/benchmarks/bench_dial.nim
+	./build/bench_dial
 
 test_autotls_docker_integration:
 	docker compose -f tests/integration/autotls_docker/docker-compose.yml build test
