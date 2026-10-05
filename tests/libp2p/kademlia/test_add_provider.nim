@@ -527,7 +527,7 @@ suite "KadDHT - Add Provider":
     let owned = sender.provideTasks
     check owned.len > 0
     await sender.stop()
-    await pending
+    await pending.wait(receiver.handleAddProviderDelay * 2)
     check owned.allIt(it.finished())
 
   asyncTest "Optimistic provide falls back to classic without a size estimate":

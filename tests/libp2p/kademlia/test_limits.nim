@@ -61,8 +61,9 @@ suite "KadDHT - Limits":
     await noCancel secondProbes.values.toSeq().cancelAndWait()
 
   asyncTest "an admission probe frees its slot at the probe timeout":
+    const probesTimeout = 500.milliseconds
     let stall = startStallServer()
-    let kad = setupKad(testKadConfig(timeout = 500.milliseconds))
+    let kad = setupKad(testKadConfig(timeout = probesTimeout))
     startAndDeferStop(@[kad.switch])
     defer:
       # Before the switch: `stop` waits for the dial this probe abandons.
@@ -74,7 +75,7 @@ suite "KadDHT - Limits":
 
     let probes = move kad.admissionProbes
     # A peer that accepts and never speaks costs `timeout`, not the dialer's 30s.
-    await allFutures(probes.values().toSeq())
+    await allFutures(probes.values().toSeq()).wait(probesTimeout * 2)
     check kad.admissionSem.availableSlots() == 1
 
   asyncTest "liveness probes do not consume admissionSem slots":

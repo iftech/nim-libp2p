@@ -682,7 +682,7 @@ suite "Multistream :: result API":
   proc selectAgainstHeader(
       header: string
   ): Future[MultiStreamResult[string]] {.
-      async: (raises: [CancelledError, LPStreamError, AsyncTimeoutError])
+      async: (raises: [CancelledError, LPStreamError])
   .} =
     let (client, server) = bridgedConnections()
     let selecting = MultistreamSelect.trySelect(client, @[codecs])

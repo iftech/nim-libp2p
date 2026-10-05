@@ -1233,7 +1233,7 @@ suite "Switch":
       switch.transports[0].upgrader.secureManagers.len == 1
       switch.transports[0].upgrader.secureManagers[0] of Noise
 
-  asyncTest "accept loop not blocked by upgrade semaphore":
+  asyncTest "accept loop not blocked by upgrade semaphore", timeout = 30.seconds:
     # Regression: old code held the upgrade semaphore in the accept loop, blocking
     # it when ConcurrentUpgrades (4) were in flight; manifested as 80+ kad nodes
     # getting stuck on bootstrap.
@@ -1253,9 +1253,7 @@ suite "Switch":
 
     let connects =
       clients.mapIt(it.connect(server.peerInfo.peerId, server.peerInfo.addrs))
-    let allConnects = allFuturesRaising(connects)
-    check await allConnects.withTimeout(30.seconds)
-    await allConnects
+    await allFuturesRaising(connects)
 
 suite "Switch :: IdentifyPusher Service":
   var
