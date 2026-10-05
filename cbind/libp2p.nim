@@ -300,16 +300,16 @@ proc mountKad(
     return err(e.msg)
   ok()
 
-proc mountServiceDiscovery(
-    lib: LibP2P, bootstrapNodes: seq[(PeerId, seq[MultiAddress])]
-): Result[void, string] =
+proc mountServiceDiscovery(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
   try:
     let sd = ServiceDiscovery.new(
       lib.switch,
-      bootstrapNodes = bootstrapNodes,
+      bootstrapNodes = cfg.bootstrapNodes,
       config = defaultKadConfig(),
       rng = lib.rng,
+      client = cfg.serviceDiscoveryMode == ServiceDiscoveryMode.Client,
       codec = ExtendedServiceDiscoveryCodec,
+      xprPublishing = not cfg.serviceDiscoveryDisableXprPublishing,
     )
     lib.switch.mount(sd)
     lib.kad = Opt.some(KadDHT(sd))
@@ -322,7 +322,7 @@ proc mountProtocols(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
     ?mountGossipsub(lib, cfg.gossipsub)
 
   if cfg.mountServiceDiscovery:
-    ?mountServiceDiscovery(lib, cfg.bootstrapNodes)
+    ?mountServiceDiscovery(lib, cfg)
   elif cfg.mountKad:
     ?mountKad(lib, cfg.bootstrapNodes)
 
@@ -472,6 +472,8 @@ type CLibp2pConfig {.exportc: "libp2p_config", bycopy.} = object
   gossipsub: CGossipsubConfig
   mountKad: cint
   mountServiceDiscovery: cint
+  serviceDiscoveryMode: cint
+  serviceDiscoveryDisableXprPublishing: cint
   dnsResolver: cstring
   addrs: ptr cstring
   addrsLen: csize_t
@@ -968,12 +970,9 @@ proc libp2pServiceDiscoStop*(lib: LibP2P): Future[Result[bool, string]] {.ffi.} 
 proc libp2pServiceDiscoStartAdvertising*(
     lib: LibP2P, req: StartAdvertisingRequest
 ): Future[Result[bool, string]] {.ffi.} =
-  ## Advertises `serviceId` (with `serviceData`, which may be empty) in this
-  ## node's record. A non-empty `advertisement` is a signed extended peer record,
-  ## published verbatim instead of this node's own record; it fails when that
-  ## record does not decode, is oversized, or does not list `serviceId`.
-  ## A service that is already advertised fails here: stop it first, then start
-  ## it again with the new advertisement.
+  ## Advertises `serviceId` in this node's record, or publishes a non-empty
+  ## `advertisement` (a signed XPR that must list `serviceId`) under its signer's key.
+  ## A second call for the same `serviceId` replaces the advertisement.
   let disco = runningServiceDiscovery(lib).valueOr:
     return err(error)
 
