@@ -3,10 +3,62 @@
 
 {.used.}
 
-import chronos, std/[sequtils], chronicles
+import chronos, std/[sequtils, tables], chronicles
 import ../../../../libp2p/protocols/pubsub/[gossipsub, mcache, peertable, pubsubpeer]
 import ../../../tools/[lifecycle, topology, unittest]
 import ../utils
+
+proc countGrafts(node: GossipSub, topic: string, rejectBackoff: Opt[uint64]): ref int =
+  ## With `rejectBackoff`, drop each GRAFT and reply with a PRUNE that carries it.
+  let grafts = new int
+  node.addOnRecvObserver(
+    proc(peer: PubSubPeer, msgs: var RPCMsg) {.gcsafe, raises: [].} =
+      if msgs.control.isNone():
+        return
+
+      var control = msgs.control.get()
+      let received = control.graft.countIt(it.topicID == topic)
+      grafts[] += received
+      if received == 0 or rejectBackoff.isNone():
+        return
+
+      control.graft.keepItIf(it.topicID != topic)
+      msgs.control = Opt.some(control)
+      node.broadcastResponse(
+        @[peer],
+        RPCMsg.withControl(ControlMessage.withPrune(topic, rejectBackoff.get(), @[])),
+        MessagePriority.High,
+      )
+  )
+  grafts
+
+proc graftsAfterRejection(
+    topic: string, rejectBackoff: Opt[uint64]
+): Future[int] {.async.} =
+  ## Counts the GRAFTs that n1 sends to n0 when n0 rejects each one.
+  let
+    nodes = generateNodes(2, gossip = true, verifySignature = false).toGossipSub()
+    n0 = nodes[0]
+    n1 = nodes[1]
+    grafts = n0.countGrafts(topic, rejectBackoff)
+
+  # n0 never grafts n1, so only n1 sends GRAFTs
+  n0.backingOff.mgetOrPut(topic, initTable[PeerId, Moment]())[n1.peerInfo.peerId] =
+    Moment.fromNow(1.hours)
+
+  startAndDeferStop(nodes)
+  await connectStar(nodes)
+  subscribeAllNodes(nodes, topic, voidTopicHandler)
+  waitSubscribeStar(nodes, topic)
+
+  checkUntilTimeout:
+    n0.peerInfo.peerId in n1.backingOff.getOrDefault(topic)
+
+  # without the backoff, n1 re-GRAFTs on the next heartbeat; the third lets it arrive
+  await n1.waitForHeartbeatByEvent(3)
+  check not n1.mesh.hasPeerId(topic, n0.peerInfo.peerId)
+
+  grafts[]
 
 suite "GossipSub Component - Control Messages":
   const topic = "foobar"
@@ -159,6 +211,12 @@ suite "GossipSub Component - Control Messages":
       n1.gossipsub.hasPeerId(topic, n0.peerInfo.peerId)
       not n0.mesh.hasPeerId(topic, n1.peerInfo.peerId)
       not n1.mesh.hasPeerId(topic, n0.peerInfo.peerId)
+
+  asyncTest "GRAFT rejected by handleGraft is sent once":
+    check (await graftsAfterRejection(topic, Opt.none(uint64))) == 1
+
+  asyncTest "GRAFT rejected by a PRUNE without backoff is sent once":
+    check (await graftsAfterRejection(topic, Opt.some(0'u64))) == 1
 
   asyncTest "Received PRUNE for non-subscribed topic":
     let

@@ -600,6 +600,18 @@ suite "GossipSub Behavior":
     check:
       timeDifference < 1.seconds.nanoseconds
 
+  asyncTest "handlePrune - max backoff does not wrap around":
+    let
+      (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic, populateMesh = true)
+      peer = peers[0]
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    gossipSub.handlePrune(peer, @[ControlPrune(topicID: topic, backoff: high(uint64))])
+
+    check gossipSub.backingOff.getOrDefault(topic).getOrDefault(peer.peerId) >
+      Moment.fromNow(23.hours)
+
   asyncTest "handlePrune - ignores unsubscribed topics":
     const unknownTopic = "not-subscribed"
     let
@@ -631,7 +643,20 @@ suite "GossipSub Behavior":
       gossipSub.mesh[topic].len == 1
       routingRecordsCalled == false
 
-  asyncTest "handlePrune - ignores peers outside mesh":
+  asyncTest "handlePrune - unsolicited prune from peer outside mesh is ignored":
+    let
+      (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+      peer = peers[0]
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    gossipSub.handlePrune(peer, @[ControlPrune(topicID: topic, backoff: 300'u64)])
+
+    check:
+      topic notin gossipSub.backingOff
+      peer notin gossipSub.mesh[topic]
+
+  asyncTest "handlePrune - peer outside mesh after our GRAFT: backoff is set, the rest is ignored":
     let
       (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
       peer = peers[0]
@@ -643,6 +668,8 @@ suite "GossipSub Behavior":
       proc(peer: PeerId, tag: string, peers: seq[RoutingRecordsPair]) =
         routingRecordsCalled = true
     )
+    gossipSub.withPeerStats(peer.peerId) do(stats: var PeerStats):
+      stats.topicInfos.mgetOrPut(topic).lastGraftSent = Moment.now()
 
     gossipSub.handlePrune(
       peer,
@@ -654,10 +681,28 @@ suite "GossipSub Behavior":
     )
 
     check:
-      topic notin gossipSub.backingOff
+      peer.peerId in gossipSub.backingOff.getOrDefault(topic)
+      gossipSub.peerStats[peer.peerId].topicInfos[topic].lastGraftSent == Moment()
       peer notin gossipSub.mesh[topic]
       gossipSub.mesh[topic].len == 0
       routingRecordsCalled == false
+
+  asyncTest "handlePrune - backoff 0 sets the default pruneBackoff":
+    let
+      (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic, populateMesh = true)
+      peer = peers[0]
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    gossipSub.handlePrune(peer, @[ControlPrune(topicID: topic, backoff: 0'u64)])
+
+    let
+      expected =
+        Moment.fromNow(gossipSub.parameters.pruneBackoff + BackoffSlackTime.seconds)
+      actual = gossipSub.backingOff.getOrDefault(topic).getOrDefault(peer.peerId)
+    check:
+      peer notin gossipSub.mesh.getOrDefault(topic)
+      abs((actual - expected).nanoseconds) < 1.seconds.nanoseconds
 
   asyncTest "handlePrune - do not trigger PeerExchange on Prune if peer score is below GossipThreshold threshold":
     const gossipThreshold = -100.0
