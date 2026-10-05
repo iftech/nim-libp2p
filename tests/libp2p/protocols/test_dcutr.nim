@@ -90,9 +90,12 @@ suite "Dcutr":
       # we can't hole punch when both peers are in the same machine. This means that the simultaneous dialings will result
       # in two connections attemps, instead of one. This dial is going to fail because the dcutr client is acting as the
       # tcp simultaneous incoming upgrader in the dialer which works only in the simultaneous open case.
-      await DcutrClient.new().startSync(
-        behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-      )
+      await DcutrClient
+        .new()
+        .startSync(
+          behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
+        )
+        .wait(300.millis)
 
     # we still expect a new connection to be open by the receiver peer acting as
     # the dcutr server; wait until it is identified so teardown doesn't race the
@@ -216,9 +219,12 @@ suite "Dcutr":
       # we can't hole punch when both peers are in the same machine. This means that the simultaneous dialings will result
       # in two connections attemps, instead of one. This dial is going to fail because the dcutr client is acting as the
       # tcp simultaneous incoming upgrader in the dialer which works only in the simultaneous open case.
-      await DcutrClient.new().startSync(
-        behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-      )
+      await DcutrClient
+        .new()
+        .startSync(
+          behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
+        )
+        .wait(300.millis)
 
     checkUntilTimeout:
       # we still expect a new connection to be open by the receiver peer acting as the dcutr server
