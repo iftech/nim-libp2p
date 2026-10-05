@@ -7,7 +7,9 @@ import ./trackers
 export checkTrackers # TODO: maybe consider importing it on demand?
 export unittest2 except suite
 
-const asyncTestTimeoutDefault* = 30.seconds
+const
+  asyncTestTimeoutDefault* = 30.seconds
+  asyncTestCleanupTimeout = 1.seconds
 
 var
   suiteAsyncTestTimeout {.threadvar.}: Duration
@@ -79,7 +81,10 @@ template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
     try:
       waitFor testFut.wait(timeout)
     except AsyncTimeoutError as exc:
-      waitFor testFut.cancelAndWait()
+      try:
+        waitFor testFut.cancelAndWait().wait(asyncTestCleanupTimeout)
+      except AsyncTimeoutError:
+        checkpoint "[TIMEOUT] Timed out waiting for the test body to cancel."
       raise exc
 
 template isErrOf*(res: untyped, T: typedesc): bool =
