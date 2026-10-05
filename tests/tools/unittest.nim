@@ -23,7 +23,7 @@ macro addAsyncTestTimeout(timeout: untyped, body: untyped): untyped =
       # An asyncTest has a name and body; any additional argument is its
       # explicit timeout, either positional or named.
       if node.len == 3:
-        result = newNimNode(node.kind)
+        result = newNimNode(node.kind, node)
         for i in 0 ..< node.len - 1:
           result.add addTimeout(node[i])
         result.add timeoutNode
