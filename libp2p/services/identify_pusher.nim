@@ -168,6 +168,7 @@ method start*(
   p.initRuntime()
 
   switch.tryMount(p.identifyPush).isOkOr:
+    p.clearRuntime()
     raise newException(
       LPError, "IdentifyPusher could not mount IdentifyPush. Reason: " & error
     )
