@@ -328,6 +328,7 @@ suite "WebSocket transport with autotls":
       wstransport.addrs.len == 0
 
   asyncTest "plain WebSocket start does not wait for autotls":
+    let startTimeout = 15.seconds # must be less then `certTimeout`
     let certTimeout = 30.seconds
     let autotls = AutotlsService(
       certReady: newAsyncEvent(),
@@ -352,7 +353,7 @@ suite "WebSocket transport with autotls":
       await wstransport.stop()
 
     # A plain /ws listener must start well before AutoTLS gives up on its certificate.
-    await startFut.wait(certTimeout div /2)
+    await startFut.wait(startTimeout)
 
     check:
       not wstransport.secure
