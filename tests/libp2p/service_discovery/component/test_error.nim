@@ -92,8 +92,8 @@ suite "Service Discovery Component - Error Handling":
         msgType: kad_protobuf.MessageType.getAds, key: makeServiceId()
       ),
     )
-    await stall.waitAccepted().wait(2.seconds)
-    await pending.cancelAndWait().wait(2.seconds)
+    await stall.waitAccepted()
+    await pending.cancelAndWait()
     check pending.cancelled()
 
   asyncTest "cancelling an RPC interrupts writing and resets the stream":
@@ -117,8 +117,8 @@ suite "Service Discovery Component - Error Handling":
         msgType: kad_protobuf.MessageType.getAds, key: makeServiceId()
       ),
     )
-    await stream.writeStarted.wait(2.seconds)
-    await pending.cancelAndWait().wait(2.seconds)
+    await stream.writeStarted
+    await pending.cancelAndWait()
     check:
       pending.cancelled()
       stream.writePending.cancelled()
@@ -150,7 +150,7 @@ suite "Service Discovery Component - Error Handling":
         msgType: kad_protobuf.MessageType.getAds, key: makeServiceId()
       ),
     )
-    await received.wait(2.seconds)
+    await received
     await pending.cancelAndWait()
     check pending.cancelled()
 
@@ -167,8 +167,7 @@ suite "Service Discovery Component - Error Handling":
     let invalidMsg = @[8'u8, 99]
 
     expect AsyncTimeoutError:
-      discard
-        await clientSwitch.sendRawMessage(registrarNode, invalidMsg).wait(2.seconds)
+      discard await clientSwitch.sendRawMessage(registrarNode, invalidMsg)
 
   asyncTest "REGISTER without register body returns Rejected":
     let registrarNode = setupServiceDiscoveryNode()
@@ -270,8 +269,7 @@ suite "Service Discovery Component - Error Handling":
     let oversizedMsg = newSeq[byte](ServiceDiscoveryMaxMsgSize + 1)
 
     expect LPStreamError:
-      discard
-        await clientSwitch.sendRawMessage(registrarNode, oversizedMsg).wait(2.seconds)
+      discard await clientSwitch.sendRawMessage(registrarNode, oversizedMsg)
 
   asyncTest "REGISTER with non-32-byte key returns Rejected":
     # Spec calls for rejection on bad key length.

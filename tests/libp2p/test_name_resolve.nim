@@ -320,6 +320,6 @@ suite "Name resolving":
       let server = newDatagramTransport(discardQuery)
       let resolver = DnsResolver.new(@[server.localAddress])
       let lookup = resolver.resolveIp("example.com", Port(0))
-      await received.wait().wait(1.seconds)
+      await received.wait()
       await lookup.cancelAndWait()
       await server.closeWait()

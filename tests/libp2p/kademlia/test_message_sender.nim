@@ -283,9 +283,9 @@ suite "KadDHT message sender":
 
     let peerId = PeerId.random(rng()).tryGet()
     let rpc = sender.sendRequest(peerId, @[stall.address], @[byte 1], 30.seconds)
-    await stall.waitAccepted().wait(5.seconds)
+    await stall.waitAccepted()
 
-    await rpc.cancelAndWait().wait(5.seconds)
+    await rpc.cancelAndWait()
     check rpc.cancelled()
 
   asyncTest "a reset stream is dropped without another RPC":

@@ -120,7 +120,7 @@ suite "GossipSub Component - Mesh Management":
 
     nodes[1].subscribe(topic, handler)
 
-    await invalidDetected.wait(10.seconds)
+    await invalidDetected
 
   asyncTest "GossipSub test directPeers":
     let nodes = generateNodes(2, gossip = true).toGossipSub()
@@ -144,7 +144,7 @@ suite "GossipSub Component - Mesh Management":
 
     nodes[1].subscribe(topic, voidTopicHandler)
 
-    await invalidDetected.wait(10.seconds)
+    await invalidDetected
 
   asyncTest "mesh and gossipsub updated when topic subscribed and unsubscribed":
     let

@@ -153,7 +153,7 @@ suite "Dialer":
     # dial lock, which a dial that hangs never does.
     for _ in 0 .. 1:
       expect DialFailedError:
-        await dialer.connect(peerId, @[stall.address]).wait(10.seconds)
+        await dialer.connect(peerId, @[stall.address])
 
   asyncTest "A stalling address-only dial does not block another one":
     let
@@ -180,11 +180,10 @@ suite "Dialer":
       await allFutures(src.stop(), dst.stop())
       await stall.stop()
 
-    await stall.waitAccepted().wait(5.seconds)
+    await stall.waitAccepted()
 
-    let dialed = await dialer
-      .connect(dst.peerInfo.addrs[0], allowUnknownPeerId = true)
-      .wait(5.seconds)
+    let dialed = await dialer.connect(dst.peerInfo.addrs[0], allowUnknownPeerId = true)
+
     check dialed == dst.peerInfo.peerId
 
   asyncTest "Ranked dialing stops at the candidate limit":
@@ -284,9 +283,7 @@ suite "Dialer":
     )
 
     let stalling = ma("/dnsaddr/stalls.example")
-    await dialer.connect(dst.peerInfo.peerId, @[stalling] & dst.peerInfo.addrs).wait(
-      5.seconds
-    )
+    await dialer.connect(dst.peerInfo.peerId, @[stalling] & dst.peerInfo.addrs)
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
     check resolver.cancelled
@@ -316,7 +313,7 @@ suite "Dialer":
     )
 
     let mixed = MultiAddress.init("/dnsaddr/mixed.example").tryGet()
-    await dialer.connect(dst.peerInfo.peerId, @[mixed]).wait(5.seconds)
+    await dialer.connect(dst.peerInfo.peerId, @[mixed])
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
     check resolver.cancelled
@@ -347,7 +344,7 @@ suite "Dialer":
     let
       stalling = ma("/dnsaddr/stalls.example")
       good = ma("/dnsaddr/good.example")
-    await dialer.connect(dst.peerInfo.peerId, @[stalling, good]).wait(5.seconds)
+    await dialer.connect(dst.peerInfo.peerId, @[stalling, good])
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
     check resolver.cancelled
@@ -376,7 +373,7 @@ suite "Dialer":
     )
 
     let name = ma("/dnsaddr/good.example")
-    await dialer.connect(dst.peerInfo.peerId, @[name]).wait(5.seconds)
+    await dialer.connect(dst.peerInfo.peerId, @[name])
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 
@@ -407,7 +404,7 @@ suite "Dialer":
     let
       dead = ma("/memorytransport/addr-0")
       name = ma("/dnsaddr/good.example")
-    await dialer.connect(dst.peerInfo.peerId, @[dead, name]).wait(5.seconds)
+    await dialer.connect(dst.peerInfo.peerId, @[dead, name])
 
     check failing.dialedAddrs == @[dead]
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
@@ -437,7 +434,7 @@ suite "Dialer":
     addrs.add(ma("/dnsaddr/stalls.example"))
 
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), addrs).wait(1.seconds)
+      await dialer.connect(randomPeerId(), addrs)
 
     check resolver.cancelled
 
@@ -465,7 +462,7 @@ suite "Dialer":
 
     let name = ma("/dnsaddr/good.example")
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), @[wire, wire, name]).wait(5.seconds)
+      await dialer.connect(randomPeerId(), @[wire, wire, name])
 
     check transport.dialedAddrs == @[wire]
 
@@ -572,9 +569,7 @@ suite "Dialer":
       stalling = ScriptedDialTransport.new(Upgrade(), rng(), handled = @[quic])
       dialer = src.makeRankedDialer(@[Transport(stalling)] & src.transports)
 
-    await dialer.connect(dst.peerInfo.peerId, @[quic] & dst.peerInfo.addrs).wait(
-      5.seconds
-    )
+    await dialer.connect(dst.peerInfo.peerId, @[quic] & dst.peerInfo.addrs)
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
     check stalling.dialedAddrs == @[quic]
@@ -807,14 +802,12 @@ suite "Dialer":
     # dial lock, which identify holds for as long as the connection lives.
     for _ in 0 .. 1:
       expect DialFailedError:
-        await dialer
-          .connect(
-            dst.peerInfo.peerId,
-            dst.peerInfo.addrs,
-            forceDial = true,
-            reuseConnection = false,
-          )
-          .wait(10.seconds)
+        await dialer.connect(
+          dst.peerInfo.peerId,
+          dst.peerInfo.addrs,
+          forceDial = true,
+          reuseConnection = false,
+        )
 
   asyncTest "A remote that never closes the identify stream frees the dial":
     let
@@ -917,5 +910,5 @@ suite "MuxedUpgrade":
     discard await remote.readLp(1024)
     discard await remote.readLp(1024)
     await remote.writeLp("bad handshake\n")
-    let res = await upgrading.wait(1.seconds)
+    let res = await upgrading
     check res.error == $MultiStreamFailure.HandshakeFailed

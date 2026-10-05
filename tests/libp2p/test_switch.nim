@@ -74,9 +74,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -121,9 +119,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -163,9 +159,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -625,13 +619,13 @@ suite "Switch":
       await switches[i].connect(switches[0].peerInfo.peerId, switches[0].peerInfo.addrs)
 
     # Wait until all 5 are connected
-    await allConnected.wait(5.seconds)
+    await allConnected
 
     # Trigger disconnect safely
     await switches[0].disconnect(peerInfo.peerId)
 
     # Wait until all disconnected
-    await allDisconnected.wait(5.seconds)
+    await allDisconnected
     check not switches[0].isConnected(peerInfo.peerId)
 
     checkUntilTimeout:
@@ -682,7 +676,7 @@ suite "Switch":
     futSwitch1Connected.done()
 
     # with the deadlock, the disconnect never completes and this times out
-    await disconnected.wait(5.seconds)
+    await disconnected
 
     checkUntilTimeout:
       not switch1.isConnected(switch2.peerInfo.peerId)
@@ -789,7 +783,7 @@ suite "Switch":
     await switchFail.start()
 
     expect DialFailedError:
-      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs).wait(10.seconds)
+      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs)
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
@@ -842,7 +836,7 @@ suite "Switch":
     await switchFail.start()
 
     expect DialFailedError:
-      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs).wait(10.seconds)
+      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs)
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
@@ -909,9 +903,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -961,9 +953,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished, switch1.stop(), switch2.stop())
 
     # Switch2 dialed switch1, so switch2 should have switch1 in LastSeenOutboundBook
     check:
@@ -1164,7 +1154,7 @@ suite "Switch":
     await stream.writeLp("test123")
     check "test456" == string.fromBytes(await stream.readLp(1024))
     await stream.close()
-    await handleFinished.wait(5.seconds)
+    await handleFinished
 
   test "tryMount rejects a protocol with no handler or codec":
     let switch = makeStandardSwitch()
@@ -1326,8 +1316,6 @@ suite "Switch :: IdentifyPusher Service":
     await dialer.start()
     defer:
       await allFutures(listener.stop(), dialer.stop())
-    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs).wait(
-      2.seconds
-    )
+    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
     check listener.isConnected(dialer.peerInfo.peerId)
     check (await listener.connManager.waitForPeerReady(dialer.peerInfo.peerId))

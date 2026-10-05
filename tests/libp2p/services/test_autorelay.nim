@@ -62,7 +62,7 @@ suite "Autorelay":
     switchClient = createSwitch(relayClient, autorelay)
     await allFutures(switchClient.start(), switchRelay.start())
     await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
-    await fut.wait(1.seconds)
+    await fut
     let addresses = autorelay.getAddresses()
     check:
       addresses == buildRelayMA(switchRelay, switchClient)
@@ -83,7 +83,7 @@ suite "Autorelay":
     await allFutures(switchClient.start(), switchRelay.start())
     await sleepAsync(250.millis)
     await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
-    await fut.wait(1.seconds)
+    await fut
     let addresses = autorelay.getAddresses()
 
     check:
@@ -199,14 +199,14 @@ suite "Autorelay":
     await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
 
     # stop the service while the reservation is still unanswered
-    await reservationRequested.wait(1.seconds)
+    await reservationRequested
     await autorelay.stop(switchClient)
 
     # from here on, anything reaching relayAddresses was written by a stopped service
     check autorelay.getAddresses().len == 0
 
     answerReservation.fire()
-    await reservationHandled.wait(1.seconds)
+    await reservationHandled
     check autorelay.getAddresses().len == 0
 
   asyncTest "restart does not announce the previous cycle's relay address":
@@ -305,10 +305,10 @@ suite "Autorelay":
     switchClient = createSwitch(relayClient, autorelay)
     await allFutures(switchClient.start(), rel1.start(), rel2.start(), rel3.start())
     await switchClient.connect(rel1.peerInfo.peerId, rel1.peerInfo.addrs)
-    await rel1Checked.wait(500.millis)
+    await rel1Checked
     await switchClient.connect(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
     await switchClient.connect(rel3.peerInfo.peerId, rel3.peerInfo.addrs)
-    await rel1And2Checked.wait(500.millis)
+    await rel1And2Checked
     await rel2.stop()
 
     # final state check

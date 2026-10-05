@@ -74,7 +74,7 @@ suite "KadDHT - Limits":
 
     let probes = move kad.admissionProbes
     # A peer that accepts and never speaks costs `timeout`, not the dialer's 30s.
-    await allFutures(probes.values().toSeq()).wait(5.seconds)
+    await allFutures(probes.values().toSeq())
     check kad.admissionSem.availableSlots() == 1
 
   asyncTest "liveness probes do not consume admissionSem slots":

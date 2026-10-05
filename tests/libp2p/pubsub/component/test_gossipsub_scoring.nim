@@ -376,7 +376,7 @@ suite "GossipSub Component - Scoring":
 
     tryPublish await nodes[0].publish(topic, toBytes("hello")), 1
 
-    await seenFut.wait(2.seconds)
+    await seenFut
     check:
       seen.len >= numberOfNodes
     for k, v in seen.pairs:

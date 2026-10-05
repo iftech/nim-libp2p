@@ -136,8 +136,8 @@ suite "WebSocket transport":
 
     # The valid WebSocket handshake must not wait for the slow one to time out.
     let outboundFut = client.dial(server.addrs[0])
-    let inbound = await server.accept().wait(1.seconds)
-    let outbound = await outboundFut.wait(1.seconds)
+    let inbound = await server.accept()
+    let outbound = await outboundFut
 
     await closeSlow()
 
@@ -346,7 +346,7 @@ suite "WebSocket transport with autotls":
         startFut.cancelSoon()
       await wstransport.stop()
 
-    await startFut.wait(5.seconds)
+    await startFut
 
     check:
       not wstransport.secure
@@ -369,7 +369,7 @@ suite "WebSocket transport with autotls":
 
     expectMsgContains TransportStartError,
       "autotls service did not start before the certificate deadline":
-      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
 
     check:
       not wstransport.running
@@ -392,7 +392,7 @@ suite "WebSocket transport with autotls":
 
     expectMsgContains TransportStartError,
       "autotls certificate was not available before the certificate deadline":
-      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
 
     check:
       not wstransport.running

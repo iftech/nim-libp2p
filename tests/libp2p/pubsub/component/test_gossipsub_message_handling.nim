@@ -545,7 +545,7 @@ suite "GossipSub Component - Message Handling":
 
     tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
 
-    check await passed.wait(10.seconds)
+    check await passed
 
     check:
       topic in nodes[0].gossipsub
@@ -765,7 +765,7 @@ suite "GossipSub Component - Message Handling":
 
     tryPublish await nodes[0].publish(topic, toBytes("hellow")), 1
 
-    await handlerFut.wait(2.seconds)
+    await handlerFut
 
     # peer shouldn't be in our mesh
     check topic notin nodes[0].mesh

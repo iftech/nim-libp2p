@@ -297,11 +297,9 @@ suite "Service Discovery Component - Advertise Discover":
     let badAdvert = @[1'u8, 2, 3, 4]
 
     # The advertiser should hit Rejected, break its retry loop, and return.
-    await advertiserNode
-      .advertiseToRegistrar(
-        serviceId, registrarNode.switch.peerInfo.peerId, Opt.none(Ticket), badAdvert
-      )
-      .wait(5.seconds)
+    await advertiserNode.advertiseToRegistrar(
+      serviceId, registrarNode.switch.peerInfo.peerId, Opt.none(Ticket), badAdvert
+    )
 
     check registrarNode.countAdsInCache(serviceId) == 0
 
@@ -320,11 +318,9 @@ suite "Service Discovery Component - Advertise Discover":
     let unreachablePeer = randomPeerId()
 
     # sendRegister fails and the task returns without retrying.
-    await advertiserNode
-      .advertiseToRegistrar(
-        serviceId, unreachablePeer, Opt.none(Ticket), @[1'u8, 2, 3, 4]
-      )
-      .wait(5.seconds)
+    await advertiserNode.advertiseToRegistrar(
+      serviceId, unreachablePeer, Opt.none(Ticket), @[1'u8, 2, 3, 4]
+    )
 
     check advertiserNode.countAdsInCache(serviceId) == 0
 

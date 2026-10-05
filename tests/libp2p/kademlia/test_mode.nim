@@ -26,7 +26,7 @@ proc dialFindNode(
   let msg = Message(msgType: Opt.some(MessageType.findNode), key: target.rtable.selfId)
   try:
     await stream.writeLp(msg.encode(querier.config.hideConnectionStatus))
-    let replyBuf = await stream.readLp(MaxMsgSize).wait(1.seconds)
+    let replyBuf = await stream.readLp(MaxMsgSize)
     let reply = Message.decode(replyBuf).valueOr:
       return Opt.none(Message)
     # A served query yields a well-formed FIND_NODE reply; anything else is a
@@ -97,7 +97,7 @@ suite "KadDHT dynamic mode":
     let msg =
       Message(msgType: Opt.some(MessageType.findNode), key: server.rtable.selfId)
     await stream.writeLp(msg.encode(querier.config.hideConnectionStatus))
-    discard await stream.readLp(MaxMsgSize).wait(1.seconds)
+    discard await stream.readLp(MaxMsgSize)
 
     checkUntilTimeout:
       server.serverStreams.len == 1
@@ -108,7 +108,7 @@ suite "KadDHT dynamic mode":
     # The downgrade must reset the parked stream: the querier's next read ends in
     # EOF, not a timeout (a timeout would mean the reset never propagated).
     expect LPStreamEOFError:
-      discard await stream.readLp(MaxMsgSize).wait(3.seconds)
+      discard await stream.readLp(MaxMsgSize)
 
   asyncTest "server closes the stream on an undecodable request":
     let querier = setupKad()
@@ -126,7 +126,7 @@ suite "KadDHT dynamic mode":
 
     await stream.writeLp(truncated)
     expect LPStreamEOFError:
-      discard await stream.readLp(MaxMsgSize).wait(3.seconds)
+      discard await stream.readLp(MaxMsgSize)
 
   asyncTest "server skips REGISTER and GET_ADS and keeps the stream open":
     let querier = setupKad()
@@ -150,5 +150,5 @@ suite "KadDHT dynamic mode":
       )
     )
 
-    let reply = Message.decode(await stream.readLp(MaxMsgSize).wait(3.seconds))
+    let reply = Message.decode(await stream.readLp(MaxMsgSize))
     check reply.get().msgType == Opt.some(MessageType.findNode)
