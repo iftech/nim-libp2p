@@ -84,7 +84,11 @@ template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
       proc() {.async.} =
         body
     )()
-    waitFor testFut.wait(timeout)
+    try:
+      waitFor testFut.wait(timeout)
+    except AsyncTimeoutError as exc:
+      waitFor testFut.cancelAndWait()
+      raise exc
 
 template isErrOf*(res: untyped, T: typedesc): bool =
   res.isErr() and res.error of T

@@ -123,17 +123,22 @@ suite "asyncTest suite timeout", timeout = 100.milliseconds:
 
 suite "asyncTest suite timeout - failed", timeout = 50.milliseconds:
   var programResultBefore {.threadvar.}: int
+  var cleanupRan {.threadvar.}: bool
 
   setup:
     programResultBefore = exitProcs.getProgramResult()
+    cleanupRan = false
 
   teardown:
+    check cleanupRan
     require testStatusIMPL == TestStatus.Failed
     testStatusIMPL = TestStatus.OK
     if programResultBefore == QuitSuccess:
       exitProcs.setProgramResult(QuitSuccess)
 
   asyncTest "fails when the suite timeout expires":
+    defer:
+      cleanupRan = true
     await sleepAsync(100.milliseconds)
 
 suite "checkUntilTimeout helpers - failed":
