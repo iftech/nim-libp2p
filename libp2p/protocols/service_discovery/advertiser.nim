@@ -3,7 +3,7 @@
 
 import std/[sets, tables, sequtils]
 import chronos, chronicles, results
-import ../../utils/[heartbeat, opt]
+import ../../utils/[heartbeat, opt, future]
 import
   ../../[peerid, switch, multihash, cid, multicodec, multiaddress, extended_peer_record]
 import ../../crypto/crypto
@@ -31,7 +31,7 @@ proc cancelRunningTasks*(a: Advertiser) {.async: (raises: []).} =
   for task in running:
     runningFuts.add(task.fut)
 
-  await runningFuts.cancelAndWait()
+  await noCancel runningFuts.cancelAndWait()
 
   cd_advertiser_pending_actions.set(0)
 
@@ -134,6 +134,10 @@ proc stopLocalRegistration(
 
   disco.localRegistrationLoop = nil
 
+proc stopRegistrations*(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
+  await disco.advertiser.cancelRunningTasks()
+  await disco.stopLocalRegistration()
+
 proc restartLocalRegistration(disco: ServiceDiscovery) =
   if not disco.localRegistrationLoop.isNil:
     disco.localRegistrationLoop.cancelSoon()
@@ -227,8 +231,7 @@ proc republishProvidedAdverts*(
   if not refreshed:
     return
 
-  await disco.advertiser.cancelRunningTasks()
-  await disco.stopLocalRegistration()
+  await disco.stopRegistrations()
   disco.startLocalRegistration()
   await disco.maintainRegistrations()
 
@@ -465,6 +468,7 @@ proc restartXprPublishing*(disco: ServiceDiscovery) =
     return
 
   disco.xprPublishLoop = disco.maintainXprsAfter(disco.xprPublishLoop)
+  reportBackgroundFailure(disco.xprPublishLoop, "service discovery XPR publishing")
 
 proc takeServiceTasks(a: Advertiser, serviceId: ServiceId): seq[Future[void]] =
   var kept: HashSet[AdvertiseTask]
@@ -483,8 +487,7 @@ proc cancelServiceTasks(
     disco: ServiceDiscovery, serviceId: ServiceId
 ): seq[Future[void]] =
   let cancelled = disco.advertiser.takeServiceTasks(serviceId)
-  for fut in cancelled:
-    fut.cancelSoon()
+  cancelled.cancelSoon()
   cancelled
 
 proc addProvidedService*(

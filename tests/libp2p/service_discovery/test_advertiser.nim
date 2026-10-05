@@ -25,10 +25,6 @@ proc settleStartupRepublish(disco: ServiceDiscovery) {.async.} =
     return
   await disco.addressRepublish
 
-proc cancelRegistrations(disco: ServiceDiscovery) {.async.} =
-  await disco.advertiser.cancelRunningTasks()
-  await disco.localRegistrationLoop.cancelAndWait()
-
 proc dropCachedAds(disco: ServiceDiscovery) =
   discard disco.registrar.ads.pruneExpired(Moment.now() + 1.hours, 0.secs)
 
@@ -357,7 +353,7 @@ suite "Advertiser - caller-supplied advertisement":
     disco.populateAdvertisementTable(serviceId)
     check disco.startAdvertising(service, Opt.some(advert)).isOk()
 
-    await disco.cancelRegistrations()
+    await disco.stopRegistrations()
     await disco.maintainRegistrations()
 
     check:
@@ -409,13 +405,13 @@ suite "Advertiser - maintainRegistrations":
     disco.populateAdvertisementTable(service.id.hashServiceId())
     check disco.addProvidedService(service).isOk()
 
-    await disco.cancelRegistrations()
+    await disco.stopRegistrations()
     check await disco.changeMode(isServer = false)
 
     await disco.maintainRegistrations()
 
     check disco.advertiser.running.len() == 0
-    check disco.localRegistrationLoop.finished()
+    check disco.localRegistrationLoop.isNil()
 
     check await disco.changeMode(isServer = true)
 

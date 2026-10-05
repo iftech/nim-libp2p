@@ -179,6 +179,7 @@ method start*(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
       warn "Cannot advertise configured service", err = error, service = serviceInfo.id
 
   disco.xprPublishLoop = disco.maintainXprs()
+  reportBackgroundFailure(disco.xprPublishLoop, "service discovery XPR publishing")
 
   disco.addressObserver = disco.republishOnAddressChange()
   disco.switch.peerInfo.addObserver(disco.addressObserver)
