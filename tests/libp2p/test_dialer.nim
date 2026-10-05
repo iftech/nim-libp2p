@@ -745,7 +745,7 @@ suite "Dialer":
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 
-  asyncTest "Cancelling a dial at any point leaves nothing open":
+  asyncTest "Cancelling a dial at any point leaves nothing open", timeout = 90.seconds:
     let
       src = makeStandardSwitch(TcpAutoAddress)
       dst = makeStandardSwitch(TcpAutoAddress)

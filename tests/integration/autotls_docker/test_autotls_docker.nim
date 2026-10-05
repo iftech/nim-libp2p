@@ -35,7 +35,7 @@ proc getAutotlsService(switch: Switch): AutotlsService =
       return AutotlsService(service)
   raiseAssert "switch has no AutoTLS service"
 
-suite "AutoTLS against a local ACME server and broker":
+suite "AutoTLS against a local ACME server and broker", timeout = 120.seconds:
   asyncTeardown:
     checkTrackers()
 

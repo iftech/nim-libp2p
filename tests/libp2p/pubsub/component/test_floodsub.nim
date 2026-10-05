@@ -39,7 +39,7 @@ proc addRateLimitedPeer(f: FloodSub, bucket: TokenBucket): PubSubPeer =
 func failingMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
   err(ValidationResult.Reject)
 
-suite "FloodSub Component":
+suite "FloodSub Component", timeout = 120.seconds:
   const topic = "foobar"
 
   teardown:
