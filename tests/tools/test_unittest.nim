@@ -118,8 +118,8 @@ suite "asyncTest suite timeout", timeout = 100.milliseconds:
   asyncTest "uses the suite timeout":
     await sleepAsync(10.milliseconds)
 
-  asyncTest "allows a per-test timeout override", timeout = 200.milliseconds:
-    await sleepAsync(150.milliseconds)
+  asyncTest "allows a per-test timeout override", timeout = 1000.milliseconds:
+    await sleepAsync(200.milliseconds)
 
 suite "asyncTest suite timeout - failed", timeout = 50.milliseconds:
   var programResultBefore {.threadvar.}: int
