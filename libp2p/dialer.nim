@@ -98,6 +98,7 @@ proc dialAndUpgrade*(
 
   reach.dialed = true
   reach.attempted.inc()
+  let dialStarted = Moment.now()
   var attemptOutcome = "cancelled"
   defer:
     case attemptOutcome
@@ -107,8 +108,10 @@ proc dialAndUpgrade*(
       reach.failed.inc()
     else:
       reach.cancelled.inc()
+      libp2p_dial_duration_ms.observe(
+        (Moment.now() - dialStarted).milliseconds, labelValues = ["cancelled"]
+      )
 
-  let dialStarted = Moment.now()
   trace "Address dial started", peerId, address = addrs, hostname
   let dialed =
     try:
