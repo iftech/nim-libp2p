@@ -14,8 +14,7 @@ macro addAsyncTestTimeout(timeout: untyped, body: untyped): untyped =
   let timeoutNode = timeout
 
   proc addTimeout(node: NimNode): NimNode =
-    if node.kind in {nnkCall, nnkCommand} and node.len > 0 and
-        node[0].eqIdent("suite"):
+    if node.kind in {nnkCall, nnkCommand} and node.len > 0 and node[0].eqIdent("suite"):
       # A nested suite applies its own timeout when it is expanded.
       return node
 
