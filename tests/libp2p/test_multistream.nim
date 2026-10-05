@@ -367,12 +367,9 @@ suite "Multistream select":
     for _ in 0 ..< 5:
       dialers.add(connector())
 
-      # This one will fail during negotiation
+    # This one will fail during negotiation
     expect LPStreamEOFError:
-      try:
-        await connector()
-      except AsyncTimeoutError:
-        raiseAssert "Timeout while waiting for connector"
+      await connector()
     # check that the dialers aren't finished
     check:
       (await dialers[0].withTimeout(10.milliseconds)) == false
