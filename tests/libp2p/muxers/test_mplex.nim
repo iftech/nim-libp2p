@@ -3,7 +3,7 @@
 
 {.used.}
 
-import strformat, random, sequtils, chronos, nimcrypto/utils, chronicles, stew/byteutils
+import strformat, random, sequtils, chronos, nimcrypto/utils, stew/byteutils
 import
   ../../../libp2p/[
     errors,
@@ -622,7 +622,6 @@ suite "Mplex":
             try:
               let msg = await stream.readLp(MaxMsgSize)
               check msg == bigseq
-              trace "Bigseq check passed!"
             except CancelledError, LPStreamError:
               return
             finally:

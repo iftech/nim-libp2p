@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, stew/byteutils, chronicles
+import chronos, stew/byteutils
 import
   ../../../libp2p/[
     errors,
@@ -177,7 +177,6 @@ suite "Noise":
 
     var hugePayload = newSeq[byte](0xFFFFF)
     rng().generate(hugePayload)
-    trace "Sending huge payload", size = hugePayload.len
 
     let
       transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
