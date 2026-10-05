@@ -64,10 +64,11 @@ template asyncSetup*(body: untyped): untyped =
     )
 
 template asyncTest*(name: string, body: untyped): untyped =
-  if hasSuiteAsyncTestTimeout:
-    asyncTest(name, suiteAsyncTestTimeout, body)
-  else:
-    asyncTest(name, asyncTestTimeoutDefault, body)
+  asyncTest(
+    name,
+    if hasSuiteAsyncTestTimeout: suiteAsyncTestTimeout else: asyncTestTimeoutDefault,
+    body,
+  )
 
 # `timeout` stays untyped: a typed overload semchecks every plain asyncTest body.
 template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
