@@ -728,3 +728,102 @@ suite "Multistream :: result API":
       raiseAssert "handle must raise"
     except MultiStreamError as e:
       check e == MultiStreamFailure.InvalidFirstMessage
+
+suite "Multistream :: optimistic selection":
+  const
+    codec = "/test/optimistic/1.0.0"
+    header = "/multistream/1.0.0\n"
+
+  proc bufferedPair(closeTogether = true): (BridgeStream, BridgeStream) =
+    let (client, server) = bridgedConnections(closeTogether = closeTogether)
+    client.readQueue = newAsyncQueue[seq[byte]](16)
+    server.readQueue = newAsyncQueue[seq[byte]](16)
+    (client, server)
+
+  teardown:
+    checkTrackers()
+
+  asyncTest "payload is sent before acknowledgement and responses are consumed once":
+    let (client, server) = bufferedPair()
+    let selected =
+      await MultistreamSelect.selectOptimistic(client, codec).wait(1.seconds)
+    defer:
+      await selected.close()
+    await selected.writeLp("early payload")
+    check string.fromBytes(await server.readLp(1024)) == header
+    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await server.readLp(1024)) == "early payload"
+    check selected.getWrapped() == client
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+    await server.writeLp("first")
+    await server.writeLp("second")
+    check string.fromBytes(await selected.readLp(1024)) == "first"
+    check string.fromBytes(await selected.readLp(1024)) == "second"
+    check client.protocol == codec
+
+  asyncTest "works with the regular listener":
+    let (client, server) = bufferedPair()
+    let handling = MultistreamSelect.handle(server, @[codec])
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+    await selected.writeLp("request")
+    check (await handling.wait(1.seconds)) == codec
+    check string.fromBytes(await server.readLp(1024)) == "request"
+    await server.writeLp("response")
+    check string.fromBytes(await selected.readLp(1024)) == "response"
+
+  asyncTest "invalid acknowledgements reset the stream and prevent further IO":
+    for responses in [
+      @["/wrong/header\n"],
+      @["/multistream/1.0.0"],
+      @[header, "na\n"],
+      @[header, "/wrong/protocol\n"],
+      @[header, codec],
+      @[header, ""],
+    ]:
+      let (client, server) = bufferedPair()
+      let selected = await MultistreamSelect.selectOptimistic(client, codec)
+      defer:
+        await selected.close()
+      for response in responses:
+        await server.writeLp(response)
+      expect LPStreamError:
+        discard await selected.readLp(1024).wait(1.seconds)
+      check selected.wasResetLocally
+      check client.wasResetLocally
+      expect LPStreamClosedError:
+        await selected.writeLp("must fail")
+      expect LPStreamClosedError:
+        discard await selected.readLp(1024)
+
+  asyncTest "EOF during acknowledgement resets the stream":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+    await client.pushEof()
+    expect LPStreamError:
+      discard await selected.readLp(1024).wait(1.seconds)
+    check client.wasResetLocally
+
+  asyncTest "cancellation during acknowledgement resets instead of retrying partial data":
+    let (client, server) = bufferedPair()
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+    await server.writeLp(header)
+    let reading = selected.readLp(1024)
+    await reading.cancelAndWait()
+    check reading.cancelled
+    check client.wasResetLocally
+
+  asyncTest "closing without reading releases both streams":
+    let (client, server) = bufferedPair()
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    await selected.close()
+    await selected.close()
+    check client.closed
+    check server.closed
