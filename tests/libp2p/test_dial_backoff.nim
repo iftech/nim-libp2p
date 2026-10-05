@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, results
+import chronos, metrics, results
 import ../../libp2p/[dial_backoff, multiaddress, multicodec, peerid]
 import ../tools/[unittest, crypto]
 
@@ -192,6 +192,22 @@ suite "Dial backoff":
     let now = start + 2.seconds
     backoff.recordFailure(extra, now)
     check:
+      libp2p_dial_backoff_entries.value(["address"]) == float(MaxBackoffEntries)
       backoff.blocked(extra, now)
       not backoff.blocked(memoryAddr(0), now)
       backoff.blocked(memoryAddr(1), now)
+
+  test "The entries gauge follows the size of each table":
+    let
+      backoff = DialBackoff.new(noTolerance)
+      start = Moment.now()
+
+    for i in 0 ..< 3:
+      backoff.recordFailure(memoryAddr(i), start)
+    backoff.recordFailure(peerId, start)
+    check:
+      libp2p_dial_backoff_entries.value(["address"]) == 3
+      libp2p_dial_backoff_entries.value(["peer"]) == 1
+
+    backoff.recordSuccess(memoryAddr(0))
+    check libp2p_dial_backoff_entries.value(["address"]) == 2

@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, sequtils, results
+import chronos, metrics, sequtils, results
 import
   ../../libp2p/[
     builders,
@@ -11,6 +11,7 @@ import
     muxers/muxer,
     nameresolving/mockresolver,
     peerstore,
+    rankeddial,
     stream/bridgestream,
     switch,
     transports/transport,
@@ -54,6 +55,25 @@ proc rankOf(address: MultiAddress): DialRank =
 
 proc makeTcpAddrs(count: int): seq[MultiAddress] =
   (0 ..< count).mapIt(ma("/ip4/1.2.3.4/tcp/" & $(4001 + it)))
+
+type RankedDialMetrics = object
+  directWins, cancelled, dials, candidates: float64
+
+template orZero(read: untyped): float64 =
+  try:
+    read
+  except ValueError:
+    0.0
+
+proc rankedDialMetrics(): RankedDialMetrics =
+  {.gcsafe.}:
+    RankedDialMetrics(
+      directWins: orZero(libp2p_dial_winner_rank.value([$DialRank.Direct])),
+      cancelled: orZero(libp2p_dial_cancelled_attempts.value()),
+      dials: orZero(libp2p_dial_candidates.valueByName("libp2p_dial_candidates_count")),
+      candidates:
+        orZero(libp2p_dial_candidates.valueByName("libp2p_dial_candidates_sum")),
+    )
 
 proc makeRankedDialer(src: Switch, transports: seq[Transport]): Dialer =
   Dialer.new(
@@ -571,6 +591,7 @@ suite "Dialer":
       quic = ma("/ip4/127.0.0.1/udp/1/quic-v1")
       stalling = ScriptedDialTransport.new(Upgrade(), rng(), handled = @[quic])
       dialer = src.makeRankedDialer(@[Transport(stalling)] & src.transports)
+      before = rankedDialMetrics()
 
     await dialer.connect(dst.peerInfo.peerId, @[quic] & dst.peerInfo.addrs).wait(
       5.seconds
@@ -579,6 +600,33 @@ suite "Dialer":
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
     check stalling.dialedAddrs == @[quic]
     check stalling.cancelledAddrs == @[quic]
+    let after = rankedDialMetrics()
+    check:
+      after.directWins == before.directWins + 1
+      after.cancelled == before.cancelled + 1
+      after.dials == before.dials + 1
+      after.candidates == before.candidates + float(1 + dst.peerInfo.addrs.len)
+
+  asyncTest "An aborted ranked dial counts no cancelled attempts":
+    let
+      src = makeStandardSwitch(TcpAutoAddress)
+      dst = makeStandardSwitch(TcpAutoAddress)
+    await src.start()
+    await dst.start()
+    defer:
+      await allFutures(src.stop(), dst.stop())
+
+    let
+      quic = ma("/ip4/127.0.0.1/udp/1/quic-v1")
+      stalling = ScriptedDialTransport.new(Upgrade(), rng(), handled = @[quic])
+      dialer = src.makeRankedDialer(@[Transport(stalling)])
+      before = rankedDialMetrics()
+
+    expect AsyncTimeoutError:
+      await dialer.connect(dst.peerInfo.peerId, @[quic]).wait(100.milliseconds)
+
+    check stalling.cancelledAddrs == @[quic]
+    check rankedDialMetrics().cancelled == before.cancelled
 
   asyncTest "Dialing skips an address that fails to resolve":
     let src = makeStandardSwitch()
