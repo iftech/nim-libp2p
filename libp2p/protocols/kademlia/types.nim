@@ -3,7 +3,7 @@
 
 import std/[tables, sequtils, sets, heapqueue, hashes]
 from std/times import format, getTime, parse, toTime, toUnix, utc
-import chronos, chronicles, results, sugar, stew/arrayOps, nimcrypto/sha2
+import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
 import ../../utils/[opt, shortlog]
 import ../protocol
@@ -108,7 +108,9 @@ proc toKey*(p: PeerId): Key =
   MultiHash.init(p.data).get().toKey()
 
 proc toPeerId*(k: Key): LPResult[PeerId] =
-  PeerId.init(k.toBytes()).mapErr(x => $x)
+  let peerId = PeerId.init(k.toBytes()).valueOr:
+    return err(error)
+  ok(peerId)
 
 proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
   let peer = ?k.toPeerId()

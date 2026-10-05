@@ -629,11 +629,6 @@ proc init*(t: typedesc[RsaSignature], data: openArray[byte]): RsaResult[RsaSigna
   else:
     ok(res)
 
-proc init*[T: RsaPKI](t: typedesc[T], data: string): T =
-  ## Initialize RSA `private key`, `public key` or `signature` from hexadecimal
-  ## string representation ``data`` and return constructed object.
-  t.init(ncrutils.fromHex(data))
-
 redactType(RsaPrivateKey)
 
 proc `$`*(key: RsaPublicKey): string =
