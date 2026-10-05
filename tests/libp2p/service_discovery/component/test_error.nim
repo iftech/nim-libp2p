@@ -167,7 +167,8 @@ suite "Service Discovery Component - Error Handling":
     let invalidMsg = @[8'u8, 99]
 
     expect AsyncTimeoutError:
-      discard await clientSwitch.sendRawMessage(registrarNode, invalidMsg)
+      discard
+        await clientSwitch.sendRawMessage(registrarNode, invalidMsg).wait(2.seconds)
 
   asyncTest "REGISTER without register body returns Rejected":
     let registrarNode = setupServiceDiscoveryNode()
