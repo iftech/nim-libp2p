@@ -352,7 +352,7 @@ suite "WebSocket transport with autotls":
       await wstransport.stop()
 
     # A plain /ws listener must start well before AutoTLS gives up on its certificate.
-    await startFut.wait(certTimeout div / 2)
+    await startFut.wait(certTimeout div /2)
 
     check:
       not wstransport.secure
