@@ -170,8 +170,8 @@ suite "GossipSub Component - Extensions":
     await connect(nodes[1], nodes[0])
 
     # Wait for both sides to have sent first message.
-    let firstMessage0to1 = await outgoingMsgs0to1.get.wait(1.seconds)
-    let firstMessage1to0 = await outgoingMsgs1to0.get.wait(1.seconds)
+    let firstMessage0to1 = await outgoingMsgs0to1.get
+    let firstMessage1to0 = await outgoingMsgs1to0.get
 
     # Both sides: first message is extensions control, not subscriptions.
     check:
@@ -199,8 +199,8 @@ suite "GossipSub Component - Extensions":
     # Reconnect
     await connect(nodes[1], nodes[0])
 
-    let secondMessage0to1 = await outgoingMsgs0to1.get.wait(1.seconds)
-    let secondMessage1to0 = await outgoingMsgs1to0.get.wait(1.seconds)
+    let secondMessage0to1 = await outgoingMsgs0to1.get
+    let secondMessage1to0 = await outgoingMsgs1to0.get
 
     # Both sides: first message is extensions control, not subscriptions.
     check:
@@ -430,7 +430,7 @@ suite "GossipSub Component - Extensions":
     # Node 1 should receive the announcement even though node 0 never subscribed.
     # Peer has not yet expressed what it wants, so only parts metadata is sent
     # on this first publish.
-    let (fromPeer, rpc) = await incomingRPC.get.wait(3.seconds)
+    let (fromPeer, rpc) = await incomingRPC.get
     check:
       fromPeer == nodes[0].peerInfo.peerId
       rpc ==

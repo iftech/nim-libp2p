@@ -103,8 +103,10 @@ suite "WebSocket transport":
   cancellationTransportTest(wsSecureTransProvider, wsSecureAddress)
 
   asyncTest "slow WebSocket headers do not block valid accepts":
+    let headersTimeout = 3.seconds
+    let acceptTimeout = headersTimeout div 3
     let server = WsTransport.new(
-      Upgrade(), rng(), headersTimeout = 3.seconds, concurrentAccepts = 2
+      Upgrade(), rng(), headersTimeout = headersTimeout, concurrentAccepts = 2
     )
     await server.start(@[ma(wsAddress)])
     defer:
@@ -136,8 +138,10 @@ suite "WebSocket transport":
 
     # The valid WebSocket handshake must not wait for the slow one to time out.
     let outboundFut = client.dial(server.addrs[0])
-    let inbound = await server.accept().wait(1.seconds)
-    let outbound = await outboundFut.wait(1.seconds)
+    # Keep accept() future bounded so a serialized accept 
+    # cannot hide behind headersTimeout
+    let inbound = await server.accept().wait(acceptTimeout)
+    let outbound = await outboundFut
 
     await closeSlow()
 
@@ -324,13 +328,13 @@ suite "WebSocket transport with autotls":
       wstransport.addrs.len == 0
 
   asyncTest "plain WebSocket start does not wait for autotls":
+    let startTimeout = 15.seconds # must be less then `certTimeout`
+    let certTimeout = 30.seconds
+      # intentionally very large, so loading certifacte is not stopped early by this timeout
     let autotls = AutotlsService(
       certReady: newAsyncEvent(),
       running: newAsyncEvent(),
-      config: AutotlsConfig.new(
-        initialCertTimeout = 30.seconds
-          # intentionally very large, so loading certifacte is not stopped early by this timeout
-      ),
+      config: AutotlsConfig.new(initialCertTimeout = certTimeout),
     )
     let wstransport = WsTransport.new(
       Upgrade(),
@@ -346,7 +350,8 @@ suite "WebSocket transport with autotls":
         startFut.cancelSoon()
       await wstransport.stop()
 
-    await startFut.wait(5.seconds)
+    # A plain /ws listener must start well before AutoTLS gives up on its certificate.
+    await startFut.wait(startTimeout)
 
     check:
       not wstransport.secure
@@ -369,7 +374,7 @@ suite "WebSocket transport with autotls":
 
     expectMsgContains TransportStartError,
       "autotls service did not start before the certificate deadline":
-      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
 
     check:
       not wstransport.running
@@ -392,7 +397,7 @@ suite "WebSocket transport with autotls":
 
     expectMsgContains TransportStartError,
       "autotls certificate was not available before the certificate deadline":
-      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")]).wait(3.seconds)
+      await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
 
     check:
       not wstransport.running

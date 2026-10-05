@@ -109,7 +109,7 @@ suite "KadDHT Bootstrap":
     defer:
       await stopNodes(@[kad])
 
-    await startNodes(@[kad]).wait(5.seconds)
+    await startNodes(@[kad])
 
     check:
       kad.started
@@ -118,7 +118,7 @@ suite "KadDHT Bootstrap":
   asyncTest "start returns before the bootstrap completes":
     let kad = setupMockKad()
     kad.findNodeStalls = true
-    await kad.switch.start().wait(5.seconds)
+    await kad.switch.start()
     defer:
       await kad.switch.stop()
 
@@ -146,7 +146,7 @@ suite "KadDHT Bootstrap":
     await kad.switch.start()
     defer:
       await kad.switch.stop()
-    await kad.waitBootstrap().wait(5.seconds)
+    await kad.waitBootstrap()
 
     check:
       kad.bootstrapFut.completed()
@@ -199,7 +199,7 @@ suite "KadDHT Bootstrap":
     defer:
       await stopNodes(@[kad])
 
-    await startNodes(@[kad]).wait(5.seconds)
+    await startNodes(@[kad])
     let afterBootstrap = kad.findNodeCancels
 
     # Every round would otherwise leave a lookup behind, still sending RPCs.

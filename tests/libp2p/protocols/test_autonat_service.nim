@@ -135,8 +135,8 @@ suite "Autonat Service":
     await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
 
     check:
-      (await first.wait(5.seconds)) == autonatClientStub.answer
-      (await last.wait(5.seconds)) == autonatClientStub.answer
+      (await first) == autonatClientStub.answer
+      (await last) == autonatClientStub.answer
       goneCalls == 0
       autonatService.networkReachability == autonatClientStub.answer
 

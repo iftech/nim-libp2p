@@ -128,7 +128,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     check acmeApi.requestedUris.len == 1
 
-    await service.stop(switch).wait(1.seconds)
+    await service.stop(switch)
 
     check acmeApi.requestedUris.len == 1
 
@@ -140,7 +140,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     service.installCert(initDuration(hours = 2))
 
-    let autotlsCert = await certFut.wait(1.seconds)
+    let autotlsCert = await certFut
     check:
       autotlsCert.cert == cert
       autotlsCert.privkey == certKey
@@ -153,7 +153,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     check acmeApi.requestedUris.len == 1
 
-    let autotlsCert = await service.getCertWhenReady().wait(1.seconds)
+    let autotlsCert = await service.getCertWhenReady()
     check autotlsCert.cert == cert
 
   asyncTest "the broker is sent the addresses the peer announces":
@@ -199,7 +199,7 @@ suite "AutoTLS certificate issuance and renewal":
     service.config.nameResolver = resolver
 
     await service.start(switch)
-    let autotlsCert = await service.getCertWhenReady().wait(10.seconds)
+    let autotlsCert = await service.getCertWhenReady()
     # Nothing signals a round that ended, so wait out a three retries window.
     await sleepAsync(50.milliseconds)
 

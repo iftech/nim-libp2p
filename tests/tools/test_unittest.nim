@@ -17,6 +17,12 @@ proc raiseTestException(msg: string) =
 proc raiseUnexpectedTestException() =
   raise newException(UnexpectedTestException, "unexpected exception")
 
+template generatedAsyncTimeoutTest(cleanupRan: untyped) =
+  asyncTest "fails when the generated test exceeds the suite timeout":
+    defer:
+      cleanupRan = true
+    await sleepAsync(100.milliseconds)
+
 suite "exception message helpers":
   test "expectMsgContains accepts an exception message containing the expected text":
     expectMsgContains TestException, "expected text":
@@ -113,6 +119,30 @@ suite "checkUntilTimeout helpers":
     asyncSpawn makeConditionTrueLater()
     checkUntilTimeoutCustom(200.milliseconds, 10.milliseconds):
       a == b
+
+suite "asyncTest suite timeout", timeout = 100.milliseconds:
+  asyncTest "uses the suite timeout":
+    await sleepAsync(10.milliseconds)
+
+  asyncTest "allows a per-test timeout override", timeout = 1000.milliseconds:
+    await sleepAsync(200.milliseconds)
+
+suite "asyncTest suite timeout - failed", timeout = 50.milliseconds:
+  var programResultBefore {.threadvar.}: int
+  var cleanupRan {.threadvar.}: bool
+
+  setup:
+    programResultBefore = exitProcs.getProgramResult()
+    cleanupRan = false
+
+  teardown:
+    require testStatusIMPL == TestStatus.Failed
+    testStatusIMPL = TestStatus.OK
+    if programResultBefore == QuitSuccess:
+      exitProcs.setProgramResult(QuitSuccess)
+    check cleanupRan
+
+  generatedAsyncTimeoutTest(cleanupRan)
 
 suite "checkUntilTimeout helpers - failed":
   var programResultBefore {.threadvar.}: int

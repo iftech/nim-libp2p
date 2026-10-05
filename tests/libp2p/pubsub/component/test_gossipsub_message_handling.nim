@@ -220,7 +220,7 @@ suite "GossipSub Component - Message Handling":
       ValidationResult.Accept
 
     nodes[1].addValidator(topic, validator)
-    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topic, "Hello!".toBytes()), 1)
 
     check (await validatorFut) and (await handlerFut)
 
@@ -248,7 +248,7 @@ suite "GossipSub Component - Message Handling":
       ValidationResult.Reject
 
     nodes[1].addValidator(topic, validator)
-    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topic, "Hello!".toBytes()), 1)
 
     check (await validatorFut) == true
 
@@ -276,7 +276,7 @@ suite "GossipSub Component - Message Handling":
       ValidationResult.Ignore
 
     nodes[1].addValidator(topic, validator)
-    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topic, "Hello!".toBytes()), 1)
 
     check (await validatorFut) == true
 
@@ -310,8 +310,8 @@ suite "GossipSub Component - Message Handling":
         ValidationResult.Reject
 
     nodes[1].addValidator(topicFoo, topicBar, validator)
-    tryPublish await nodes[0].publish(topicFoo, "Hello!".toBytes()), 1
-    tryPublish await nodes[0].publish(topicBar, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topicFoo, "Hello!".toBytes()), 1)
+    tryPublish(await nodes[0].publish(topicBar, "Hello!".toBytes()), 1)
 
     check ((await passed) and (await failed) and (await handlerFut))
 
@@ -362,7 +362,7 @@ suite "GossipSub Component - Message Handling":
     nodes[1].addValidator(topicFoo, topicBar, validator)
 
     # Send message that will be accepted by the receiver's validator
-    tryPublish await nodes[0].publish(topicFoo, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topicFoo, "Hello!".toBytes()), 1)
 
     checkUntilTimeout:
       recvCounter == 1
@@ -370,7 +370,7 @@ suite "GossipSub Component - Message Handling":
       sendCounter == 1
 
     # Send message that will be rejected by the receiver's validator
-    tryPublish await nodes[0].publish(topicBar, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topicBar, "Hello!".toBytes()), 1)
 
     checkUntilTimeout:
       recvCounter == 2
@@ -391,7 +391,7 @@ suite "GossipSub Component - Message Handling":
     subscribeAllNodes(nodes, topic, handler)
     waitSubscribeStar(nodes, topic)
 
-    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topic, "Hello!".toBytes()), 1)
 
     check await passed
 
@@ -457,7 +457,7 @@ suite "GossipSub Component - Message Handling":
       nodes[0].mesh.getOrDefault(topic).len == 2
       nodes[1].mesh.getOrDefault(topic).len == 2
       nodes[2].mesh.getOrDefault(topic).len == 2
-    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 2
+    tryPublish(await nodes[0].publish(topic, "Hello!".toBytes()), 2)
 
     await bFinished.wait()
 
@@ -517,7 +517,7 @@ suite "GossipSub Component - Message Handling":
       nodes[2].mesh.hasPeerId(topic, nodes[0].peerInfo.peerId)
 
     # A publishes – only reaches B (C removed from A's mesh/gossipsub)
-    tryPublish await nodes[0].publish(topic, msgData), 1
+    tryPublish(await nodes[0].publish(topic, msgData), 1)
 
     # Wait for C to receive the message via B's relay
     await cReceived.wait()
@@ -543,9 +543,9 @@ suite "GossipSub Component - Message Handling":
     nodes[1].subscribe(topic, handler)
     waitSubscribe(nodes[0], nodes[1], topic)
 
-    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
+    tryPublish(await nodes[0].publish(topic, "Hello!".toBytes()), 1)
 
-    check await passed.wait(10.seconds)
+    check await passed
 
     check:
       topic in nodes[0].gossipsub
@@ -625,12 +625,10 @@ suite "GossipSub Component - Message Handling":
       dialer.subscribe(topic, handler)
     await waitSubGraph(nodes, topic)
 
-    tryPublish await wait(
-      nodes[0].publish(topic, toBytes("from node " & $nodes[0].peerInfo.peerId)),
-      1.minutes,
-    ), 1
+    let msgData = toBytes("from node " & $nodes[0].peerInfo.peerId)
+    tryPublish(await nodes[0].publish(topic, msgData), 1)
 
-    await wait(seenFut, 1.minutes)
+    await seenFut
     check:
       seen.len >= numberOfNodes
     for k, v in seen.pairs:
@@ -671,12 +669,10 @@ suite "GossipSub Component - Message Handling":
       dialer.subscribe(topic, handler)
 
     await waitSubGraph(nodes, topic)
-    tryPublish await wait(
-      nodes[0].publish(topic, toBytes("from node " & $nodes[0].peerInfo.peerId)),
-      1.minutes,
-    ), 1
+    let msgData = toBytes("from node " & $nodes[0].peerInfo.peerId)
+    tryPublish(await nodes[0].publish(topic, msgData), 1)
 
-    await wait(seenFut, 60.seconds)
+    await seenFut
     check:
       seen.len >= numberOfNodes
     for k, v in seen.pairs:
@@ -763,9 +759,9 @@ suite "GossipSub Component - Message Handling":
     nodes[1].subscribe(topic, noop)
     nodes[2].subscribe(topic, handler)
 
-    tryPublish await nodes[0].publish(topic, toBytes("hellow")), 1
+    tryPublish(await nodes[0].publish(topic, toBytes("hellow")), 1)
 
-    await handlerFut.wait(2.seconds)
+    await handlerFut
 
     # peer shouldn't be in our mesh
     check topic notin nodes[0].mesh

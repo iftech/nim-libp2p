@@ -271,6 +271,7 @@ suite "KadDHT message sender":
       reply.error().stage == dialStage
 
   asyncTest "cancelling an RPC does not wait out a stalled dial":
+    const timeout = 30.seconds
     let stall = startStallServer()
     let client = makeStandardSwitch(TcpAutoAddress)
     await client.start()
@@ -282,10 +283,10 @@ suite "KadDHT message sender":
       await client.stop()
 
     let peerId = PeerId.random(rng()).tryGet()
-    let rpc = sender.sendRequest(peerId, @[stall.address], @[byte 1], 30.seconds)
-    await stall.waitAccepted().wait(5.seconds)
+    let rpc = sender.sendRequest(peerId, @[stall.address], @[byte 1], timeout)
+    await stall.waitAccepted()
 
-    await rpc.cancelAndWait().wait(5.seconds)
+    await rpc.cancelAndWait().wait(timeout div 5)
     check rpc.cancelled()
 
   asyncTest "a reset stream is dropped without another RPC":

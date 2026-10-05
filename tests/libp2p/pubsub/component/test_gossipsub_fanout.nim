@@ -40,7 +40,7 @@ suite "GossipSub Component - Fanout Management":
 
     tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
 
-    discard await passed.wait(2.seconds)
+    discard await passed
 
     check:
       topic in nodes[0].gossipsub
@@ -74,7 +74,7 @@ suite "GossipSub Component - Fanout Management":
 
     tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
 
-    discard await passed.wait(2.seconds)
+    discard await passed
     check:
       nodes[0].mesh.getOrDefault(topic).len == 0
       nodes[0].fanout.getOrDefault(topic).len == 1

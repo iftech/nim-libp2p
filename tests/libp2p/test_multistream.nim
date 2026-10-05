@@ -312,7 +312,7 @@ suite "Multistream select":
     await transport2.stop()
     await transport1.stop()
 
-    await handlerWait.wait(30.seconds)
+    await handlerWait
 
   asyncTest "e2e - streams limit":
     let blocker = newWaitGroup(1)
@@ -367,12 +367,9 @@ suite "Multistream select":
     for _ in 0 ..< 5:
       dialers.add(connector())
 
-      # This one will fail during negotiation
+    # This one will fail during negotiation
     expect LPStreamEOFError:
-      try:
-        await connector().wait(1.seconds)
-      except AsyncTimeoutError:
-        raiseAssert "Timeout while waiting for connector"
+      await connector()
     # check that the dialers aren't finished
     check:
       (await dialers[0].withTimeout(10.milliseconds)) == false
@@ -422,7 +419,7 @@ suite "Multistream select":
     await acceptFut
     await transport2.stop()
     await transport1.stop()
-    await listenFut.wait(5.seconds)
+    await listenFut
 
   asyncTest "e2e - select one from a list with unsupported protos":
     proc testHandler(
@@ -529,7 +526,7 @@ suite "Multistream :: stream limits":
     for _ in 0 ..< maxTotalStreams:
       dialers.add(connector())
 
-    await reserved.wait(5.seconds)
+    await reserved.wait()
 
     expect LPStreamEOFError:
       await connector()
@@ -568,7 +565,7 @@ suite "Multistream :: stream limits":
     var d1 = connector("/test/proto1/1.0.0")
     var d2 = connector("/test/proto2/1.0.0")
 
-    await reserved.wait(5.seconds)
+    await reserved.wait()
 
     expect LPStreamEOFError:
       await connector("/test/proto1/1.0.0")
@@ -614,7 +611,7 @@ suite "Multistream :: stream limits":
 
     # First stream fills budget, then completes (budget released)
     await connector()
-    await handlerResolved.wait(5.seconds)
+    await handlerResolved
     check handlerCount == 1
     # Second stream should succeed
     await connector()
@@ -654,7 +651,7 @@ suite "Multistream :: stream limits":
     for _ in 0 ..< 2:
       dialers.add(connector())
 
-    await reserved.wait(5.seconds)
+    await reserved.wait()
 
     expect LPStreamEOFError:
       await connector()
@@ -674,7 +671,7 @@ suite "Multistream :: stream limits":
     check string.fromBytes(await client.readLp(1024)) == "na\n"
     await client.writeLp(codecs & "\n")
     check string.fromBytes(await client.readLp(1024)) == codecs & "\n"
-    check (await handling.wait(1.seconds)) == codecs
+    check (await handling) == codecs
 
 suite "Multistream :: result API":
   const codecs = "/test/proto/1.0.0"
@@ -685,7 +682,7 @@ suite "Multistream :: result API":
   proc selectAgainstHeader(
       header: string
   ): Future[MultiStreamResult[string]] {.
-      async: (raises: [CancelledError, LPStreamError, AsyncTimeoutError])
+      async: (raises: [CancelledError, LPStreamError])
   .} =
     let (client, server) = bridgedConnections()
     let selecting = MultistreamSelect.trySelect(client, @[codecs])
@@ -695,7 +692,7 @@ suite "Multistream :: result API":
     discard await server.readLp(1024)
     discard await server.readLp(1024)
     await server.writeLp(header)
-    let res = await selecting.wait(1.seconds)
+    let res = await selecting
     res
 
   asyncTest "trySelect returns HandshakeFailed on a wrong header":
@@ -713,8 +710,7 @@ suite "Multistream :: result API":
       await client.close()
       await server.close()
     await client.writeLp(codecs & "\n")
-    check (await handling.wait(1.seconds)).error ==
-      MultiStreamFailure.InvalidFirstMessage
+    check (await handling).error == MultiStreamFailure.InvalidFirstMessage
 
   asyncTest "handle raises MultiStreamError with the failure text":
     let (client, server) = bridgedConnections()
@@ -724,7 +720,7 @@ suite "Multistream :: result API":
       await server.close()
     await client.writeLp(codecs & "\n")
     try:
-      discard await handling.wait(1.seconds)
+      discard await handling
       raiseAssert "handle must raise"
     except MultiStreamError as e:
       check e == MultiStreamFailure.InvalidFirstMessage

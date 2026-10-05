@@ -644,7 +644,7 @@ suite "Yamux":
       let realPing = YamuxHeader.ping(Syn, 22).encode()
       let frame = YamuxHeader.data(99, uint32(fakePing.len)).encode()
       await conna.write(@frame & @fakePing & @realPing)
-      let reply = await conna.readHeader().wait(1.seconds)
+      let reply = await conna.readHeader()
       check reply.msgType == Ping
       check reply.flags == {Ack}
       check reply.length == 22
@@ -656,11 +656,11 @@ suite "Yamux":
       let realPing = YamuxHeader.ping(Syn, 22).encode()
       let frame = YamuxHeader.data(99, uint32(fakePing.len), {Syn}).encode()
       await conna.write(@frame & @fakePing & @realPing)
-      let reset = await conna.readHeader().wait(1.seconds)
+      let reset = await conna.readHeader()
       check reset.msgType == Data
       check reset.flags == {Rst}
       check reset.streamId == 99
-      let reply = await conna.readHeader().wait(1.seconds)
+      let reply = await conna.readHeader()
       check reply.msgType == Ping
       check reply.flags == {Ack}
       check reply.length == 22
@@ -672,7 +672,7 @@ suite "Yamux":
       let frame = YamuxHeader.data(99, uint32(payload.len)).encode()
       let ping = YamuxHeader.ping(Syn, 22).encode()
       await conna.write(@frame & payload & @ping)
-      let reply = await conna.readHeader().wait(1.seconds)
+      let reply = await conna.readHeader()
       check reply.msgType == Ping
       check reply.length == 22
 
@@ -682,9 +682,9 @@ suite "Yamux":
       discard yamuxb.createStream(1, false, YamuxDefaultWindowSize, MaxSendQueueSize)
       let frame = YamuxHeader.data(99, 3, {Syn}).encode()
       await conna.write(@frame & @[1'u8, 2, 3])
-      let reset = await conna.readHeader().wait(1.seconds)
+      let reset = await conna.readHeader()
       check reset.flags == {Rst}
       await conna.write(YamuxHeader.data(99, YamuxDefaultWindowSize.uint32 - 2))
-      let reply = await conna.readHeader().wait(1.seconds)
+      let reply = await conna.readHeader()
       check reply.msgType == GoAway
       check reply.length == ProtocolError.uint32

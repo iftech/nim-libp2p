@@ -232,7 +232,7 @@ suite "Tor authentication":
     expect TransportDialError:
       discard await dialing
     var reply: array[1, byte]
-    check (await peer.readOnce(addr reply[0], 1).wait(100.millis)) == 0
+    check (await peer.readOnce(addr reply[0], 1)) == 0
 
   asyncTest "cancelled authentication closes the proxy socket":
     let server = createStreamServer(initTAddress("127.0.0.1:0"))
@@ -247,7 +247,7 @@ suite "Tor authentication":
     await peer.readExactly(addr greeting[0], greeting.len)
     await dialing.cancelAndWait()
     var reply: array[1, byte]
-    check (await peer.readOnce(addr reply[0], 1).wait(100.millis)) == 0
+    check (await peer.readOnce(addr reply[0], 1)) == 0
 
   asyncTest "truncated authentication is a dial error":
     let server = createStreamServer(initTAddress("127.0.0.1:0"))
@@ -289,7 +289,7 @@ suite "Tor CONNECT reply":
     expectMsgContains TransportDialError, reason:
       discard await dialing
     var reply: array[1, byte]
-    check (await peer.readOnce(addr reply[0], 1).wait(100.millis)) == 0
+    check (await peer.readOnce(addr reply[0], 1)) == 0
 
   asyncTest "truncated CONNECT header closes the proxy socket":
     await checkRejectedReply(@[5'u8, 0, 0])

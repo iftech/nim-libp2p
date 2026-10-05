@@ -7,13 +7,41 @@ import ./trackers
 export checkTrackers # TODO: maybe consider importing it on demand?
 export unittest2 except suite
 
+const
+  asyncTestTimeoutDefault* = 30.seconds
+  asyncTestCleanupTimeout = 1.seconds
+
+var
+  suiteAsyncTestTimeout {.threadvar.}: Duration
+  hasSuiteAsyncTestTimeout {.threadvar.}: bool
+
+template withSuiteAsyncTestTimeout(timeout: untyped, body: untyped): untyped =
+  let previousTimeout = suiteAsyncTestTimeout
+  let hadPreviousTimeout = hasSuiteAsyncTestTimeout
+  suiteAsyncTestTimeout = timeout
+  hasSuiteAsyncTestTimeout = true
+  defer:
+    suiteAsyncTestTimeout = previousTimeout
+    hasSuiteAsyncTestTimeout = hadPreviousTimeout
+  body
+
 ## suite wraps unittest2.suite in a proc to avoid issue with too many global variables
 ## See https://github.com/nim-lang/Nim/issues/8500
+template suite*(name: string, timeout: untyped, body: untyped): untyped =
+  block:
+    proc testSuite() =
+      withSuiteAsyncTestTimeout(timeout):
+        unittest2.suite name:
+          body
+
+    testSuite()
+
 template suite*(name: string, body: untyped): untyped =
   block:
     proc testSuite() =
-      unittest2.suite name:
-        body
+      withSuiteAsyncTestTimeout(asyncTestTimeoutDefault):
+        unittest2.suite name:
+          body
 
     testSuite()
 
@@ -36,13 +64,11 @@ template asyncSetup*(body: untyped): untyped =
     )
 
 template asyncTest*(name: string, body: untyped): untyped =
-  test name:
-    waitFor(
-      (
-        proc() {.async.} =
-          body
-      )()
-    )
+  asyncTest(
+    name,
+    if hasSuiteAsyncTestTimeout: suiteAsyncTestTimeout else: asyncTestTimeoutDefault,
+    body,
+  )
 
 # `timeout` stays untyped: a typed overload semchecks every plain asyncTest body.
 template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
@@ -51,7 +77,16 @@ template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
       proc() {.async.} =
         body
     )()
-    waitFor testFut.wait(timeout)
+    try:
+      waitFor testFut.wait(timeout)
+    except AsyncTimeoutError as exc:
+      checkpoint "[TEST TIMEOUT] Test body exceeded its configured timeout of " &
+        $timeout & "."
+      try:
+        waitFor testFut.cancelAndWait().wait(asyncTestCleanupTimeout)
+      except AsyncTimeoutError:
+        checkpoint "[TIMEOUT] Timed out waiting for the test body to cancel."
+      raise exc
 
 template isErrOf*(res: untyped, T: typedesc): bool =
   res.isErr() and res.error of T

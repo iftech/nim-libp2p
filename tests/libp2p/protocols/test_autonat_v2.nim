@@ -86,7 +86,7 @@ template dialbackConnectionTest(transport, scenario: string) =
         await backPeer.disconnect(src.peerInfo.peerId)
     await back.writeLp(DialBack(nonce: nonce).encode())
     try:
-      let response = await back.readLp(AutonatV2MsgLpSize).wait(1.seconds)
+      let response = await back.readLp(AutonatV2MsgLpSize)
       return DialBackResponse.decode(response).isOk
     except LPStreamError:
       return false
