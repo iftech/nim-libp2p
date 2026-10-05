@@ -580,7 +580,7 @@ proc addServices(b: SwitchBuilder, switch: Switch) =
     switch.services.add(NATService.new(natCfg, b.rng, b.natPortMapperFactory))
 
   if b.identifyPusherEnabled:
-    switch.services.add(IdentifyPusher.new())
+    switch.services.add(IdentifyPusher.new(switch))
 
 proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
   ## Handler for ``KadMode.Auto``: the node serves queries while it is
