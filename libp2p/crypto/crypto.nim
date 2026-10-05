@@ -66,7 +66,7 @@ when supported(PKScheme.ECDSA):
   export ecnist.ephemeral, ecnist.ECDHEScheme
 
 import ../vbuffer, ../multihash, ../multicodec
-import nimcrypto/[rijndael, twofish, sha2, hash, hmac]
+import nimcrypto/[rijndael, sha2, hash, hmac]
 # We use `ncrutils` for constant-time hexadecimal encoding/decoding procedures.
 import nimcrypto/utils as ncrutils
 import ../utils/[opt, shortlog, collections, redact]
@@ -76,7 +76,7 @@ export results, opt, shortlog, collections
 export rng except bearSslDrbg, bearSslDrbgRef, bearSslPrng
 
 # This is workaround for Nim's `import` bug
-export rijndael, twofish, sha2, hash, hmac, ncrutils
+export rijndael, sha2, hash, hmac, ncrutils
 
 type
   DigestSheme* = enum
@@ -876,9 +876,6 @@ proc stretchKeys*(
   elif cipherType == "AES-256":
     secret.ivsize = aes256.sizeBlock
     secret.keysize = aes256.sizeKey
-  elif cipherType == "TwofishCTR":
-    secret.ivsize = twofish256.sizeBlock
-    secret.keysize = twofish256.sizeKey
 
   var seed = "key expansion"
   secret.macsize = 20

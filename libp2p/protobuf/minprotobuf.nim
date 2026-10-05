@@ -18,14 +18,7 @@ type
     EndGroup
     Fixed32
 
-  ProtoFlags* = enum
-    ## Protobuf's encoding types
-    WithVarintLength
-    WithUint32BeLength
-    WithUint32LeLength
-
   ProtoBuffer* = object ## Protobuf's message representation object
-    options: set[ProtoFlags]
     buffer*: seq[byte]
     offset*: int
     length*: int
@@ -116,33 +109,16 @@ proc vsizeof*(field: ProtoField): int =
   else:
     0
 
-proc initProtoBuffer*(
-    data: seq[byte], offset = 0, options: set[ProtoFlags] = {}
-): ProtoBuffer =
+func initProtoBuffer*(data: seq[byte], offset = 0): ProtoBuffer =
   ## Initialize ProtoBuffer with shallow copy of ``data``.
-  ProtoBuffer(buffer: data, offset: offset, options: options)
+  ProtoBuffer(buffer: data, offset: offset)
 
-proc initProtoBuffer*(
-    data: openArray[byte], offset = 0, options: set[ProtoFlags] = {}
-): ProtoBuffer =
+func initProtoBuffer*(data: openArray[byte], offset = 0): ProtoBuffer =
   ## Initialize ProtoBuffer with copy of ``data``.
-  ProtoBuffer(buffer: @data, offset: offset, options: options)
+  ProtoBuffer(buffer: @data, offset: offset)
 
-proc initProtoBuffer*(options: set[ProtoFlags] = {}): ProtoBuffer =
-  ## Initialize ProtoBuffer with new sequence of capacity ``cap``
-  var pb: ProtoBuffer
-  pb.options = options
-  if WithVarintLength in options:
-    # Our buffer will start from position 10, so we can store length of buffer
-    # in [0, 9].
-    pb.buffer = newSeqUninit[byte](10)
-    pb.offset = 10
-  elif {WithUint32LeLength, WithUint32BeLength} * options != {}:
-    # Our buffer will start from position 4, so we can store length of buffer
-    # in [0, 3].
-    pb.buffer = newSeqUninit[byte](4)
-    pb.offset = 4
-  pb
+func initProtoBuffer*(): ProtoBuffer =
+  ProtoBuffer()
 
 proc write*[T: ProtoScalar](pb: var ProtoBuffer, field: int, value: T) =
   checkFieldNumber(field)
@@ -263,28 +239,9 @@ proc write*(pb: var ProtoBuffer, field: int, value: ProtoBuffer) =
   ## ``pb`` with field number ``field``.
   write(pb, field, value.buffer)
 
-proc finish*(pb: var ProtoBuffer) =
+func finish*(pb: var ProtoBuffer) =
   ## Prepare protobuf's buffer ``pb`` for writing to stream.
-  if WithVarintLength in pb.options:
-    doAssert(len(pb.buffer) >= 10)
-    let size = uint(len(pb.buffer) - 10)
-    let pos = 10 - vsizeof(size)
-    var usedBytes = 0
-    let res = PB.putUVarint(pb.buffer.toOpenArray(pos, 9), usedBytes, size)
-    doAssert(res.isOk())
-    pb.offset = pos
-  elif WithUint32BeLength in pb.options:
-    doAssert(len(pb.buffer) >= 4)
-    let size = uint(len(pb.buffer) - 4)
-    pb.buffer[0 ..< 4] = toBytesBE(uint32(size))
-    pb.offset = 4
-  elif WithUint32LeLength in pb.options:
-    doAssert(len(pb.buffer) >= 4)
-    let size = uint(len(pb.buffer) - 4)
-    pb.buffer[0 ..< 4] = toBytesLE(uint32(size))
-    pb.offset = 4
-  else:
-    pb.offset = 0
+  pb.offset = 0
 
 proc getHeader(data: var ProtoBuffer, header: var ProtoHeader): ProtoResult[void] =
   var length = 0
