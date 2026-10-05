@@ -17,6 +17,12 @@ proc raiseTestException(msg: string) =
 proc raiseUnexpectedTestException() =
   raise newException(UnexpectedTestException, "unexpected exception")
 
+template generatedAsyncTimeoutTest(cleanupRan: untyped) =
+  asyncTest "fails when the generated test exceeds the suite timeout":
+    defer:
+      cleanupRan = true
+    await sleepAsync(100.milliseconds)
+
 suite "exception message helpers":
   test "expectMsgContains accepts an exception message containing the expected text":
     expectMsgContains TestException, "expected text":
@@ -136,10 +142,7 @@ suite "asyncTest suite timeout - failed", timeout = 50.milliseconds:
     if programResultBefore == QuitSuccess:
       exitProcs.setProgramResult(QuitSuccess)
 
-  asyncTest "fails when the suite timeout expires":
-    defer:
-      cleanupRan = true
-    await sleepAsync(100.milliseconds)
+  generatedAsyncTimeoutTest(cleanupRan)
 
 suite "checkUntilTimeout helpers - failed":
   var programResultBefore {.threadvar.}: int

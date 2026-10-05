@@ -9,50 +9,39 @@ export unittest2 except suite
 
 const asyncTestTimeoutDefault* = 30.seconds
 
-macro addAsyncTestTimeout(timeout: untyped, body: untyped): untyped =
-  ## Adds the suite timeout to asyncTests which do not specify one themselves.
-  let timeoutNode = timeout
-
-  proc addTimeout(node: NimNode): NimNode =
-    if node.kind in {nnkCall, nnkCommand} and node.len > 0 and node[0].eqIdent("suite"):
-      # A nested suite applies its own timeout when it is expanded.
-      return node
-
-    if node.kind in {nnkCall, nnkCommand} and node.len >= 2 and
-        node[0].eqIdent("asyncTest"):
-      # An asyncTest has a name and body; any additional argument is its
-      # explicit timeout, either positional or named.
-      if node.len == 3:
-        result = newNimNode(node.kind, node)
-        for i in 0 ..< node.len - 1:
-          result.add addTimeout(node[i])
-        result.add timeoutNode
-        result.add addTimeout(node[^1])
-        return
-
-    result = copyNimTree(node)
-    for i in 0 ..< node.len:
-      result[i] = addTimeout(node[i])
-
-  result = addTimeout(body)
+var
+  suiteAsyncTestTimeout {.threadvar.}: Duration
+  hasSuiteAsyncTestTimeout {.threadvar.}: bool
 
 ## suite wraps unittest2.suite in a proc to avoid issue with too many global variables
 ## See https://github.com/nim-lang/Nim/issues/8500
 template suite*(name: string, timeout: untyped, body: untyped): untyped =
   block:
     proc testSuite() =
+      let previousTimeout = suiteAsyncTestTimeout
+      let hadPreviousTimeout = hasSuiteAsyncTestTimeout
+      suiteAsyncTestTimeout = timeout
+      hasSuiteAsyncTestTimeout = true
+      defer:
+        suiteAsyncTestTimeout = previousTimeout
+        hasSuiteAsyncTestTimeout = hadPreviousTimeout
       unittest2.suite name:
-        addAsyncTestTimeout(timeout):
-          body
+        body
 
     testSuite()
 
 template suite*(name: string, body: untyped): untyped =
   block:
     proc testSuite() =
+      let previousTimeout = suiteAsyncTestTimeout
+      let hadPreviousTimeout = hasSuiteAsyncTestTimeout
+      suiteAsyncTestTimeout = asyncTestTimeoutDefault
+      hasSuiteAsyncTestTimeout = true
+      defer:
+        suiteAsyncTestTimeout = previousTimeout
+        hasSuiteAsyncTestTimeout = hadPreviousTimeout
       unittest2.suite name:
-        addAsyncTestTimeout(asyncTestTimeoutDefault):
-          body
+        body
 
     testSuite()
 
@@ -75,7 +64,10 @@ template asyncSetup*(body: untyped): untyped =
     )
 
 template asyncTest*(name: string, body: untyped): untyped =
-  asyncTest(name, asyncTestTimeoutDefault, body)
+  if hasSuiteAsyncTestTimeout:
+    asyncTest(name, suiteAsyncTestTimeout, body)
+  else:
+    asyncTest(name, asyncTestTimeoutDefault, body)
 
 # `timeout` stays untyped: a typed overload semchecks every plain asyncTest body.
 template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
