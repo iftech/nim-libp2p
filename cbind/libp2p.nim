@@ -518,7 +518,7 @@ proc libp2pPublicKey*(lib: LibP2P): Future[Result[seq[byte], string]] {.ffi.} =
 
   # Scheme-native serialization: whatever key the switch was built with round-trips, not just secp256k1 (the default builder uses Ed25519).
   let rawBytes = peerInfo.publicKey.getRawBytes().valueOr:
-    return err("could not serialize public key: " & $error)
+    return err(error, "could not serialize public key")
   ok(rawBytes)
 
 func callTimeout(timeoutMs: int64): Duration =
@@ -882,7 +882,7 @@ proc kadAndCid(lib: LibP2P, cid: string): Result[(KadDHT, Cid), string] =
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
   let c = Cid.init(cid).valueOr:
-    return err("invalid cid: " & $error)
+    return err(error, "invalid cid")
   ok((kad, c))
 
 proc libp2pKadAddProvider*(
@@ -1067,10 +1067,10 @@ proc libp2pDecodeXpr*(
 ): Future[Result[ExtendedPeerRecordEntry, string]] {.ffiStatic.} =
   ## Decodes a signed extended peer record and verifies its signature.
   let sxpr = SignedExtendedPeerRecord.decode(req.encoded).valueOr:
-    return err("failed to decode signed extended peer record: " & $error)
+    return err(error, "failed to decode signed extended peer record")
 
   sxpr.checkValid().isOkOr:
-    return err("invalid XPR signature: " & $error)
+    return err(error, "invalid XPR signature")
 
   ok(toExtendedRecordEntry(sxpr.data))
 
@@ -1088,7 +1088,7 @@ proc libp2pCircuitRelayReserve*(
     return err(error)
 
   let rsvp = (await cl.tryReserve(peerId, multiaddresses)).valueOr:
-    return err("reservation failed: " & $error)
+    return err(error, "reservation failed")
 
   ok(ReservationResponse(addrs: rsvp.addrs.mapIt($it), expireTime: rsvp.expire))
 
@@ -1192,10 +1192,10 @@ proc libp2pCreateCid*(
     return err("invalid multicodec: " & req.multicodec)
 
   let mh = MultiHash.digest(req.hash, req.data).valueOr:
-    return err("multihash error: " & $error)
+    return err(error, "multihash error")
 
   let cid = Cid.init(cidVer, mc, mh).valueOr:
-    return err("cid init error: " & $error)
+    return err(error, "cid init error")
 
   ok($cid)
 

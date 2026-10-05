@@ -11,6 +11,7 @@ import
     protocols/pubsub/gossipsub/partial_message,
     protocols/pubsub/pubsubpeer,
     protocols/pubsub/rpc/messages,
+    results,
     switch,
     utils/tablekey,
   ]

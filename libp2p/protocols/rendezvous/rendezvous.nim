@@ -249,12 +249,12 @@ proc register*[E](
   if ttl < rdv.config.minTTL or ttl > rdv.config.maxTTL:
     return stream.sendRegisterResponseError(InvalidTTL)
   rdv.peerRecordValidator(peerRecord, r.signedPeerRecord, stream.peerId).isOkOr:
-    return stream.sendRegisterResponseError(InvalidSignedPeerRecord, error.cause)
+    return stream.sendRegisterResponseError(InvalidSignedPeerRecord, $error)
   if rdv.countRegister(stream.peerId) >= RegistrationLimitPerPeer:
     return stream.sendRegisterResponseError(NotAuthorized, "Registration limit reached")
 
   rdv.save(r.ns, stream.peerId, r).isOkOr:
-    return stream.sendRegisterResponseError(NotAuthorized, error.cause)
+    return stream.sendRegisterResponseError(NotAuthorized, $error)
   libp2p_rendezvous_registered.inc()
   libp2p_rendezvous_namespaces.set(int64(rdv.namespaces.len))
   stream.sendRegisterResponse(ttl)
@@ -401,17 +401,14 @@ proc advertise*[E](
     peers: seq[PeerId],
     sprBuff: seq[byte],
 ) {.async: (raises: [CancelledError, AdvertiseError]).} =
-  ns.checkNamespace().isOkOr:
-    raise error.toException(AdvertiseError)
-  rdv.config.checkTtl(ttl).isOkOr:
-    raise error.toException(AdvertiseError)
+  ns.checkNamespace().onErrorRaise(AdvertiseError)
+  rdv.config.checkTtl(ttl).onErrorRaise(AdvertiseError)
 
   let
     r = Register(ns: ns, signedPeerRecord: sprBuff, ttl: Opt.some(ttl.seconds.uint64))
     msg = encode(Message(msgType: MessageType.Register, register: Opt.some(r)))
 
-  rdv.save(ns, rdv.switch.peerInfo.peerId, r).isOkOr:
-    raise error.toException(AdvertiseError)
+  rdv.save(ns, rdv.switch.peerInfo.peerId, r).onErrorRaise(AdvertiseError)
 
   let futs = peers.mapIt(rdv.advertisePeer(it, msg))
   await allFutures(futs.mapIt(it.withTimeout(5.seconds)))
@@ -487,8 +484,7 @@ proc request*[E](
     limit: uint64
   let l = lt.get(DiscoverLimit.int)
   let peers = peersOpt.get(rdv.peers)
-  checkRequest(ns, l).isOkOr:
-    raise error.toException(AdvertiseError)
+  checkRequest(ns, l).onErrorRaise(AdvertiseError)
 
   limit = l.uint64
 
@@ -533,8 +529,7 @@ proc unsubscribeLocally*[E](rdv: GenericRendezVous[E], ns: string) =
 proc unsubscribe*[E](
     rdv: GenericRendezVous[E], ns: string, peerIds: seq[PeerId]
 ) {.async: (raises: [RendezVousError, CancelledError]).} =
-  ns.checkNamespace().isOkOr:
-    raise error.toException(RendezVousError)
+  ns.checkNamespace().onErrorRaise(RendezVousError)
 
   let msg = encode(
     Message(msgType: MessageType.Unregister, unregister: Opt.some(Unregister(ns: ns)))

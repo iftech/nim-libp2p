@@ -142,7 +142,7 @@ proc partsMetadata*(pm: InteropPartialMessage): PartsMetadata =
 
 proc materializeParts*(
     pm: InteropPartialMessage, metadata: PartsMetadata
-): LPResult[PartsData] =
+): LPResult[PartsData] {.gcsafe, raises: [].} =
   ## Encode parts that the peer doesn't have.
   ## metadata is the peer's 1-byte bitmap (what parts they have).
   ## Returns: [bitmap][parts...][groupId] for parts we have that they don't.

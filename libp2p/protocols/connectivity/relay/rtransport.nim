@@ -64,9 +64,9 @@ proc peerIdOf(part: MultiAddress): LPResult[PeerId] =
 proc parseRelayAddr(ma: MultiAddress): LPResult[RelayAddr] =
   let parts = ?ma.len()
   if parts < 4:
-    return err(LPResultError.init("too few parts", $ma))
+    return err($ma, "too few parts")
   if not CircuitRelay.match(?ma[parts - 2]):
-    return err(LPResultError.init("missing p2p-circuit", $ma))
+    return err($ma, "missing p2p-circuit")
 
   let relayPeerId = peerIdOf(?ma[parts - 3]).valueOr:
     return err(error, "Relay doesn't exist")

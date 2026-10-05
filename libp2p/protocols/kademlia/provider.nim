@@ -123,7 +123,7 @@ proc dispatchAddProvider(
       await kad.msgSender.sendMessage(peer, addrs, move encoded, kad.config.timeout)
     sendRes.countSent(MessageType.addProvider, sentBytes)
     sendRes.isOkOr:
-      return err(error)
+      return err(error.msg, $error.stage)
     return ok(AddProviderStatus.accepted)
 
   let sendRes =
@@ -134,7 +134,7 @@ proc dispatchAddProvider(
   # failure to reach the peer is an error; a silent read counts as accepted.
   let replyBuf = sendRes.valueOr:
     if error.stage != readStage:
-      return err(error)
+      return err(error.msg, $error.stage)
     return ok(AddProviderStatus.accepted)
 
   let reply = Message.decode(replyBuf).valueOr:

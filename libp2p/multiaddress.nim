@@ -790,7 +790,7 @@ proc toString*(value: MultiAddress): MaResult[string] =
 proc `$`*(value: MultiAddress): string =
   ## Return string representation of MultiAddress ``value``.
   value.toString().valueOr:
-    error.cause
+    $error
 
 proc protocols*(value: MultiAddress): MaResult[seq[MultiCodec]] =
   ## Returns list of protocol codecs inside of MultiAddress ``value``.

@@ -75,7 +75,7 @@ func extractField(data, key: string): LPResult[string] =
     let parts = segment.split("=", 1)
     if parts.len == 2 and parts[0].strip() == key:
       return ok(parts[1].strip(chars = {' ', '"'}))
-  err(LPResultError.init("Failed to find field in PeerID Auth header", key))
+  err(key, "Failed to find field in PeerID Auth header")
 
 func genDataToSign(
     parts: seq[SigParam], prefix: string = PeerIDAuthPrefix

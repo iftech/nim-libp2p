@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/strutils, bearssl, chronos, stew/byteutils
+import bearssl, chronos, stew/byteutils
 import
   ../../../libp2p/[
     protocols/connectivity/relay/relay,

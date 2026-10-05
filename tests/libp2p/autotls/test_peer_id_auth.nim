@@ -4,7 +4,7 @@
 {.used.}
 {.push raises: [].}
 
-import chronos, chronos/apps/http/httpclient, uri, base64, times, strutils
+import chronos, chronos/apps/http/httpclient, uri, base64, times
 import
   ../../../libp2p/
     [stream/connection, upgrademngrs/upgrade, peeridauth/client, wire, crypto/crypto]
