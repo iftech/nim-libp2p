@@ -330,13 +330,11 @@ suite "WebSocket transport with autotls":
   asyncTest "plain WebSocket start does not wait for autotls":
     let startTimeout = 15.seconds # must be less then `certTimeout`
     let certTimeout = 30.seconds
+      # intentionally very large, so loading certifacte is not stopped early by this timeout
     let autotls = AutotlsService(
       certReady: newAsyncEvent(),
       running: newAsyncEvent(),
-      config: AutotlsConfig.new(
-        initialCertTimeout = certTimeout
-          # intentionally very large, so loading certifacte is not stopped early by this timeout
-      ),
+      config: AutotlsConfig.new(initialCertTimeout = certTimeout),
     )
     let wstransport = WsTransport.new(
       Upgrade(),
