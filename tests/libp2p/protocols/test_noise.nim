@@ -255,10 +255,8 @@ suite "Noise":
     await conn.close()
 
     let
-      initiatorMuxer =
-        switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
-      responderMuxer =
-        switch1.connManager.getConnections()[switch2.peerInfo.peerId][0]
+      initiatorMuxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
+      responderMuxer = switch1.connManager.getConnections()[switch2.peerInfo.peerId][0]
     check SecureConn(initiatorMuxer.connection).earlyMuxer == "/yamux/1.0.0"
     check SecureConn(responderMuxer.connection).earlyMuxer == "/yamux/1.0.0"
 
