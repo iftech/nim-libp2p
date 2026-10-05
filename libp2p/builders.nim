@@ -490,7 +490,9 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
 
   var secureManagerInstances: seq[Secure]
   if SecureProtocol.Noise in b.secureManagers:
-    secureManagerInstances.add(Noise.new(b.rng, seckey).Secure)
+    secureManagerInstances.add(
+      Noise.new(b.rng, seckey, muxers = b.muxers.mapIt(it.codec)).Secure
+    )
 
   let peerInfo = ?PeerInfo.tryNew(
     seckey,

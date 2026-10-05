@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/tables
 import chronos, stew/byteutils
 import
   ../../../libp2p/[
@@ -225,6 +226,83 @@ suite "Noise":
     let msg = string.fromBytes(await conn.readLp(1024))
     check "Hello!" == msg
     await conn.close()
+
+    await allFuturesRaising(switch1.stop(), switch2.stop())
+
+  asyncTest "e2e: early muxer negotiation uses initiator preference":
+    var switch1 = makeStandardSwitchBuilder(maddr).withYamux().build()
+    var switch2 =
+      SwitchBuilder
+        .new()
+        .withRng(rng())
+        .withNoise()
+        .withAddress(maddr)
+        .withTcpTransport()
+        .withYamux()
+        .withMplex()
+        .build()
+
+    let testProto = new TestProto
+    testProto.init()
+    switch1.mount(testProto)
+    await switch1.start()
+    await switch2.start()
+
+    let conn =
+      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    await conn.writeLp("Hello!")
+    check string.fromBytes(await conn.readLp(1024)) == "Hello!"
+    await conn.close()
+
+    let
+      initiatorMuxer =
+        switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
+      responderMuxer =
+        switch1.connManager.getConnections()[switch2.peerInfo.peerId][0]
+    check SecureConn(initiatorMuxer.connection).earlyMuxer == "/yamux/1.0.0"
+    check SecureConn(responderMuxer.connection).earlyMuxer == "/yamux/1.0.0"
+
+    await allFuturesRaising(switch1.stop(), switch2.stop())
+
+  asyncTest "e2e: early muxer negotiation over WebSocket":
+    var switch1 = makeStandardSwitchBuilder(WsAutoAddress).build()
+    var switch2 = makeStandardSwitchBuilder(WsAutoAddress).build()
+
+    let testProto = new TestProto
+    testProto.init()
+    switch1.mount(testProto)
+    await switch1.start()
+    await switch2.start()
+
+    let conn =
+      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    await conn.writeLp("Hello!")
+    let msg = string.fromBytes(await conn.readLp(1024))
+    check "Hello!" == msg
+    await conn.close()
+    let muxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
+    check SecureConn(muxer.connection).earlyMuxer == "/mplex/6.7.0"
+
+    await allFuturesRaising(switch1.stop(), switch2.stop())
+
+  asyncTest "e2e: early muxer negotiation falls back for a legacy peer":
+    var switch1 = makeStandardSwitchBuilder(maddr).build()
+    var switch2 = makeSwitch(maddr, true)
+
+    let testProto = new TestProto
+    testProto.init()
+    switch1.mount(testProto)
+    await switch1.start()
+    await switch2.start()
+
+    let conn =
+      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    await conn.writeLp("Hello!")
+    let msg = string.fromBytes(await conn.readLp(1024))
+    check "Hello!" == msg
+    await conn.close()
+    let muxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
+    check SecureConn(muxer.connection).earlyMuxer.len == 0
 
     await allFuturesRaising(switch1.stop(), switch2.stop())
 
