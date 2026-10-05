@@ -15,35 +15,33 @@ var
   suiteAsyncTestTimeout {.threadvar.}: Duration
   hasSuiteAsyncTestTimeout {.threadvar.}: bool
 
+template withSuiteAsyncTestTimeout(timeout: untyped, body: untyped): untyped =
+  let previousTimeout = suiteAsyncTestTimeout
+  let hadPreviousTimeout = hasSuiteAsyncTestTimeout
+  suiteAsyncTestTimeout = timeout
+  hasSuiteAsyncTestTimeout = true
+  defer:
+    suiteAsyncTestTimeout = previousTimeout
+    hasSuiteAsyncTestTimeout = hadPreviousTimeout
+  body
+
 ## suite wraps unittest2.suite in a proc to avoid issue with too many global variables
 ## See https://github.com/nim-lang/Nim/issues/8500
 template suite*(name: string, timeout: untyped, body: untyped): untyped =
   block:
     proc testSuite() =
-      let previousTimeout = suiteAsyncTestTimeout
-      let hadPreviousTimeout = hasSuiteAsyncTestTimeout
-      suiteAsyncTestTimeout = timeout
-      hasSuiteAsyncTestTimeout = true
-      defer:
-        suiteAsyncTestTimeout = previousTimeout
-        hasSuiteAsyncTestTimeout = hadPreviousTimeout
-      unittest2.suite name:
-        body
+      withSuiteAsyncTestTimeout(timeout):
+        unittest2.suite name:
+          body
 
     testSuite()
 
 template suite*(name: string, body: untyped): untyped =
   block:
     proc testSuite() =
-      let previousTimeout = suiteAsyncTestTimeout
-      let hadPreviousTimeout = hasSuiteAsyncTestTimeout
-      suiteAsyncTestTimeout = asyncTestTimeoutDefault
-      hasSuiteAsyncTestTimeout = true
-      defer:
-        suiteAsyncTestTimeout = previousTimeout
-        hasSuiteAsyncTestTimeout = hadPreviousTimeout
-      unittest2.suite name:
-        body
+      withSuiteAsyncTestTimeout(asyncTestTimeoutDefault):
+        unittest2.suite name:
+          body
 
     testSuite()
 
