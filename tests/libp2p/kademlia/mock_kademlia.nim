@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import chronos, chronicles
+import chronos
 import
   ../../../libp2p/protocols/kademlia/
     [types, routing_table, protobuf, get, provider, find]
@@ -62,8 +62,8 @@ method handleGetValue*(
 
   try:
     await stream.writeLp(response.encode())
-  except LPStreamError as exc:
-    debug "Failed to send malicious get-value response", stream = stream, err = exc.msg
+  except LPStreamError as e:
+    raiseAssert "Failed to send malicious get-value response: " & e.msg
 
 method handleAddProvider*(
     kad: MockKadDHT, stream: Stream, msg: Message
@@ -83,8 +83,6 @@ method handleFindNode*(
   if kad.handleFindNodeMalformedResponse:
     try:
       await stream.writeLp(@[0xFF'u8, 0xFF, 0xFF])
-    except LPStreamError as exc:
-      debug "Failed to send malformed find-node response",
-        stream = stream, err = exc.msg
-    return
+    except LPStreamError as e:
+      raiseAssert "Failed to send malformed find-node response: " & e.msg
   await procCall handleFindNode(KadDHT(kad), stream, msg)

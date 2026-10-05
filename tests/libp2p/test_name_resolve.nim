@@ -22,7 +22,7 @@ const unixPlatform =
   defined(netbsd) or defined(openbsd) or defined(dragonfly)
 
 when unixPlatform:
-  import std/strutils, chronicles
+  import std/strutils
 
 proc guessOsNameServers(): seq[TransportAddress] {.raises: [].} =
   when unixPlatform:
@@ -41,10 +41,10 @@ proc guessOsNameServers(): seq[TransportAddress] {.raises: [].} =
           if resultSeq.len > 2:
             break
             #3 nameserver max on linux
-    except IOError as exc:
-      debug "Failed to get unix nameservers", err = exc.msg
-    except TransportAddressError as exc:
-      debug "Failed to init address", err = exc.msg
+    except IOError as e:
+      raiseAssert "Failed to get unix nameservers: " & e.msg
+    except TransportAddressError as e:
+      raiseAssert "Failed to init address: " & e.msg
     finally:
       if resultSeq.len > 0:
         return resultSeq

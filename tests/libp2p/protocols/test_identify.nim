@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, chronicles, protobuf_serialization, sets
+import chronos, protobuf_serialization, sets
 import
   ../../../libp2p/[
     protocols/identify,
@@ -157,8 +157,8 @@ suite "Identify":
         try:
           conn = await transport1.accept()
           await msListen.handle(conn)
-        except transport.TransportError as exc:
-          debug "Transport error", err = exc.msg
+        except transport.TransportError as e:
+          raiseAssert "unexpected error: " & e.msg
         finally:
           await conn.close()
 
