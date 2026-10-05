@@ -231,16 +231,15 @@ suite "Noise":
 
   asyncTest "e2e: early muxer negotiation uses initiator preference":
     var switch1 = makeStandardSwitchBuilder(maddr).withYamux().build()
-    var switch2 =
-      SwitchBuilder
-        .new()
-        .withRng(rng())
-        .withNoise()
-        .withAddress(maddr)
-        .withTcpTransport()
-        .withYamux()
-        .withMplex()
-        .build()
+    var switch2 = SwitchBuilder
+      .new()
+      .withRng(rng())
+      .withNoise()
+      .withAddress(maddr)
+      .withTcpTransport()
+      .withYamux()
+      .withMplex()
+      .build()
 
     let testProto = new TestProto
     testProto.init()
