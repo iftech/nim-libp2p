@@ -57,6 +57,7 @@ const
 type
   TopicInfo* = object # gossip 1.1 related
     graftTime*: Moment
+    lastGraftSent*: Moment
     meshTime*: Duration
     inMesh*: bool
     meshMessageDeliveriesActive*: bool
