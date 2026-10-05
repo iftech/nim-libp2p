@@ -672,7 +672,7 @@ suite "GossipSub Component - Message Handling":
     let msgData = toBytes("from node " & $nodes[0].peerInfo.peerId)
     tryPublish(await nodes[0].publish(topic, msgData), 1)
 
-    await wait(seenFut, 60.seconds)
+    await seenFut
     check:
       seen.len >= numberOfNodes
     for k, v in seen.pairs:
