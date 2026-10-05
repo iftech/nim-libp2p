@@ -114,6 +114,28 @@ suite "checkUntilTimeout helpers":
     checkUntilTimeoutCustom(200.milliseconds, 10.milliseconds):
       a == b
 
+suite "asyncTest suite timeout", timeout = 100.milliseconds:
+  asyncTest "uses the suite timeout":
+    await sleepAsync(10.milliseconds)
+
+  asyncTest "allows a per-test timeout override", timeout = 200.milliseconds:
+    await sleepAsync(150.milliseconds)
+
+suite "asyncTest suite timeout - failed", timeout = 50.milliseconds:
+  var programResultBefore {.threadvar.}: int
+
+  setup:
+    programResultBefore = exitProcs.getProgramResult()
+
+  teardown:
+    require testStatusIMPL == TestStatus.Failed
+    testStatusIMPL = TestStatus.OK
+    if programResultBefore == QuitSuccess:
+      exitProcs.setProgramResult(QuitSuccess)
+
+  asyncTest "fails when the suite timeout expires":
+    await sleepAsync(100.milliseconds)
+
 suite "checkUntilTimeout helpers - failed":
   var programResultBefore {.threadvar.}: int
 

@@ -7,13 +7,53 @@ import ./trackers
 export checkTrackers # TODO: maybe consider importing it on demand?
 export unittest2 except suite
 
+const asyncTestTimeoutDefault* = 30.seconds
+
+macro addAsyncTestTimeout(timeout: untyped, body: untyped): untyped =
+  ## Adds the suite timeout to asyncTests which do not specify one themselves.
+  let timeoutNode = timeout
+
+  proc addTimeout(node: NimNode): NimNode =
+    if node.kind in {nnkCall, nnkCommand} and node.len > 0 and
+        node[0].eqIdent("suite"):
+      # A nested suite applies its own timeout when it is expanded.
+      return node
+
+    if node.kind in {nnkCall, nnkCommand} and node.len >= 2 and
+        node[0].eqIdent("asyncTest"):
+      # An asyncTest has a name and body; any additional argument is its
+      # explicit timeout, either positional or named.
+      if node.len == 3:
+        result = newNimNode(node.kind)
+        for i in 0 ..< node.len - 1:
+          result.add addTimeout(node[i])
+        result.add timeoutNode
+        result.add addTimeout(node[^1])
+        return
+
+    result = copyNimTree(node)
+    for i in 0 ..< node.len:
+      result[i] = addTimeout(node[i])
+
+  result = addTimeout(body)
+
 ## suite wraps unittest2.suite in a proc to avoid issue with too many global variables
 ## See https://github.com/nim-lang/Nim/issues/8500
+template suite*(name: string, timeout: untyped, body: untyped): untyped =
+  block:
+    proc testSuite() =
+      unittest2.suite name:
+        addAsyncTestTimeout(timeout):
+          body
+
+    testSuite()
+
 template suite*(name: string, body: untyped): untyped =
   block:
     proc testSuite() =
       unittest2.suite name:
-        body
+        addAsyncTestTimeout(asyncTestTimeoutDefault):
+          body
 
     testSuite()
 
@@ -36,13 +76,7 @@ template asyncSetup*(body: untyped): untyped =
     )
 
 template asyncTest*(name: string, body: untyped): untyped =
-  test name:
-    waitFor(
-      (
-        proc() {.async.} =
-          body
-      )()
-    )
+  asyncTest(name, asyncTestTimeoutDefault, body)
 
 # `timeout` stays untyped: a typed overload semchecks every plain asyncTest body.
 template asyncTest*(name: string, timeout: untyped, body: untyped): untyped =
