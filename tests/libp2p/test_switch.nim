@@ -1266,6 +1266,9 @@ suite "Switch :: IdentifyPusher Service":
     await switch1.start()
     await switch2.start()
     await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
+    checkUntilTimeout:
+      IdentifyPushCodec in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
+      IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
 
   asyncTeardown:
     await switch1.stop()
