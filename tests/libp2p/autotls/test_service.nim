@@ -105,6 +105,11 @@ suite "AutoTLS certificate issuance and renewal":
     checkUntilTimeout:
       acmeApi.requestedUris.len == 4
 
+    let certResult = await service.getCertWhenReady()
+    check:
+      certResult.isErr()
+      certResult.error == "ACMEApiStub refused https://acme.example/new-account"
+
   asyncTest "a failed round is retried on the next heartbeat":
     # No retries, so a round is one request.
     service = newService(
@@ -140,7 +145,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     service.installCert(initDuration(hours = 2))
 
-    let autotlsCert = await certFut
+    let autotlsCert = (await certFut).get()
     check:
       autotlsCert.cert == cert
       autotlsCert.privkey == certKey
@@ -153,7 +158,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     check acmeApi.requestedUris.len == 1
 
-    let autotlsCert = await service.getCertWhenReady()
+    let autotlsCert = (await service.getCertWhenReady()).get()
     check autotlsCert.cert == cert
 
   asyncTest "the broker is sent the addresses the peer announces":
@@ -199,7 +204,7 @@ suite "AutoTLS certificate issuance and renewal":
     service.config.nameResolver = resolver
 
     await service.start(switch)
-    let autotlsCert = await service.getCertWhenReady()
+    let autotlsCert = (await service.getCertWhenReady()).get()
     # Nothing signals a round that ended, so wait out a three retries window.
     await sleepAsync(50.milliseconds)
 
@@ -226,16 +231,19 @@ suite "AutoTLS certificate issuance and renewal":
 
     check acmeApi.requestedUris.len == 3
 
-  asyncTest "no certificate is issued without a TcpTransport, and the service still runs":
+  asyncTest "certificate wait fails when the switch has no TcpTransport":
     let memSwitch = makeStandardSwitch(MemoryAutoAddress())
     startAndDeferStop(@[memSwitch])
 
     service = newService()
     await service.start(memSwitch)
+    let certResult = await service.getCertWhenReady()
 
     check:
       acmeApi.requestedUris.len == 0
       service.running.isSet
+      certResult.isErr()
+      certResult.error == "Could not find a TcpTransport in switch"
 
   asyncTest "issuance aborts when no public IP address can be determined":
     acmeApi.scriptChallenge(ChallengeToken)
@@ -323,24 +331,34 @@ suite "AutoTLS on a switch":
     check switch.addressManager.candidates.anyIt(it.address == wsAddr)
 
   asyncTest "a switch listening on wss fails to start without a certificate":
+    let acmeApi = ACMEApiStub.new()
     let switch = makeStandardSwitchBuilder(
         @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
       )
       .withAutotls(
         AutotlsConfig.new(
           ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
-          # A refused connection fails issuance at once, leaving the certificate
-          # wait as the only thing that can hang.
-          acmeDirectoryURL = parseUri("http://127.0.0.1:1"),
-          initialCertTimeout = 100.milliseconds,
+          issueRetries = 0,
+          initialCertTimeout = 10.seconds,
         )
       )
+      .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    defer:
+      await switch.stop()
+
+    expectMsgContains LPError, "ACMEApiStub refused https://acme.example/new-account":
+      await switch.start()
+
+  asyncTest "a switch listening on wss fails when autotls has no TcpTransport":
+    let switch = makeStandardSwitchBuilder(@[ma("/ip4/127.0.0.1/tcp/0/wss")])
+      .withAutotls(AutotlsConfig.new(initialCertTimeout = 10.seconds))
       .build()
     defer:
       await switch.stop()
 
-    expectMsgContains LPError,
-      "autotls certificate was not available before the certificate deadline":
+    expectMsgContains LPError, "Could not find a TcpTransport in switch":
       await switch.start()
 
   asyncTest "a switch listening only on ws starts without an autotls certificate":
