@@ -316,13 +316,13 @@ proc skipValue(data: var ProtoBuffer, header: ProtoHeader): ProtoResult[void] =
       data.offset += sizeof(uint32)
       ok()
     else:
-      err(ProtoError.VarintDecode)
+      err(ProtoError.MessageIncomplete)
   of ProtoFieldKind.Fixed64:
     if data.isEnough(uint64(sizeof(uint64))):
       data.offset += sizeof(uint64)
       ok()
     else:
-      err(ProtoError.VarintDecode)
+      err(ProtoError.MessageIncomplete)
   of ProtoFieldKind.Length:
     var length = 0
     var bsize = 0'u64
@@ -337,6 +337,14 @@ proc skipValue(data: var ProtoBuffer, header: ProtoHeader): ProtoResult[void] =
       err(ProtoError.VarintDecode)
   of ProtoFieldKind.StartGroup, ProtoFieldKind.EndGroup:
     err(ProtoError.BadWireType)
+
+func scalarWire(T: typedesc[ProtoScalar]): ProtoFieldKind =
+  when T is float32:
+    ProtoFieldKind.Fixed32
+  elif T is float64:
+    ProtoFieldKind.Fixed64
+  else:
+    ProtoFieldKind.Varint
 
 proc getValue[T: ProtoScalar](
     data: var ProtoBuffer, header: ProtoHeader, outval: var T
@@ -440,16 +448,8 @@ proc getField*[T: ProtoScalar](
   while not (pb.isEmpty()):
     var header: ProtoHeader
     ?pb.getHeader(header)
-    let wireCheck =
-      when (T is uint64) or (T is uint32) or (T is uint) or (T is zint64) or
-          (T is zint32) or (T is zint) or (T is hint64) or (T is hint32) or (T is hint):
-        header.wire == ProtoFieldKind.Varint
-      elif T is float32:
-        header.wire == ProtoFieldKind.Fixed32
-      elif T is float64:
-        header.wire == ProtoFieldKind.Fixed64
     if header.index == uint64(field):
-      if wireCheck:
+      if header.wire == scalarWire(T):
         var value: T
         let vres = pb.getValue(header, value)
         if vres.isOk():
@@ -649,8 +649,7 @@ proc getRepeatedField*[T: ProtoScalar](
       return err(hres.error)
 
     if header.index == uint64(field):
-      if header.wire in
-          {ProtoFieldKind.Varint, ProtoFieldKind.Fixed32, ProtoFieldKind.Fixed64}:
+      if header.wire == scalarWire(T):
         var item: T
         let vres = getValue(pb, header, item)
         if vres.isOk():
@@ -702,15 +701,7 @@ proc getPackedRepeatedField*[T: ProtoScalar](
         let ares = getValue(pb, header, arritem)
         if ares.isOk():
           var pbarr = initProtoBuffer(arritem)
-          let itemHeader =
-            when (T is uint64) or (T is uint32) or (T is uint) or (T is zint64) or
-                (T is zint32) or (T is zint) or (T is hint64) or (T is hint32) or
-                (T is hint):
-              ProtoHeader(wire: ProtoFieldKind.Varint)
-            elif T is float32:
-              ProtoHeader(wire: ProtoFieldKind.Fixed32)
-            elif T is float64:
-              ProtoHeader(wire: ProtoFieldKind.Fixed64)
+          let itemHeader = ProtoHeader(wire: scalarWire(T))
           while not (pbarr.isEmpty()):
             var item: T
             let vres = getValue(pbarr, itemHeader, item)
