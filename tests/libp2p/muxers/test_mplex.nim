@@ -261,7 +261,9 @@ suite "Mplex":
 
   suite "channel reset":
     asyncTest "cleanup waits for the reset message":
-      proc newSignal(name: static[string]): Future[void] {.async: (raises: [], raw: true).} =
+      proc newSignal(
+          name: static[string]
+      ): Future[void] {.async: (raises: [], raw: true).} =
         newFuture[void](name)
 
       let
