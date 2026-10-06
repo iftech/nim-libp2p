@@ -421,7 +421,7 @@ proc read*(ab: var Asn1Buffer): Asn1Result[Asn1Field] =
         return err(Asn1Error.Incorrect)
       else:
         inclass = true
-        ttag = tag
+        ttag = tag and 0x1F
         tlength = ?ab.getLength()
     of Asn1Class.Universal:
       length = ?ab.getLength()
@@ -429,6 +429,7 @@ proc read*(ab: var Asn1Buffer): Asn1Result[Asn1Field] =
       if inclass:
         if length >= tlength:
           return err(Asn1Error.Incorrect)
+        aclass = Asn1Class.ContextSpecific
 
       case byte(tag)
       of Asn1Tag.Boolean.code():

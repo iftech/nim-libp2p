@@ -602,18 +602,23 @@ proc init*(key: var EcPrivateKey, data: openArray[byte]): Result[void, Asn1Error
 
   oid = ?ib.read()
 
-  if oid.kind != Asn1Tag.Oid:
+  if oid.kind != Asn1Tag.Oid or oid.klass != Asn1Class.ContextSpecific or oid.index != 0:
     return err(Asn1Error.Incorrect)
 
-  if oid == Asn1OidSecp256r1:
-    curve = safeConvert[cint](Secp256r1)
-  elif oid == Asn1OidSecp384r1:
-    curve = safeConvert[cint](Secp384r1)
-  elif oid == Asn1OidSecp521r1:
-    curve = safeConvert[cint](Secp521r1)
-  else:
+  let kind =
+    if oid == Asn1OidSecp256r1:
+      Secp256r1
+    elif oid == Asn1OidSecp384r1:
+      Secp384r1
+    elif oid == Asn1OidSecp521r1:
+      Secp521r1
+    else:
+      return err(Asn1Error.Incorrect)
+
+  if raw.length != kind.getPrivateKeyLength():
     return err(Asn1Error.Incorrect)
 
+  curve = safeConvert[cint](kind)
   if checkScalar(raw.toOpenArray(), curve) == 1'u32:
     key = new EcPrivateKey
     copyMem(addr key.buffer[0], addr raw.buffer[raw.offset], raw.length)
