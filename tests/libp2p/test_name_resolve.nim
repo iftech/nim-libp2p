@@ -173,7 +173,7 @@ suite "Name resolving":
     teardown:
       checkTrackers()
 
-    asyncTest "test manual dns ip resolve":
+    asyncTest "test manual dns ip resolve with duplicate responses":
       ## DNS mock server
       proc clientMark1(
           transp: DatagramTransport, raddr: TransportAddress
@@ -198,6 +198,7 @@ suite "Name resolving":
           # Echo back the query id so the resolver accepts the response.
           resp[0] = char(msg[0])
           resp[1] = char(msg[1])
+          await transp.sendTo(raddr, resp)
           await transp.sendTo(raddr, resp)
         except CancelledError, transport.TransportError:
           raiseAssert "unexpected error: " & getCurrentExceptionMsg()

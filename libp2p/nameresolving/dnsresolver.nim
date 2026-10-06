@@ -6,7 +6,7 @@
 import std/[sets, sequtils], chronos, chronicles, ./dnsmessage
 
 import nameresolver
-import ../crypto/rng
+import ../crypto/rng, ../utils/future
 
 logScope:
   topics = "libp2p dnsresolver"
@@ -34,7 +34,7 @@ proc getDnsResponse(
   proc datagramDataReceived(
       transp: DatagramTransport, raddr: TransportAddress
   ): Future[void] {.async: (raises: []).} =
-    receivedDataFuture.complete()
+    receivedDataFuture.completeOnce()
 
   let sock =
     if dnsServer.family == AddressFamily.IPv6:
