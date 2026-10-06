@@ -834,3 +834,16 @@ suite "Multistream :: optimistic selection":
     await selected.close()
     check client.closed
     check server.closed
+
+  asyncTest "join completes when the underlying stream closes":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+
+    let joined = selected.join()
+    check not joined.finished()
+    await client.close()
+    await joined
+    check selected.closed

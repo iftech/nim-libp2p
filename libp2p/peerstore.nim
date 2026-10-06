@@ -428,6 +428,18 @@ proc `[]`*[T](p: PeerStore, typ: type[T]): T =
   p.books[name] = book
   book
 
+proc firstSupportedProtocol*(
+    p: PeerStore, peerId: PeerId, protocols: openArray[string]
+): string =
+  ## Return the first requested protocol advertised by the peer without
+  ## creating a protocol book or copying its entry, or "" when none match.
+  let name = getTypeName(ProtoBook)
+  p.books.withValue(name, bookPtr):
+    ProtoBook(bookPtr[]).book.withValue(peerId, supportedPtr):
+      for protocol in protocols:
+        if protocol in supportedPtr[]:
+          return protocol
+
 proc removeFromCleanupQueue(peerStore: PeerStore, peerId: PeerId) =
   let cleanupPos = peerStore.toClean.find(peerId)
   if cleanupPos >= 0:

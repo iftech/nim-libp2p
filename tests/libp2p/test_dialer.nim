@@ -919,6 +919,14 @@ suite "Dialer":
   asyncTest "Known peer protocol uses optimistic negotiation":
     const codec = "/test/optimistic/1.0.0"
     let (stream, remote) = bridgedConnections()
+    var selected: Stream
+    defer:
+      if selected.isNil:
+        await stream.close()
+      else:
+        await selected.close()
+      await remote.close()
+
     stream.readQueue = newAsyncQueue[seq[byte]](16)
     remote.readQueue = newAsyncQueue[seq[byte]](16)
     let peerStore = PeerStore.new(nil)
@@ -926,10 +934,7 @@ suite "Dialer":
     let dialer =
       Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
 
-    let selected = await dialer.negotiateStream(stream, @[codec])
-    defer:
-      await selected.close()
-      await remote.close()
+    selected = await dialer.negotiateStream(stream, @[codec])
 
     check selected.getWrapped() == stream
     await selected.writeLp("early payload")
@@ -941,6 +946,34 @@ suite "Dialer":
     await remote.writeLp(codec & "\n")
     await remote.writeLp("response")
     check string.fromBytes(await selected.readLp(1024)) == "response"
+
+  asyncTest "Stale peer protocol fails on first read and resets the stream":
+    const codec = "/test/stale/1.0.0"
+    let (stream, remote) = bridgedConnections()
+    var selected: Stream
+    defer:
+      if selected.isNil:
+        await stream.close()
+      else:
+        await selected.close()
+      await remote.close()
+
+    stream.readQueue = newAsyncQueue[seq[byte]](16)
+    remote.readQueue = newAsyncQueue[seq[byte]](16)
+    let peerStore = PeerStore.new(nil)
+    peerStore[ProtoBook][stream.peerId] = @[codec]
+    let dialer =
+      Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
+
+    selected = await dialer.negotiateStream(stream, @[codec])
+    check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
+    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+
+    await remote.writeLp("/multistream/1.0.0\n")
+    await remote.writeLp("na\n")
+    expectMsg LPStreamError, "Optimistic multistream protocol rejected":
+      discard await selected.readLp(1024)
+    check stream.wasResetLocally
 
   asyncTest "Unknown peer protocol uses blocking negotiation":
     const codec = "/test/blocking/1.0.0"

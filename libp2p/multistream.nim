@@ -63,6 +63,13 @@ method atEof(s: OptimisticStream): bool =
 method closed(s: OptimisticStream): bool =
   s.isClosed or s.stream.closed
 
+method join(s: OptimisticStream) {.async: (raises: [CancelledError]).} =
+  await s.stream.join()
+  if s.isClosed:
+    await s.closeEvent.wait()
+  else:
+    await s.close()
+
 method closeImpl(s: OptimisticStream) {.async: (raises: []).} =
   await s.stream.close()
   await procCall Connection(s).closeImpl()

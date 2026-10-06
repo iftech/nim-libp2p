@@ -643,7 +643,10 @@ proc negotiateStream*(
     self: Dialer, stream: Stream, protos: seq[string]
 ): Future[Stream] {.async: (raises: [CancelledError, LPError]).} =
   ## Negotiate one of `protos` over an open stream.
-  ## Raises DialFailedError when negotiation selects no supported protocol or
+  ## When the peer advertised a requested protocol through Identify, returns
+  ## before acknowledgement. Rejection then raises LPStreamError on the first
+  ## read; optimistic negotiation cannot fall back after application writes.
+  ## Raises DialFailedError when blocking negotiation selects no protocol or
   ## the selected protocol's outgoing stream budget is exhausted.
 
   var
@@ -654,13 +657,11 @@ proc negotiateStream*(
       await selectedStream.reset()
 
   trace "Protocol negotiation started", stream, protocols = protos
-  var preferred: string
-  if not self.peerStore.isNil:
-    let supported = self.peerStore[ProtoBook][stream.peerId]
-    for proto in protos:
-      if proto in supported:
-        preferred = proto
-        break
+  let preferred =
+    if self.peerStore.isNil:
+      ""
+    else:
+      self.peerStore.firstSupportedProtocol(stream.peerId, protos)
 
   let selected =
     if preferred.len > 0:
