@@ -52,7 +52,7 @@ proc partialMessageInteropTest*(
 
   proc validateRPC(
       rpc: PartialMessageExtensionRPC
-  ): Result[void, string] {.gcsafe, raises: [].} =
+  ): LPResult[void] {.gcsafe, raises: [].} =
     return ok()
 
   var requestFulfilled = newFuture[bool]()
@@ -95,6 +95,8 @@ proc partialMessageInteropTest*(
       param.partialMessageExtensionConfig = Opt.some(
         PartialMessageExtensionConfig(
           unionPartsMetadata: my_partial_message.unionPartsMetadata,
+          materializeParts: MyPartialMessageStore().materializePartsFn(),
+            # nim peer only receives in this test, it never serves parts
           validateRPC: validateRPC,
           onIncomingRPC: onIncomingRPC,
           heartbeatsTillEviction: 100,

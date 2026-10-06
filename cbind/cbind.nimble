@@ -111,9 +111,11 @@ proc buildFfiLib(san = "") =
   # nim-ffi's `declareLibrary` imports.
   # ffiThreadExitTimeoutMs: bound the FFI thread's graceful-shutdown wait; the
   # 1500ms default is too tight for libp2pDestroy's switch.stop() over many conns.
+  # RfcUtcTime: libc localtime() writes one static buffer for all FFI threads.
   exec "nim c --out:" & buildDir & "/liblibp2p." & ffiLibExt() &
     " --threads:on --app:lib --opt:size --noMain -d:metrics" & sanFlags &
-    " -d:chronicles_runtime_filtering=on -d:ffiThreadExitTimeoutMs=5000" & ffiDepPaths() &
+    " -d:chronicles_runtime_filtering=on -d:chronicles_timestamps=RfcUtcTime" &
+    " -d:ffiThreadExitTimeoutMs=5000" & ffiDepPaths() &
     " --nimMainPrefix:liblibp2p --nimcache:" & nimcache & " libp2p.nim"
 
 task buildffi, "Build the FFI shared library":

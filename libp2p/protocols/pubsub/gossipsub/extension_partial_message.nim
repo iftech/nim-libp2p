@@ -48,11 +48,19 @@ type
 
     # configuration set by application (user)
     unionPartsMetadata*:
-      proc(a, b: PartsMetadata): Result[PartsMetadata, string] {.gcsafe, raises: [].}
+      proc(a, b: PartsMetadata): LPResult[PartsMetadata] {.gcsafe, raises: [].}
       # creates union of two PartsMetadata and returns it.
       # needs to be implemented by application.
+    materializeParts*: proc(
+      topic: string, groupId: GroupId, metadata: PartsMetadata
+    ): LPResult[PartsData] {.gcsafe, raises: [].}
+      # produces encoded message data for the parts of (topic, groupId) specified by
+      # metadata. it should return as many of the requested parts as are available.
+      # empty metadata must be treated as a request for all available parts.
+      # returns error if metadata is invalid or the request cannot be satisfied.
+      # needs to be implemented by application.
     validateRPC*:
-      proc(rpc: PartialMessageExtensionRPC): Result[void, string] {.gcsafe, raises: [].}
+      proc(rpc: PartialMessageExtensionRPC): LPResult[void] {.gcsafe, raises: [].}
       # implements logic for performing sanity checks on PartialMessageExtensionRPC.
       # when error is returned extension will not process PartialMessageExtensionRPC.
       # needs to be implemented by application.
@@ -106,6 +114,7 @@ proc doAssert(config: PartialMessageExtensionConfig) =
   doAssert(config.updatePeerBehaviorPenalty != nil, msg("updatePeerBehaviorPenalty"))
   doAssert(config.nodeTopicOpts != nil, msg("nodeTopicOpts"))
   doAssert(config.unionPartsMetadata != nil, msg("unionPartsMetadata"))
+  doAssert(config.materializeParts != nil, msg("materializeParts"))
   doAssert(config.validateRPC != nil, msg("validateRPC"))
   doAssert(config.onIncomingRPC != nil, msg("onIncomingRPC"))
   doAssert(config.heartbeatsTillEviction >= 1, msg("heartbeatsTillEviction"))
@@ -382,22 +391,22 @@ method onHandleRPC*(
 proc publishPartialToPeer(
     ext: PartialMessageExtension,
     topic: string,
-    pm: PartialMessage,
+    groupId: GroupId,
+    msgPartsMetadata: PartsMetadata,
     groupState: var GroupState,
     peer: PeerId,
     peerRequestsPartial: bool,
 ): bool {.raises: [].} =
-  let msgPartsMetadata = pm.partsMetadata()
-  var rpc = PartialMessageExtensionRPC(
-    topicID: Opt.some(topic), groupID: Opt.some(pm.groupId())
-  )
+  var rpc =
+    PartialMessageExtensionRPC(topicID: Opt.some(topic), groupID: Opt.some(groupId))
   var peerState = groupState.getPeerState(peer)
   var hasChanges: bool = false
 
   # if peer has requested partial messages and node knows what parts peer has requested, then
   # attempt to fulfill any parts that peer is missing.
   if peerRequestsPartial and peerState.receivedPartsMetadata.isSome():
-    let materializeRes = pm.materializeParts(peerState.receivedPartsMetadata.get())
+    let materializeRes =
+      ext.config.materializeParts(topic, groupId, peerState.receivedPartsMetadata.get())
     if materializeRes.isErr():
       # there might be error with last PartsMetadata so it is discarded,
       # to avoid any error with future messages.
@@ -434,17 +443,18 @@ proc publishPartialToPeer(
 proc publishPartial*(
     ext: PartialMessageExtension,
     topic: string,
-    pm: PartialMessage,
+    groupId: GroupId,
+    partsMetadata: PartsMetadata,
     peers: seq[PeerId] = @[],
       # overrides the peers to whom partial messages is going to be published.
 ): int {.raises: [].} =
-  if pm.groupId().len == 0:
-    warn "could not publish partial message without groupId", groupId = pm.groupId()
+  if groupId.len == 0:
+    warn "could not publish partial message without groupId", groupId
     return 0
 
-  var groupState = ext.getGroupState(topic, pm.groupId())
+  var groupState = ext.getGroupState(topic, groupId)
   groupState.heartbeatsTillEviction = ext.config.heartbeatsTillEviction
-  groupState.lastPublishedMetadata = pm.partsMetadata()
+  groupState.lastPublishedMetadata = partsMetadata
   ext.updateGroupCountMetric()
 
   let publishToPeers =
@@ -472,7 +482,7 @@ proc publishPartial*(
       # If the peer requests partials, publish to it without checking this
       # node's own topic opts. A node may publish partials as a fanout
       # publisher without being subscribed to the topic.
-      if ext.publishPartialToPeer(topic, pm, groupState, p, true):
+      if ext.publishPartialToPeer(topic, groupId, partsMetadata, groupState, p, true):
         publishedToCount.inc
       continue
 
@@ -482,7 +492,7 @@ proc publishPartial*(
     # this group without ever sending a subscription RPC.
     if nodeRequestsPartial and
         (peerSubOpt.supportsSendingPartial or groupState.hasPeer(p)):
-      if ext.publishPartialToPeer(topic, pm, groupState, p, false):
+      if ext.publishPartialToPeer(topic, groupId, partsMetadata, groupState, p, false):
         publishedToCount.inc
 
   return publishedToCount

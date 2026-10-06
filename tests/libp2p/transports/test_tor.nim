@@ -232,7 +232,7 @@ suite "Tor authentication":
     expect TransportDialError:
       discard await dialing
     var reply: array[1, byte]
-    check (await peer.readOnce(addr reply[0], 1).wait(100.millis)) == 0
+    check (await peer.readOnce(addr reply[0], 1)) == 0
 
   asyncTest "cancelled authentication closes the proxy socket":
     let server = createStreamServer(initTAddress("127.0.0.1:0"))
@@ -247,7 +247,7 @@ suite "Tor authentication":
     await peer.readExactly(addr greeting[0], greeting.len)
     await dialing.cancelAndWait()
     var reply: array[1, byte]
-    check (await peer.readOnce(addr reply[0], 1).wait(100.millis)) == 0
+    check (await peer.readOnce(addr reply[0], 1)) == 0
 
   asyncTest "truncated authentication is a dial error":
     let server = createStreamServer(initTAddress("127.0.0.1:0"))
@@ -269,7 +269,7 @@ suite "Tor CONNECT reply":
   teardown:
     checkTrackers()
 
-  proc checkTruncatedReply(response: seq[byte]) {.async.} =
+  proc checkRejectedReply(response: seq[byte], reason = "") {.async.} =
     let server = createStreamServer(initTAddress("127.0.0.1:0"))
     let transport = TorTransport.new(server.localAddress, upgrade = Upgrade())
     let dialing = transport.dial("", ma("/ip4/127.0.0.1/tcp/1234"))
@@ -286,25 +286,37 @@ suite "Tor CONNECT reply":
     discard await peer.write(response)
     # Signal EOF while keeping the read side open to observe client cleanup.
     await peer.shutdownWait()
-    expect TransportDialError:
+    expectMsgContains TransportDialError, reason:
       discard await dialing
     var reply: array[1, byte]
-    check (await peer.readOnce(addr reply[0], 1).wait(100.millis)) == 0
+    check (await peer.readOnce(addr reply[0], 1)) == 0
 
   asyncTest "truncated CONNECT header closes the proxy socket":
-    await checkTruncatedReply(@[5'u8, 0, 0])
+    await checkRejectedReply(@[5'u8, 0, 0])
 
   asyncTest "missing CONNECT FQDN length closes the proxy socket":
-    await checkTruncatedReply(@[5'u8, 0, 0, 3])
+    await checkRejectedReply(@[5'u8, 0, 0, 3])
 
   asyncTest "truncated CONNECT IPv4 address closes the proxy socket":
-    await checkTruncatedReply(@[5'u8, 0, 0, 1, 127, 0, 0])
+    await checkRejectedReply(@[5'u8, 0, 0, 1, 127, 0, 0])
 
   asyncTest "truncated CONNECT IPv4 port closes the proxy socket":
-    await checkTruncatedReply(@[5'u8, 0, 0, 1, 127, 0, 0, 1, 0])
+    await checkRejectedReply(@[5'u8, 0, 0, 1, 127, 0, 0, 1, 0])
 
   asyncTest "truncated CONNECT IPv6 port closes the proxy socket":
-    await checkTruncatedReply(@[5'u8, 0, 0, 4] & newSeq[byte](17))
+    await checkRejectedReply(@[5'u8, 0, 0, 4] & newSeq[byte](17))
 
   asyncTest "truncated CONNECT FQDN port closes the proxy socket":
-    await checkTruncatedReply(@[5'u8, 0, 0, 3, 3, 97, 98, 99, 0])
+    await checkRejectedReply(@[5'u8, 0, 0, 3, 3, 97, 98, 99, 0])
+
+  asyncTest "CONNECT reply with another socks version is a dial error":
+    await checkRejectedReply(@[4'u8, 0, 0, 1], "Unsupported socks version")
+
+  asyncTest "CONNECT reply with a failure code is a dial error":
+    await checkRejectedReply(@[5'u8, 5, 0, 1], "Server reply error: Connection Refused")
+
+  asyncTest "CONNECT reply with an unknown code is a dial error":
+    await checkRejectedReply(@[5'u8, 42, 0, 1], "Unexpected server reply")
+
+  asyncTest "CONNECT reply with an unknown address type is a dial error":
+    await checkRejectedReply(@[5'u8, 0, 0, 2], "Address not supported")

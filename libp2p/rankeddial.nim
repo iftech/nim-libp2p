@@ -5,12 +5,19 @@
 
 import std/[algorithm, sequtils, sets]
 
-import pkg/[chronos, chronicles]
+import pkg/[chronos, chronicles, metrics]
 
 import dialcandidate, muxers/muxer, utils/collections, utils/future
 
 logScope:
   topics = "libp2p dialer"
+
+declarePublicHistogram libp2p_dial_candidates,
+  "candidates a ranked dial queued after dedup",
+  buckets = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+declarePublicCounter libp2p_dial_winner_rank, "ranked dials won, by rank", ["rank"]
+declarePublicCounter libp2p_dial_cancelled_attempts,
+  "losing attempts that a ranked dial cancelled or closed"
 
 const MaxDialCandidates* = 32
   ## A peer names as many addresses as it likes, and each dnsaddr fans out further.
@@ -30,6 +37,10 @@ type
     seen: HashSet[string]
     exhausted: AsyncEvent
 
+  PendingAttempt = object
+    rank: DialRank
+    attempt: DialAttempt
+
   RankedDial* = ref object
     deadline: Moment
     attempt: proc(candidate: DialCandidate): DialAttempt {.gcsafe, raises: [].}
@@ -38,7 +49,7 @@ type
     dialable: DialBudget
     unresolved: DialBudget
     queued: seq[DialCandidate] ## best rank first, in arrival order within a rank
-    pending: seq[DialAttempt]
+    pending: seq[PendingAttempt]
     lookups: int ## advertised names whose lookups can still queue candidates
     changed: Future[void] ## completes when a candidate is queued or a name lookup ends
 
@@ -79,15 +90,24 @@ proc awaitLookup(
   debug "Address lookup stopped at candidate limit"
   @[]
 
-proc dropLosers(attempts: seq[DialAttempt]) {.async: (raises: []).} =
+proc dropLosers(pending: seq[PendingAttempt], won: bool) {.async: (raises: []).} =
   ## Give up every attempt that did not win, and close a muxer that landed anyway.
+  ## Only a dial that `won` counts its losers, an aborted dial wastes nothing.
 
+  let attempts = pending.mapIt(it.attempt)
   await noCancel attempts.cancelAndWait()
+  var lost = 0
   for attempt in attempts:
-    if attempt.completed():
+    if attempt.cancelled():
+      lost.inc()
+    elif attempt.completed():
       let mux = attempt.value()
       if not isNil(mux):
+        lost.inc()
         await mux.close()
+
+  if won:
+    libp2p_dial_cancelled_attempts.inc(lost.int64)
 
 proc new*(
     T: typedesc[RankedDial],
@@ -143,21 +163,24 @@ proc openSlots(dial: RankedDial) =
     let candidate = dial.queued[0]
     dial.queued.delete(0)
     trace "Ranked dial attempt opened", candidate
-    dial.pending.add(dial.attempt(candidate))
+    dial.pending.add(
+      PendingAttempt(rank: candidate.dialRank(), attempt: dial.attempt(candidate))
+    )
 
 proc takeWinner(dial: RankedDial): Muxer =
   ## Drop the attempts that ended, and hand over one that connected.
 
   var i = 0
   while i < dial.pending.len:
-    let attempt = dial.pending[i]
-    if not attempt.finished():
+    let slot = dial.pending[i]
+    if not slot.attempt.finished():
       i.inc()
       continue
 
     dial.pending.del(i)
-    if attempt.completed() and not isNil(attempt.value()):
-      return attempt.value()
+    if slot.attempt.completed() and not isNil(slot.attempt.value()):
+      libp2p_dial_winner_rank.inc(labelValues = [$slot.rank])
+      return slot.attempt.value()
 
   nil
 
@@ -166,8 +189,9 @@ proc firstConnected(
 ): Future[Muxer] {.async: (raises: [CancelledError]).} =
   ## The first attempt that connects. Nil once nothing waits, runs, or can still arrive.
 
+  var won = false
   defer:
-    await dropLosers(dial.pending)
+    await dropLosers(dial.pending, won)
 
   while true:
     if dial.changed.finished():
@@ -175,6 +199,7 @@ proc firstConnected(
 
     let mux = dial.takeWinner()
     if not isNil(mux):
+      won = true
       return mux
 
     dial.openSlots()
@@ -183,7 +208,9 @@ proc firstConnected(
 
     # `changed` keeps the race non-empty. Every attempt and lookup ends by the deadline.
     try:
-      discard await race(dial.pending.mapIt(FutureBase(it)) & FutureBase(dial.changed))
+      discard await race(
+        dial.pending.mapIt(FutureBase(it.attempt)) & FutureBase(dial.changed)
+      )
     except ValueError as e:
       raiseAssert "race() over a seq that holds `changed`: " & e.msg
 
@@ -199,6 +226,7 @@ proc run*(
   let lookups = named.mapIt(dial.queueName(it))
   defer:
     await noCancel lookups.cancelAndWait()
+    libp2p_dial_candidates.observe(float(MaxDialCandidates - dial.dialable.left))
 
   # The deferred await replaces the child future that a trailing `await` reads its value from.
   let mux = await dial.firstConnected()

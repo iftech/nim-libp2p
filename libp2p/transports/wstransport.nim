@@ -7,7 +7,8 @@
 
 import ../logging
 import std/[sequtils]
-import chronos, chronicles, results, metrics, stew/byteutils
+import chronos, chronicles, metrics, stew/byteutils
+import ../results
 import
   transport,
   ../autotls/service,
@@ -32,7 +33,6 @@ const
   DefaultHeadersTimeout = 3.seconds
   DefaultConcurrentAccepts = 200
   DefaultAcceptFailureBackoff = 100.millis
-  DefaultAutotlsWaitTimeout = 3.seconds
 
 type
   WsStream = ref object of Connection
@@ -161,7 +161,7 @@ type HostHeaderHook = ref object of Hook
 
 proc hostHeaderHook(host: string): Hook =
   let hook = HostHeaderHook(host: host)
-  hook.append = proc(ctx: Hook, headers: var HttpTable): Result[void, string] =
+  hook.append = proc(ctx: Hook, headers: var HttpTable): LPResult[void] =
     headers.set("Host", HostHeaderHook(ctx).host)
     ok()
   hook
@@ -203,7 +203,7 @@ proc closeHttpStream(stream: AsyncStream) {.async: (raises: []).} =
 
 proc connHandler(
   self: WsTransport, stream: WSSession, secure: bool, dir: Direction
-): Future[RawConn] {.async: (raises: [CatchableError]).}
+): LPResult[WsStream] {.gcsafe.}
 
 proc wsHandshakeWorker(
     self: WsTransport, server: HttpServer, stream: AsyncStream
@@ -216,8 +216,11 @@ proc wsHandshakeWorker(
     let conn = await (
       proc(): Future[RawConn] {.async: (raises: [CatchableError]).} =
         let req = await readHttpRequest(stream, server.headersTimeout)
-        let wstransp = await self.wsserver.handleRequest(req)
-        return await self.connHandler(wstransp, server.secure, Direction.In)
+        let session = await self.wsserver.handleRequest(req)
+        let conn = self.connHandler(session, server.secure, Direction.In).valueOr:
+          safeClose(session)
+          raise error.toException(WsTransportError)
+        conn
     )()
       .wait(self.headersTimeout)
 
@@ -338,77 +341,106 @@ proc wsAcceptDispatcher(self: WsTransport) {.async: (raises: []).} =
 
       self.notifyAcceptClosed()
 
-method start*(
-    self: WsTransport, addrs: seq[MultiAddress]
-) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
-  ## listen on the transport
-  if self.running:
-    warn "WS transport already running"
-    return
-
-  info "Starting WS transport"
-
-  let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
-
-  if not self.secure and self.autotls.isSome():
-    self.autotls.ifValue(autotls):
-      if not await autotls.running.wait().withTimeout(DefaultAutotlsWaitTimeout):
-        error "Unable to upgrade, autotls not running"
-        await self.stop()
-        return
-
-      trace "Waiting for autotls certificate"
-      try:
-        let autotlsCert = await autotls.getCertWhenReady()
-        self.tlsCertificate = autotlsCert.cert
-        self.tlsPrivateKey = autotlsCert.privkey
-      except AutoTLSError as e:
-        raise newException(LPError, e.msg, e)
-      except TLSStreamProtocolError as e:
-        raise newException(LPError, e.msg, e)
-
-  self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
-
-  var resolvedAddrs = addrs
+proc listen(
+    self: WsTransport,
+    addrs: openArray[MultiAddress],
+    addrsTa: openArray[TransportAddress],
+): LPResult[seq[MultiAddress]] =
+  ## Servers created before a failure stay in `self.httpservers` for the caller to close.
+  var resolved: seq[MultiAddress]
   for i, ma in addrs:
-    let isWss =
-      if WSS.match(ma):
-        if self.secure:
-          true
-        else:
-          warn "Trying to listen on a WSS address without setting certificate or autotls"
-          false
-      else:
-        false
+    let isWss = WSS.match(ma)
+    if isWss and not self.secure:
+      warn "Trying to listen on a WSS address without setting certificate or autotls"
+    let secure = isWss and self.secure
 
     let httpserver =
       try:
-        let address = addrsTa[i]
-        if isWss:
+        if secure:
           HttpServer.create(
-            address = address,
+            address = addrsTa[i],
             tlsPrivateKey = self.tlsPrivateKey,
             tlsCertificate = self.tlsCertificate,
             flags = self.flags,
             headersTimeout = self.headersTimeout,
           )
         else:
-          HttpServer.create(address, headersTimeout = self.headersTimeout)
-      except CatchableError as e:
-        raise
-          (ref WsTransportError)(msg: "error in WsTransport start: " & e.msg, parent: e)
-
+          HttpServer.create(addrsTa[i], headersTimeout = self.headersTimeout)
+      except TransportOsError as e:
+        return
+          err("WsTransport.start failed to listen on " & $addrsTa[i] & ". " & e.msg)
     self.httpservers &= httpserver
 
     let codec =
-      if isWss:
-        ma[2 .. ^1]
+      if secure:
+        ?ma[2 .. ^1]
       else:
-        MultiAddress.init("/ws")
+        ?MultiAddress.init("/ws")
+    # read the real address, because the listen address can be 0.0.0.0:0
+    resolved.add(?concat(?MultiAddress.init(httpserver.localAddress()), codec))
 
-    # always get the resolved address in case we're bound to 0.0.0.0:0
-    resolvedAddrs[i] =
-      MultiAddress.init(httpserver.localAddress()).tryGet() & codec.tryGet()
+  ok(resolved)
+
+proc loadAutotlsCertificate(
+    autotls: AutotlsService
+): Future[LPResult[AutotlsCert]] {.async: (raises: [CancelledError]).} =
+  let deadlineFut = sleepAsync(autotls.config.initialCertTimeout)
+  defer:
+    deadlineFut.cancelSoon()
+
+  trace "Waiting for autotls service"
+  let runningFut = autotls.running.wait()
+  defer:
+    runningFut.cancelSoon()
+  try:
+    await runningFut.wait(deadlineFut)
+  except AsyncTimeoutError:
+    return err("autotls service did not start before the certificate deadline")
+
+  trace "Waiting for autotls certificate"
+  let certFut = autotls.getCertWhenReady()
+  defer:
+    certFut.cancelSoon()
+  try:
+    return ok(await certFut.wait(deadlineFut))
+  except AsyncTimeoutError:
+    return err("autotls certificate was not available before the certificate deadline")
+  except AutoTLSError as e:
+    return err("failed to load autotls certificate: " & e.msg)
+
+method start*(
+    self: WsTransport, addrs: seq[MultiAddress]
+) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
+  ## listen on the transport
+  if self.running:
+    warn "WebSocket transport already started"
+    return
+
+  let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
+
+  if not self.secure and addrs.anyIt(WSS.match(it)):
+    if self.autotls.isNone():
+      raise newException(
+        TransportStartError,
+        "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
+      )
+
+    let autotlsCert = (await loadAutotlsCertificate(self.autotls.get())).valueOr:
+      raise newException(
+        TransportStartError,
+        "Unable to start WebSocket transport: failed to load autotls certificate. " &
+          $error,
+      )
+
+    self.tlsCertificate = autotlsCert.cert
+    self.tlsPrivateKey = autotlsCert.privkey
+
+  self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
+
+  let resolvedAddrs = self.listen(addrs, addrsTa).valueOr:
+    await noCancel allFutures(self.httpservers.mapIt(it.closeWait()))
+    reset(self.httpservers)
+    raise error.toException(WsTransportError)
 
   self.acceptSem = newAsyncSemaphore(self.concurrentAccepts)
   self.acceptResults = newAsyncQueue[RawConn](self.concurrentAccepts)
@@ -417,16 +449,18 @@ method start*(
   await procCall Transport(self).start(resolvedAddrs)
   self.acceptLoop = self.wsAcceptDispatcher()
 
-  trace "Listening on", addresses = self.addrs
+  info "WebSocket transport started", addresses = self.addrs
 
 method stop*(self: WsTransport) {.async: (raises: []).} =
   ## stop the transport
   ##
 
+  let wasRunning = self.running
   self.running = false # mark stopped as soon as possible
+  if not wasRunning:
+    warn "WebSocket transport already stopped"
 
   try:
-    info "Stopping WS transport"
     await procCall Transport(self).stop() # call base
 
     var toWait: seq[Future[void]]
@@ -454,7 +488,8 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
     self.handshakeFuts = @[]
     self.connectionCleanupFuts = @[]
     self.acceptLoop = nil
-    info "Transport stopped"
+    if wasRunning:
+      info "WebSocket transport stopped", addresses = self.addrs
   except CatchableError as e:
     trace "WebSocket transport shutdown failed", err = e.msg
   finally:
@@ -462,30 +497,15 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
 
 proc connHandler(
     self: WsTransport, stream: WSSession, secure: bool, dir: Direction
-): Future[RawConn] {.async: (raises: [CatchableError]).} =
-  ## Returning CatchableError is fine because we later handle different exceptions.
-
-  let (observedAddr, localAddr) =
-    try:
-      let
-        codec =
-          if secure:
-            MultiAddress.init("/wss")
-          else:
-            MultiAddress.init("/ws")
-        remoteAddr = stream.stream.reader.tsource.remoteAddress
-        localAddr = stream.stream.reader.tsource.localAddress
-
-      (
-        MultiAddress.init(remoteAddr).tryGet() & codec.tryGet(),
-        MultiAddress.init(localAddr).tryGet() & codec.tryGet(),
-      )
-    except CatchableError as e:
-      trace "WebSocket connection address extraction failed", err = e.msg
-      safeClose(stream)
-      raise e
-
-  let conn = WsStream.new(stream, dir, Opt.some(observedAddr), Opt.some(localAddr))
+): LPResult[WsStream] =
+  let codec = ?MultiAddress.init(if secure: "/wss" else: "/ws")
+  let addrs = ?stream.stream.reader.tsource.connAddrs()
+  let conn = WsStream.new(
+    stream,
+    dir,
+    Opt.some(?concat(addrs.observed, codec)),
+    Opt.some(?concat(addrs.local, codec)),
+  )
 
   self.connections[dir].add(conn)
   proc onClose() {.async: (raises: []).} =
@@ -495,7 +515,7 @@ proc connHandler(
   self.connectionCleanupFuts.keepItIf(not it.finished)
   self.connectionCleanupFuts.add(onClose())
 
-  return conn
+  ok(conn)
 
 method accept*(
     self: WsTransport
@@ -520,47 +540,59 @@ method dial*(
   ##
 
   trace "Transport connection started", peerId, address = $address
-  var transp: websock.WSSession
 
-  try:
-    let secure = WSS.match(address)
-    let initAddress = address.initTAddress().tryGet()
-    let
-      sni = address.getSni()
-      httpHostname =
-        if hostname.len > 0:
-          hostname
-        else:
-          $initAddress
-      serverName = if sni.len > 0: sni else: httpHostname
-      hooks =
-        if serverName != httpHostname:
-          @[hostHeaderHook(httpHostname)]
-        else:
-          @[]
-    trace "Creating websocket",
-      address = initAddress,
-      secure = secure,
-      hostName = httpHostname,
-      serverName = serverName
-    transp = await WebSocket.connect(
-      initAddress,
-      "",
-      secure = secure,
-      hostName = serverName,
-      hooks = hooks,
-      flags = self.tlsFlags,
-      rng = websockRng(self.rng),
-    )
-    return await self.connHandler(transp, secure, Direction.Out)
-  except CancelledError as e:
-    safeClose(transp)
-    raise e
-  except CatchableError as e:
-    safeClose(transp)
+  let secure = WSS.match(address)
+  let initAddress = address.initTAddress().valueOr:
     raise newException(
-      transport.TransportDialError, "error in WsTransport dial: " & e.msg, e
+      transport.TransportDialError,
+      "WsTransport.dial called with unsupported address " & $address & ". " & error,
     )
+  let
+    sni = address.getSni()
+    httpHostname =
+      if hostname.len > 0:
+        hostname
+      else:
+        $initAddress
+    serverName = if sni.len > 0: sni else: httpHostname
+    hooks =
+      if serverName != httpHostname:
+        @[hostHeaderHook(httpHostname)]
+      else:
+        @[]
+  trace "Creating websocket",
+    address = initAddress,
+    secure = secure,
+    hostName = httpHostname,
+    serverName = serverName
+
+  let session =
+    try:
+      await WebSocket.connect(
+        initAddress,
+        "",
+        secure = secure,
+        hostName = serverName,
+        hooks = hooks,
+        flags = self.tlsFlags,
+        rng = websockRng(self.rng),
+      )
+    except CancelledError as e:
+      raise e
+    except CatchableError as e:
+      raise newException(
+        transport.TransportDialError,
+        "WsTransport.dial failed to connect to " & $address & ". " & e.msg,
+        e,
+      )
+
+  let conn = self.connHandler(session, secure, Direction.Out).valueOr:
+    safeClose(session)
+    raise newException(
+      transport.TransportDialError,
+      "WsTransport.dial failed to read connection addresses. " & error,
+    )
+  conn
 
 method handles*(t: WsTransport, address: MultiAddress): bool {.gcsafe, raises: [].} =
   if procCall Transport(t).handles(address):

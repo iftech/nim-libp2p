@@ -3,8 +3,7 @@
 
 {.used.}
 
-import
-  sequtils, strformat, sugar, tables, chronos, stew/byteutils, protobuf_serialization
+import sequtils, strformat, tables, chronos, stew/byteutils, protobuf_serialization
 import
   ../../../libp2p/[
     protocols/rendezvous,
@@ -47,10 +46,11 @@ proc encode*(record: CustomPeerRecord): seq[byte] =
 
 proc checkCustomPeerRecord(
     _: CustomPeerRecord, spr: seq[byte], peerId: PeerId
-): Result[void, string] {.gcsafe.} =
+): LPResult[void] {.gcsafe.} =
   if spr.len == 0:
     return err("Empty peer record")
-  let signedEnv = ?SignedPayload[CustomPeerRecord].decode(spr).mapErr(x => $x)
+  let signedEnv = SignedPayload[CustomPeerRecord].decode(spr).valueOr:
+    return err($error)
   if signedEnv.data.peerId != peerId:
     return err("Bad Peer ID")
   return ok()
@@ -74,8 +74,7 @@ proc new*(
   let pr = CustomPeerRecord.init(
     PeerId.init(PrivateKey.random(ECDSA, rng()).get()).tryGet(), 0
   )
-  logScope:
-    topics = "libp2p discovery rendezvous"
+
   proc handleStream(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
@@ -87,18 +86,17 @@ proc new*(
       of MessageType.Register:
         await rdv.register(stream, msg.register.tryGet(), pr)
       of MessageType.RegisterResponse:
-        trace "Got an unexpected Register Response", response = msg.registerResponse
+        raiseAssert "Got an unexpected Register Response"
       of MessageType.Unregister:
         rdv.unregister(stream, msg.unregister.tryGet())
       of MessageType.Discover:
         await rdv.discover(stream, msg.discover.tryGet())
       of MessageType.DiscoverResponse:
-        trace "Got an unexpected Discover Response", response = msg.discoverResponse
-    except CancelledError as exc:
-      trace "cancelled rendezvous handler"
-      raise exc
-    except CatchableError as exc:
-      trace "exception in rendezvous handler", err = exc.msg
+        raiseAssert "Got an unexpected Discover Response"
+    except CancelledError as e:
+      raise e
+    except CatchableError as e:
+      raiseAssert "Unexpected exception in rendezvous handler: " & e.msg
     finally:
       await stream.close()
 

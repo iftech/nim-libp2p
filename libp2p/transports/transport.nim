@@ -4,7 +4,9 @@
 
 {.push raises: [].}
 
-import chronos, chronicles, results
+import std/oserrors
+import chronos, chronicles
+import ../results
 import
   ../stream/connection,
   ../multiaddress,
@@ -34,8 +36,20 @@ type
     onRunning*: AsyncEvent
     onStop*: AsyncEvent
 
+  ConnAddrs* = object
+    observed*: MultiAddress
+    local*: MultiAddress
+
 proc newTransportClosedError*(parent: ref Exception = nil): ref TransportError =
   newException(TransportClosedError, "Transport closed, no more connections!", parent)
+
+proc connAddrs*(transp: StreamTransport): LPResult[ConnAddrs] =
+  let remote = transp.remoteAddress2().valueOr:
+    return err("cannot read remote address. " & osErrorMsg(error))
+  let local = transp.localAddress2().valueOr:
+    return err("cannot read local address. " & osErrorMsg(error))
+
+  ok(ConnAddrs(observed: ?MultiAddress.init(remote), local: ?MultiAddress.init(local)))
 
 proc initialize*(self: Transport) =
   self.onRunning = newAsyncEvent()
@@ -47,7 +61,6 @@ method start*(
   ## start the transport
   ##
 
-  info "Transport starting", addresses = addrs
   self.addrs = addrs
   self.running = true
   self.onRunning.fire()
@@ -57,7 +70,6 @@ method stop*(self: Transport) {.base, async: (raises: []).} =
   ## including all outstanding connections
   ##
 
-  info "Transport stopping", addresses = self.addrs
   self.running = false
   self.onStop.fire()
 
@@ -122,7 +134,7 @@ template safeClose*(stream: untyped) =
 
 proc toTransportAddress*(
     self: Transport, addrsMa: seq[MultiAddress]
-): Result[seq[TransportAddress], string] =
+): LPResult[seq[TransportAddress]] =
   var addrsTa = newSeq[TransportAddress](addrsMa.len)
   for i, maAddr in addrsMa:
     if not self.handles(maAddr):

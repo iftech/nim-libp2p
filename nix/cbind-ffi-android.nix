@@ -98,6 +98,7 @@ pkgs.stdenv.mkDerivation {
 
     # ffiThreadExitTimeoutMs: bound the FFI thread's graceful-shutdown wait; the
     # 1500ms default is too tight for libp2pDestroy's switch.stop() over many conns.
+    # RfcUtcTime: libc localtime() writes one static buffer for all FFI threads.
     commonArgs="--noNimblePath ${cbindPathArgs} ${pathArgs} \
       --os:android --cpu:${nimCpu} --cc:clang \
       --clang.path:$ANDROID_TOOLCHAIN/bin \
@@ -105,7 +106,7 @@ pkgs.stdenv.mkDerivation {
       --passC:-DANDROID --passC:-fPIC \
       --passL:-L$PWD/build --passL:-lc++_shared --passL:-llog --passL:-ldl --passL:-lm \
       --threads:on --opt:size --noMain --mm:refc --d:metrics \
-      -d:ffiThreadExitTimeoutMs=5000 \
+      -d:ffiThreadExitTimeoutMs=5000 -d:chronicles_timestamps=RfcUtcTime \
       --nimMainPrefix:liblibp2p --nimcache:$NIMCACHE"
 
     echo "== Building Android FFI library (shared) for ${abi} =="

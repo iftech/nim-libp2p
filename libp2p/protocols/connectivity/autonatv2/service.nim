@@ -37,6 +37,7 @@ type
     peerHandler: PeerEventHandler
     client*: AutonatV2Client
     rng: Rng
+    configured: bool
 
   StatusAndConfidenceHandler* = ReachabilityHandler
     ## The name of the replaced single-subscriber API; use `ReachabilityHandler`.
@@ -67,7 +68,7 @@ proc new*(
   )
 
 func networkReachability*(self: AutonatV2Service): NetworkReachability =
-  ## The address manager's summary; `Unknown` before setup.
+  ## The address manager's summary; `Unknown` before start.
   if self.addressManager.isNil():
     return NetworkReachability.Unknown
   self.addressManager.reachability()
@@ -86,9 +87,7 @@ proc addressMapper(
       addrs.add(self.addressManager.externalAddrFor(listenAddr))
   addrs
 
-method setup*(self: AutonatV2Service, switch: Switch) {.raises: [].} =
-  info "Setting up AutonatV2Service"
-
+proc configure(self: AutonatV2Service, switch: Switch) =
   self.addressManager = switch.addressManager
   self.verifier = AutonatV2Verifier.new(switch, self.client, self.rng)
 
@@ -99,9 +98,10 @@ method setup*(self: AutonatV2Service, switch: Switch) {.raises: [].} =
 
 method start*(
     self: AutonatV2Service, switch: Switch
-) {.async: (raises: [CancelledError]).} =
-  info "Running AutonatV2Service"
-
+) {.async: (raises: [CancelledError, LPError]).} =
+  if not self.configured:
+    self.configure(switch)
+    self.configured = true
   let manager = switch.addressManager
   self.config.scheduleInterval.ifValue(interval):
     manager.verifyInterval = interval
@@ -125,6 +125,8 @@ method start*(
     if manager.reachability() == NetworkReachability.Unknown:
       manager.triggerVerification()
   switch.addPeerEventHandler(self.peerHandler, PeerEventKind.Identified)
+
+  info "AutoNAT v2 service started"
 
 method stop*(
     self: AutonatV2Service, switch: Switch

@@ -49,7 +49,7 @@ suite "GossipSub":
     gossipSub.peerStats[peer.peerId] = peerStats
 
     # And the peer is connected
-    await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0]))
+    check (await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0]))).isOk()
     check:
       gossipSub.switch.isConnected(peer.peerId)
 
@@ -106,7 +106,7 @@ suite "GossipSub":
       await teardownGossipSub(gossipSub, conns)
 
     # And the peer is connected
-    await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0]))
+    check (await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0]))).isOk()
     check:
       gossipSub.switch.isConnected(peer.peerId)
       gossipSub.mesh.hasPeerId(topic, peer.peerId)
@@ -157,7 +157,7 @@ suite "GossipSub":
       peerId notin gossipSub.peers
 
     unblockConnected.fire()
-    await storeFut
+    check (await storeFut).isOk()
 
     check:
       peerId notin connMngr
@@ -496,12 +496,17 @@ suite "GossipSub":
   asyncTest "rpcHandler - extensions only see accepted subscriptions":
     proc unionPartsMetadata(
         a, b: PartsMetadata
-    ): Result[PartsMetadata, string] {.gcsafe, raises: [].} =
+    ): LPResult[PartsMetadata] {.gcsafe, raises: [].} =
       ok(a & b)
+
+    proc materializeParts(
+        topic: string, groupId: GroupId, metadata: PartsMetadata
+    ): LPResult[PartsData] {.gcsafe, raises: [].} =
+      ok(newSeq[byte]())
 
     proc validateRPC(
         rpc: PartialMessageExtensionRPC
-    ): Result[void, string] {.gcsafe, raises: [].} =
+    ): LPResult[void] {.gcsafe, raises: [].} =
       ok()
 
     proc onIncomingRPC(
@@ -516,6 +521,7 @@ suite "GossipSub":
         partialMessageExtensionConfig = Opt.some(
           PartialMessageExtensionConfig(
             unionPartsMetadata: unionPartsMetadata,
+            materializeParts: materializeParts,
             validateRPC: validateRPC,
             onIncomingRPC: onIncomingRPC,
             heartbeatsTillEviction: 1,

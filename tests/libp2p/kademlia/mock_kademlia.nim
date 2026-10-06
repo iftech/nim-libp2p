@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import chronos, chronicles
+import chronos
 import
   ../../../libp2p/protocols/kademlia/
     [types, routing_table, protobuf, get, provider, find]
 import ../../../libp2p/[peerid, stream/connection]
+import ../../../libp2p/protocols/kademlia
 
 type MockKadDHT* = ref object of KadDHT
   findNodeCalls*: seq[Key]
@@ -19,6 +20,11 @@ type MockKadDHT* = ref object of KadDHT
   handleFindNodeMalformedResponse*: bool
   findNodeStalls*: bool
   findNodeCancels*: int
+  maintainableTablesCalls*: int
+
+method maintainableTables*(kad: MockKadDHT): seq[RoutingTable] {.gcsafe, raises: [].} =
+  kad.maintainableTablesCalls.inc()
+  procCall KadDHT(kad).maintainableTables()
 
 proc stallUntilCancelled(kad: MockKadDHT) {.async: (raises: [CancelledError]).} =
   ## A lookup that only ends when the caller gives up on it.
@@ -56,8 +62,8 @@ method handleGetValue*(
 
   try:
     await stream.writeLp(response.encode())
-  except LPStreamError as exc:
-    debug "Failed to send malicious get-value response", stream = stream, err = exc.msg
+  except LPStreamError as e:
+    raiseAssert "Failed to send malicious get-value response: " & e.msg
 
 method handleAddProvider*(
     kad: MockKadDHT, stream: Stream, msg: Message
@@ -77,8 +83,7 @@ method handleFindNode*(
   if kad.handleFindNodeMalformedResponse:
     try:
       await stream.writeLp(@[0xFF'u8, 0xFF, 0xFF])
-    except LPStreamError as exc:
-      debug "Failed to send malformed find-node response",
-        stream = stream, err = exc.msg
+    except LPStreamError as e:
+      raiseAssert "Failed to send malformed find-node response: " & e.msg
     return
   await procCall handleFindNode(KadDHT(kad), stream, msg)

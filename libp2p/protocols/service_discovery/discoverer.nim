@@ -48,12 +48,29 @@ proc validAds(ads: seq[seq[byte]], serviceId: ServiceId): seq[Advertisement] =
     validAds.add(ad)
   return validAds
 
-proc localGetAds(disco: ServiceDiscovery, msg: Message): Result[Message, string] =
+proc atMostOnePerBucket(
+    disco: ServiceDiscovery, searchTable: RoutingTable, closerPeers: seq[PeerInfo]
+): seq[PeerInfo] =
+  ## Cap each responder to one peer per service bucket before merging
+  ## replies. Exclude self before counting.
+  var capped: seq[PeerInfo] = @[]
+  var filled = initHashSet[int]()
+  for peer in closerPeers:
+    if peer.peerId == disco.switch.peerInfo.peerId:
+      continue
+    let bucketIdx = searchTable.bucketIndex(peer.peerId.toKey())
+    if filled.containsOrIncl(bucketIdx):
+      trace "Closer peer beyond one per bucket", bucket = bucketIdx, peer = peer.peerId
+      continue
+    capped.add(peer)
+  return capped
+
+proc localGetAds(disco: ServiceDiscovery, msg: Message): LPResult[Message] =
   return ok(disco.getAdvertisements(disco.switch.peerInfo.peerId, msg))
 
 proc dispatchGetAds(
     disco: ServiceDiscovery, peerId: PeerId, serviceId: ServiceId
-): Future[Result[GetAdsResult, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[GetAdsResult]] {.async: (raises: [CancelledError]), gcsafe.} =
   trace "Getting adverts", serviceId, registrar = peerId
 
   let msg = Message(msgType: Opt.some(MessageType.getAds), key: Opt.some(serviceId))
@@ -113,26 +130,29 @@ proc processResponse(
 proc drainCompletedPeers(
     disco: ServiceDiscovery,
     serviceId: ServiceId,
-    pending: seq[Future[Result[GetAdsResult, string]]],
+    searchTable: RoutingTable,
+    pending: seq[Future[LPResult[GetAdsResult]]],
 ) =
   for fut in pending.filterIt(it.completed()):
     let res = fut.value()
     if res.isOk():
-      disco.admitCloserPeers(serviceId, res.value().closerPeers)
+      disco.admitCloserPeers(
+        serviceId, disco.atMostOnePerBucket(searchTable, res.value().closerPeers)
+      )
       disco.tracker.recordProviders(serviceId, res.value().ads, FromLookup)
 
 proc collectBucketAds(
     disco: ServiceDiscovery,
     serviceId: ServiceId,
+    searchTable: RoutingTable,
     peers: seq[PeerId],
     known: HashSet[Advertisement],
     limit: int,
     stats: LookupLog,
 ): Future[BucketAds] {.async: (raises: [CancelledError]).} =
   var bucketAds = BucketAds(found: known)
-  var pending: seq[Future[Result[GetAdsResult, string]]] = peers.mapIt(
-    Future[Result[GetAdsResult, string]](dispatchGetAds(disco, it, serviceId))
-  )
+  var pending: seq[Future[LPResult[GetAdsResult]]] =
+    peers.mapIt(Future[LPResult[GetAdsResult]](dispatchGetAds(disco, it, serviceId)))
   let queries = pending
   stats.queried += queries.len
   defer:
@@ -161,12 +181,13 @@ proc collectBucketAds(
     if completedFut.completed():
       let res = completedFut.value()
       if res.isOk():
-        let reply = res.value()
+        var reply = res.value()
+        reply.closerPeers = disco.atMostOnePerBucket(searchTable, reply.closerPeers)
         bucketAds.closerPeers.add(reply.closerPeers)
         disco.processResponse(serviceId, reply, bucketAds.found, limit)
 
     if bucketAds.found.len >= limit:
-      disco.drainCompletedPeers(serviceId, pending)
+      disco.drainCompletedPeers(serviceId, searchTable, pending)
       break
 
   return bucketAds
@@ -219,7 +240,7 @@ proc recordCloserPeers(
 
 proc lookup*(
     disco: ServiceDiscovery, serviceId: ServiceId
-): Future[Result[seq[Advertisement], string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[seq[Advertisement]]] {.async: (raises: [CancelledError]).} =
   ## Look up providers for a specific service id.
   cd_lookup_requests.inc()
 
@@ -264,7 +285,7 @@ proc lookup*(
 
     let peers = disco.peersToQuery(candidates)
     let bucketAds = await disco.collectBucketAds(
-      serviceId, peers, found, disco.discoConfig.fLookup, stats
+      serviceId, searchTable, peers, found, disco.discoConfig.fLookup, stats
     )
     found = bucketAds.found
     disco.recordCloserPeers(searchTable, bucketAds.closerPeers, bucketIdx, learned)

@@ -46,6 +46,7 @@ method start*(
     self: MemoryTransport, addrs: seq[MultiAddress]
 ) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
   if self.running:
+    warn "Memory transport already started"
     return
 
   info "Starting memory transport on addrs", address = addrs
@@ -56,9 +57,9 @@ method start*(
 
 method stop*(self: MemoryTransport) {.async: (raises: []).} =
   if not self.running:
+    warn "Memory transport already stopped"
     return
 
-  info "Stopping memory transport", address = self.addrs
   self.running = false
   self.onStop.fire()
 
@@ -69,6 +70,7 @@ method stop*(self: MemoryTransport) {.async: (raises: []).} =
 
   # end all connections
   await noCancel allFutures(self.connections.mapIt(it.close()))
+  info "Memory transport stopped", addresses = self.addrs
 
 method accept*(
     self: MemoryTransport

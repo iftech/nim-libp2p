@@ -252,3 +252,43 @@ suite "Service Discovery Component - Lookup Get Ads":
     checkUntilTimeout:
       serviceTable.hasPeer(otherKey)
       discovererNode.rtable.hasPeer(otherKey)
+
+  asyncTest "closer peers from one registrar are capped at one per bucket":
+    let conf = ServiceDiscoveryConfig.new(safetyParam = 0.0)
+
+    # Three candidates share a service bucket. K_register is 3, so the registrar
+    # names all of them in a single reply and only the cap keeps them apart.
+    let (sharedBucketNodes, serviceName) = setupRegistrarsInSameBucket(conf, 3)
+
+    # The registrar and the discoverer sit in another bucket, so neither takes a
+    # slot the shared bucket would otherwise use.
+    let otherBucketKeys = serviceBucketLookupTable[serviceName][1]
+    let registrarNode = setupServiceDiscoveryNode(
+      discoConfig = conf,
+      privateKey = Opt.some(PrivateKey.init(otherBucketKeys[0]).get()),
+    )
+    let discovererNode = setupServiceDiscoveryNode(
+      discoConfig = conf,
+      privateKey = Opt.some(PrivateKey.init(otherBucketKeys[1]).get()),
+    )
+
+    startAndDeferStop(@[registrarNode, discovererNode] & sharedBucketNodes)
+    for node in sharedBucketNodes:
+      await connect(registrarNode, node)
+    await connect(registrarNode, discovererNode)
+
+    let serviceId = serviceName.hashServiceId()
+    let sharedBucketKeys = sharedBucketNodes.mapIt(it.switch.peerInfo.peerId.toKey())
+
+    # Only the registrar's reply can name them.
+    check:
+      sharedBucketKeys.allIt(registrarNode.rtable.hasPeer(it))
+      not sharedBucketKeys.anyIt(discovererNode.rtable.hasPeer(it))
+
+    let found = await discovererNode.lookup(serviceId)
+    check found.isOk()
+
+    let serviceTable = discovererNode.rtManager.getTable(serviceId).get()
+    checkUntilTimeout:
+      sharedBucketKeys.countIt(serviceTable.hasPeer(it)) == 1
+      sharedBucketKeys.countIt(discovererNode.rtable.hasPeer(it)) == 1

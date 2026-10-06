@@ -20,6 +20,7 @@ type PeerIDAuthClientStub* = ref object of PeerIDAuthClient
   ## `challengeServer` signs over a challenge other than the one the client sent.
   serverKey: PrivateKey
   status*: int
+  statuses*: seq[int]
   body*: seq[byte]
   token*: string
   expires*: Opt[DateTime]
@@ -92,12 +93,16 @@ method post*(
   self.requestedUris.add(uri)
   self.payloads.add(payload)
   self.authHeaders.add(authHeader)
+  let status =
+    if self.statuses.len >= self.authHeaders.len:
+      self.statuses[self.authHeaders.len - 1]
+    else:
+      self.status
 
   # a bearer-authenticated request carries no challenge to answer
   if authHeader.extractField("bearer") != "":
-    return PeerIDAuthResponse(
-      status: self.status, headers: HttpTable.init(), body: self.body
-    )
+    return
+      PeerIDAuthResponse(status: status, headers: HttpTable.init(), body: self.body)
 
   var authenticationInfo = self.authenticationInfo.valueOr:
     var clientPubkey: PublicKey
@@ -120,4 +125,4 @@ method post*(
 
   var headers = HttpTable.init()
   headers.add("Authentication-Info", authenticationInfo)
-  PeerIDAuthResponse(status: self.status, headers: headers, body: self.body)
+  PeerIDAuthResponse(status: status, headers: headers, body: self.body)

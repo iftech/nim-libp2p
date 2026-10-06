@@ -4,32 +4,61 @@
 {.used.}
 
 import chronos, results, sequtils, sets, tables
-import ../../../libp2p/[protocols/kademlia, switch, builders]
-import ../../../libp2p/protocols/kademlia/[find, types]
-import ../../tools/[unittest]
+import ../../../libp2p/[protocols/kademlia, switch, builders, utils/future]
+import
+  ../../../libp2p/protocols/kademlia/[find, message_sender, probe_backoff, rpc, types]
+import ../../tools/[multiaddress, unittest]
 import ./utils.nim
+
+type DialGate = Future[void].Raising([CancelledError])
+
+proc holdDial(
+    held: ref Table[PeerId, DialGate], peer: PeerId, cancelled: ref seq[PeerId]
+) {.async: (raises: [CancelledError]).} =
+  ## Releases the previous held dial of `peer` and holds this one until the next.
+  held[].withValue(peer, prev):
+    prev[].completeOnce()
+  let gate = DialGate.init("holdDial")
+  held[][peer] = gate
+  try:
+    await gate
+  except CancelledError as e:
+    cancelled[].add(peer)
+    raise e
 
 proc recordingDispatch(
     queried: ref seq[PeerId],
     closerPeers = initTable[PeerId, seq[PeerId]](),
     failing = initHashSet[PeerId](),
+    undialable = initHashSet[PeerId](),
+    holdDials = false,
+    cancelled = new(seq[PeerId]),
 ): DispatchProc =
-  ## Answers every query without any I/O, recording who was asked in order and
-  ## replying with the peers `closerPeers` maps that peer to. Peers in `failing`
-  ## answer with an error, as an unreachable or misbehaving peer would.
+  ## Answers every query without I/O, records who was asked in order, and replies with
+  ## the peers `closerPeers` maps that peer to. Peers in `failing` return an error, and
+  ## peers in `undialable` fail at the refused stage, after `holdDial` when `holdDials`.
+  let held = new(Table[PeerId, DialGate])
   proc(
       kad: KadDHT, peer: PeerId, target: Key
-  ): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+  ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
     queried[].add(peer)
+    if peer in undialable:
+      if holdDials:
+        await held.holdDial(peer, cancelled)
+      return err($refusedStage & ": connection refused")
     if peer in failing:
       return err("peer is not answering")
     let closer = closerPeers.getOrDefault(peer).mapIt(Peer(id: it.getBytes()))
     ok(Message(msgType: MessageType.findNode, closerPeers: closer))
 
-proc setupLookupKad(retries = DefaultRetries): KadDHT =
+proc setupLookupKad(retries = DefaultRetries, timeout = 1.seconds): KadDHT =
   ## `alpha = 1` keeps a single query in flight, so the recorded query order
   ## tells the two phases apart.
-  setupKad(testKadConfig(replication = 5, retries = retries, alpha = 1, beta = 2))
+  setupKad(
+    testKadConfig(
+      replication = 5, retries = retries, alpha = 1, beta = 2, timeout = timeout
+    )
+  )
 
 suite "KadDHT Iterative Lookup":
   teardown:
@@ -440,3 +469,76 @@ suite "KadDHT Iterative Lookup":
     )
 
     check queried[] == known[0 .. 0]
+
+  asyncTest "Lookup neither retries nor returns a peer whose dial failed":
+    let kad = setupLookupKad()
+
+    let targetKey = randomPeerId().toKey()
+    let known = kad.seedRoutingTable(5, targetKey)
+
+    let queried = new(seq[PeerId])
+    let dispatch = recordingDispatch(queried, undialable = toHashSet([known[0]]))
+    let state = await kad.iterativeLookup(targetKey, dispatch, noopReply)
+
+    check:
+      queried[].countIt(it == known[0]) == 1
+      kad.probeBackedOff(known[0], kad.dialAddrs(known[0]))
+      state.responded[known[0]] == RespondedStatus.Failed
+      known[0] in state.shortlist
+      state.allSortedPeers() == known[1 .. ^1]
+
+  asyncTest "Lookup stops retrying a peer whose timed-out dial fails":
+    let kad = setupLookupKad(timeout = 200.milliseconds)
+
+    let targetKey = randomPeerId().toKey()
+    let known = kad.seedRoutingTable(5, targetKey)
+
+    let queried = new(seq[PeerId])
+    let cancelled = new(seq[PeerId])
+    let dispatch = recordingDispatch(
+      queried,
+      undialable = toHashSet([known[0]]),
+      holdDials = true,
+      cancelled = cancelled,
+    )
+    let state = await kad.iterativeLookup(targetKey, dispatch, noopReply)
+
+    check:
+      # The retry sent when the first attempt timed out is the last one.
+      queried[].countIt(it == known[0]) == 2
+      state.responded[known[0]] == RespondedStatus.Failed
+      # The late refusal of the first attempt cancels the retry still in flight.
+      cancelled[] == @[known[0]]
+
+  asyncTest "Lookup asks a refused peer again once its backoff ends":
+    let kad = setupLookupKad(timeout = 200.milliseconds)
+
+    let targetKey = randomPeerId().toKey()
+    let known = kad.seedRoutingTable(5, targetKey)
+    let refused = toHashSet([known[0]])
+
+    let first = new(seq[PeerId])
+    discard await kad.iterativeLookup(
+      targetKey, recordingDispatch(first, undialable = refused), noopReply
+    )
+    let second = new(seq[PeerId])
+    discard await kad.iterativeLookup(
+      targetKey, recordingDispatch(second, undialable = refused), noopReply
+    )
+
+    check:
+      first[].countIt(it == known[0]) == 1
+      known[0] notin second[]
+      known[0].toKey() in kad.rtable
+
+    checkUntilTimeout:
+      not kad.probeBackedOff(known[0], kad.dialAddrs(known[0]))
+
+    let third = new(seq[PeerId])
+    let state =
+      await kad.iterativeLookup(targetKey, recordingDispatch(third), noopReply)
+
+    check:
+      known[0] in third[]
+      state.responded[known[0]] == RespondedStatus.Success
+      not kad.probeBackedOff(known[0], kad.dialAddrs(known[0]))

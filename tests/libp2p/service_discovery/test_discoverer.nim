@@ -5,11 +5,13 @@
 import chronos, results
 import
   ../../../libp2p/[
+    peerid,
+    protocols/kademlia,
     protocols/service_discovery,
     protocols/service_discovery/discoverer,
     protocols/service_discovery/types,
   ]
-import ../../tools/unittest
+import ../../tools/[lifecycle, unittest]
 import ./utils
 
 suite "Discoverer - lookup":
@@ -80,6 +82,54 @@ suite "Discoverer - lookup":
 
     check res.isOk()
     check disco.rtManager.hasService(serviceId)
+
+  asyncTest "drops cached advertisements that fail validation":
+    let disco = setupServiceDiscoveryNode()
+    let service = makeServiceInfo("local-service")
+    let serviceId = service.id.hashServiceId()
+    disco.registrar.seedAds(
+      serviceId,
+      @[makeOversizedAdvertisement(service.id), makeAdvertisement("other-service")],
+    )
+
+    let res = await disco.lookup(serviceId)
+
+    check:
+      disco.countAdsInCache(serviceId) == 2
+      res.get().len == 0
+
+  asyncTest "local advertisements past fLookup are not returned":
+    let fLookup = 2
+    let disco = setupServiceDiscoveryNode(
+      discoConfig = ServiceDiscoveryConfig.new(fLookup = fLookup, fReturn = 10)
+    )
+    let service = makeServiceInfo("local-service")
+    let serviceId = service.id.hashServiceId()
+    for _ in 0 .. fLookup:
+      disco.registrar.seedAd(serviceId, makeAdvertisement(service.id))
+
+    let res = await disco.lookup(serviceId)
+
+    check res.get().len == fLookup
+
+  asyncTest "walks past an empty first bucket":
+    let disco = setupServiceDiscoveryNode()
+    startAndDeferStop(@[disco])
+    let service = makeServiceInfo("remote-service")
+    let serviceId = service.id.hashServiceId()
+    check disco.registerInterest(service.id)
+    let table = disco.rtManager.getTable(serviceId).get()
+
+    var peerId = randomPeerId()
+    while table.bucketIndex(peerId.toKey()) == 0:
+      peerId = randomPeerId()
+    check table.insert(peerId)
+
+    let res = await disco.lookup(serviceId)
+
+    check:
+      table.buckets[0].peers.len == 0
+      res.get().len == 0
 
 suite "Discoverer - register/unregister interest":
   teardown:

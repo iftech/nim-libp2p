@@ -52,7 +52,7 @@ suite "GossipSub Extensions :: State":
     # expect to fail because this is user facing function, they shouldn't
     # call if extensions is not configured.
     expect AssertionDefect:
-      discard state.publishPartial("logos", nil)
+      discard state.publishPartial("logos", @[1.byte], @[])
 
     # should return false, backwards compatible behavior
     check state.peerRequestsPartial(peerId, "logos") == false

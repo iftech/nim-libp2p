@@ -79,6 +79,53 @@ suite "PeerInfo":
     waitFor peerInfo.update()
     check peerInfo.addrs == multiAddresses2
 
+  asyncTest "Direct construction initializes the address-expansion lock":
+    let
+      privateKey = PrivateKey.random(ECDSA, rng()).get()
+      publicKey = privateKey.getPublicKey().get()
+      listenAddrs = @[ma("/ip4/0.0.0.0/tcp/24")]
+    var mapperCalls = 0
+
+    proc addressMapper(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc mapperCalls
+      return input
+
+    let peerInfo = PeerInfo(
+      peerId: PeerId.init(publicKey).get(),
+      privateKey: privateKey,
+      publicKey: publicKey,
+      listenAddrs: listenAddrs,
+      addressMappers: @[addressMapper],
+    )
+
+    check (await peerInfo.expandAddrs()) == listenAddrs
+    await peerInfo.update()
+    check:
+      mapperCalls == 2
+      peerInfo.addrs == listenAddrs
+
+  asyncTest "Address mapper passes are serialized":
+    let
+      seckey = PrivateKey.random(ECDSA, rng()).get()
+      listenAddrs = @[ma("/ip4/0.0.0.0/tcp/24")]
+    var active, maxActive: int
+
+    proc addressMapper(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc active
+      maxActive = max(maxActive, active)
+      defer:
+        dec active
+      await sleepAsync(10.milliseconds)
+      return input
+
+    let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[addressMapper])
+    await allFutures(peerInfo.expandAddrs(), peerInfo.expandAddrs(listenAddrs))
+    check maxActive == 1
+
   test "Announced addresses win over the mapper chain":
     let
       seckey = PrivateKey.random(ECDSA, rng()).get()

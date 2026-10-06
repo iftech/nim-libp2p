@@ -25,6 +25,9 @@ const
 
   Default_K_register* = 3
   Default_K_lookup* = 5
+  CloserPeersPerBucket* = 1
+    ## GETPEERS returns one peer per bucket, so a reply stays spread across
+    ## buckets instead of concentrating in whichever the responder picks.
   Default_F_lookup* = 30
   Default_F_return* = 10
   Default_E* = 900.secs
@@ -83,6 +86,7 @@ type
   ProvidedAdvert* = object
     bytes*: seq[byte]
     callerSupplied*: bool ## Bytes we did not build carry addresses we cannot refresh.
+    signer*: PeerId
 
   Advertiser* = ref object
     running*: HashSet[AdvertiseTask]
@@ -136,7 +140,7 @@ type
     discoConfig*: ServiceDiscoveryConfig
       # can't use name "config", clashes with KadDHT's config
     xprPublishing*: bool
-    signedPeerRecordLoop*: Future[void]
+    xprPublishLoop*: Future[void]
     pruneExpiredAdsLoop*: Future[void]
     refreshServiceTablesLoop*: Future[void]
     advertiserMaintenanceLoop*: Future[void]
@@ -271,7 +275,7 @@ method isValid*(
 type ExtEntrySelector* = ref object of EntrySelector
 method select*(
     self: ExtEntrySelector, key: Key, records: seq[EntryRecord]
-): Result[int, string] {.raises: [], gcsafe.} =
+): LPResult[int] {.raises: [], gcsafe.} =
   if records.len == 0:
     return err("No records to choose from")
 
@@ -292,7 +296,7 @@ method select*(
 
   return ok(bestIdx)
 
-proc record*(disco: ServiceDiscovery): Result[SignedExtendedPeerRecord, string] =
+proc record*(disco: ServiceDiscovery): LPResult[SignedExtendedPeerRecord] =
   let peerInfo = disco.switch.peerInfo
   let filteredAddresses = disco.config.addressPolicy.dialableAddrs(
     peerInfo.addrs, disco.switch.peerStore.allowUndialableAddrs

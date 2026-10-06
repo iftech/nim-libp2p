@@ -3,7 +3,7 @@
 
 {.used.}
 
-import bearssl, chronos, stew/byteutils
+import std/strutils, bearssl, chronos, stew/byteutils
 import
   ../../../libp2p/[
     protocols/connectivity/relay/relay,
@@ -15,16 +15,12 @@ import
     peerinfo,
     peerid,
     stream/connection,
-    multistream,
     switch,
     builders,
     upgrademngrs/upgrade,
     varint,
   ]
 import ../../tools/[unittest, switch_builder, multiaddress]
-
-proc new(T: typedesc[RelayTransport], relay: Relay): T =
-  T.new(relay = relay, upgrader = relay.switch.transports[0].upgrader)
 
 suite "Circuit Relay":
   asyncTeardown:
@@ -305,3 +301,28 @@ suite "Circuit Relay":
       let maStr = "/ip4/127.0.0.1"
       let maddr = ma(maStr)
       stream = await src.dial(dst.peerInfo.peerId, @[maddr], protos[0])
+
+  asyncTest "tryDial rejects an address that does not name a relay":
+    let transport = RelayTransport.new(clSrc, src.transports[0].upgrader)
+
+    let tooShort = await transport.tryDial(ma("/ip4/127.0.0.1/tcp/1"))
+    check:
+      tooShort.isErr()
+      tooShort.error.startsWith("dial address not valid")
+
+    let noRelay = await transport.tryDial(
+      ma("/ip4/127.0.0.1/tcp/1/p2p-circuit/p2p/" & $dst.peerInfo.peerId)
+    )
+    check:
+      noRelay.isErr()
+      noRelay.error.contains("Relay doesn't exist")
+
+    let noCircuit = await transport.tryDial(
+      ma(
+        "/ip4/127.0.0.1/tcp/1/p2p/" & $srelay.peerInfo.peerId & "/p2p/" &
+          $dst.peerInfo.peerId
+      )
+    )
+    check:
+      noCircuit.isErr()
+      noCircuit.error.contains("missing p2p-circuit")

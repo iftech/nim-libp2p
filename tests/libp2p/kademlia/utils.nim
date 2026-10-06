@@ -64,15 +64,13 @@ method isValid(self: RestrictiveValidator, key: Key, record: EntryRecord): bool 
   false
 
 type CandSelector* = ref object of EntrySelector
-method select*(
-    self: CandSelector, key: Key, values: seq[EntryRecord]
-): Result[int, string] =
+method select*(self: CandSelector, key: Key, values: seq[EntryRecord]): LPResult[int] =
   return ok(0)
 
 type OthersSelector* = ref object of EntrySelector
 method select*(
     self: OthersSelector, key: Key, values: seq[EntryRecord]
-): Result[int, string] =
+): LPResult[int] =
   if values.len == 0:
     return err("no values were given")
   if values.len == 1:
@@ -367,7 +365,7 @@ proc addRandomPeers*(
 
 proc sendAddProviderAndGetStatus*(
     sender: KadDHT, receiver: KadDHT, key: Key
-): Future[Result[AddProviderStatus, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[AddProviderStatus]] {.async: (raises: [CancelledError]).} =
   let streamRes = catch:
     await sender.switch.dial(
       receiver.switch.peerInfo.peerId, receiver.switch.peerInfo.addrs, sender.codec

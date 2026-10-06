@@ -73,24 +73,13 @@ type
 
   UpgradeError* = object of LPError
 
-  ServiceSetupError* = object of LPError
-
   Service* = ref object of RootObj
     ## Service is internal component of Switch. Service is automatically started and stopped
     ## when the Switch starts and stops.
 
-{.push hint[XCannotRaiseY]: off.}
-  # Base setup keeps `raises: [ServiceSetupError]` to match overrides.
-method setup*(
-    self: Service, switch: Switch
-) {.base, gcsafe, raises: [ServiceSetupError].} =
-  raiseAssert "[Service.setup] abstract method not implemented!"
-
-{.pop.}
-
 method start*(
     self: Service, switch: Switch
-) {.base, async: (raises: [CancelledError]).} =
+) {.base, async: (raises: [CancelledError, LPError]).} =
   raiseAssert "[Service.start] abstract method not implemented!"
 
 method stop*(
@@ -209,42 +198,53 @@ proc dial*(
 
 proc add*(
     s: Switch, service: Service
-) {.
-    raises: [ServiceSetupError],
-    deprecated: "externally created services should not be added to Switch"
-.} =
+) {.deprecated: "externally created services should not be added to Switch".} =
   if service.isNil:
     return
 
   s.services.add(service)
-  service.setup(s)
+
+proc tryMount*[T: LPProtocol](
+    s: Switch, proto: T, matcher: Matcher = nil
+): Result[void, string] {.gcsafe, raises: [].} =
+  ## mount a protocol to the switch, or return why the protocol is invalid
+
+  if proto.handler.isNil:
+    return err("Protocol has to define a handle method or proc")
+
+  if proto.codecs.len == 0 or proto.codec.len == 0:
+    return err("Protocol has to define a codec string")
+
+  if s.started and not proto.started:
+    return err("Protocol needs to be started when mounting to started Switch")
+
+  s.ms.addHandler(proto, matcher)
+  s.peerInfo.protocols.add(proto.codec)
+  s.peerInfo.notifyObservers()
+  ok()
 
 proc mount*[T: LPProtocol](
     s: Switch, proto: T, matcher: Matcher = nil
 ) {.gcsafe, raises: [LPError].} =
   ## mount a protocol to the switch
+  s.tryMount(proto, matcher).onErrorRaise(LPError)
 
-  if proto.handler.isNil:
-    raise newException(LPError, "Protocol has to define a handle method or proc")
+proc unmount*(s: Switch, proto: LPProtocol): bool =
+  ## Unregister a protocol handler and stop advertising its primary codec.
+  if not s.ms.removeHandler(proto):
+    return false
 
-  if proto.codec.len == 0:
-    raise newException(LPError, "Protocol has to define a codec string")
-
-  if s.started and not proto.started:
-    raise newException(
-      LPError, "Protocol needs to be started when mounting to started Switch"
-    )
-
-  s.ms.addHandler(proto, matcher)
-  s.peerInfo.protocols.add(proto.codec)
+  if s.ms.lookupProtocol(proto.codec).isNone:
+    s.peerInfo.protocols.keepItIf(it != proto.codec)
   s.peerInfo.notifyObservers()
+  true
 
 proc upgrader(
     switch: Switch, trans: Transport, conn: RawConn
 ) {.async: (raises: [CancelledError, UpgradeError]).} =
   try:
     let muxed = await trans.upgrade(conn, Opt.none(PeerId))
-    await switch.connManager.storeMuxer(muxed)
+    (await switch.connManager.storeMuxer(muxed)).onErrorRaise(UpgradeError)
     await switch.peerStore.identify(muxed, conn.transportDir)
     await switch.connManager.triggerPeerEvents(
       muxed.connection.peerId,
@@ -445,4 +445,10 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
 
   s.peerStore.startAddressPruning()
 
-  info "Started libp2p node", peerId = s.peerInfo
+  info "Libp2p node started",
+    peerId = s.peerInfo.peerId,
+    listenAddresses = s.peerInfo.listenAddrs,
+    announcedAddresses = s.peerInfo.addrs,
+    protocols = s.peerInfo.protocols,
+    transports = s.transports.len,
+    services = s.services.len

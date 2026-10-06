@@ -12,6 +12,8 @@ import
     switch,
     routing_record,
     crypto/crypto,
+    protocols/protocol,
+    stream/connection,
   ]
 import ../../tools/[lifecycle, unittest, crypto]
 import ./utils
@@ -45,6 +47,30 @@ suite "RendezVous Errors":
       await rdv.advertise("A", Opt.some(73.hours))
     expect AdvertiseError:
       await rdv.advertise("A", Opt.some(30.seconds))
+
+  asyncTest "Advertise timeout releases the semaphore slot":
+    let
+      rdv = createSwitch(RendezVousConfig.new())
+      silentPeer = createSwitch()
+
+    proc neverRespond(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      defer:
+        await stream.close()
+      try:
+        while true:
+          discard await stream.readLp(4096)
+      except LPStreamError:
+        discard
+
+    silentPeer.mount(LPProtocol.new(@[RendezVousCodec], neverRespond))
+    startAndDeferStop(@[rdv.switch, silentPeer])
+
+    await rdv.switch.connect(silentPeer.peerInfo.peerId, silentPeer.peerInfo.addrs)
+    await rdv.advertise("foo")
+
+    check rdv.sema.availableSlots() == SemaphoreDefaultSize
 
   let testCases = @[
     (

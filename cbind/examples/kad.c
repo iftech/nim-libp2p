@@ -131,6 +131,9 @@ int main(void) {
   if (!AWAIT_BOOL(bw, libp2p_ctx_start(client, on_bool, &bw), "start client") ||
       !await_connect(client, &serverInfo))
     goto cleanup_client;
+  if (!AWAIT_BOOL(bw, libp2p_ctx_kad_wait_bootstrap(client, 5000, on_bool, &bw),
+                  "wait bootstrap"))
+    goto cleanup_client;
 
   // ── Value round-trip: server stores, client fetches over the DHT ──────────
   NimFfiBytes key = {(uint8_t *)ValueKey, strlen(ValueKey)};

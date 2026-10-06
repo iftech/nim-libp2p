@@ -35,7 +35,7 @@ type
 
 proc handleDialBack(
     self: AutonatV2Client, stream: Stream, dialBack: DialBack
-) {.async: (raises: [CancelledError, AutonatV2Error, LPStreamError]).} =
+) {.async: (raises: [CancelledError, LPStreamError]).} =
   trace "Handling DialBack",
     stream, localAddr = stream.localAddr, observedAddr = stream.observedAddr
 
@@ -104,43 +104,44 @@ proc new*(
 proc setup*(self: AutonatV2Client, switch: Switch) =
   self.dialer = switch.dialer
 
+proc tryHandleDialDataRequest*(
+    stream: Stream, req: DialDataRequest
+): Future[LPResult[DialResponse]] {.async: (raises: [CancelledError, LPStreamError]).} =
+  trace "Received DialDataRequest",
+    numBytes = req.numBytes, maxAcceptedNumBytes = MaxAcceptedDialDataRequest
+
+  if req.numBytes > MaxAcceptedDialDataRequest:
+    return err("Rejecting DialDataRequest: numBytes is greater than the maximum")
+
+  # send required data
+  let data = AutonatV2Msg(
+    oneof: AutonatV2MsgOneof(
+      kind: MsgKind.DialDataResponse,
+      dialDataResponse: DialDataResponse(data: newSeq[byte](MaxDialDataResponsePayload)),
+    )
+  ).encode()
+  let messagesToSend =
+    (req.numBytes + MaxDialDataResponsePayload - 1) div MaxDialDataResponsePayload
+  for i in 0 ..< messagesToSend:
+    await stream.writeLp(data)
+    trace "Sending DialDataResponse", index = i, messagesToSend = messagesToSend
+
+  let msg = AutonatV2Msg.decode(await stream.readLp(AutonatV2MsgLpSize)).valueOr:
+    return err($error)
+
+  trace "Received message", kind = msg.oneof.kind
+  if msg.oneof.kind != MsgKind.DialResponse:
+    return err("Expecting DialResponse, but got " & $msg.oneof.kind)
+
+  ok(msg.oneof.dialResponse)
+
 proc handleDialDataRequest*(
     stream: Stream, req: DialDataRequest
 ): Future[DialResponse] {.
     async: (raises: [CancelledError, AutonatV2Error, LPStreamError])
 .} =
-  trace "Received DialDataRequest",
-    numBytes = req.numBytes, maxAcceptedNumBytes = MaxAcceptedDialDataRequest
-
-  if req.numBytes > MaxAcceptedDialDataRequest:
-    raise newException(
-      AutonatV2Error, "Rejecting DialDataRequest: numBytes is greater than the maximum"
-    )
-
-  # send required data
-  var msg = AutonatV2Msg(
-    oneof: AutonatV2MsgOneof(
-      kind: MsgKind.DialDataResponse,
-      dialDataResponse: DialDataResponse(data: newSeq[byte](MaxDialDataResponsePayload)),
-    )
-  )
-  let messagesToSend =
-    (req.numBytes + MaxDialDataResponsePayload - 1) div MaxDialDataResponsePayload
-  for i in 0 ..< messagesToSend:
-    await stream.writeLp(msg.encode())
-    trace "Sending DialDataResponse", index = i, messagesToSend = messagesToSend
-
-  # get DialResponse
-  msg = AutonatV2Msg.decode(await stream.readLp(AutonatV2MsgLpSize)).valueOrRaise(
-      AutonatV2Error
-    )
-
-  trace "Received message", kind = msg.oneof.kind
-  if msg.oneof.kind != MsgKind.DialResponse:
-    raise
-      newException(AutonatV2Error, "Expecting DialResponse, but got " & $msg.oneof.kind)
-
-  return msg.oneof.dialResponse
+  let handled = await stream.tryHandleDialDataRequest(req)
+  handled.valueOrRaise(AutonatV2Error)
 
 proc checkAddrIdx(
     self: AutonatV2Client, addrIdx: AddrIdx, testAddrs: seq[MultiAddress], nonce: Nonce
@@ -163,11 +164,10 @@ proc checkAddrIdx(
     return false
   true
 
-method sendDialRequest*(
+proc trySendDialRequest*(
     self: AutonatV2Client, pid: PeerId, testAddrs: seq[MultiAddress]
-): Future[AutonatV2Response] {.
-    base,
-    async: (raises: [AutonatV2Error, CancelledError, DialFailedError, LPStreamError])
+): Future[LPResult[AutonatV2Response]] {.
+    async: (raises: [CancelledError, DialFailedError, LPStreamError])
 .} =
   ## Dials peer with `pid` and requests that it tries connecting to `testAddrs`
 
@@ -191,21 +191,19 @@ method sendDialRequest*(
         )
       ).encode()
     )
-    let msg = AutonatV2Msg.decode(await stream.readLp(AutonatV2MsgLpSize)).valueOrRaise(
-        AutonatV2Error
-      )
+    let msg = AutonatV2Msg.decode(await stream.readLp(AutonatV2MsgLpSize)).valueOr:
+      return err($error)
 
     dialResp =
       case msg.oneof.kind
       of MsgKind.DialResponse:
         msg.oneof.dialResponse
       of MsgKind.DialDataRequest:
-        await stream.handleDialDataRequest(msg.oneof.dialDataRequest)
+        let handled = await stream.tryHandleDialDataRequest(msg.oneof.dialDataRequest)
+        ?handled
       else:
-        raise newException(
-          AutonatV2Error,
-          "Expecting DialResponse or DialDataRequest, but got " & $msg.oneof.kind,
-        )
+        return
+          err("Expecting DialResponse or DialDataRequest, but got " & $msg.oneof.kind)
 
     trace "Received DialResponse", dialResp = dialResp
 
@@ -213,13 +211,20 @@ method sendDialRequest*(
       if dialStatus == DialStatus.Ok:
         let addrIdx = dialResp.addrIdx.valueOr(0.AddrIdx)
         if not self.checkAddrIdx(addrIdx, testAddrs, nonce):
-          raise newException(
-            AutonatV2Error, "Invalid addrIdx " & $addrIdx & " in DialResponse"
-          )
+          return err("Invalid addrIdx in DialResponse")
   except LPStreamRemoteClosedError as exc:
     trace "Stream reset by server", err = exc.msg, peerId = pid
   finally:
     # rollback any changes
     self.expectedNonces.del(nonce)
 
-  return dialResp.asAutonatV2Response(testAddrs)
+  ok(dialResp.asAutonatV2Response(testAddrs))
+
+method sendDialRequest*(
+    self: AutonatV2Client, pid: PeerId, testAddrs: seq[MultiAddress]
+): Future[AutonatV2Response] {.
+    base,
+    async: (raises: [AutonatV2Error, CancelledError, DialFailedError, LPStreamError])
+.} =
+  let sent = await self.trySendDialRequest(pid, testAddrs)
+  sent.valueOrRaise(AutonatV2Error)

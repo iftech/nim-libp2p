@@ -1029,9 +1029,13 @@ method publish*(
   return peers.len
 
 proc publishPartial*(
-    g: GossipSub, topic: string, pm: PartialMessage, peers: seq[PeerId] = @[]
+    g: GossipSub,
+    topic: string,
+    groupId: GroupId,
+    partsMetadata: PartsMetadata,
+    peers: seq[PeerId] = @[],
 ): Future[void] {.async: (raises: []).} =
-  let count = g.extensionsState.publishPartial(topic, pm, peers)
+  let count = g.extensionsState.publishPartial(topic, groupId, partsMetadata, peers)
 
   libp2p_pubsub_messages_published_partial.inc(
     count.int64, labelValues = [g.topicLabel(topic)]

@@ -153,6 +153,40 @@ method init*(p: Identify) =
   p.handler = handle
   p.codec = IdentifyCodec
 
+func invalidMsg(msg: string): ref IdentifyError =
+  newException(IdentityInvalidMsgError, msg)
+
+proc tryIdentify*(
+    self: Identify, stream: Stream, remotePeerId: PeerId
+): Future[Result[IdentifyInfo, ref IdentifyError]] {.
+    async: (raises: [LPStreamError, CancelledError])
+.} =
+  trace "initiating identify", stream
+
+  var message = await stream.readLp(maxMsgSize)
+  if message.len == 0:
+    trace "identify: Empty message received!", stream
+    return err(invalidMsg("Empty message received"))
+
+  let identifyMsg = IdentifyMsg.decode(move message).valueOr:
+    return err(invalidMsg($error))
+
+  trace "identify: info received", stream, identifyMsg
+
+  var peer = remotePeerId
+  identifyMsg.publicKey.ifValue(pubkey):
+    peer = PeerId.init(pubkey).valueOr:
+      return err(invalidMsg($error))
+    if peer != remotePeerId:
+      trace "Peer ids don't match", remote = peer, local = remotePeerId
+      return err(newException(IdentityNoMatchError, "Peer ids don't match"))
+
+  identifyMsg.observedAddr.ifValue(observed):
+    if not self.addressManager.addObservation(peer, observed):
+      trace "Observed address is not valid", observedAddr = observed
+
+  ok(makeIdentifyInfo(peer, identifyMsg))
+
 proc identify*(
     self: Identify, stream: Stream, remotePeerId: PeerId
 ): Future[IdentifyInfo] {.
@@ -161,32 +195,11 @@ proc identify*(
         [IdentityInvalidMsgError, IdentityNoMatchError, LPStreamError, CancelledError]
     )
 .} =
-  trace "initiating identify", stream
-
-  var message = await stream.readLp(maxMsgSize)
-  if message.len == 0:
-    trace "identify: Empty message received!", stream
-    raise newException(IdentityInvalidMsgError, "Empty message received")
-
-  var identifyMsg =
-    IdentifyMsg.decode(move message).valueOrRaise(IdentityInvalidMsgError)
-
-  trace "identify: info received", stream, identifyMsg
-
-  var peer: PeerId
-  identifyMsg.publicKey.ifValue(pubkey):
-    peer = PeerId.init(pubkey).valueOrRaise(IdentityInvalidMsgError)
-    if peer != remotePeerId:
-      trace "Peer ids don't match", remote = peer, local = remotePeerId
-      raise newException(IdentityNoMatchError, "Peer ids don't match")
-  else:
-    peer = remotePeerId
-
-  identifyMsg.observedAddr.ifValue(observed):
-    if not self.addressManager.addObservation(peer, observed):
-      trace "Observed address is not valid", observedAddr = observed
-
-  return makeIdentifyInfo(peer, identifyMsg)
+  let identified = await self.tryIdentify(stream, remotePeerId)
+  identified.valueOr:
+    if error of IdentityNoMatchError:
+      raise (ref IdentityNoMatchError)(error)
+    raise (ref IdentityInvalidMsgError)(error)
 
 proc new*(T: typedesc[IdentifyPush], handler: IdentifyPushHandler = nil): T =
   ## Create a IdentifyPush protocol. `handler` will be called every time

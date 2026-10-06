@@ -23,6 +23,7 @@ const
   DefaultRegistrationURL* =
     parseUri("https://registration.libp2p.direct/v1/_acme-challenge")
   HttpOk = 200
+  HttpUnauthorized = 401
 
 type AutotlsBroker* = ref object
   registrationURL: Uri
@@ -66,12 +67,24 @@ proc sendChallenge*(
       self.bearer = Opt.none(BearerToken)
 
   trace "Sending challenge to AutoTLS broker", registrationURL = $self.registrationURL
-  let (bearer, response) = await self.peerIdAuthClient.send(
+  var (bearer, response) = await self.peerIdAuthClient.send(
     self.registrationURL, peerInfo, payload, self.bearer
   )
+
+  # If broker returns 401, it is a signal that bearer is no loger accepted.
+  if response.status == HttpUnauthorized and self.bearer.isSome():
+    trace "Bearer rejected by AutoTLS broker; retrying with mutual-auth handshake",
+      registrationURL = $self.registrationURL
+    # Retry this registration once without bearer, which runs the mutual-auth handshake and
+    # obtains a replacement bearer. 
+    # Do not retry a 401 from that fresh handshake.
+    self.bearer = Opt.none(BearerToken)
+    (bearer, response) =
+      await self.peerIdAuthClient.send(self.registrationURL, peerInfo, payload)
+
   # remember the latest bearer in case the broker rotated it
   self.bearer =
-    if response.status == 401:
+    if response.status == HttpUnauthorized:
       Opt.none(BearerToken)
     else:
       Opt.some(bearer)

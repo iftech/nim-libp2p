@@ -134,6 +134,12 @@ suite "Circuit Relay V2":
         msg.msgType == Opt.some(HopMessageType.Status)
         msg.status == Opt.some(StatusV2.ReservationRefused)
 
+    asyncTest "tryReserve returns a refused reservation as an error":
+      let res = await cl2.tryReserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
+      check:
+        res.isErr()
+        res.error == "Reservation failed"
+
     asyncTest "Too many reservations + Reconnect":
       expect ReservationError:
         discard await cl2.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)

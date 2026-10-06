@@ -27,14 +27,16 @@ when defined(linux) and defined(amd64):
       defer:
         await acmeApi.close()
 
-      let registerResponse = await acmeApi.requestRegister(key)
+      let registerResponse = (await acmeApi.requestRegister(key)).get()
       check registerResponse.kid != ""
       if registerResponse.kid == "":
         raiseAssert "unable to register acme account"
 
-      let challenge = await acmeApi.requestChallenge(
-        @["some.dummy.domain.com"], key, registerResponse.kid
-      )
+      let challenge = (
+        await acmeApi.requestChallenge(
+          @["some.dummy.domain.com"], key, registerResponse.kid
+        )
+      ).get()
 
       assertChallenge(challenge)
 
@@ -44,6 +46,6 @@ when defined(linux) and defined(amd64):
       defer:
         await acme.close()
 
-      let challenge = await acme.getChallenge(@["some.dummy.domain.com"])
+      let challenge = (await acme.getChallenge(@["some.dummy.domain.com"])).get()
 
       assertChallenge(challenge)

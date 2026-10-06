@@ -8,6 +8,7 @@ import
     peerid,
     protocols/pubsub/gossipsub,
     protocols/pubsub/gossipsub/extension_partial_message,
+    protocols/pubsub/gossipsub/partial_message,
     protocols/pubsub/pubsubpeer,
     protocols/pubsub/rpc/messages,
     switch,
@@ -89,10 +90,25 @@ proc makePartialMessageConfig(runner: ScriptRunner): PartialMessageExtensionConf
 
     doAssert runner.node != nil, "runner.node must be set before RPC processing"
 
-    asyncSpawn runner.node.publishPartial(rpc.topicID.get(), pm)
+    asyncSpawn runner.node.publishPartial(
+      rpc.topicID.get(), pm.groupId(), pm.partsMetadata()
+    )
+
+  proc materializeParts(
+      topic: string, groupId: GroupId, metadata: PartsMetadata
+  ): Result[PartsData, string] {.gcsafe, raises: [].} =
+    if groupId.len != GroupIdLen:
+      return err("invalid groupId length")
+
+    let pm = runner.messages.getOrDefault(makeKey(topic, groupId))
+    if pm.isNil:
+      return err("unknown partial message")
+
+    pm.materializeParts(metadata)
 
   PartialMessageExtensionConfig(
     unionPartsMetadata: interopUnionPartsMetadata,
+    materializeParts: materializeParts,
     validateRPC: validateRPC,
     onIncomingRPC: onIncomingRPC,
     heartbeatsTillEviction: 100,
@@ -223,7 +239,7 @@ proc executePublishPartial(
   for nodeId in publishToNodeIDs:
     peers.add(nodePeerId(nodeId))
 
-  await runner.node.publishPartial(topicId, pm, peers)
+  await runner.node.publishPartial(topicId, pm.groupId(), pm.partsMetadata(), peers)
 
 proc executeInstruction*(
     runner: ScriptRunner, instruction: ScriptInstruction

@@ -57,7 +57,7 @@ func partsPresent*(metadata: InteropPartsMetadata): int =
 func bytesForBitmap(metadata: InteropPartsMetadata): int =
   metadata.partsPresent() * PartLen
 
-type InteropPartialMessage* = ref object of PartialMessage
+type InteropPartialMessage* = ref object
   metadata: InteropPartsMetadata
   parts*: array[NumParts, seq[byte]]
   groupIdBytes*: array[GroupIdLen, byte]
@@ -134,15 +134,15 @@ proc extend*(pm: InteropPartialMessage, data: seq[byte]): Result[void, string] =
 
   ok()
 
-method groupId*(pm: InteropPartialMessage): GroupId {.gcsafe, raises: [].} =
+proc groupId*(pm: InteropPartialMessage): GroupId {.gcsafe, raises: [].} =
   @(pm.groupIdBytes)
 
-method partsMetadata*(pm: InteropPartialMessage): PartsMetadata {.gcsafe, raises: [].} =
+proc partsMetadata*(pm: InteropPartialMessage): PartsMetadata =
   @[pm.metadata.bitmap]
 
-method materializeParts*(
+proc materializeParts*(
     pm: InteropPartialMessage, metadata: PartsMetadata
-): Result[PartsData, string] {.gcsafe, raises: [].} =
+): Result[PartsData, string] =
   ## Encode parts that the peer doesn't have.
   ## metadata is the peer's 1-byte bitmap (what parts they have).
   ## Returns: [bitmap][parts...][groupId] for parts we have that they don't.

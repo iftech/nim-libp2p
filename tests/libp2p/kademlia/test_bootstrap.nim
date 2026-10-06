@@ -109,7 +109,7 @@ suite "KadDHT Bootstrap":
     defer:
       await stopNodes(@[kad])
 
-    await startNodes(@[kad]).wait(5.seconds)
+    await startNodes(@[kad])
 
     check:
       kad.started
@@ -118,7 +118,7 @@ suite "KadDHT Bootstrap":
   asyncTest "start returns before the bootstrap completes":
     let kad = setupMockKad()
     kad.findNodeStalls = true
-    await kad.switch.start().wait(5.seconds)
+    await kad.switch.start()
     defer:
       await kad.switch.stop()
 
@@ -146,7 +146,7 @@ suite "KadDHT Bootstrap":
     await kad.switch.start()
     defer:
       await kad.switch.stop()
-    await kad.waitBootstrap().wait(5.seconds)
+    await kad.waitBootstrap()
 
     check:
       kad.bootstrapFut.completed()
@@ -199,7 +199,7 @@ suite "KadDHT Bootstrap":
     defer:
       await stopNodes(@[kad])
 
-    await startNodes(@[kad]).wait(5.seconds)
+    await startNodes(@[kad])
     let afterBootstrap = kad.findNodeCancels
 
     # Every round would otherwise leave a lookup behind, still sending RPCs.
@@ -424,4 +424,83 @@ suite "KadDHT Bootstrap Component":
     kad.livenessProbes.del(peer)
     check:
       kad.hasKey(peer.toKey())
+      kad.livenessProbes.len == 0
+
+  asyncTest "failed liveness probe keeps a peer marked useful mid-flight":
+    let config =
+      testKadConfig(timeout = chronos.milliseconds(200), disableBootstrapping = true)
+    let hub = setupKad(config = config)
+    let leaf = setupKad(config = config)
+    startAndDeferStop(@[hub, leaf])
+    await connect(hub, leaf)
+
+    let leafId = leaf.switch.peerInfo.peerId
+    await leaf.stop()
+    await leaf.switch.stop()
+    agePeerPastLivenessGrace(hub.rtable, leafId.toKey())
+
+    let batch = hub.probeAndEvictPeers(hub.rtable)
+    check not batch.finished()
+    hub.rtable.markUseful(leafId)
+    await batch
+
+    check hub.hasKey(leafId.toKey())
+
+  asyncTest "cancelling a liveness batch cancels its in-flight probes":
+    let kad = setupMockKad()
+    startAndDeferStop(@[kad])
+
+    let peer = randomPeerId()
+    check kad.rtable.insert(peer)
+    agePeerPastLivenessGrace(kad.rtable, peer.toKey())
+
+    let hang = newFuture[void]("liveness-probe-cancel-hang")
+    kad.livenessProbes[peer] = hang
+
+    let batch = kad.probeAndEvictPeers(kad.rtable)
+    await batch.cancelAndWait()
+    kad.livenessProbes.del(peer)
+
+    check:
+      batch.cancelled()
+      hang.cancelled()
+      kad.hasKey(peer.toKey())
+
+  asyncTest "liveness loop idles on a finished probe":
+    let kad = setupMockKad(
+      testKadConfig(
+        disableBootstrapping = true, livenessIdleInterval = chronos.milliseconds(20)
+      )
+    )
+    startAndDeferStop(@[kad])
+
+    let done = newFuture[void]("liveness-probe-finished")
+    done.complete()
+    kad.livenessProbes[randomPeerId()] = done
+    kad.maintainableTablesCalls = 0
+    await sleepAsync(chronos.milliseconds(100))
+
+    # 100ms / 20ms idle interval is ~5 scans; a spinning loop runs thousands.
+    check kad.maintainableTablesCalls <= 10
+
+  asyncTest "stop ends a liveness loop parked on an in-flight probe":
+    let kad = setupKad(
+      config = testKadConfig(
+        disableBootstrapping = true, livenessIdleInterval = chronos.milliseconds(20)
+      )
+    )
+    await kad.switch.start()
+    defer:
+      await kad.switch.stop()
+
+    await kad.start()
+    let hang = newFuture[void]("liveness-loop-stop-hang")
+    kad.livenessProbes[randomPeerId()] = hang
+    # Several idle intervals, so the loop parks on the in-flight probe.
+    await sleepAsync(chronos.milliseconds(100))
+
+    await kad.stop()
+    check:
+      hang.cancelled()
+      kad.livenessLoop.isNil
       kad.livenessProbes.len == 0

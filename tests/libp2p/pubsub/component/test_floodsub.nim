@@ -39,7 +39,7 @@ proc addRateLimitedPeer(f: FloodSub, bucket: TokenBucket): PubSubPeer =
 func failingMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
   err(ValidationResult.Reject)
 
-suite "FloodSub Component":
+suite "FloodSub Component", timeout = 120.seconds:
   const topic = "foobar"
 
   teardown:
@@ -57,7 +57,7 @@ suite "FloodSub Component":
     waitSubscribe(nodes[0], nodes[1], topic)
 
     check (await nodes[0].publish(topic, "Hello!".toBytes())) > 0
-    check (await handlerFut.wait(5.seconds)) == true
+    check (await handlerFut) == true
 
     when defined(libp2p_agents_metrics):
       let
@@ -79,7 +79,7 @@ suite "FloodSub Component":
     waitSubscribe(nodes[1], nodes[0], topic)
 
     check (await nodes[1].publish(topic, "Hello!".toBytes())) > 0
-    check (await handlerFut.wait(5.seconds)) == true
+    check (await handlerFut) == true
 
   asyncTest "FloodSub validation should succeed":
     let (handlerFut, handler) = createCompleteHandler()

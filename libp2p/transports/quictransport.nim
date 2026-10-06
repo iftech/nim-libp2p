@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
+{.push raises: [].}
+
 import std/[hashes, sets, sequtils]
-import chronos, chronicles, metrics, results
+import chronos, chronicles, metrics
+import ../results
 import lsquic
 import
   ../crypto/rng,
@@ -220,20 +223,37 @@ type QuicMuxer* = ref object of Muxer
   handleFut: Future[void]
   handleStreamFuts: seq[Future[void]]
 
-proc new*(
+proc parseCertificate(certificatesDer: seq[seq[byte]]): LPResult[P2pCertificate] =
+  if certificatesDer.len != 1:
+    return err("expected one certificate, got " & $certificatesDer.len)
+
+  try:
+    ok(parse(certificatesDer[0]))
+  except CertificateParsingError as e:
+    err("cannot parse certificate. " & e.msg)
+
+proc certificatePeerId(certificatesDer: seq[seq[byte]]): LPResult[PeerId] =
+  let cert = ?parseCertificate(certificatesDer)
+  let peerId = PeerId.init(cert.publicKey()).valueOr:
+    return err("cannot derive peer ID from certificate. " & $error)
+  ok(peerId)
+
+proc tryNew*(
     _: type QuicMuxer, conn: P2PConnection, peerId: Opt[PeerId] = Opt.none(PeerId)
-): QuicMuxer {.raises: [CertificateParsingError, LPError].} =
+): LPResult[QuicMuxer] =
   if conn.isNil:
-    raise (ref QuicTransportError)(msg: "cannot create QUIC muxer from nil connection")
+    return err("QuicMuxer.new called with nil connection")
 
   let session = QuicSession(conn)
   session.peerId = peerId.valueOr:
-    let certificates = session.connection.certificates()
-    if certificates.len != 1:
-      raise (ref QuicTransportError)(msg: "expected one certificate in connection")
-    let cert = parse(certificates[0])
-    cert.peerId()
-  QuicMuxer(session: session, connection: conn)
+    certificatePeerId(session.connection.certificates()).valueOr:
+      return err("QuicMuxer.new called with invalid peer certificate. " & error)
+  ok(QuicMuxer(session: session, connection: conn))
+
+proc new*(
+    _: type QuicMuxer, conn: P2PConnection, peerId: Opt[PeerId] = Opt.none(PeerId)
+): QuicMuxer {.raises: [LPError].} =
+  QuicMuxer.tryNew(conn, peerId).valueOrRaise(QuicTransportError)
 
 when defined(libp2p_agents_metrics):
   method setShortAgent*(m: QuicMuxer, shortAgent: string) =
@@ -318,27 +338,14 @@ type QuicTransport* = ref object of Transport
   closeFuts: seq[Future[void]]
   inTimeout: Duration
   outTimeout: Duration
+  engineConfig: QuicEngineConfig
 
 type PeerIdCertificateVerifier = ref object of CertificateVerifier
   expectedPeerId: PeerId
 
-proc parseCertificate(certificatesDer: seq[seq[byte]]): Opt[P2pCertificate] =
-  if certificatesDer.len != 1:
-    trace "QUIC certificate chain rejected",
-      certificateCount = certificatesDer.len, reason = "expected one certificate"
-    return Opt.none(P2pCertificate)
-
-  let cert =
-    try:
-      parse(certificatesDer[0])
-    except CertificateParsingError as e:
-      trace "QUIC certificate parsing failed", err = e.msg
-      return Opt.none(P2pCertificate)
-
-  Opt.some(cert)
-
 proc verifyCertificates(certificatesDer: seq[seq[byte]]): bool =
   let cert = parseCertificate(certificatesDer).valueOr:
+    trace "QUIC certificate rejected", err = error
     return false
 
   if cert.verifiedIdentityKey().isNone:
@@ -350,6 +357,7 @@ proc verifyCertificatesForPeer(
     certificatesDer: seq[seq[byte]], expectedPeerId: PeerId
 ): bool =
   let cert = parseCertificate(certificatesDer).valueOr:
+    trace "QUIC certificate rejected", err = error
     return false
 
   if not cert.verify(expectedPeerId):
@@ -378,6 +386,7 @@ proc new*(
     connManager: ConnManager = nil,
     inTimeout: Duration = DefaultChanTimeout,
     outTimeout: Duration = DefaultChanTimeout,
+    engineConfig: QuicEngineConfig = DefaultQuicEngineConfig,
 ): QuicTransport =
   doAssert not rng.isNil, "Rng is nil"
 
@@ -388,6 +397,7 @@ proc new*(
     certGenerator: defaultCertGenerator,
     inTimeout: inTimeout,
     outTimeout: outTimeout,
+    engineConfig: engineConfig,
   )
   procCall Transport(self).initialize()
   self
@@ -401,6 +411,7 @@ proc new*(
     connManager: ConnManager = nil,
     inTimeout: Duration = DefaultChanTimeout,
     outTimeout: Duration = DefaultChanTimeout,
+    engineConfig: QuicEngineConfig = DefaultQuicEngineConfig,
 ): QuicTransport =
   doAssert not rng.isNil, "Rng is nil"
 
@@ -411,6 +422,7 @@ proc new*(
     certGenerator: certGenerator,
     inTimeout: inTimeout,
     outTimeout: outTimeout,
+    engineConfig: engineConfig,
   )
   procCall Transport(self).initialize()
   self
@@ -420,64 +432,81 @@ method handles*(transport: QuicTransport, address: MultiAddress): bool {.raises:
     return false
   QUIC_V1.match(address)
 
-proc makeConfig(self: QuicTransport): TLSConfig =
+proc makeConfig(self: QuicTransport): LPResult[TLSConfig] =
   let pubkey = self.privateKey.getPublicKey().valueOr:
-    raiseAssert "could not obtain public key"
+    return err("cannot obtain public key. " & $error)
 
-  let cert = self.certGenerator(KeyPair(seckey: self.privateKey, pubkey: pubkey))
+  let cert =
+    try:
+      self.certGenerator(KeyPair(seckey: self.privateKey, pubkey: pubkey))
+    except TLSCertificateError as e:
+      return err("cannot generate certificate. " & e.msg)
+
   let certVerifier = CustomCertificateVerifier.init(certificateVerifier)
-  let tlsConfig = TLSConfig.new(
-    cert.certificate,
-    cert.privateKey,
-    @[alpn].toHashSet(),
-    Opt.some(CertificateVerifier(certVerifier)),
-  )
-  return tlsConfig
+  try:
+    ok(
+      TLSConfig.new(
+        cert.certificate,
+        cert.privateKey,
+        @[alpn],
+        Opt.some(CertificateVerifier(certVerifier)),
+      )
+    )
+  except QuicConfigError as e:
+    err("invalid TLS config. " & e.msg)
 
-proc toMultiAddress(ta: TransportAddress): MultiAddress {.raises: [MaError].} =
-  ## Returns quic MultiAddress from TransportAddress
-  MultiAddress.init(ta, IPPROTO_UDP).get() & MultiAddress.init("/quic-v1").get()
+proc toMultiAddress(ta: TransportAddress): MaResult[MultiAddress] =
+  concat(?MultiAddress.init(ta, IPPROTO_UDP), ?MultiAddress.init("/quic-v1"))
+
+proc listen(
+    self: QuicTransport, addrs: openArray[TransportAddress]
+): LPResult[seq[MultiAddress]] =
+  ## Endpoints created before a failure stay in `self.listeners` for the caller to stop.
+  let tlsConfig = ?self.makeConfig()
+  var listenMAs: seq[MultiAddress]
+  for ta in addrs:
+    let endpoint =
+      try:
+        QuicEndpoint.new(tlsConfig, ta, engineConfig = self.engineConfig)
+      except QuicError as e:
+        return err("cannot listen on " & $ta & ". " & e.msg)
+      except TransportOsError as e:
+        return err("cannot listen on " & $ta & ". " & e.msg)
+    self.listeners.add(endpoint)
+
+    let local =
+      try:
+        endpoint.localAddress()
+      except TransportOsError as e:
+        return err("cannot read local address. " & e.msg)
+    listenMAs.add(?toMultiAddress(local))
+
+  ok(listenMAs)
 
 method start*(
     self: QuicTransport, addrs: seq[MultiAddress]
 ) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
+  if self.running:
+    warn "QUIC transport already started"
+    return
+
   doAssert self.listeners.len == 0, "start() already called"
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
-
-  var listenMAs: seq[MultiAddress]
-  var initialized = false
-  try:
-    let tlsConfig = self.makeConfig()
-    for ta in addrsTa:
-      let endpoint = QuicEndpoint.new(tlsConfig, ta)
-      self.listeners.add(endpoint)
-      listenMAs.add(toMultiAddress(endpoint.localAddress()))
-    initialized = true
-  except QuicConfigError as exc:
-    raiseAssert "invalid quic setup: " & $exc.msg
-  except TLSCertificateError as exc:
-    raise (ref QuicTransportError)(
-      msg: "tlscert error in quic start: " & exc.msg, parent: exc
-    )
-  except QuicError as exc:
-    raise
-      (ref QuicTransportError)(msg: "quicerror in quic start: " & exc.msg, parent: exc)
-  except TransportOsError as exc:
-    raise (ref QuicTransportError)(
-      msg: "transport error in quic start: " & exc.msg, parent: exc
-    )
-  finally:
-    if not initialized:
-      for listener in self.listeners:
-        await noCancel listener.stop()
-      self.listeners = @[]
+  let listenMAs = self.listen(addrsTa).valueOr:
+    await noCancel allFutures(self.listeners.mapIt(it.stop()))
+    self.listeners = @[]
+    raise (ref QuicTransportError)(msg: "QuicTransport.start failed. " & error)
 
   await procCall Transport(self).start(listenMAs)
+  info "QUIC transport started", addresses = self.addrs
 
 method stop*(transport: QuicTransport) {.async: (raises: []).} =
-  if transport.running:
+  let wasRunning = transport.running
+  if wasRunning:
     await noCancel procCall Transport(transport).stop()
+  else:
+    warn "QUIC transport already stopped"
 
   let futs = transport.connections.mapIt(it.close())
   await noCancel allFutures(futs)
@@ -499,16 +528,14 @@ method stop*(transport: QuicTransport) {.async: (raises: []).} =
   transport.listeners = @[]
   transport.acceptFuts = @[]
 
+  if wasRunning:
+    info "QUIC transport stopped", addresses = transport.addrs
+
 proc wrapConnection(
     transport: QuicTransport, connection: QuicConnection, transportDir: Direction
-): QuicSession {.raises: [].} =
-  var observedAddr: MultiAddress
-  var localAddr: MultiAddress
-  try:
-    observedAddr = toMultiAddress(connection.remoteAddress())
-    localAddr = toMultiAddress(connection.localAddress())
-  except MaError as e:
-    raiseAssert "Multiaddr Error" & e.msg
+): LPResult[QuicSession] =
+  let observedAddr = ?toMultiAddress(connection.remoteAddress())
+  let localAddr = ?toMultiAddress(connection.localAddress())
 
   let session = QuicSession(
     dir: transportDir,
@@ -533,7 +560,7 @@ proc wrapConnection(
 
   transport.closeFuts.trackFut(onClose())
 
-  return session
+  ok(session)
 
 method accept*(
     self: QuicTransport
@@ -566,57 +593,85 @@ method accept*(
   let index = self.acceptFuts.find(finished)
   self.acceptFuts[index] = self.listeners[index].accept()
 
-  try:
-    let conn = await finished
-    return self.wrapConnection(conn, Direction.In)
-  except QuicError as exc:
-    debug "QUIC connection acceptance failed", err = exc.msg
-    raise (ref QuicTransportError)(msg: "QUIC accept failed: " & exc.msg, parent: exc)
-  except common.TransportError as exc:
-    debug "QUIC transport stopped during acceptance", err = exc.msg
-    raise newTransportClosedError(exc)
-  except TransportOsError as exc:
-    debug "QUIC socket acceptance failed", err = exc.msg
-    raise
-      (ref QuicTransportError)(msg: "QUIC OS accept failed: " & exc.msg, parent: exc)
+  let conn =
+    try:
+      await finished
+    except common.TransportError as exc:
+      debug "QUIC transport stopped during acceptance", err = exc.msg
+      raise newTransportClosedError(exc)
+
+  self.wrapConnection(conn, Direction.In).valueOr:
+    conn.close()
+    raise (ref QuicTransportError)(msg: "QuicTransport.accept failed. " & error)
 
 proc listenerEndpointFor(
     self: QuicTransport, address: TransportAddress
-): Opt[QuicEndpoint] {.raises: [TransportOsError].} =
+): LPResult[Opt[QuicEndpoint]] =
   var matchedEndpoint = Opt.none(QuicEndpoint)
   for endpoint in self.listeners:
-    if endpoint.localAddress().family == address.family:
+    let local =
+      try:
+        endpoint.localAddress()
+      except TransportOsError as e:
+        return err("cannot read listener address. " & e.msg)
+    if local.family == address.family:
       if matchedEndpoint.isSome():
-        return Opt.none(QuicEndpoint)
+        return ok(Opt.none(QuicEndpoint))
       matchedEndpoint = Opt.some(endpoint)
 
-  matchedEndpoint
+  ok(matchedEndpoint)
+
+proc newDialEndpoint(
+    self: QuicTransport, family: AddressFamily
+): LPResult[QuicEndpoint] =
+  let tlsConfig = ?self.makeConfig()
+  try:
+    ok(QuicEndpoint.new(tlsConfig, family, engineConfig = self.engineConfig))
+  except QuicError as e:
+    err("cannot create dial endpoint. " & e.msg)
+  except TransportOsError as e:
+    err("cannot create dial endpoint. " & e.msg)
 
 proc dialOnlyEndpointFor(
     self: QuicTransport, family: AddressFamily
-): QuicEndpoint {.raises: [TLSCertificateError, QuicError, TransportOsError].} =
+): LPResult[QuicEndpoint] =
   case family
   of AddressFamily.IPv4:
     if self.dialEndpoint4.isNone():
-      let endpoint = QuicEndpoint.new(self.makeConfig(), family)
+      let endpoint = ?self.newDialEndpoint(family)
       self.dialEndpoint4 = Opt.some(endpoint)
-    self.dialEndpoint4.get()
+    ok(self.dialEndpoint4.get())
   of AddressFamily.IPv6:
     if self.dialEndpoint6.isNone():
-      let endpoint = QuicEndpoint.new(self.makeConfig(), family)
+      let endpoint = ?self.newDialEndpoint(family)
       self.dialEndpoint6 = Opt.some(endpoint)
-    self.dialEndpoint6.get()
+    ok(self.dialEndpoint6.get())
   else:
-    raise newException(QuicError, "client supports only IPv4/IPv6 address")
+    err("client supports only IPv4/IPv6 address")
 
 proc dialEndpointFor(
     self: QuicTransport, address: TransportAddress
-): QuicEndpoint {.raises: [TLSCertificateError, QuicError, TransportOsError].} =
-  let listenerEndpoint = self.listenerEndpointFor(address)
-  if listenerEndpoint.isSome():
-    return listenerEndpoint.get()
+): LPResult[QuicEndpoint] =
+  let listenerEndpoint = ?self.listenerEndpointFor(address)
+  listenerEndpoint.ifValue(endpoint):
+    return ok(endpoint)
 
   self.dialOnlyEndpointFor(address.family)
+
+proc holePunch(
+    self: QuicTransport, endpoint: QuicEndpoint, address: TransportAddress
+) {.async: (raises: [CancelledError, QuicTransportDialError]).} =
+  # Random UDP packets open the NAT mapping of the Sync sender, which is the QUIC server.
+  while true:
+    let payload = self.rng.generateBytes(QuicHolePunchPacketSize)
+    try:
+      await endpoint.datagramTransport().sendTo(address, payload)
+    except chronos.TransportError as e:
+      raise newException(
+        QuicTransportDialError, "QUIC hole punch cannot send packet. " & e.msg, e
+      )
+    let delay = self.rng.rand(10, 200)
+    await sleepAsync(delay.milliseconds)
 
 method dial*(
     self: QuicTransport,
@@ -625,57 +680,46 @@ method dial*(
     peerId: Opt[PeerId] = Opt.none(PeerId),
     dir: Direction = Direction.Out,
 ): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
-  let taAddress =
-    try:
-      initTAddress(address).tryGet
-    except LPError as e:
+  let taAddress = initTAddress(address).valueOr:
+    raise newException(
+      QuicTransportDialError,
+      "QuicTransport.dial called with invalid address " & $address & ". " & error,
+    )
+
+  if dir == Direction.In:
+    let listenerEndpoint = self.listenerEndpointFor(taAddress).valueOr:
+      raise newException(QuicTransportDialError, "QuicTransport.dial failed. " & error)
+    let endpoint = listenerEndpoint.valueOr:
       raise newException(
-        QuicTransportDialError, "error in quic dial: invald address: " & e.msg, e
+        QuicTransportDialError,
+        "QuicTransport.dial found no unique listener for the address family",
       )
+    await self.holePunch(endpoint, taAddress)
 
-  try:
-    if dir == Direction.In:
-      let endpoint = self.listenerEndpointFor(taAddress)
-      if endpoint.isNone():
-        raise newException(
-          QuicTransportDialError,
-          "error in QUIC hole punch: no unique listener for address family",
-        )
+  let endpoint = self.dialEndpointFor(taAddress).valueOr:
+    raise newException(QuicTransportDialError, "QuicTransport.dial failed. " & error)
 
-      # The Sync sender is the QUIC server. Open its NAT mapping with random
-      # UDP packets from the listener socket and let the expected inbound
-      # connection complete the DCUtR attempt.
-      while true:
-        let payload = self.rng.generateBytes(QuicHolePunchPacketSize)
-        await endpoint.get().datagramTransport().sendTo(taAddress, payload)
-        let delay = self.rng.rand(10, 200)
-        await sleepAsync(delay.milliseconds)
-
-    let endpoint = self.dialEndpointFor(taAddress)
-    let quicConnection =
+  let quicConnection =
+    try:
       if peerId.isSome():
         await endpoint.dial(
           taAddress, PeerIdCertificateVerifier(expectedPeerId: peerId.get())
         )
       else:
         await endpoint.dial(taAddress)
-    return self.wrapConnection(quicConnection, Direction.Out)
-  except QuicConfigError as e:
-    raise newException(
-      QuicTransportDialError, "error in quic dial: invalid tls config:" & e.msg, e
-    )
-  except TLSCertificateError as e:
-    raise newException(
-      QuicTransportDialError, "error in quic dial: tls certificate error:" & e.msg, e
-    )
-  except TransportOsError as e:
-    raise newException(QuicTransportDialError, "error in quic dial:" & e.msg, e)
-  except chronos.TransportError as e:
-    raise newException(QuicTransportDialError, "error in quic dial: " & e.msg, e)
-  except DialError as e:
-    raise newException(QuicTransportDialError, "error in quic dial:" & e.msg, e)
-  except QuicError as e:
-    raise newException(QuicTransportDialError, "error in quic dial:" & e.msg, e)
+    except QuicError as e:
+      raise
+        newException(QuicTransportDialError, "QuicTransport.dial failed. " & e.msg, e)
+    except DialError as e:
+      raise
+        newException(QuicTransportDialError, "QuicTransport.dial failed. " & e.msg, e)
+    except TransportOsError as e:
+      raise
+        newException(QuicTransportDialError, "QuicTransport.dial failed. " & e.msg, e)
+
+  self.wrapConnection(quicConnection, Direction.Out).valueOr:
+    quicConnection.close()
+    raise newException(QuicTransportDialError, "QuicTransport.dial failed. " & error)
 
 method upgrade*(
     self: QuicTransport, conn: RawConn, peerId: Opt[PeerId]

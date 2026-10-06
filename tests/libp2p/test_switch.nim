@@ -74,9 +74,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -121,9 +119,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -163,9 +159,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -625,13 +619,13 @@ suite "Switch":
       await switches[i].connect(switches[0].peerInfo.peerId, switches[0].peerInfo.addrs)
 
     # Wait until all 5 are connected
-    await allConnected.wait(5.seconds)
+    await allConnected.wait()
 
     # Trigger disconnect safely
     await switches[0].disconnect(peerInfo.peerId)
 
     # Wait until all disconnected
-    await allDisconnected.wait(5.seconds)
+    await allDisconnected.wait()
     check not switches[0].isConnected(peerInfo.peerId)
 
     checkUntilTimeout:
@@ -682,7 +676,7 @@ suite "Switch":
     futSwitch1Connected.done()
 
     # with the deadlock, the disconnect never completes and this times out
-    await disconnected.wait(5.seconds)
+    await disconnected.wait()
 
     checkUntilTimeout:
       not switch1.isConnected(switch2.peerInfo.peerId)
@@ -789,7 +783,7 @@ suite "Switch":
     await switchFail.start()
 
     expect DialFailedError:
-      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs).wait(10.seconds)
+      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs)
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
@@ -842,7 +836,7 @@ suite "Switch":
     await switchFail.start()
 
     expect DialFailedError:
-      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs).wait(10.seconds)
+      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs)
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
@@ -909,9 +903,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     check not switch1.isConnected(switch2.peerInfo.peerId)
     check not switch2.isConnected(switch1.peerInfo.peerId)
@@ -961,9 +953,7 @@ suite "Switch":
     check "Hello!" == msg
     await stream.close()
 
-    await allFuturesRaising(
-      handleFinished.wait(5.seconds), switch1.stop(), switch2.stop()
-    )
+    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
     # Switch2 dialed switch1, so switch2 should have switch1 in LastSeenOutboundBook
     check:
@@ -1164,7 +1154,23 @@ suite "Switch":
     await stream.writeLp("test123")
     check "test456" == string.fromBytes(await stream.readLp(1024))
     await stream.close()
-    await handleFinished.wait(5.seconds)
+    await handleFinished.wait()
+
+  test "tryMount rejects a protocol with no handler or codec":
+    let switch = makeStandardSwitch()
+
+    let noHandler = new TestProto
+    noHandler.codec = TestCodec
+    check switch.tryMount(noHandler).error ==
+      "Protocol has to define a handle method or proc"
+
+    let noCodec = LPProtocol.new(
+      @[""],
+      proc(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+        discard,
+    )
+    check switch.tryMount(noCodec).error == "Protocol has to define a codec string"
+    check TestCodec notin switch.peerInfo.protocols
 
   asyncTest "switch failing to start stops properly":
     let switch = makeStandardSwitch(@[TcpWildcardAddress, ma("/ip4/1.1.1.1/tcp/0")])
@@ -1227,7 +1233,7 @@ suite "Switch":
       switch.transports[0].upgrader.secureManagers.len == 1
       switch.transports[0].upgrader.secureManagers[0] of Noise
 
-  asyncTest "accept loop not blocked by upgrade semaphore":
+  asyncTest "accept loop not blocked by upgrade semaphore", timeout = 30.seconds:
     # Regression: old code held the upgrade semaphore in the accept loop, blocking
     # it when ConcurrentUpgrades (4) were in flight; manifested as 80+ kad nodes
     # getting stuck on bootstrap.
@@ -1247,9 +1253,7 @@ suite "Switch":
 
     let connects =
       clients.mapIt(it.connect(server.peerInfo.peerId, server.peerInfo.addrs))
-    let allConnects = allFuturesRaising(connects)
-    check await allConnects.withTimeout(30.seconds)
-    await allConnects
+    await allFuturesRaising(connects)
 
 suite "Switch :: IdentifyPusher Service":
   var
@@ -1310,8 +1314,6 @@ suite "Switch :: IdentifyPusher Service":
     await dialer.start()
     defer:
       await allFutures(listener.stop(), dialer.stop())
-    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs).wait(
-      2.seconds
-    )
+    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
     check listener.isConnected(dialer.peerInfo.peerId)
     check (await listener.connManager.waitForPeerReady(dialer.peerInfo.peerId))

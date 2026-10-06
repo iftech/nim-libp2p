@@ -10,7 +10,16 @@ import ../libp2p/pubsub/extensions/my_partial_message
 import ../tools/[crypto, unittest, multiaddress]
 import ./partial_message
 
-proc createOtherPeer(): tuple[switch: Switch, gossipsub: GossipSub] =
+proc publishPartial(
+    node: GossipSub, store: MyPartialMessageStore, topic: string, pm: MyPartialMessage
+) {.async: (raises: []).} =
+  # stores message so config.materializeParts can serve it, then publishes
+  store.messages[pm.groupId] = pm
+  await node.publishPartial(topic, pm.groupId, pm.partsMetadata())
+
+proc createOtherPeer(): tuple[
+  switch: Switch, gossipsub: GossipSub, store: MyPartialMessageStore
+] =
   let switch = SwitchBuilder
     .new()
     .withRng(rng())
@@ -20,9 +29,11 @@ proc createOtherPeer(): tuple[switch: Switch, gossipsub: GossipSub] =
     .withNoise()
     .build()
 
+  let store = MyPartialMessageStore()
+
   proc validateRPC(
       rpc: PartialMessageExtensionRPC
-  ): Result[void, string] {.gcsafe, raises: [].} =
+  ): LPResult[void] {.gcsafe, raises: [].} =
     return ok()
 
   proc onIncomingRPC(
@@ -38,6 +49,7 @@ proc createOtherPeer(): tuple[switch: Switch, gossipsub: GossipSub] =
       param.partialMessageExtensionConfig = Opt.some(
         PartialMessageExtensionConfig(
           unionPartsMetadata: my_partial_message.unionPartsMetadata,
+          materializeParts: store.materializePartsFn(),
           validateRPC: validateRPC,
           onIncomingRPC: onIncomingRPC,
           heartbeatsTillEviction: 100,
@@ -49,7 +61,7 @@ proc createOtherPeer(): tuple[switch: Switch, gossipsub: GossipSub] =
 
   switch.mount(gossipsub)
 
-  (switch, gossipsub)
+  (switch, gossipsub, store)
 
 suite "Gossipsub Partial Message Interop Tests with Nim nodes":
   const ourAddress = "/ip4/127.0.0.1/tcp/0"
@@ -71,7 +83,9 @@ suite "Gossipsub Partial Message Interop Tests with Nim nodes":
 
     # other peer publishes expected message
     otherPeer.gossipsub.subscribe(partialTopic, nil, requestsPartial = true)
-    await otherPeer.gossipsub.publishPartial(partialTopic, makePartialMessage())
+    await otherPeer.gossipsub.publishPartial(
+      otherPeer.store, partialTopic, makePartialMessage()
+    )
 
     # interop test should end successfully
     check await interopRes
@@ -92,7 +106,7 @@ suite "Gossipsub Partial Message Interop Tests with Nim nodes":
     otherPeer.gossipsub.subscribe(partialTopic, nil, requestsPartial = true)
     var pm = makePartialMessage()
     pm.groupId = "wrong-id".toBytes # unexpected groupId
-    await otherPeer.gossipsub.publishPartial(partialTopic, pm)
+    await otherPeer.gossipsub.publishPartial(otherPeer.store, partialTopic, pm)
 
     # interop test should end unsuccessfully
     check not await interopRes

@@ -15,6 +15,8 @@ logScope:
 declareCounter libp2p_dial_backoffs,
   "failures that started or raised a backoff", ["scope"]
 declareCounter libp2p_dial_backoff_skips, "dials skipped while on backoff", ["scope"]
+declarePublicGauge libp2p_dial_backoff_entries,
+  "entries in the dial backoff table, capped at MaxBackoffEntries", ["scope"]
 
 const MaxBackoffEntries* = 1024
   ## Cap per table, so a peer that names a fresh address per dial stays bounded.
@@ -148,6 +150,7 @@ proc countFailure[K](
   entry.failures.inc()
   entry.until = now + self.jittered(self.config.delay(entry.failures))
   entries[key] = entry
+  libp2p_dial_backoff_entries.set(entries.len, labelValues = [scope])
 
   if entry.until <= now:
     return
@@ -179,9 +182,11 @@ proc recordFailure*(self: DialBackoff, peerId: Opt[PeerId], now = Moment.now()) 
 
 proc recordSuccess*(self: DialBackoff, peerId: PeerId) =
   self.peers.del(peerId)
+  libp2p_dial_backoff_entries.set(self.peers.len, labelValues = ["peer"])
 
 proc recordSuccess*(self: DialBackoff, address: MultiAddress) =
   self.addrs.del(address)
+  libp2p_dial_backoff_entries.set(self.addrs.len, labelValues = ["address"])
 
 proc recordSuccess*(self: DialBackoff, peerId: Opt[PeerId]) =
   peerId.ifValue(pid):

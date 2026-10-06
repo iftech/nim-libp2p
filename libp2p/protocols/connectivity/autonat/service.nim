@@ -42,6 +42,7 @@ type
     minConfidence: float
     dialTimeout: Duration
     enableAddressMapper: bool
+    configured: bool
 
   StatusAndConfidenceHandler* = proc(
     networkReachability: NetworkReachability, confidence: Opt[float]
@@ -226,9 +227,7 @@ proc addressMapper(
     addrs.add(processedMA)
   return addrs
 
-method setup*(self: AutonatService, switch: Switch) {.raises: [].} =
-  info "Setting up AutonatService"
-
+proc configure(self: AutonatService, switch: Switch) =
   self.addressMapper = proc(
       listenAddrs: seq[MultiAddress]
   ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
@@ -242,12 +241,14 @@ method setup*(self: AutonatService, switch: Switch) {.raises: [].} =
 
 method start*(
     self: AutonatService, switch: Switch
-) {.async: (raises: [CancelledError]).} =
-  info "Running AutonatService"
-
-  switch.connManager.addPeerEventHandler(
-    self.newConnectedPeerHandler, PeerEventKind.Joined
-  )
+) {.async: (raises: [CancelledError, LPError]).} =
+  if not self.configured:
+    self.configure(switch)
+    self.configured = true
+  if not self.newConnectedPeerHandler.isNil:
+    switch.connManager.addPeerEventHandler(
+      self.newConnectedPeerHandler, PeerEventKind.Joined
+    )
 
   if self.enableAddressMapper:
     switch.addressManager.addMapper(self.addressMapper, AddrSource.Autonat)
@@ -256,6 +257,8 @@ method start*(
   self.scheduleInterval.ifValue(interval):
     if self.scheduleHandle.isNil:
       self.scheduleHandle = schedule(self, switch, interval)
+
+  info "AutoNAT service started"
 
 method stop*(
     self: AutonatService, switch: Switch

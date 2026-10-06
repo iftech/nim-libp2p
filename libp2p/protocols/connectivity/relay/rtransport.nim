@@ -3,9 +3,7 @@
 
 {.push raises: [].}
 
-import sequtils, strutils
-
-import chronos, chronicles
+import std/sequtils, chronos, chronicles
 
 import
   ./client,
@@ -43,64 +41,87 @@ method stop*(self: RelayTransport) {.async: (raises: []).} =
   self.running = false
   self.selfRunning = false
   self.client.onNewConnection = nil
-  while not self.queue.empty():
-    try:
-      await self.queue.popFirstNoWait().close()
-    except AsyncQueueEmptyError:
-      continue # checked with self.queue.empty()
+
+  let pending = toSeq(self.queue)
+  self.queue.clear()
+  await noCancel allFutures(pending.mapIt(it.close()))
 
 method accept*(
     self: RelayTransport
 ): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
   await self.queue.popFirst()
 
+type RelayAddr = object
+  relay: MultiAddress
+  relayPeerId: PeerId
+  dstPeerId: PeerId
+
+proc peerIdOf(part: MultiAddress): LPResult[PeerId] =
+  let peerId = PeerId.init(?part.protoAddress()).valueOr:
+    return err($error)
+  ok(peerId)
+
+proc parseRelayAddr(ma: MultiAddress): LPResult[RelayAddr] =
+  let parts = ?ma.len()
+  if parts < 4:
+    return err("too few parts in " & $ma)
+  if not CircuitRelay.match(?ma[parts - 2]):
+    return err("missing p2p-circuit in " & $ma)
+
+  let relayPeerId = peerIdOf(?ma[parts - 3]).valueOr:
+    return err("Relay doesn't exist: " & error)
+  let dstPeerId = peerIdOf(?ma[parts - 1]).valueOr:
+    return err("Destination doesn't exist: " & error)
+
+  ok(
+    RelayAddr(
+      relay: ?ma[0 .. parts - 4], relayPeerId: relayPeerId, dstPeerId: dstPeerId
+    )
+  )
+
+proc tryDial*(
+    self: RelayTransport, ma: MultiAddress
+): Future[LPResult[RawConn]] {.async: (raises: [CancelledError]).} =
+  let address = parseRelayAddr(ma).valueOr:
+    return err("dial address not valid: " & error)
+
+  trace "Dial", relayPeerId = address.relayPeerId, dstPeerId = address.dstPeerId
+
+  let conn =
+    try:
+      await self.client.switch.dial(
+        address.relayPeerId, @[address.relay], @[RelayV2HopCodec, RelayV1Codec]
+      )
+    except DialFailedError as e:
+      return err("dial relay peer failed: " & e.msg)
+  conn.dir = Direction.Out
+
+  var dialedConn: Stream = conn
+  let dialed =
+    try:
+      case conn.protocol
+      of RelayV1Codec:
+        await self.client.tryDialPeerV1(conn, address.dstPeerId, @[])
+      of RelayV2HopCodec:
+        let rc = RelayConnection.new(conn, 0, 0)
+        dialedConn = rc
+        await self.client.tryDialPeerV2(rc, address.dstPeerId, @[])
+      else:
+        LPResult[RawConn].err("unexpected relay protocol")
+    except CancelledError as e:
+      safeClose(dialedConn)
+      raise e
+
+  if dialed.isErr():
+    safeClose(dialedConn)
+    return err("dial relay " & conn.protocol & " failed: " & dialed.error)
+
+  dialed
+
 proc dial*(
     self: RelayTransport, ma: MultiAddress
 ): Future[RawConn] {.async: (raises: [RelayDialError, CancelledError]).} =
-  var
-    relayAddrs: MultiAddress
-    relayPeerId: PeerId
-    dstPeerId: PeerId
-
-  try:
-    let sma = toSeq(ma.items())
-    relayAddrs = sma[0 .. sma.len - 4].mapIt(it.tryGet()).foldl(a & b)
-    if not relayPeerId.init(($(sma[^3].tryGet())).split('/')[2]):
-      raise newException(RelayDialError, "Relay doesn't exist")
-    if not dstPeerId.init(($(sma[^1].tryGet())).split('/')[2]):
-      raise newException(RelayDialError, "Destination doesn't exist")
-  except RelayDialError as e:
-    raise newException(RelayDialError, "dial address not valid: " & e.msg, e)
-  except CatchableError:
-    raise newException(RelayDialError, "dial address not valid")
-
-  trace "Dial", relayPeerId, dstPeerId
-
-  var rc: RelayConnection
-  try:
-    let conn = await self.client.switch.dial(
-      relayPeerId, @[relayAddrs], @[RelayV2HopCodec, RelayV1Codec]
-    )
-    conn.dir = Direction.Out
-
-    case conn.protocol
-    of RelayV1Codec:
-      return await self.client.dialPeerV1(conn, dstPeerId, @[])
-    of RelayV2HopCodec:
-      rc = RelayConnection.new(conn, 0, 0)
-      return await self.client.dialPeerV2(rc, dstPeerId, @[])
-  except CancelledError as e:
-    safeClose(rc)
-    raise e
-  except DialFailedError as e:
-    safeClose(rc)
-    raise newException(RelayDialError, "dial relay peer failed: " & e.msg, e)
-  except RelayV1DialError as e:
-    safeClose(rc)
-    raise newException(RelayV1DialError, "dial relay v1 failed: " & e.msg, e)
-  except RelayV2DialError as e:
-    safeClose(rc)
-    raise newException(RelayV2DialError, "dial relay v2 failed: " & e.msg, e)
+  (await self.tryDial(ma)).valueOrRaise(RelayDialError)
 
 method dial*(
     self: RelayTransport,
@@ -110,24 +131,19 @@ method dial*(
     dir: Direction = Direction.Out,
 ): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
   peerId.ifValue(pid):
-    try:
-      let address = MultiAddress.init($ma & "/p2p/" & $pid).tryGet()
-      return await self.dial(address)
-    except CancelledError as e:
-      raise e
-    except CatchableError as e:
-      raise
-        newException(transport.TransportDialError, "Caught error in dial: " & e.msg, e)
+    let address = MultiAddress.init($ma & "/p2p/" & $pid).valueOr:
+      raise newException(transport.TransportDialError, "relay dial failed: " & error)
+    let conn = (await self.tryDial(address)).valueOr:
+      raise newException(transport.TransportDialError, "relay dial failed: " & error)
+    return conn
 
 method handles*(self: RelayTransport, ma: MultiAddress): bool {.gcsafe.} =
-  var handles = false
-  try:
-    if ma.protocols.isOk():
-      let sma = toSeq(ma.items())
-      handles = sma.len >= 2 and CircuitRelay.match(sma[^1].tryGet())
-  except CatchableError:
-    handles = false
-  handles
+  if ma.protocols.isErr() or ma.len().get(0) < 2:
+    return false
+
+  let last = ma[^1].valueOr:
+    return false
+  CircuitRelay.match(last)
 
 proc new*(Self: typedesc[RelayTransport], cl: RelayClient, upgrader: Upgrade): Self =
   # Self instead of T to avoid clashing with ifValue[T]'s type param under --lineDir:on

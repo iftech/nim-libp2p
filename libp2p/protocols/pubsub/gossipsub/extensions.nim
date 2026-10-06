@@ -191,10 +191,14 @@ proc makeControlExtensions*(state: ExtensionsState): ControlExtensions =
   return state.nodeExtensions
 
 proc publishPartial*(
-    state: ExtensionsState, topic: string, pm: PartialMessage, peers: seq[PeerId] = @[]
+    state: ExtensionsState,
+    topic: string,
+    groupId: GroupId,
+    partsMetadata: PartsMetadata,
+    peers: seq[PeerId] = @[],
 ): int =
   state.partialMessageExtension.ifValue(e):
-    return e.publishPartial(topic, pm, peers)
+    return e.publishPartial(topic, groupId, partsMetadata, peers)
   else:
     # raises because this proc is called by user
     raiseAssert "partial message extension is not configured"

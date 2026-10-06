@@ -5,7 +5,8 @@
 
 {.push raises: [].}
 
-import chronos, chronicles, strutils, results
+import chronos, chronicles, strutils
+import ../results
 import stew/[byteutils, endians2, objects]
 import ../multicodec
 import
@@ -69,6 +70,15 @@ type
   Socks5VersionError* = object of Socks5Error
   Socks5ServerReplyError* = object of Socks5Error
 
+  Socks5Target = object
+    atyp: byte
+    dstAddr: seq[byte]
+    dstPort: seq[byte]
+
+  TorListenAddrs = object
+    tcp: seq[MultiAddress]
+    onion3: seq[MultiAddress]
+
 proc new*(
     T: typedesc[TorTransport],
     transportAddress: TransportAddress,
@@ -91,52 +101,47 @@ proc handlesDial(address: MultiAddress): bool {.gcsafe.} =
 proc handlesStart(address: MultiAddress): bool {.gcsafe.} =
   return TcpOnion3.match(address)
 
+func checkAuthReply(reply: array[2, byte]): LPResult[void] =
+  if reply[0] != Socks5ProtocolVersion:
+    return err("Unsupported socks version")
+  if reply[1] != Socks5AuthMethod.NoAuth.byte:
+    return err("Unsupported auth method")
+
+  ok()
+
 proc authenticate(
     transp: StreamTransport
-) {.
-    async: (
-      raises: [
-        Socks5VersionError, Socks5AuthFailedError, common.TransportError, CancelledError
-      ]
-    )
-.} =
+): Future[LPResult[void]] {.async: (raises: [common.TransportError, CancelledError]).} =
   discard
     await transp.write(@[Socks5ProtocolVersion, NMethods, Socks5AuthMethod.NoAuth.byte])
   var serverReply: array[2, byte]
   await transp.readExactly(addr serverReply[0], serverReply.len)
-  if serverReply[0] != Socks5ProtocolVersion:
-    raise newException(Socks5VersionError, "Unsupported socks version")
-  if serverReply[1] != Socks5AuthMethod.NoAuth.byte:
-    raise newException(Socks5AuthFailedError, "Unsupported auth method")
+  checkAuthReply(serverReply)
+
+func checkReplyHeader(header: array[4, byte]): LPResult[void] =
+  if header[0] != Socks5ProtocolVersion:
+    return err("Unsupported socks version")
+  if header[1] == Socks5ReplyType.Succeeded.byte:
+    return ok()
+
+  var socks5ReplyType: Socks5ReplyType
+  if socks5ReplyType.checkedEnumAssign(header[1]):
+    err("Server reply error: " & $socks5ReplyType)
+  else:
+    err("Unexpected server reply")
 
 proc readServerReply(
     transp: StreamTransport
-) {.
-    async: (
-      raises: [
-        Socks5VersionError, Socks5ServerReplyError, LPError, common.TransportError,
-        CancelledError,
-      ]
-    )
-.} =
+): Future[LPResult[void]] {.async: (raises: [common.TransportError, CancelledError]).} =
   ## The specification for this code is defined on
   ## [link text](https://www.rfc-editor.org/rfc/rfc1928#section-5)
   ## and [link text](https://www.rfc-editor.org/rfc/rfc1928#section-6).
-  var firstFourOctets: array[4, byte]
-  await transp.readExactly(addr firstFourOctets[0], firstFourOctets.len)
-  let
-    socks5ProtocolVersion = firstFourOctets[0]
-    serverReply = firstFourOctets[1]
-  if socks5ProtocolVersion != Socks5ProtocolVersion:
-    raise newException(Socks5VersionError, "Unsupported socks version")
-  if serverReply != Socks5ReplyType.Succeeded.byte:
-    var socks5ReplyType: Socks5ReplyType
-    if socks5ReplyType.checkedEnumAssign(serverReply):
-      raise newException(Socks5ServerReplyError, "Server reply error")
-    else:
-      raise newException(LPError, "Unexpected server reply")
+  var header: array[4, byte]
+  await transp.readExactly(addr header[0], header.len)
+  ?checkReplyHeader(header)
+
   let addressLength =
-    case firstFourOctets[3]
+    case header[3]
     of Socks5AddressType.IPv4.byte:
       4
     of Socks5AddressType.FQDN.byte:
@@ -146,75 +151,68 @@ proc readServerReply(
     of Socks5AddressType.IPv6.byte:
       16
     else:
-      raise newException(LPError, "Address not supported")
+      return err("Address not supported")
   var addressAndPort = newSeqUninit[byte](addressLength + 2)
   await transp.readExactly(addr addressAndPort[0], addressAndPort.len)
+  ok()
 
-proc parseOnion3(
-    address: MultiAddress
-): (byte, seq[byte], seq[byte]) {.raises: [LPError].} =
-  var addressArray = ($address).split('/')
-  if addressArray.len < 2:
-    raise newException(LPError, "Onion address not supported")
-  addressArray = addressArray[2].split(':')
-  if addressArray.len == 0:
-    raise newException(LPError, "Onion address not supported")
-  let
-    addressStr = addressArray[0] & ".onion"
-    dstAddr = @(uint8(addressStr.len).toBytes()) & addressStr.toBytes()
-    dstPort = address.data.buffer[37 .. 38]
-  return (Socks5AddressType.FQDN.byte, dstAddr, dstPort)
+func parseOnion3(address: MultiAddress): Socks5Target =
+  ## `address` must match `Onion3`: one onion3 component, so the port sits at bytes 37..38.
+  let addressStr = ($address).split('/')[2].split(':')[0] & ".onion"
+  Socks5Target(
+    atyp: Socks5AddressType.FQDN.byte,
+    dstAddr: @(uint8(addressStr.len).toBytes()) & addressStr.toBytes(),
+    dstPort: address.data.buffer[37 .. 38],
+  )
 
-proc parseIpTcp(
-    address: MultiAddress
-): (byte, seq[byte], seq[byte]) {.raises: [LPError].} =
+func tcpPort(address: MultiAddress): LPResult[seq[byte]] =
+  (?address[TcpMultiCodec]).protoArgument()
+
+func parseIpTcp(address: MultiAddress): LPResult[Socks5Target] =
   let (codec, atyp) =
     if IPv4Tcp.match(address):
       (multiCodec("ip4"), Socks5AddressType.IPv4.byte)
     elif IPv6Tcp.match(address):
       (multiCodec("ip6"), Socks5AddressType.IPv6.byte)
     else:
-      raise newException(LPError, "IP address not supported")
-  let
-    dstAddr = address[codec].tryGet().protoArgument().tryGet()
-    dstPort = address[TcpMultiCodec].tryGet().protoArgument().tryGet()
-  (atyp, dstAddr, dstPort)
+      return err("IP address not supported")
 
-proc parseDnsTcp(
-    address: MultiAddress
-): (byte, seq[byte], seq[byte]) {.raises: [LPError].} =
-  let dnsAddress = address[multiCodec("dns")].tryGet().protoArgument().tryGet()
+  ok Socks5Target(
+    atyp: atyp, dstAddr: ?(?address[codec]).protoArgument(), dstPort: ?address.tcpPort()
+  )
+
+func parseDnsTcp(address: MultiAddress): LPResult[Socks5Target] =
+  let dnsAddress = ?(?address[multiCodec("dns")]).protoArgument()
   if dnsAddress.len > MaxSocks5DomainLength:
-    raise newException(LPError, "DNS address exceeds SOCKS5 domain length limit")
-  let
-    dstAddr = @(uint8(dnsAddress.len).toBytes()) & dnsAddress
-    dstPort = address[TcpMultiCodec].tryGet().protoArgument().tryGet()
-  (Socks5AddressType.FQDN.byte, dstAddr, dstPort)
+    return err("DNS address exceeds SOCKS5 domain length limit")
+
+  ok Socks5Target(
+    atyp: Socks5AddressType.FQDN.byte,
+    dstAddr: @(uint8(dnsAddress.len).toBytes()) & dnsAddress,
+    dstPort: ?address.tcpPort(),
+  )
+
+func parseTarget(address: MultiAddress): LPResult[Socks5Target] =
+  if Onion3.match(address):
+    ok parseOnion3(address)
+  elif IPTcp.match(address):
+    parseIpTcp(address)
+  elif DnsTcp.match(address):
+    parseDnsTcp(address)
+  else:
+    err("Address not supported")
 
 proc dialPeer(
     transp: StreamTransport, address: MultiAddress
-) {.
-    async: (
-      raises: [
-        LPError, common.TransportError, CancelledError, Socks5ServerReplyError,
-        Socks5VersionError,
-      ]
-    )
-.} =
-  let (atyp, dstAddr, dstPort) =
-    if Onion3.match(address):
-      parseOnion3(address)
-    elif IPTcp.match(address):
-      parseIpTcp(address)
-    elif DnsTcp.match(address):
-      parseDnsTcp(address)
-    else:
-      raise newException(LPError, "Address not supported")
+): Future[LPResult[void]] {.async: (raises: [common.TransportError, CancelledError]).} =
+  let auth = await authenticate(transp)
+  ?auth
 
+  let target = ?parseTarget(address)
   let reserved = byte(0)
   let request =
-    @[Socks5ProtocolVersion, Socks5RequestCommand.Connect.byte, reserved, atyp] & dstAddr &
-    dstPort
+    @[Socks5ProtocolVersion, Socks5RequestCommand.Connect.byte, reserved, target.atyp] &
+    target.dstAddr & target.dstPort
   discard await transp.write(request)
   await readServerReply(transp)
 
@@ -232,46 +230,58 @@ method dial*(
   trace "Transport connection started", peerId, address = $address
 
   var transp: StreamTransport
+  let handshake =
+    try:
+      transp = await connect(self.transportAddress)
+      await dialPeer(transp, address)
+    except CancelledError as e:
+      safeCloseWait(transp)
+      raise e
+    except common.TransportError as e:
+      safeCloseWait(transp)
+      raise newException(
+        transport.TransportDialError, "error in dial TorTransport: " & e.msg, e
+      )
 
-  try:
-    transp = await connect(self.transportAddress)
-    await authenticate(transp)
-    await dialPeer(transp, address)
-    return self.tcpTransport.connHandler(
-      transp, Opt.none(MultiAddress), Opt.none(MultiAddress), Direction.Out
-    )
-  except CancelledError as e:
+  handshake.isOkOr:
     safeCloseWait(transp)
-    raise e
-  except CatchableError as e:
-    safeCloseWait(transp)
-    raise newException(
-      transport.TransportDialError, "error in dial TorTransport: " & e.msg, e
-    )
+    raise
+      newException(transport.TransportDialError, "TorTransport.dial failed. " & error)
+
+  self.tcpTransport.connHandler(
+    transp, Opt.none(MultiAddress), Opt.none(MultiAddress), Direction.Out
+  )
+
+func splitListenAddrs(addrs: openArray[MultiAddress]): LPResult[TorListenAddrs] =
+  if addrs.len == 0:
+    return err("TorTransport.start called with no address.")
+
+  var listenAddrs: TorListenAddrs
+  for ma in addrs:
+    if not handlesStart(ma):
+      return err("TorTransport.start called with unsupported address: " & $ma)
+
+    let
+      tcp = ma[0 .. 1].valueOr:
+        return err("TorTransport.start called with invalid tor address: " & $ma)
+      onion3 = ma[multiCodec("onion3")].valueOr:
+        return err("TorTransport.start called with invalid tor address: " & $ma)
+    listenAddrs.tcp.add(tcp)
+    listenAddrs.onion3.add(onion3)
+
+  ok(listenAddrs)
 
 method start*(
     self: TorTransport, addrs: seq[MultiAddress]
 ) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
-  ## listen on the transport
-  ##
+  if self.running:
+    warn "Tor transport already started"
+    return
 
-  var listenAddrs: seq[MultiAddress]
-  var onion3Addrs: seq[MultiAddress]
-  for ma in addrs:
-    if not handlesStart(ma):
-      raise newException(TransportStartError, "unsupported address: " & $ma)
-
-    try:
-      listenAddrs.add(ma[0 .. 1].tryGet())
-      onion3Addrs.add(ma[multiCodec("onion3")].tryGet())
-    except ResultError[string]:
-      raise newException(TransportStartError, "invalid tor address: " & $ma)
-
-  if listenAddrs.len == 0:
-    raise newException(TransportStartError, "no address was provided.")
-
-  await procCall Transport(self).start(onion3Addrs)
-  await self.tcpTransport.start(listenAddrs)
+  let listenAddrs = splitListenAddrs(addrs).valueOrRaise(TransportStartError)
+  await procCall Transport(self).start(listenAddrs.onion3)
+  await self.tcpTransport.start(listenAddrs.tcp)
+  info "Tor transport started", addresses = self.addrs
 
 method accept*(
     self: TorTransport
@@ -285,8 +295,13 @@ method accept*(
 method stop*(self: TorTransport) {.async: (raises: []).} =
   ## stop the transport
   ##
+  let wasRunning = self.running
+  if not wasRunning:
+    warn "Tor transport already stopped"
   await procCall Transport(self).stop() # call base
   await self.tcpTransport.stop()
+  if wasRunning:
+    info "Tor transport stopped", addresses = self.addrs
 
 method handles*(t: TorTransport, address: MultiAddress): bool {.gcsafe, raises: [].} =
   if procCall Transport(t).handles(address):

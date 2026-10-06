@@ -106,7 +106,7 @@ proc addProviderRecord(pm: ProviderManager, record: ProviderRecord) =
 
 proc dispatchAddProvider(
     kad: KadDHT, peer: PeerId, key: Key
-): Future[Result[AddProviderStatus, string]] {.async: (raises: [CancelledError]).} =
+): Future[LPResult[AddProviderStatus]] {.async: (raises: [CancelledError]).} =
   withRpcSlot(kad)
   let addrs = kad.switch.peerStore[AddressBook][peer]
 
@@ -530,7 +530,7 @@ method handleAddProvider*(
 
 proc dispatchGetProviders*(
     kad: KadDHT, peer: PeerId, key: Key
-): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   let msg = Message(msgType: Opt.some(MessageType.getProviders), key: Opt.some(key))
   let reply = ?await kad.dispatchRpc(peer, msg)
 

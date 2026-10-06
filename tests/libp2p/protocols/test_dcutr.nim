@@ -125,13 +125,10 @@ suite "Dcutr":
 
     # A direct QUIC connection stands in for the relay, so the listener-role
     # hole punch must time out.
-    try:
-      await DcutrClient.new(connectTimeout = 300.millis).startSync(
-        behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-      )
-      check false
-    except DcutrError as err:
-      check err.parent of AsyncTimeoutError
+    let synced = await DcutrClient.new(connectTimeout = 300.millis).tryStartSync(
+      behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
+    )
+    check synced.isParentErrOf(AsyncTimeoutError)
 
   template ductrClientTest(
       behindNATSwitch: Switch, publicSwitch: Switch, body: untyped
@@ -174,13 +171,10 @@ suite "Dcutr":
     let behindNATSwitch = SwitchStub.new(makeSwitch(), connectTimeoutProc)
     let publicSwitch = makeSwitch()
     ductrClientTest(behindNATSwitch, publicSwitch):
-      try:
-        let client = DcutrClient.new(connectTimeout = 5.millis)
-        await client.startSync(
-          behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-        )
-      except DcutrError as err:
-        check err.parent of AsyncTimeoutError
+      let synced = await DcutrClient.new(connectTimeout = 5.millis).tryStartSync(
+        behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
+      )
+      check synced.isParentErrOf(AsyncTimeoutError)
 
   asyncTest "All client connect attempts fail":
     proc connectErrorProc(
@@ -196,13 +190,10 @@ suite "Dcutr":
     let behindNATSwitch = SwitchStub.new(makeSwitch(), connectErrorProc)
     let publicSwitch = makeSwitch()
     ductrClientTest(behindNATSwitch, publicSwitch):
-      try:
-        let client = DcutrClient.new(connectTimeout = 5.millis)
-        await client.startSync(
-          behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-        )
-      except DcutrError as err:
-        check err.parent of AllFuturesFailedError
+      let synced = await DcutrClient.new(connectTimeout = 5.millis).tryStartSync(
+        behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
+      )
+      check synced.isParentErrOf(AllFuturesFailedError)
 
   proc ductrServerTest(connectStub: connectStubType) {.async.} =
     let behindNATSwitch = makeSwitch()

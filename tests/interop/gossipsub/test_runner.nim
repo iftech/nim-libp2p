@@ -72,7 +72,7 @@ suite "GossipSub Interop - Script runner - Component":
 
     await runner.runScript(script)
 
-    check (await receivedMsgIdFut.wait(10.seconds)) == "99"
+    check (await receivedMsgIdFut) == "99"
 
   asyncTest "ifNodeIDEquals filters correctly":
     # Standalone peer node (no runner)

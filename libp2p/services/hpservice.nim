@@ -25,6 +25,7 @@ type HPService* = ref object of Service
   onNewStatusHandler: ReachabilityHandler
   autoRelayService: AutoRelayService
   autonatService: AutonatService
+  dcutrMounted: bool
 
 proc new*(
     T: typedesc[HPService],
@@ -106,18 +107,7 @@ proc reachabilityObservers*(self: HPService): ReachabilityObservers =
   ## The observers of the AutoNAT v1 service that drives hole punching.
   self.autonatService.reachabilityObservers
 
-method setup*(self: HPService, switch: Switch) {.raises: [ServiceSetupError].} =
-  self.autonatService.setup(switch)
-  self.autoRelayService.setup(switch)
-
-  try:
-    let dcutrProto = Dcutr.new(switch)
-    switch.mount(dcutrProto)
-  except LPError as e:
-    raise newException(
-      ServiceSetupError, "HPService Failed to mount Dcutr. Reason: " & $e.msg
-    )
-
+proc configure(self: HPService, switch: Switch) {.raises: [LPError].} =
   self.newConnectedPeerHandler = proc(
       peerId: PeerId, event: PeerEvent
   ) {.async: (raises: [CancelledError]).} =
@@ -130,7 +120,10 @@ method setup*(self: HPService, switch: Switch) {.raises: [ServiceSetupError].} =
   ) {.async: (raises: [CancelledError]).} =
     if networkReachability == NetworkReachability.NotReachable and
         not self.autoRelayService.isRunning():
-      await self.autoRelayService.start(switch)
+      try:
+        await self.autoRelayService.start(switch)
+      except LPError as e:
+        error "Unable to start auto-relay service", err = e.msg
     elif networkReachability == NetworkReachability.Reachable and
         self.autoRelayService.isRunning():
       await self.autoRelayService.stop(switch)
@@ -139,15 +132,24 @@ method setup*(self: HPService, switch: Switch) {.raises: [ServiceSetupError].} =
     for t in switch.transports:
       t.networkReachability = networkReachability
 
-method start*(self: HPService, switch: Switch) {.async: (raises: [CancelledError]).} =
+method start*(
+    self: HPService, switch: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  if not self.dcutrMounted:
+    switch.tryMount(Dcutr.new(switch)).onErrorRaise(LPError)
+    self.dcutrMounted = true
+  self.configure(switch)
   switch.connManager.addPeerEventHandler(
     self.newConnectedPeerHandler, PeerEventKind.Identified
   )
 
   discard self.reachabilityObservers.add(self.onNewStatusHandler)
   await self.autonatService.start(switch)
+  info "Hole-punching service started"
 
 method stop*(self: HPService, switch: Switch) {.async: (raises: [CancelledError]).} =
+  info "Stopping hole-punching service"
+
   switch.connManager.removePeerEventHandler(
     self.newConnectedPeerHandler, PeerEventKind.Identified
   )

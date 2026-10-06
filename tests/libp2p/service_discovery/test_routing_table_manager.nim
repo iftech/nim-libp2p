@@ -120,6 +120,21 @@ suite "ServiceRoutingTableManager":
       hits.ids.len == 2
       otherId in hits.ids
 
+  asyncTest "a new service table bootstraps when bootstrapping is enabled":
+    let disco = setupServiceDiscoveryNode(
+      kadConfig = KadDHTConfig.new(
+        ExtEntryValidator(), ExtEntrySelector(), disableBootstrapping = false
+      )
+    )
+    let serviceId = makeServiceId(1)
+
+    check disco.rtManager.addService(
+      serviceId, disco.rtable, DefaultReplication, DefaultMaxBuckets, Interest
+    )
+    check serviceId in disco.serviceBootstrapFuts
+
+    await disco.serviceBootstrapFuts[serviceId]
+
   test "addService with no callback set does not crash":
     let manager = ServiceRoutingTableManager.new()
     let serviceId = makeServiceId(1)
@@ -351,6 +366,22 @@ suite "ServiceRoutingTableManager":
     check not disco.insertPeer(serviceId, otherPeerInfo)
     check not disco.hasPeerInServiceTable(serviceId, otherPeerInfo.peerId)
 
+  test "insertPeer rejects a second peer on a full public IP":
+    let disco = setupServiceDiscoveryNode()
+    disco.config.limits.maxPeersPerIp = 1
+    let serviceId = makeServiceId(1)
+    check disco.rtManager.addService(
+      serviceId, disco.rtable, DefaultReplication, DefaultMaxBuckets, Interest
+    )
+
+    let first = makePeerInfo(addrs = @[makeMultiAddress("1.2.3.4")])
+    let second = makePeerInfo(addrs = @[makeMultiAddress("1.2.3.4")])
+
+    check:
+      disco.insertPeer(serviceId, first)
+      not disco.insertPeer(serviceId, second)
+      not disco.hasPeerInServiceTable(serviceId, second.peerId)
+
   test "insertPeer on non-existent service is a no-op":
     let disco = setupServiceDiscoveryNode()
     let serviceId = makeServiceId(1)
@@ -498,6 +529,32 @@ suite "ServiceRoutingTableManager - refreshAllTables":
     check:
       kad.findNodeCalls.len == 2
       kad.findNodeTables[1] == keptTable
+
+  asyncTest "an empty service table walks toward the main table's peers":
+    let manager = ServiceRoutingTableManager.new()
+    let kad = setupMockKad()
+    startAndDeferStop(@[kad])
+
+    let serviceId = makeServiceId(1)
+    check manager.addService(
+      serviceId,
+      makeMainTable(makeKey(2), @[]),
+      DefaultReplication,
+      DefaultMaxBuckets,
+      Interest,
+    )
+    let serviceTable = manager.getTable(serviceId).get()
+    for i in 3'u8 .. 5'u8:
+      discard kad.rtable.insert(makeKey(i))
+    let callsBefore = kad.findNodeCalls.len
+
+    await manager.refreshAllTables(kad)
+
+    check:
+      serviceTable.allKeys().len == 0
+      kad.findNodeCalls.len == callsBefore + 1
+      kad.findNodeCalls[^1] in kad.rtable.allKeys()
+      kad.findNodeTables[^1] == serviceTable
 
   test "addService rejects local node insertion into service table":
     let selfId = makeKey(0)

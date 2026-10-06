@@ -4,7 +4,8 @@
 {.used.}
 
 import std/[net, sequtils]
-import chronos, results
+import chronos
+import ../../../libp2p/results
 import ../../../libp2p/[builders, switch, multiaddress, multicodec, peerinfo, wire]
 import ../../../libp2p/services/natservice
 import ../../../libp2p/services/nat/portmapper
@@ -27,15 +28,15 @@ type
     extIp: IpAddress
     extPortQueue: seq[Port] ## ports handed out in order; once empty, echo request
     extPortIdx: int
-    mapErr: Opt[string]
+    mappingError: Opt[string]
     calls: seq[MockCall]
 
 proc newMock(
     extIp = parseIpAddress("203.0.113.7"),
     extPorts: seq[Port] = @[],
-    mapErr = Opt.none(string),
+    mappingError = Opt.none(string),
 ): MockPortMapper =
-  MockPortMapper(extIp: extIp, mapErr: mapErr, extPortQueue: extPorts)
+  MockPortMapper(extIp: extIp, mappingError: mappingError, extPortQueue: extPorts)
 
 proc mapperFactory(m: MockPortMapper): PortMapperFactory =
   proc(mode: PortMappingMode): Opt[PortMapper] {.gcsafe, raises: [].} =
@@ -43,7 +44,7 @@ proc mapperFactory(m: MockPortMapper): PortMapperFactory =
 
 method map*(
     self: MockPortMapper, internalPort: Port, externalPort: Port, proto: MapProto
-): Future[Result[MappedPort, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[MappedPort]] {.async: (raises: [CancelledError]), gcsafe.} =
   let assigned =
     if self.extPortIdx < self.extPortQueue.len:
       let p = self.extPortQueue[self.extPortIdx]
@@ -56,13 +57,13 @@ method map*(
       kind: mckMap, internalPort: internalPort, externalPort: assigned, proto: proto
     )
   )
-  if self.mapErr.isSome:
-    return err(self.mapErr.get())
+  if self.mappingError.isSome():
+    return err(self.mappingError.get())
   ok(MappedPort(externalIp: self.extIp, externalPort: assigned))
 
 method unmap*(
     self: MockPortMapper, externalPort: Port, proto: MapProto
-): Future[Result[void, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   self.calls.add(MockCall(kind: mckUnmap, externalPort: externalPort, proto: proto))
   ok()
 
@@ -271,14 +272,14 @@ suite "NATService":
     check Port(5555) in mock.unmappedPorts()
     check mock.countCalls(mckClose) == 1
 
-  asyncTest "setup raises when config has zero discoveryTimeout":
+  test "build raises when config has zero discoveryTimeout":
     let cfg = natPmpConfig(discoveryTimeout = 0.seconds)
-    expect ServiceSetupError:
+    expectMsgContains LPError, "discoveryTimeout must be > 0":
       discard makeSwitch(cfg, @[TcpAutoAddress])
 
-  asyncTest "setup raises when config has zero mappingTimeout":
+  test "build raises when config has zero mappingTimeout":
     let cfg = upnpConfig(mappingTimeout = 0.seconds)
-    expect ServiceSetupError:
+    expectMsgContains LPError, "mappingTimeout must be > 0":
       discard makeSwitch(cfg, @[TcpAutoAddress])
 
   asyncTest "factory receives the configured mode":
@@ -298,7 +299,8 @@ suite "NATService":
     check seenMode == NatPmp
 
   asyncTest "map failure leaves no stale entry; announced falls through":
-    let mock = newMock(extPorts = @[Port(8000)], mapErr = Opt.some("mapping refused"))
+    let mock =
+      newMock(extPorts = @[Port(8000)], mappingError = Opt.some("mapping refused"))
     let factory = mapperFactory(mock)
 
     let switch = makeSwitch(upnpConfig(), @[TcpAutoAddress], factory)
@@ -372,9 +374,14 @@ suite "NATService":
       nat.autonatV2Service.isNone()
       nat.networkReachability == NetworkReachability.Unknown
 
-  test "hole-punching paired with AutonatV2 reachability is rejected at setup":
+  test "build raises when config has less then one maxNumRelays":
+    let cfg = holePunchingConfig(maxNumRelays = 0)
+    expectMsgContains LPError, "maxNumRelays must be >= 1":
+      discard makeSwitch(cfg, @[TcpAutoAddress])
+
+  test "hole-punching paired with AutonatV2 reachability is rejected at build":
     # The realistic path: two withNAT calls for the conflicting concerns.
-    expect ServiceSetupError:
+    expectMsgContains LPError, "holePunching and reachability are mutually exclusive":
       discard standardBuilder(@[TcpAutoAddress])
         .withNAT(holePunchingConfig())
         .withNAT(autonatConfig(AutonatV2))
@@ -634,7 +641,7 @@ suite "NATService (setupMappings)":
   asyncTest "NatPmp mapping failure leaves announced empty":
     let
       cfg = natPmpConfig()
-      mapper = newMock(mapErr = Opt.some("mock no IGD"))
+      mapper = newMock(mappingError = Opt.some("mock no IGD"))
       switch = makeSwitch(cfg, @[TcpAutoAddress], mapperFactory(mapper))
       svc = findNatService(switch)
 

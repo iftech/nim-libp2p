@@ -52,7 +52,7 @@ iterator iterChunkMeta(m: PartsMetadata): (Chunk, Meta) =
 
 proc unionPartsMetadata*(
     a, b: PartsMetadata
-): Result[PartsMetadata, string] {.gcsafe, raises: [].} =
+): LPResult[PartsMetadata] {.gcsafe, raises: [].} =
   checkLen(a)
   checkLen(b)
 
@@ -79,24 +79,21 @@ proc unionPartsMetadata*(
   metadata.add(MyPartsMetadata.want(toSeq(want)))
   return ok(metadata)
 
-type MyPartialMessage* = ref object of PartialMessage
-  # implements PartialMessage as example implementation needed for testing
+type MyPartialMessage* = ref object
+  # example partial message implementation needed for testing
   groupId*: GroupId
   data*: Table[Chunk, seq[byte]] # holds parts that this partial message has
   want*: seq[Chunk] # holds parts that this partial message wants
 
-method groupId*(m: MyPartialMessage): GroupId {.gcsafe, raises: [].} =
-  return m.groupId
-
-method partsMetadata*(m: MyPartialMessage): PartsMetadata {.gcsafe, raises: [].} =
+proc partsMetadata*(m: MyPartialMessage): PartsMetadata =
   var metadata: seq[byte]
   metadata.add(MyPartsMetadata.have(toSeq(m.data.keys)))
   metadata.add(MyPartsMetadata.want(m.want))
   return metadata
 
-method materializeParts*(
+proc materializeParts*(
     pm: MyPartialMessage, metadata: PartsMetadata
-): Result[PartsData, string] {.gcsafe, raises: [].} =
+): LPResult[PartsData] {.gcsafe, raises: [].} =
   checkLen(metadata)
 
   var data: seq[byte]
@@ -107,3 +104,37 @@ method materializeParts*(
       except KeyError:
         raiseAssert "checked with if"
   ok(data)
+
+type MyPartialMessageStore* = ref object
+  # holds messages this node has published, keyed by groupId.
+  # backs PartialMessageExtensionConfig.materializeParts in tests.
+  messages*: Table[GroupId, MyPartialMessage]
+
+proc materializeParts*(
+    store: MyPartialMessageStore,
+    topic: string,
+    groupId: GroupId,
+    metadata: PartsMetadata,
+): LPResult[PartsData] {.gcsafe, raises: [].} =
+  let pm = store.messages.getOrDefault(groupId)
+  if pm.isNil:
+    return err("unknown groupId")
+  if metadata.len == 0:
+    var all: seq[byte]
+    for chunk in toSeq(pm.data.keys).sorted():
+      try:
+        all.add(pm.data[chunk])
+      except KeyError:
+        raiseAssert "key came from table iterator"
+    return ok(all)
+  pm.materializeParts(metadata)
+
+proc materializePartsFn*(
+    store: MyPartialMessageStore
+): proc(topic: string, groupId: GroupId, metadata: PartsMetadata): LPResult[PartsData] {.
+  gcsafe, raises: []
+.} =
+  return proc(
+      topic: string, groupId: GroupId, metadata: PartsMetadata
+  ): LPResult[PartsData] {.gcsafe, raises: [].} =
+    store.materializeParts(topic, groupId, metadata)

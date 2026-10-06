@@ -2,7 +2,6 @@
 # Copyright (c) Status Research & Development GmbH
 
 import
-  chronicles,
   metrics,
   hashes,
   random,
@@ -95,7 +94,6 @@ proc getPubSubPeer*(p: TestGossipSub, peerId: PeerId): PubSubPeer =
   let pubSubPeer = PubSubPeer.new(
     peerId, getStream, nil, GossipSubCodec_12, 1024 * 1024, voidPeerHandler
   )
-  debug "created new pubsub peer", peerId
 
   p.peers[peerId] = pubSubPeer
 

@@ -92,7 +92,7 @@ suite "PeerStore Address TTL - Component":
         it.confidence == AddressConfidence.High
       )
 
-    await listenerIdentified.wait(10.seconds)
+    await listenerIdentified
 
     # The listener announces an extra address.
     # Its IdentifyPusher pushes the updated PeerInfo to the dialer at Medium.

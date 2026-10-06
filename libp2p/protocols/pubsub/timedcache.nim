@@ -36,13 +36,20 @@ func hash*(a: TimedEntry): Hash =
   else:
     hash(a[].key)
 
+func removeHead[K](t: var TimedCache[K]) =
+  let removed = t.head
+  t.entries.excl(removed)
+  t.head = removed.next
+  removed.next = nil
+  removed.prev = nil
+  if t.head != nil:
+    t.head.prev = nil
+  else:
+    t.tail = nil
+
 func expire*(t: var TimedCache, now: Moment = Moment.now()) =
   while t.head != nil and t.head.expiresAt < now:
-    t.entries.excl(t.head)
-    t.head.prev = nil
-    t.head = t.head.next
-    if t.head == nil:
-      t.tail = nil
+    t.removeHead()
 
 func del*[K](t: var TimedCache[K], key: K): Opt[TimedEntry[K]] =
   # Removes existing key from cache, returning the previous value if present
@@ -64,6 +71,8 @@ func del*[K](t: var TimedCache[K], key: K): Opt[TimedEntry[K]] =
       item.next.prev = item.prev
     if item.prev != nil:
       item.prev.next = item.next
+    item.next = nil
+    item.prev = nil
     Opt.some(item)
   else:
     Opt.none(TimedEntry[K])
@@ -75,12 +84,7 @@ func put*[K](cache: var TimedCache[K], key: K, now = Moment.now()): bool =
   func ensureSizeBound(cache: var TimedCache[K]) =
     if cache.maxSize > 0 and cache.entries.len() >= cache.maxSize and key notin cache:
       if cache.head != nil:
-        cache.entries.excl(cache.head)
-        cache.head = cache.head.next
-        if cache.head != nil:
-          cache.head.prev = nil
-        else:
-          cache.tail = nil
+        cache.removeHead()
 
   cache.expire(now)
   cache.ensureSizeBound()
@@ -111,6 +115,8 @@ func put*[K](cache: var TimedCache[K], key: K, now = Moment.now()): bool =
       node.prev = cur
       node.next = cur.next
       cur.next = node
+      if node.next != nil:
+        node.next.prev = node
       if cur == cache.tail:
         cache.tail = node
 

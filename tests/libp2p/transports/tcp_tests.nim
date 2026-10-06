@@ -40,7 +40,7 @@ template tcpListenerIPTests(suiteName: string, listenMA: MultiAddress) =
       let receivedData = await conn.read(message.len)
       check string.fromBytes(receivedData) == message
 
-      await handlerFut.wait(1.seconds)
+      await handlerFut
       await conn.closeWait()
       await server.stop()
 
@@ -61,7 +61,7 @@ template tcpListenerIPTests(suiteName: string, listenMA: MultiAddress) =
       let sentBytes = await conn.write(message)
       check sentBytes == message.len
 
-      await handlerFut.wait(1.seconds)
+      await handlerFut
       await conn.closeWait()
       await server.stop()
 
@@ -93,7 +93,7 @@ template tcpDialerIPTest(suiteName: string, listenTA: TransportAddress) =
       await conn.readExactly(addr msg[0], message.len)
       check string.fromBytes(msg) == message
 
-      await handlerFut.wait(1.seconds)
+      await handlerFut
       await conn.close()
       await client.stop()
       server.stop()
@@ -124,7 +124,7 @@ template tcpDialerIPTest(suiteName: string, listenTA: TransportAddress) =
       let conn = await client.dial(maddr)
       await conn.write(message)
 
-      await handlerFut.wait(1.seconds)
+      await handlerFut
       await conn.close()
       await client.stop()
       server.stop()
@@ -184,7 +184,7 @@ template tcpTests*() =
       let handlerFut = serverHandler()
 
       let streamTransport = await connect(server.addrs[0])
-      await handlerFut.wait(1.seconds)
+      await handlerFut
       await streamTransport.closeWait()
       await server.stop()
 
@@ -215,7 +215,14 @@ template tcpTests*() =
       let unbindable = ma("/ip4/192.0.2.1/tcp/0")
       let transport = TcpTransport.new(upgrade = Upgrade())
 
-      expect LPError:
+      expect TcpTransportError:
         await transport.start(@[TcpAutoAddressIP4, unbindable])
 
       check transport.servers.len == 0
+
+    asyncTest "dial of a non-wire address is a TcpTransportError":
+      let transport = TcpTransport.new(upgrade = Upgrade())
+
+      expect TcpTransportError:
+        discard await transport.dial("", ma("/dns/example.com/tcp/1234"))
+      await transport.stop()

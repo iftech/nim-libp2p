@@ -105,6 +105,22 @@ suite "KadDHT Routing Table":
 
     check rt.randomPeersClosestFirst(target, rng(), 0, maxBuckets = 2).len == 0
 
+  test "sampling drops every excluded key":
+    let selfId = testKey(0)
+    let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
+    var rt = RoutingTable.new(selfId, config)
+    for bucket in [1, 3, TargetBucket]:
+      check rt.insert(rt.keyInBucket(bucket))
+
+    let kept = rt.buckets[3].peers[0]
+    let skipped = [rt.buckets[1].peers[0], rt.buckets[TargetBucket].peers[0]]
+
+    # Dropped before sampling, so they cannot take a slot from their buckets.
+    check rt.randomPeersClosestFirst(rng(), 3, exclude = skipped) == @[kept]
+
+    # The same in a view centred on a target, here one of the excluded keys.
+    check rt.randomPeersClosestFirst(skipped[0], rng(), 3, exclude = skipped) == @[kept]
+
   test "does not insert beyond capacity":
     let selfId = testKey(0)
     let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
@@ -153,6 +169,63 @@ suite "KadDHT Routing Table":
       not rt.insert(newcomer)
       rt.buckets[TargetBucket].allKeys() == before
       not rt.buckets[TargetBucket].allKeys().contains(newcomer)
+
+  test "probed newcomer rotates out the least-recently-seen peer of the newer half":
+    let selfId = testKey(0)
+    let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
+    var rt = RoutingTable.new(selfId, config)
+    for _ in 0 ..< config.replication:
+      discard rt.insert(rt.keyInBucket(TargetBucket))
+    for nodeId in rt.buckets[TargetBucket].peers:
+      rt.markUseful(nodeId)
+
+    let longestHeld = rt.buckets[TargetBucket].peers[0]
+    let victim = rt.buckets[TargetBucket].peers[^1]
+    rt.registry.withRecord(longestHeld, record):
+      record[].lastSeen = Moment.now() - 2.hours
+    rt.registry.withRecord(victim, record):
+      record[].lastSeen = Moment.now() - 1.hours
+    let newcomer = rt.keyInBucket(TargetBucket)
+
+    check:
+      rt.insert(newcomer, probed = true)
+      rt.buckets[TargetBucket].peers.len == config.replication
+      rt.buckets[TargetBucket].allKeys().contains(newcomer)
+      rt.buckets[TargetBucket].allKeys().contains(longestHeld)
+      not rt.buckets[TargetBucket].allKeys().contains(victim)
+
+  test "rotation never evicts the longest-held half of a bucket":
+    let selfId = testKey(0)
+    let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
+    var rt = RoutingTable.new(selfId, config)
+    for _ in 0 ..< config.replication:
+      discard rt.insert(rt.keyInBucket(TargetBucket))
+    let stable = rt.buckets[TargetBucket].peers[0 ..< config.replication div 2]
+
+    for _ in 0 ..< config.replication:
+      rt.buckets[TargetBucket].lastRotation = Opt.none(Moment)
+      check rt.insert(rt.keyInBucket(TargetBucket), probed = true)
+
+    for nodeId in stable:
+      check rt.buckets[TargetBucket].allKeys().contains(nodeId)
+
+  test "rotation admits one probed newcomer per interval":
+    let selfId = testKey(0)
+    let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
+    var rt = RoutingTable.new(selfId, config)
+    for _ in 0 ..< config.replication:
+      discard rt.insert(rt.keyInBucket(TargetBucket))
+
+    check rt.insert(rt.keyInBucket(TargetBucket), probed = true)
+
+    let before = rt.buckets[TargetBucket].allKeys()
+    check:
+      not rt.insert(rt.keyInBucket(TargetBucket), probed = true)
+      rt.buckets[TargetBucket].allKeys() == before
+
+    rt.buckets[TargetBucket].lastRotation =
+      Opt.some(Moment.now() - BucketRotationInterval)
+    check rt.insert(rt.keyInBucket(TargetBucket), probed = true)
 
   test "markUseful protects a peer from eviction":
     let selfId = testKey(0)

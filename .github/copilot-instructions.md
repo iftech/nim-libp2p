@@ -503,7 +503,7 @@ nimble genbindings_cddl # Generate the CDDL schema
 | Workflow | Description |
 |----------|-------------|
 | `test_all.yml` | Main CI: Linux (amd64), macOS (arm64), Windows (amd64); Nim v2.2.4 & v2.2.10 |
-| `daily_test_all_latest_deps.yml` | Daily tests that run using latests dependencies |
+| `daily_test_all_latest_deps.yml` | Daily tests that run using latest dependencies |
 | `daily_test_all_no_flags.yml` | Tests without experimental flags |
 | `daily_ci_report.yml` | Daily CI failure reporting: opens/updates GitHub issues for failed daily CI runs |
 | `daily_nimbus.yml` | Nimbus-specific test matrix |

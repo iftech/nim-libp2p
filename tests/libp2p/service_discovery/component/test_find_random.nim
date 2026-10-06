@@ -36,6 +36,22 @@ suite "Service Discovery - XPR key binding":
 
     check (await discos[1].lookupRandom()).len == 0
 
+  asyncTest "lookupRandom finds a caller-supplied XPR under its signer's key":
+    let discos = setupServiceDiscoveryNodes(3, xprPublishing = false)
+    startAndDeferStop(discos)
+    await connectStar(discos)
+
+    let signer = discos[2].switch.peerInfo
+    let service = makeServiceInfo()
+    let advert = makeAdvertisement(service.id, signer.privateKey, signer.addrs)
+    check discos[0].startAdvertising(service, Opt.some(advert.encode())).isOk()
+
+    checkUntilTimeout:
+      discos[2].dataTable.get(signer.peerId.toKey()).isSome()
+
+    let records = await discos[1].lookupRandom()
+    check records.mapIt(it.peerId) == @[signer.peerId]
+
 suite "Service Discovery Component - Find Random":
   teardown:
     checkTrackers()
@@ -71,3 +87,11 @@ suite "Service Discovery Component - Find Random":
     let fut = discos[0].lookupRandom()
     await sleepAsync(1.millis)
     await fut.cancelAndWait()
+
+  asyncTest "a disco node answers a ping on its own codec":
+    let discos = setupServiceDiscoveryNodes(2)
+    startAndDeferStop(discos)
+
+    check await discos[0].ping(
+      discos[1].switch.peerInfo.peerId, discos[1].switch.peerInfo.addrs
+    )

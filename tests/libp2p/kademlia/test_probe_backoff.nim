@@ -132,3 +132,40 @@ suite "KadDHT - Probe backoff":
     checkUntilTimeout:
       kads[0].hasKey(peerId.toKey())
       not kads[0].probeFailures.hasKey(peerId)
+
+  asyncTest "an admission probe for a detached table does not insert the peer":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+
+    let peerId = kads[1].switch.peerInfo.peerId
+    let serviceTable =
+      RoutingTable.new(randomServiceId(), registry = kads[0].rtable.registry)
+    kads[0].admitPeers(
+      serviceTable, @[PeerInfo(peerId: peerId, addrs: kads[1].switch.peerInfo.addrs)]
+    )
+    check kads[0].admissionProbes.len == 1
+
+    serviceTable.detachAll()
+    checkUntilTimeout:
+      kads[0].admissionProbes.len == 0
+
+    check:
+      not serviceTable.contains(peerId.toKey())
+      not kads[0].probeFailures.hasKey(peerId)
+
+  asyncTest "a probe that fails without suspending is not tracked":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+
+    let peerId = kads[1].switch.peerInfo.peerId
+    await kads[0].msgSender.stop()
+    kads[0].admitPeers(
+      @[PeerInfo(peerId: peerId, addrs: kads[1].switch.peerInfo.addrs)]
+    )
+
+    check:
+      kads[0].admissionProbes.len == 0
+      kads[0].probeFailures.getOrDefault(peerId).count == 1
+      not kads[0].hasKey(peerId.toKey())
+    checkUntilTimeout:
+      kads[0].admissionSem.availableSlots == kads[0].config.limits.maxConcurrentProbes

@@ -3,7 +3,7 @@
 
 import std/[tables, sequtils, sets, heapqueue, hashes]
 from std/times import format, getTime, parse, toTime, toUnix, utc
-import chronos, chronicles, results, sugar, stew/arrayOps, nimcrypto/sha2
+import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
 import ../../utils/[opt, shortlog]
 import ../protocol
@@ -27,6 +27,8 @@ const
     ## Peer not seen for this duration marks the bucket stale (refresh trigger).
   DefaultUsefulnessGracePeriod* = 1.hours
     ## New peers resist eviction until in the table this long without proving
+  BucketRotationInterval* = 1.minutes
+    ## Minimum time between two evictions of useful peers from one bucket.
   DefaultLivenessGracePeriod* = 1.hours
     ## Peers with no successful outbound DHT activity within this window are
     ## probed for liveness by the background liveness loop; failures are
@@ -105,10 +107,12 @@ proc toKey*(c: Cid): Key =
 proc toKey*(p: PeerId): Key =
   MultiHash.init(p.data).get().toKey()
 
-proc toPeerId*(k: Key): Result[PeerId, string] =
-  PeerId.init(k.toBytes()).mapErr(x => $x)
+proc toPeerId*(k: Key): LPResult[PeerId] =
+  let peerId = PeerId.init(k.toBytes()).valueOr:
+    return err(error)
+  ok(peerId)
 
-proc toPeer*(k: Key, switch: Switch): Result[Peer, string] =
+proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
   let peer = ?k.toPeerId()
   let addrs = switch.peerStore[AddressBook][peer]
   if addrs.len == 0:
@@ -245,6 +249,7 @@ type
   ## looking up ``PeerRecord`` timestamps in the shared registry.
   Bucket* = object
     peers*: seq[Key]
+    lastRotation*: Opt[Moment]
 
   RoutingTableConfig* = ref object
     replication*: int
@@ -396,7 +401,7 @@ method isValid*(
 type EntrySelector* = ref object of RootObj
 method select*(
     self: EntrySelector, key: Key, records: seq[EntryRecord]
-): Result[int, string] {.base, raises: [], gcsafe.} =
+): LPResult[int] {.base, raises: [], gcsafe.} =
   doAssert(false, "EntrySelection base not implemented")
 
 type DefaultEntryValidator* = ref object of EntryValidator
@@ -408,7 +413,7 @@ method isValid*(
 type DefaultEntrySelector* = ref object of EntrySelector
 method select*(
     self: DefaultEntrySelector, key: Key, records: seq[EntryRecord]
-): Result[int, string] {.raises: [], gcsafe.} =
+): LPResult[int] {.raises: [], gcsafe.} =
   if records.len == 0:
     return err("No records to choose from")
 

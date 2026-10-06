@@ -5,6 +5,7 @@
 import chronos, results, sequtils
 import
   ../../../../libp2p/[
+    crypto/crypto,
     peerid,
     peerinfo,
     protocols/kademlia/routing_table,
@@ -26,16 +27,23 @@ suite "Service Discovery Component - Registrar Closer Peers":
 
   asyncTest "REGISTER closerPeers come from RegT when available":
     let conf = ServiceDiscoveryConfig.new(safetyParam = 0.0)
+    let serviceName = "service"
+    # One peer per bucket is returned, so the two probes need distinct buckets
+    # or the reply can only carry whichever of them is drawn.
+    let bucketKeys = serviceBucketLookupTable[serviceName]
     let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
     let advertiserNode = setupServiceDiscoveryNode(discoConfig = conf)
-    let serviceOnlyNode = setupServiceDiscoveryNode(discoConfig = conf)
-    let kadOnlyNode = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceOnlyNode = setupServiceDiscoveryNode(
+      discoConfig = conf, privateKey = Opt.some(PrivateKey.init(bucketKeys[0][0]).get())
+    )
+    let kadOnlyNode = setupServiceDiscoveryNode(
+      discoConfig = conf, privateKey = Opt.some(PrivateKey.init(bucketKeys[1][0]).get())
+    )
 
     startAndDeferStop(@[registrarNode, advertiserNode, serviceOnlyNode, kadOnlyNode])
     await connect(registrarNode, advertiserNode)
     await connect(registrarNode, kadOnlyNode)
 
-    let serviceName = "service"
     let serviceId = serviceName.hashServiceId()
 
     # serviceOnlyNode has addresses in the peer store but is not in the main Kad table.
@@ -69,16 +77,23 @@ suite "Service Discovery Component - Registrar Closer Peers":
 
   asyncTest "GET_ADS closerPeers come from RegT when available":
     let conf = ServiceDiscoveryConfig.new(safetyParam = 0.0)
+    let serviceName = "service"
+    # The discoverer files one closer peer per bucket, so the two probes need
+    # distinct buckets or only whichever is named first survives.
+    let bucketKeys = serviceBucketLookupTable[serviceName]
     let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
     let discovererNode = setupServiceDiscoveryNode(discoConfig = conf)
-    let serviceOnlyNode = setupServiceDiscoveryNode(discoConfig = conf)
-    let kadOnlyNode = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceOnlyNode = setupServiceDiscoveryNode(
+      discoConfig = conf, privateKey = Opt.some(PrivateKey.init(bucketKeys[0][0]).get())
+    )
+    let kadOnlyNode = setupServiceDiscoveryNode(
+      discoConfig = conf, privateKey = Opt.some(PrivateKey.init(bucketKeys[1][0]).get())
+    )
 
     startAndDeferStop(@[registrarNode, discovererNode, serviceOnlyNode, kadOnlyNode])
     await connect(registrarNode, discovererNode)
     await connect(registrarNode, kadOnlyNode)
 
-    let serviceName = "service"
     let serviceId = serviceName.hashServiceId()
 
     # serviceOnlyNode has addresses in the peer store but is not in the main Kad table.
@@ -187,6 +202,55 @@ suite "Service Discovery Component - Registrar Closer Peers":
     )
 
     check response.closerPeers.len == 1
+
+  asyncTest "GET_ADS closerPeers hold one peer per bucket at the default config":
+    # Pins the shipped default. The per-bucket cap used to be K_register, so it
+    # could return three peers from one bucket with nothing turning red.
+    let conf = ServiceDiscoveryConfig.new(safetyParam = 0.0)
+    let (sameBucketNodes, serviceName) = setupRegistrarsInSameBucket(conf, 3)
+    let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
+    let requester = setupServiceDiscoveryNode(discoConfig = conf)
+
+    startAndDeferStop(@[registrarNode, requester] & sameBucketNodes)
+    for node in sameBucketNodes:
+      await connect(registrarNode, node)
+    await connect(registrarNode, requester)
+
+    let serviceId = serviceName.hashServiceId()
+    let sharedBucketIds = sameBucketNodes.mapIt(it.switch.peerInfo.peerId)
+
+    check:
+      conf.kRegister == 3
+      sharedBucketIds.allIt(registrarNode.rtable.hasPeer(it.toKey()))
+
+    let response = registrarNode.getAdvertisements(
+      requester.switch.peerInfo.peerId,
+      Message(msgType: Opt.some(MessageType.getAds), key: Opt.some(serviceId)),
+    )
+
+    check response.closerPeers.toPeerIds().countIt(it in sharedBucketIds) == 1
+
+  asyncTest "GET_ADS closerPeers do not name the requester":
+    # The requester is seated on every query, so naming it back would spend its
+    # bucket's only slot on the one peer the requester already knows.
+    let conf = ServiceDiscoveryConfig.new(safetyParam = 0.0)
+    let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
+    let requester = setupServiceDiscoveryNode(discoConfig = conf)
+
+    startAndDeferStop(@[registrarNode, requester])
+    await connect(registrarNode, requester)
+
+    let requesterId = requester.switch.peerInfo.peerId
+    check registrarNode.rtable.hasPeer(requesterId.toKey())
+
+    let response = registrarNode.getAdvertisements(
+      requesterId,
+      Message(
+        msgType: Opt.some(MessageType.getAds), key: Opt.some("service".hashServiceId())
+      ),
+    )
+
+    check requesterId notin response.closerPeers.toPeerIds()
 
   asyncTest "REGISTER with Wait adds advertiser to RegT":
     # Use safetyParam = 0 so the first registration is Confirmed, and

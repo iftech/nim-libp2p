@@ -4,7 +4,7 @@
 ## This module contains a Switch Building helper.
 {.push raises: [].}
 
-import tables, chronos, chronicles, sequtils
+import tables, chronos, chronicles, sequtils, lsquic
 import
   switch,
   peerid,
@@ -273,12 +273,13 @@ proc withQuicTransport*(
     b: SwitchBuilder,
     inTimeout: Duration = DefaultChanTimeout,
     outTimeout: Duration = DefaultChanTimeout,
+    engineConfig: QuicEngineConfig = DefaultQuicEngineConfig,
 ): SwitchBuilder =
   b.withTransport(
     proc(config: TransportConfig): Transport =
       QuicTransport.new(
         config.upgr, config.privateKey, config.rng, config.connManager, inTimeout,
-        outTimeout,
+        outTimeout, engineConfig,
       )
   )
 
@@ -320,6 +321,7 @@ proc withWatermarkPolicy*(
     highWater: int,
     gracePeriod: Duration = 0.minutes,
     silencePeriod: Duration = 10.seconds,
+    periodicTrimInterval: Duration = DefaultPeriodicTrimInterval,
 ): SwitchBuilder =
   ## Enable hi/lo watermark connection management.
   ## When connected peers exceed `highWater`, the connection manager trims
@@ -328,12 +330,14 @@ proc withWatermarkPolicy*(
   ## a hard semaphore cap and active trimming simultaneously.
   doAssert lowWater > 0, "lowWater must be > 0"
   doAssert highWater > lowWater, "highWater must be > lowWater"
+  doAssert periodicTrimInterval > ZeroDuration, "periodicTrimInterval must be > 0"
   b.watermark = Opt.some(
     WatermarkPolicy(
       lowWater: lowWater,
       highWater: highWater,
       gracePeriod: gracePeriod,
       silencePeriod: silencePeriod,
+      periodicTrimInterval: periodicTrimInterval,
     )
   )
   b
@@ -481,7 +485,7 @@ proc withPrivateAddressFilter*(b: SwitchBuilder): SwitchBuilder =
   ## Circuit relay and DNS addresses are never filtered.
   b.withAddressPolicy(publicRoutableAddressPolicy)
 
-proc buildSwitch(b: SwitchBuilder): Switch {.raises: [LPError].} =
+proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
   if isNil(b.rng):
     b.rng = newRng()
 
@@ -501,7 +505,7 @@ proc buildSwitch(b: SwitchBuilder): Switch {.raises: [LPError].} =
   if SecureProtocol.NoiseHFS in b.secureManagers:
     secureManagerInstances.add(NoiseHFS.new(b.rng, seckey).Secure)
 
-  let peerInfo = PeerInfo.new(
+  let peerInfo = ?PeerInfo.tryNew(
     seckey,
     b.addresses,
     protoVersion = b.protoVersion,
@@ -579,9 +583,9 @@ proc buildSwitch(b: SwitchBuilder): Switch {.raises: [LPError].} =
     addressManager: addressManager,
   )
 
-  return switch
+  ok(switch)
 
-proc setupServices(b: SwitchBuilder, switch: Switch) {.raises: [LPError].} =
+proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
@@ -589,10 +593,7 @@ proc setupServices(b: SwitchBuilder, switch: Switch) {.raises: [LPError].} =
     switch.services.add(NATService.new(natCfg, b.rng, b.natPortMapperFactory))
 
   if b.identifyPusherEnabled:
-    switch.services.add(IdentifyPusher.new())
-
-  for service in switch.services:
-    service.setup(switch)
+    switch.services.add(IdentifyPusher.new(switch))
 
 proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
   ## Handler for ``KadMode.Auto``: the node serves queries while it is
@@ -611,26 +612,26 @@ proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
     of NetworkReachability.Unknown:
       discard
 
-proc mountProtocols(b: SwitchBuilder, switch: Switch) {.raises: [LPError].} =
+proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
   if not switch.peerStore.identify.isNil:
-    switch.mount(switch.peerStore.identify)
+    ?switch.tryMount(switch.peerStore.identify)
 
   b.rdvConfig.ifValue(rdvCfg):
     let rend = RendezVous.new(b.rng, rdvCfg)
     rend.setup(switch)
-    switch.mount(rend)
+    ?switch.tryMount(rend)
 
   b.autonatV2ServerConfig.ifValue(config):
-    switch.mount(AutonatV2.new(switch, config = config))
+    ?switch.tryMount(AutonatV2.new(switch, config = config))
 
   if b.autonatEnabled:
-    switch.mount(Autonat.new(switch))
+    ?switch.tryMount(Autonat.new(switch))
 
   b.circuitRelay.ifValue(relay):
     if relay of RelayClient:
       switch.addTransport(RelayTransport.new(RelayClient(relay), switch.muxedUpgrade))
     relay.setup(switch)
-    switch.mount(relay)
+    ?switch.tryMount(relay)
 
   b.kad.ifValue(kadInfo):
     var config = kadInfo.config
@@ -643,7 +644,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch) {.raises: [LPError].} =
       # Auto starts as a client until autonat proves the node reachable.
       isServer = kadInfo.mode == KadMode.Server,
     )
-    switch.mount(kad)
+    ?switch.tryMount(kad)
 
     if kadInfo.mode == KadMode.Auto:
       var wired = false
@@ -652,10 +653,12 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch) {.raises: [LPError].} =
       if not wired:
         warn "Kad-DHT auto mode has no reachability service; it stays a client",
           hint = "configure withNAT reachability or hole-punching"
+  ok()
 
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
-  var switch = b.buildSwitch()
-  b.setupServices(switch)
-  b.mountProtocols(switch)
-
-  return switch
+  b.natConfig.ifValue(natCfg):
+    validateNATConfig(natCfg).onErrorRaise(LPError)
+  let switch = b.buildSwitch().valueOrRaise(LPError)
+  b.addServices(switch)
+  b.mountProtocols(switch).onErrorRaise(LPError)
+  switch

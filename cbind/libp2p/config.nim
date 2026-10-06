@@ -24,6 +24,10 @@ type MuxerType {.ffi.} = enum
   Mplex = "mplex"
   Yamux = "yamux"
 
+type ServiceDiscoveryMode {.ffi.} = enum
+  Server = "server"
+  Client = "client"
+
 type BootstrapNode {.ffi.} = object
   peerId: string
   multiaddrs: seq[string]
@@ -46,6 +50,10 @@ type Libp2pConfig {.ffi.} = object
   gossipsub: GossipsubConfig ## Mounting and ingress limits for GossipSub.
   mountKad: bool ## Mount the Kademlia DHT service.
   mountServiceDiscovery: bool ## Mount random-find based service discovery.
+  serviceDiscoveryMode: ServiceDiscoveryMode
+    ## A client queries the DHT but serves no requests and registers no adverts.
+  serviceDiscoveryDisableXprPublishing: bool
+    ## Keep this node's own signed peer record out of the DHT.
   dnsResolver: string ## DNS server address; empty uses the core defaults.
   addrs: seq[string] ## Listen multiaddresses for the switch.
   muxer: MuxerType ## Type of muxer used for TCP transports.
@@ -120,6 +128,8 @@ type ParsedConfig = object
   gossipsub: ParsedGossipsub
   mountKad: bool
   mountServiceDiscovery: bool
+  serviceDiscoveryMode: ServiceDiscoveryMode
+  serviceDiscoveryDisableXprPublishing: bool
 
 proc parseMultiaddrs(raw: openArray[string]): Result[seq[MultiAddress], string] =
   var addrs: seq[MultiAddress]
@@ -373,7 +383,16 @@ proc parseNATConfig(config: Libp2pConfig): Result[Opt[NATConfig], string] =
   else:
     ok(Opt.some(nat))
 
+func requireServiceDiscoveryMount(config: Libp2pConfig): Result[void, string] =
+  if config.mountServiceDiscovery:
+    return ok()
+  if config.serviceDiscoveryMode != ServiceDiscoveryMode.Server or
+      config.serviceDiscoveryDisableXprPublishing:
+    return err("service discovery settings require mountServiceDiscovery")
+  ok()
+
 proc parse(config: Libp2pConfig): Result[ParsedConfig, string] =
+  ?requireServiceDiscoveryMount(config)
   ok(
     ParsedConfig(
       dnsServers: ?resolveDnsServers(config.dnsResolver),
@@ -393,5 +412,7 @@ proc parse(config: Libp2pConfig): Result[ParsedConfig, string] =
       gossipsub: ?parseGossipsub(config.gossipsub),
       mountKad: config.mountKad,
       mountServiceDiscovery: config.mountServiceDiscovery,
+      serviceDiscoveryMode: config.serviceDiscoveryMode,
+      serviceDiscoveryDisableXprPublishing: config.serviceDiscoveryDisableXprPublishing,
     )
   )

@@ -20,12 +20,15 @@ proc newWatermarkSwitch(
     highWater: int,
     gracePeriod: Duration = 0.seconds,
     silencePeriod: Duration = 0.seconds,
+    periodicTrimInterval: Duration = 100.millis,
     outboundBonus: int = 0,
     decayResolution: Duration = 1.minutes,
     maxConnections: int = 0,
 ): Switch {.raises: [LPError].} =
   var builder = makeStandardSwitchBuilder()
-    .withWatermarkPolicy(lowWater, highWater, gracePeriod, silencePeriod)
+    .withWatermarkPolicy(
+      lowWater, highWater, gracePeriod, silencePeriod, periodicTrimInterval
+    )
     .withPeerScoring(
       PeerScoring(outboundBonus: outboundBonus, decayResolution: decayResolution)
     )
@@ -407,7 +410,7 @@ suite "Connection Manager Watermark/Scoring Component":
   asyncTest "hard cap rejects new connections when the trim cannot free slots":
     # every peer is protected, so the trim has nothing to prune
     # the cap stays full at maxConnections
-    # the semaphore then rejects further connections: an inbound slot blocks, an outbound slot raises
+    # the semaphore then rejects further connections: an inbound slot blocks, an outbound slot fails
     const
       lowWater = 2
       highWater = 3
@@ -432,8 +435,7 @@ suite "Connection Manager Watermark/Scoring Component":
 
     # with the cap full the semaphore rejects new connections
     check not (await node.connManager.getIncomingSlot().withTimeout(100.millis))
-    expect TooManyConnectionsError:
-      discard node.connManager.getOutgoingSlot()
+    check node.connManager.getOutgoingSlot().isErr()
 
   asyncTest "cap rejection retries watermark trimming after grace":
     const
@@ -486,9 +488,7 @@ suite "Connection Manager Watermark/Scoring Component":
     expect DialFailedError:
       await connect(peers[2], node)
 
-  asyncTest "gossipsub drops peers pruned after Joined is emitted":
-    # When the trim prunes a just-stored connection, gossipsub must observe Joined
-    # before Left so it does not keep a pruned peer subscribed.
+  asyncTest "gossipsub does not keep a peer pruned before Joined":
     const
       lowWater = 1
       highWater = 2
@@ -506,24 +506,36 @@ suite "Connection Manager Watermark/Scoring Component":
     proc connectedHandler(
         peerId: PeerId, event: ConnEvent
     ) {.async: (raises: [CancelledError]).} =
-      # Simulates a Connected handler with I/O that used to delay Joined past the prune.
+      # holds Joined back past a periodic trim tick
       if peerId == prunedId:
         await sleepAsync(connectedHandlerDelay)
 
+    var peerEvents: seq[PeerEventKind]
+    proc peerHandler(
+        peerId: PeerId, event: PeerEvent
+    ) {.async: (raises: [CancelledError]).} =
+      if peerId == prunedId:
+        peerEvents.add(event.kind)
+
     node.connManager.addConnEventHandler(connectedHandler, ConnEventKind.Connected)
+    node.connManager.addPeerEventHandler(peerHandler, PeerEventKind.Joined)
+    node.connManager.addPeerEventHandler(peerHandler, PeerEventKind.Left)
 
     # protect peers[0] so it is the only peer the trim is allowed to keep
     await connect(peers[0], node)
     await connect(peers[1], node)
     node.connManager.protect(peers[0].peerInfo.peerId, "keep")
 
-    # peers[2] triggers the trim, which prunes its own just-stored connection.
-    await connect(peers[2], node)
+    # the prune can land before the dialer finishes identify
+    try:
+      await connect(peers[2], node)
+    except DialFailedError:
+      discard
 
-    # Joined is handled before Left, so the prune removes the peer from gossipsub.
     checkUntilTimeout:
       not node.isConnected(prunedId)
       prunedId notin gossip.peers
+    check peerEvents.len == 0
 
   asyncTest "score and protection are persisted between disconnections":
     let node = newWatermarkSwitch(1, 2)

@@ -70,6 +70,22 @@ suite "KadDHT fixLowPeers":
     checkUntilTimeout:
       kad.rtable.contains(peerId.toKey())
 
+  asyncTest "connected peers without a known address are skipped":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+    let (kad, peer) = (kads[0], kads[1])
+    let peerId = peer.switch.peerInfo.peerId
+
+    await kad.switch.connect(peerId, peer.switch.peerInfo.addrs)
+    discard kad.switch.peerStore[AddressBook].del(peerId)
+
+    await kad.fixLowPeers()
+
+    check:
+      kad.switch.isConnected(peerId)
+      not kad.rtable.contains(peerId.toKey())
+      kad.admissionProbes.len == 0
+
   asyncTest "the loop re-seeds without an explicit call":
     let bootstrap = setupMockKad()
     startAndDeferStop(@[bootstrap])

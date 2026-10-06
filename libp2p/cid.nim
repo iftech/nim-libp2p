@@ -81,10 +81,6 @@ when libp2p_contentids_exts != "":
 else:
   const CodeContentIds = initCidCodeTable(@ContentIdsList)
 
-template orError*(exp: untyped, err: untyped): untyped =
-  exp.mapErr do(_: auto) -> auto:
-    err
-
 proc decode(data: openArray[byte]): Result[Cid, CidError] =
   if len(data) == 34 and data[0] == 0x12'u8 and data[1] == 0x20'u8:
     ok(
@@ -177,11 +173,11 @@ proc validate*(ctype: typedesc[Cid], data: openArray[byte]): bool =
 proc mhash*(cid: Cid): Result[MultiHash, CidError] =
   ## Returns MultiHash part of CID.
   if cid.cidver notin {CIDv0, CIDv1}:
-    err(CidError.Incorrect)
-  else:
-    MultiHash.init(cid.data.buffer.toOpenArray(cid.hpos, cid.data.high)).orError(
-      CidError.Incorrect
-    )
+    return err(CidError.Incorrect)
+
+  let mh = MultiHash.init(cid.data.buffer.toOpenArray(cid.hpos, cid.data.high)).valueOr:
+    return err(CidError.Incorrect)
+  ok(mh)
 
 proc contentType*(cid: Cid): Result[MultiCodec, CidError] =
   ## Returns content type part of CID

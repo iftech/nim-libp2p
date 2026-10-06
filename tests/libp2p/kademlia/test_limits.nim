@@ -61,8 +61,9 @@ suite "KadDHT - Limits":
     await noCancel secondProbes.values.toSeq().cancelAndWait()
 
   asyncTest "an admission probe frees its slot at the probe timeout":
+    const probesTimeout = 500.milliseconds
     let stall = startStallServer()
-    let kad = setupKad(testKadConfig(timeout = 500.milliseconds))
+    let kad = setupKad(testKadConfig(timeout = probesTimeout))
     startAndDeferStop(@[kad.switch])
     defer:
       # Before the switch: `stop` waits for the dial this probe abandons.
@@ -74,7 +75,7 @@ suite "KadDHT - Limits":
 
     let probes = move kad.admissionProbes
     # A peer that accepts and never speaks costs `timeout`, not the dialer's 30s.
-    await allFutures(probes.values().toSeq()).wait(5.seconds)
+    await allFutures(probes.values().toSeq()).wait(probesTimeout * 2)
     check kad.admissionSem.availableSlots() == 1
 
   asyncTest "liveness probes do not consume admissionSem slots":
@@ -307,6 +308,22 @@ suite "KadDHT - Limits":
       res.value().value == lookupValue
       kads[0].containsData(existingKey, existingValue)
       kads[0].containsNoData(lookupKey)
+
+  asyncTest "getValue drops replies larger than maxValueSize":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+
+    kads[0].config.limits.maxValueSize = 8
+
+    let key = kads[1].rtable.selfId
+    kads[1].dataTable.insert(key, newSeq[byte](64), Timestamp.now())
+
+    let res = await kads[0].getValue(key, quorumOverride = Opt.some(1))
+
+    check:
+      res.isErr()
+      kads[0].containsNoData(key)
 
   asyncTest "getValue caps ReceivedTable at maxReceivedSize":
     let kads = setupKadSwitches(4)

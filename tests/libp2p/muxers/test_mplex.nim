@@ -3,7 +3,7 @@
 
 {.used.}
 
-import strformat, random, sequtils, chronos, nimcrypto/utils, chronicles, stew/byteutils
+import strformat, random, sequtils, chronos, nimcrypto/utils, stew/byteutils
 import
   ../../../libp2p/[
     errors,
@@ -232,7 +232,7 @@ suite "Mplex":
       await conn.close()
       var buf: array[1, byte]
       expect LPStreamConnDownError:
-        discard await chann.readOnce(addr buf[0], 1).wait(100.millis)
+        discard await chann.readOnce(addr buf[0], 1)
 
       await chann.reset()
 
@@ -250,12 +250,12 @@ suite "Mplex":
 
       var remainder: array[4, byte]
       check:
-        (await chann.readOnce(addr remainder[0], 4).wait(100.millis)) == 3
+        (await chann.readOnce(addr remainder[0], 4)) == 3
         string.fromBytes(remainder[0 ..< 3]) == "lo!"
 
       var buf: array[1, byte]
       expect LPStreamConnDownError:
-        discard await chann.readOnce(addr buf[0], 1).wait(100.millis)
+        discard await chann.readOnce(addr buf[0], 1)
 
       await chann.reset()
 
@@ -622,7 +622,6 @@ suite "Mplex":
             try:
               let msg = await stream.readLp(MaxMsgSize)
               check msg == bigseq
-              trace "Bigseq check passed!"
             except CancelledError, LPStreamError:
               return
             finally:
@@ -646,7 +645,7 @@ suite "Mplex":
       let stream = await mplexDial.newStream()
 
       await stream.writeLp(bigseq)
-      await listenJob.wait(10.seconds)
+      await listenJob
 
       await stream.close()
       await mplexDial.close()
@@ -731,9 +730,9 @@ suite "Mplex":
         await stream.writeLp(&"stream {i}!")
         await stream.close()
 
-      await done.wait(10.seconds)
+      await done
       await conn.close()
-      await acceptFut.wait(1.seconds)
+      await acceptFut
       await allFuturesRaising(transport1.stop(), transport2.stop())
       await mplexDialFut
       await listenFut
@@ -779,7 +778,7 @@ suite "Mplex":
         check string.fromBytes(msg) == &"stream {i} from listener!"
         await stream.close()
 
-      await done.wait(5.seconds)
+      await done
       await conn.close()
       await mplexDial.close()
       await allFuturesRaising(transport1.stop(), transport2.stop())
@@ -1187,7 +1186,7 @@ suite "Mplex":
             buf.buffer = buf.buffer[size ..^ 1]
 
         await writer()
-        await complete.wait(1.seconds)
+        await complete
         await stream.close()
         await mplexDial.close()
         await conn.close()
@@ -1248,7 +1247,7 @@ suite "Mplex":
 
         await writer()
 
-        await complete.wait(5.seconds)
+        await complete
         await stream.close()
         await mplexDial.close()
         await conn.close()

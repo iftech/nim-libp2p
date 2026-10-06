@@ -28,7 +28,7 @@ suite "GossipSub Scoring":
     for i, peer in peers:
       peer.appScore = gossipSub.parameters.graylistThreshold - 1
       let conn = conns[i]
-      await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conn))
+      check (await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conn))).isOk()
 
     gossipSub.updateScores()
 

@@ -263,3 +263,69 @@ suite "KadDHT Put":
     # Record with an unparseable timestamp is treated as expired
     let badRecord = EntryRecord(value: @[1.byte], time: "not-a-timestamp")
     check isExpired(badRecord, 24.hours)
+
+  asyncTest "PUT_VALUE without a key or with an invalid record is not stored":
+    let kads = setupKadSwitches(2, validator = RestrictiveValidator())
+    startAndDeferStop(kads)
+
+    await connect(kads[0], kads[1])
+
+    let conn = await kads[1].switch.dial(
+      kads[0].switch.peerInfo.peerId, kads[0].switch.peerInfo.addrs, kads[0].codec
+    )
+    defer:
+      await conn.close()
+
+    let key = kads[0].rtable.selfId
+    let record = Record(key: key, value: Value.init([1.byte, 2, 3]))
+
+    await kads[0].handlePutValue(
+      conn, Message(msgType: MessageType.putValue, record: record)
+    )
+    check kads[0].containsNoData(key)
+
+    await kads[0].handlePutValue(
+      conn, Message(msgType: MessageType.putValue, key: key, record: record)
+    )
+    check kads[0].containsNoData(key)
+
+  asyncTest "RPC handlers survive a reply write on a closed stream":
+    let kads = @[
+      setupKad(testKadConfig(providerRejection = true)),
+      setupKad(testKadConfig(providerRejection = true)),
+    ]
+    startAndDeferStop(kads)
+
+    await connect(kads[0], kads[1])
+
+    let conn = await kads[1].switch.dial(
+      kads[0].switch.peerInfo.peerId, kads[0].switch.peerInfo.addrs, kads[0].codec
+    )
+    await conn.close()
+
+    let key = kads[0].rtable.selfId
+    let value = @[1.byte, 2, 3]
+
+    await kads[0].handlePutValue(
+      conn,
+      Message(
+        msgType: MessageType.putValue,
+        key: key,
+        record: Record(key: key, value: Value.init(value)),
+      ),
+    )
+    check kads[0].containsData(key, value)
+
+    await kads[0].handleGetValue(conn, Message(msgType: MessageType.getValue, key: key))
+    await kads[0].handleFindNode(conn, Message(msgType: MessageType.findNode, key: key))
+    await kads[0].handleAddProvider(
+      conn,
+      Message(
+        msgType: MessageType.addProvider,
+        key: key,
+        providerPeers: @[kads[1].switch.peerInfo.toPeer()],
+      ),
+    )
+    await kads[0].handleGetProviders(
+      conn, Message(msgType: MessageType.getProviders, key: key)
+    )

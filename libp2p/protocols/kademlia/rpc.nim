@@ -13,7 +13,7 @@ proc countSent*[T](
     res: Result[T, SendError], msgType: MessageType, sentBytes: int64
 ) {.gcsafe, raises: [].} =
   ## Count what left the node: a send that gave up at the dial sent nothing.
-  if res.isErr() and res.error().stage == dialStage:
+  if res.isErr() and res.error().stage in {waitStage, dialStage, refusedStage}:
     return
   kad_messages_sent.inc(labelValues = [$msgType])
   kad_message_bytes_sent.inc(sentBytes, labelValues = [$msgType])
@@ -27,7 +27,7 @@ proc dispatchRpc*(
     peer: PeerId,
     msg: Message,
     addrs: Opt[seq[MultiAddress]] = Opt.none(seq[MultiAddress]),
-): Future[Result[Message, string]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Addresses default to the peer store; `addrs` overrides them for a peer the
   ## caller learned about elsewhere.
   let msgType = msg.msgType.valueOr:

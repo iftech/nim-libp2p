@@ -48,15 +48,19 @@ proc autonatInteropTest*(
     if networkReachability != NetworkReachability.Unknown:
       awaiter.completeOnce()
 
+  # NATService creates its selected AutoNAT implementation during start.
+  # Start before retrieving it, then register the observer before connecting
+  # the peer that triggers verification.
+  await switch.start()
+  defer:
+    await switch.stop()
+
   let nat = switch.natService().valueOr:
     raiseAssert "expected NATService to be configured"
   let v2 = nat.autonatV2Service.valueOr:
     raiseAssert "expected AutonatV2 service to be configured"
   discard v2.reachabilityObservers.add(reachabilityHandler)
 
-  await switch.start()
-  defer:
-    await switch.stop()
   await switch.connect(otherPeerId, @[ma(otherAddr)])
 
   # await for network reachability with some timeout,

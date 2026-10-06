@@ -250,6 +250,14 @@ proc addHandler*(m: MultistreamSelect, protocol: LPProtocol, matcher: Matcher = 
     HandlerHolder(protos: protocol.codecs, protocol: protocol, match: matcher)
   )
 
+proc removeHandler*(m: MultistreamSelect, protocol: LPProtocol): bool =
+  ## Removes the handler registered for `protocol`.
+  for i, handler in m.handlers:
+    if handler.protocol == protocol:
+      m.handlers.del(i)
+      return true
+  false
+
 proc addHandler*[E](
     m: MultistreamSelect,
     codec: string,

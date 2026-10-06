@@ -107,8 +107,8 @@ suite "AutonatV2 Service":
       await allFuturesRaising(switch.stop(), peer.stop())
     await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
 
-    await first.wait(5.seconds)
-    await second.wait(5.seconds)
+    await first
+    await second
 
     check:
       service.networkReachability == Reachable
@@ -128,7 +128,7 @@ suite "AutonatV2 Service":
     switch.addressManager.add(publicAddr, AddrSource.Upnp)
     await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
 
-    await notified.wait(5.seconds)
+    await notified
 
     checkUntilTimeout:
       service.networkReachability == NotReachable
@@ -172,9 +172,9 @@ suite "AutonatV2 Service":
       await allFuturesRaising(switch.stop(), peer.stop())
     await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
 
-    await notReachable.wait(5.seconds)
+    await notReachable
     client.response = mockResponse(Reachable)
-    await reachable.wait(5.seconds)
+    await reachable
 
     check service.networkReachability == Reachable
 
@@ -196,7 +196,7 @@ suite "AutonatV2 Service":
     for _ in 0 ..< 3:
       check switch.addressManager.addObservation(randomPeerId(), observedAddr)
 
-    await notified.wait(5.seconds)
+    await notified
 
     checkUntilTimeout:
       observedAddr in switch.addressManager.confirmedAddrs()
@@ -217,7 +217,7 @@ suite "AutonatV2 Service":
     for _ in 0 ..< 3:
       check switch.addressManager.addObservation(randomPeerId(), observedAddr)
 
-    await notified.wait(5.seconds)
+    await notified
     await sleepAsync(VerifyInterval * 4)
 
     check observedAddr notin switch.addressManager.confirmedAddrs()
