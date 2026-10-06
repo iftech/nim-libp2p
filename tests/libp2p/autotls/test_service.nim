@@ -275,7 +275,7 @@ suite "AutoTLS on a switch":
     )
     config.nameResolver = StubNameResolver.new()
     let switch = makeStandardSwitchBuilder(
-        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
+        @[TcpAutoAddress, WssAutoAddress]
       )
       .withAutotls(config)
       .build()
@@ -333,7 +333,7 @@ suite "AutoTLS on a switch":
   asyncTest "a switch listening on wss fails to start without a certificate":
     let acmeApi = ACMEApiStub.new()
     let switch = makeStandardSwitchBuilder(
-        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
+        @[TcpAutoAddress, WssAutoAddress]
       )
       .withAutotls(
         AutotlsConfig.new(
@@ -352,7 +352,7 @@ suite "AutoTLS on a switch":
       await switch.start()
 
   asyncTest "a switch listening on wss fails when autotls has no TcpTransport":
-    let switch = makeStandardSwitchBuilder(@[ma("/ip4/127.0.0.1/tcp/0/wss")])
+    let switch = makeStandardSwitchBuilder(@[WssAutoAddress])
       .withAutotls(AutotlsConfig.new(initialCertTimeout = 10.seconds))
       .build()
     defer:

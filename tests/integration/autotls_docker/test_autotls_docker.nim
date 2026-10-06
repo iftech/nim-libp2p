@@ -85,7 +85,7 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     let cert = (await issuerService.getCertWhenReady().wait(IssueTimeout)).get()
 
     let server = makeStandardSwitchBuilder(
-        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
+        @[TcpAutoAddress, WssAutoAddress]
       )
       .withPrivateKey(issuer.peerInfo.privateKey)
       .withAutotls(newAutotlsConfig())
