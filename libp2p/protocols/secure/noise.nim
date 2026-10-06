@@ -543,7 +543,11 @@ method handshake*(
   let msg = NoiseHandshakePayloadMsg(
     identityKey: Opt.some(p.localPublicKey),
     identitySig: Opt.some(signedPayload.get().getBytes()),
-    extensions: Opt.some(NoiseExtensionsMsg(streamMuxers: p.muxers)),
+    extensions:
+      if p.muxers.len > 0:
+        Opt.some(NoiseExtensionsMsg(streamMuxers: p.muxers))
+      else:
+        Opt.none(NoiseExtensionsMsg),
   )
 
   var handshakeRes =
