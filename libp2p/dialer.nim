@@ -642,12 +642,15 @@ method connect*(
 proc negotiateStream*(
     self: Dialer, stream: Stream, protos: seq[string]
 ): Future[Stream] {.async: (raises: [CancelledError, LPError]).} =
-  ## Negotiate one of `protos` over an open stream.
-  ## When the peer advertised a requested protocol through Identify, returns
-  ## before acknowledgement. Rejection then raises LPStreamError on the first
-  ## read; optimistic negotiation cannot fall back after application writes.
-  ## Raises DialFailedError when blocking negotiation selects no protocol or
-  ## the selected protocol's outgoing stream budget is exhausted.
+  ## Negotiates one protocol from `protos` on an open stream.
+  ##
+  ## If the peer store indicates that the peer supports a requested protocol,
+  ## returns before the peer acknowledges. If the peer then rejects the protocol,
+  ## the first read raises LPStreamError. Because the caller may write immediately,
+  ## rejection cannot fall back to another protocol.
+  ##
+  ## Raises DialFailedError if blocking negotiation selects no protocol, or
+  ## if the selected protocol has no outgoing stream budget left.
 
   var
     negotiated = false
@@ -657,29 +660,27 @@ proc negotiateStream*(
       await selectedStream.reset()
 
   trace "Protocol negotiation started", stream, protocols = protos
-  let preferred =
+  let preferredProto =
     if self.peerStore.isNil:
-      ""
+      Opt.none(string)
     else:
       self.peerStore.firstSupportedProtocol(stream.peerId, protos)
 
-  let selected =
-    if preferred.len > 0:
-      selectedStream = await MultistreamSelect.selectOptimistic(stream, preferred)
-      preferred
-    else:
-      await MultistreamSelect.select(stream, protos)
-  if not protos.contains(selected):
+  let selection = await MultistreamSelect.select(stream, protos, preferredProto)
+  selectedStream = selection.stream
+  let selectedProto = selection.protocol
+  if not protos.contains(selectedProto):
     raise newException(
       DialFailedError,
       "Unable to select sub-protocol. None of the offered protocols were accepted: " &
         $protos,
     )
 
-  self.ms.lookupProtocol(selected).ifValue(protocol):
-    if not protocol.reserveOutgoing(stream.peerId):
+  self.ms.lookupProtocol(selectedProto).ifValue(protocol):
+    if not protocol.reserveOutgoing(selectedStream.peerId):
       raise newException(
-        DialFailedError, "Outbound stream budget exceeded for protocol: " & selected
+        DialFailedError,
+        "Outbound stream budget exceeded for protocol: " & selectedProto,
       )
 
     proc releaseOnClose() {.async: (raises: []).} =

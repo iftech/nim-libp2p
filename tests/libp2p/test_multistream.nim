@@ -845,6 +845,29 @@ suite "Multistream :: optimistic selection":
     check client.closed
     check server.closed
 
+  asyncTest "read and close share acknowledgement confirmation":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+
+    let reading = selected.readLp(1024)
+    let closing = selected.close()
+    check:
+      not reading.finished()
+      not closing.finished()
+
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+
+    await closing
+    expect LPStreamClosedError:
+      discard await reading
+    check:
+      client.protocol == codec
+      client.closed
+
   asyncTest "join completes when the underlying stream closes":
     let (client, server) = bufferedPair(closeTogether = false)
     let selected = await MultistreamSelect.selectOptimistic(client, codec)

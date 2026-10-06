@@ -5,7 +5,7 @@
 
 import std/[strutils, sequtils]
 import chronos, results, chronicles, stew/byteutils
-import stream/connection, protocols/protocol
+import stream/connection, protocols/protocol, utils/opt
 
 logScope:
   topics = "libp2p multistream"
@@ -53,6 +53,7 @@ template readMessage(stream: Stream): MultiStreamResult[string] =
 type OptimisticStream = ref object of Connection
   stream: Stream
   confirmed: bool
+  confirmation: Future[void].Raising([CancelledError, LPStreamError])
 
 method getWrapped(s: OptimisticStream): Connection =
   s.stream
@@ -70,13 +71,14 @@ method join(s: OptimisticStream) {.async: (raises: [CancelledError]).} =
   else:
     await s.close()
 
-proc confirm(s: OptimisticStream) {.async: (raises: [CancelledError, LPStreamError]).} =
+proc confirmImpl(
+    s: OptimisticStream
+) {.async: (raises: [CancelledError, LPStreamError]).} =
   if s.confirmed:
     return
   let header = s.stream.readMessage().valueOr:
-    raise newException(
-      LPStreamError, "Optimistic multistream handshake failed: " & $error
-    )
+    raise
+      newException(LPStreamError, "Optimistic multistream handshake failed: " & $error)
   if header != Codec:
     raise newException(
       LPStreamError, "Optimistic multistream handshake failed: unexpected codec"
@@ -89,6 +91,13 @@ proc confirm(s: OptimisticStream) {.async: (raises: [CancelledError, LPStreamErr
     raise newException(LPStreamError, "Optimistic multistream protocol rejected")
   s.confirmed = true
   s.stream.protocol = s.protocol
+
+proc confirm(
+    s: OptimisticStream
+): Future[void].Raising([CancelledError, LPStreamError]) =
+  if s.confirmation.isNil:
+    s.confirmation = s.confirmImpl()
+  s.confirmation
 
 method closeImpl(s: OptimisticStream) {.async: (raises: []).} =
   if not s.confirmed and not s.stream.closed:
@@ -209,6 +218,22 @@ proc select*(
     _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: seq[string]
 ): Future[string] {.async: (raises: [CancelledError, LPStreamError, MultiStreamError]).} =
   (await MultistreamSelect.trySelect(stream, proto)).valueOrRaise(MultiStreamError)
+
+proc select*(
+    _: MultistreamSelect | type MultistreamSelect,
+    stream: Stream,
+    protos: seq[string],
+    preferredProto: Opt[string],
+): Future[tuple[protocol: string, stream: Stream]] {.
+    async: (raises: [CancelledError, LPStreamError, MultiStreamError])
+.} =
+  ## Select optimistically when `preferredProto` is present, otherwise use
+  ## blocking negotiation. The preferred protocol must belong to `protos`.
+  preferredProto.ifValue(proto):
+    doAssert proto in protos,
+      "Preferred protocol must be one of the requested protocols"
+    return (proto, await MultistreamSelect.selectOptimistic(stream, proto))
+  (await MultistreamSelect.select(stream, protos), stream)
 
 proc select*(
     _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: string
