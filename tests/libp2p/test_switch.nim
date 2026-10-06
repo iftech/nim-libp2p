@@ -646,10 +646,13 @@ suite "Switch":
       # Wait for the remote's dial to fully complete before disconnecting,
       # to avoid racing with multistream protocol negotiation completion
       # (the handler fires before the remote reads the protocol confirmation).
-      await futSwitch1Connected.wait()
       try:
+        await stream.writeLp("ready")
+        await futSwitch1Connected.wait()
         await switch1.disconnect(stream.peerId)
         disconnected.done()
+      except LPStreamError:
+        raiseAssert "Unexpected LPStreamError in protocol handler"
       finally:
         await stream.close()
 
@@ -672,7 +675,8 @@ suite "Switch":
     let stream =
       await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
 
-    # Signal to the handler that the dial has completed so it can proceed with the disconnect.
+    check string.fromBytes(await stream.readLp(1024)) == "ready"
+    # Signal after reading the optimistic negotiation response.
     futSwitch1Connected.done()
 
     # with the deadlock, the disconnect never completes and this times out

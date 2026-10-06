@@ -70,7 +70,34 @@ method join(s: OptimisticStream) {.async: (raises: [CancelledError]).} =
   else:
     await s.close()
 
+proc confirm(s: OptimisticStream) {.async: (raises: [CancelledError, LPStreamError]).} =
+  if s.confirmed:
+    return
+  let header = s.stream.readMessage().valueOr:
+    raise newException(
+      LPStreamError, "Optimistic multistream handshake failed: " & $error
+    )
+  if header != Codec:
+    raise newException(
+      LPStreamError, "Optimistic multistream handshake failed: unexpected codec"
+    )
+  let response = s.stream.readMessage().valueOr:
+    raise newException(
+      LPStreamError, "Optimistic multistream protocol negotiation failed: " & $error
+    )
+  if response != s.protocol:
+    raise newException(LPStreamError, "Optimistic multistream protocol rejected")
+  s.confirmed = true
+  s.stream.protocol = s.protocol
+
 method closeImpl(s: OptimisticStream) {.async: (raises: []).} =
+  if not s.confirmed and not s.stream.closed:
+    # Let the responder finish negotiation before signalling that reads ended.
+    # Otherwise it may discard already-written application data.
+    try:
+      await s.confirm()
+    except CancelledError, LPStreamError:
+      discard
   await s.stream.close()
   await procCall Connection(s).closeImpl()
 
@@ -95,22 +122,7 @@ method readOnce(
     raise newLPStreamClosedError()
   if not s.confirmed:
     try:
-      let header = s.stream.readMessage().valueOr:
-        raise newException(
-          LPStreamError, "Optimistic multistream handshake failed: " & $error
-        )
-      if header != Codec:
-        raise newException(
-          LPStreamError, "Optimistic multistream handshake failed: unexpected codec"
-        )
-      let response = s.stream.readMessage().valueOr:
-        raise newException(
-          LPStreamError, "Optimistic multistream protocol negotiation failed: " & $error
-        )
-      if response != s.protocol:
-        raise newException(LPStreamError, "Optimistic multistream protocol rejected")
-      s.confirmed = true
-      s.stream.protocol = s.protocol
+      await s.confirm()
     except CancelledError as exc:
       await noCancel s.reset()
       raise exc

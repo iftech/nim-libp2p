@@ -827,10 +827,20 @@ suite "Multistream :: optimistic selection":
     check reading.cancelled
     check client.wasResetLocally
 
-  asyncTest "closing without reading releases both streams":
+  asyncTest "close waits for acknowledgement before closing the stream":
     let (client, server) = bufferedPair()
     let selected = await MultistreamSelect.selectOptimistic(client, codec)
-    await selected.close()
+    await selected.writeLp("request")
+    let closing = selected.close()
+    check not closing.finished()
+
+    check string.fromBytes(await server.readLp(1024)) == header
+    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+    check string.fromBytes(await server.readLp(1024)) == "request"
+
+    await closing
     await selected.close()
     check client.closed
     check server.closed
