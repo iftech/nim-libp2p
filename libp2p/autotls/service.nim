@@ -97,6 +97,10 @@ method getCertWhenReady*(
     return ok(self.cert.get())
   err(self.certFailure.get("certificate issuance failed without an error"))
 
+proc resetCertWait(self: AutotlsService) =
+  self.certFailure = Opt.none(string)
+  self.certReady.clear()
+
 proc new*(
     T: typedesc[AutotlsConfig],
     ipAddress: Opt[IpAddress] = Opt.none(IpAddress),
@@ -347,6 +351,9 @@ proc hasTcpTransport(switch: Switch): bool =
 proc tryIssueCertificate(
     self: AutotlsService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
+  if self.cert.isNone():
+    self.resetCertWait()
+
   var lastError = LPResultError.init("certificate issuance not attempted")
   let operation = if self.cert.isSome(): "renewal" else: "initial issuance"
   var attempts = 0
@@ -394,6 +401,9 @@ method start*(
     self.certFailure = Opt.some(failure)
     self.certReady.fire()
     return
+
+  if self.cert.isNone():
+    self.resetCertWait()
 
   proc manageCert() {.async: (raises: []).} =
     try:
