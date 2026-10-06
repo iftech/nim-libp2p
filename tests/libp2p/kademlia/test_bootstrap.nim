@@ -235,7 +235,7 @@ suite "KadDHT Bootstrap Component":
             return false
       true
 
-    checkUntilTimeoutCustom(30.seconds, 100.milliseconds):
+    checkUntilTimeoutCustom(15.seconds, 500.milliseconds):
       allPeersKnowEachOther()
 
   asyncTest "bootstrap with unreachable peer completes gracefully", timeout = 30.seconds:
