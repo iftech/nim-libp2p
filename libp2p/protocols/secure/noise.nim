@@ -108,15 +108,14 @@ Protobuf.serializerFor(
   [NoiseExtensionsMsg, NoiseHandshakePayloadMsg], withMetrics = true, domain = "noise"
 )
 
-func matchMuxers(local, remote: openArray[string], initiator: bool): string =
-  if initiator:
-    for localMuxer in local:
-      if localMuxer in remote:
-        return localMuxer
-  else:
-    for remoteMuxer in remote:
-      if remoteMuxer in local:
-        return remoteMuxer
+func matchMuxers(local, remote: seq[string], initiator: bool): string =
+  let
+    preferred = if initiator: local else: remote
+    supported = if initiator: remote else: local
+
+  for muxer in preferred:
+    if muxer in supported:
+      return muxer
 
 func shortLog*(conn: NoiseConnection): auto =
   try:
