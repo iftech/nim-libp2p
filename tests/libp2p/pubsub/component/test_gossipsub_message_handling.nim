@@ -73,7 +73,7 @@ proc createMessages(
 
   return (iwantMessageIds, sentMessages)
 
-suite "GossipSub Component - Message Handling":
+suite "GossipSub Component - Message Handling", timeout = 30.seconds:
   const topic = "foobar"
 
   teardown:

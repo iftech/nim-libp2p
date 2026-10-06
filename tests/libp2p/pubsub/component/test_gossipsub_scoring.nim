@@ -11,7 +11,7 @@ import ../../../../libp2p/utils/future
 import ../../../tools/[lifecycle, topology, unittest, futures]
 import ../utils
 
-suite "GossipSub Component - Scoring":
+suite "GossipSub Component - Scoring", timeout = 30.seconds:
   const topic = "foobar"
 
   teardown:
