@@ -1068,7 +1068,15 @@ proc init*(
     discard protoProto.coder.stringToBuffer($address.port, res.data)
   elif address.family == AddressFamily.Unix:
     res.data.write(getProtocol("unix").mcodec)
-    res.data.writeSeq(address.address_un)
+    let nul = address.address_un.find(0'u8)
+    let pathLen =
+      if nul < 0:
+        len(address.address_un)
+      else:
+        nul
+    if pathLen == 0:
+      return err("multiaddress: Unix path must not be empty")
+    res.data.writeSeq(address.address_un.toOpenArray(0, pathLen - 1))
   res.data.finish()
   ok(res)
 
