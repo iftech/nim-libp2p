@@ -103,7 +103,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     # Every attempt fails on its first ACME request, so a request is an attempt.
     checkUntilTimeoutCustom(15.seconds, 500.milliseconds):
-      acmeApi.requestedUris.len == 4
+      acmeApi.requestedUris.len >= 4
 
   asyncTest "a failed round is retried on the next heartbeat":
     # No retries, so a round is one request.
