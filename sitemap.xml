@@ -2,34 +2,34 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/circuitrelay/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/tutorial_1_connect/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/tutorial_2_customproto/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/tutorial_3_protobuf/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/tutorial_4_gossipsub/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/tutorial_5_connmanager/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
     <url>
          <loc>https://vacp2p.github.io/nim-libp2p/tutorial_6_peerscoring/</loc>
-         <lastmod>2026-10-05</lastmod>
+         <lastmod>2026-10-06</lastmod>
     </url>
 </urlset>
