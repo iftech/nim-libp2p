@@ -72,6 +72,7 @@ type AutotlsService* = ref object of Service
   acmeClient*: ACMEClient
   broker*: AutotlsBroker
   cert*: Opt[AutotlsCert]
+  certFailure: Opt[string]
   certReady*: AsyncEvent
   running*: AsyncEvent
   config*: AutotlsConfig
@@ -90,9 +91,15 @@ proc new*(
 
 method getCertWhenReady*(
     self: AutotlsService
-): Future[AutotlsCert] {.base, async: (raises: [AutoTLSError, CancelledError]).} =
+): Future[LPResult[AutotlsCert]] {.base, async: (raises: [CancelledError]).} =
   await self.certReady.wait()
-  return self.cert.get
+  if self.cert.isSome():
+    return ok(self.cert.get())
+  err(self.certFailure.get("certificate issuance failed without an error"))
+
+proc resetCertWait(self: AutotlsService) =
+  self.certFailure = Opt.none(string)
+  self.certReady.clear()
 
 proc new*(
     T: typedesc[AutotlsConfig],
@@ -143,6 +150,7 @@ proc new*(
     ),
     broker: AutotlsBroker.new(rng, config.registrationURL),
     cert: Opt.none(AutotlsCert),
+    certFailure: Opt.none(string),
     certReady: newAsyncEvent(),
     running: newAsyncEvent(),
     config: config,
@@ -332,6 +340,7 @@ proc issueCertificate(
 
   trace "Installing certificate"
   self.cert = Opt.some(?newAutotlsCert(certificate, certKeyPair))
+  self.certFailure = Opt.none(string)
   self.certReady.fire()
   info "AutoTLS successfully renewed certificate"
   ok()
@@ -342,6 +351,9 @@ proc hasTcpTransport(switch: Switch): bool =
 proc tryIssueCertificate(
     self: AutotlsService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
+  if self.cert.isNone():
+    self.resetCertWait()
+
   var lastError = LPResultError.init("certificate issuance not attempted")
   let operation = if self.cert.isSome(): "renewal" else: "initial issuance"
   var attempts = 0
@@ -370,6 +382,10 @@ proc tryIssueCertificate(
     hasCertificate = self.cert.isSome(),
     expiry = (if self.cert.isSome: $self.cert.get().expiry else: "none")
 
+  if self.cert.isNone():
+    self.certFailure = Opt.some($lastError)
+    self.certReady.fire()
+
 method start*(
     self: AutotlsService, switch: Switch
 ) {.async: (raises: [CancelledError, LPError]).} =
@@ -380,8 +396,14 @@ method start*(
   # transport to be running here could fail when the service starts first, so
   # AutotlsService should only check whether a transport exists.
   if not switch.hasTcpTransport():
-    error "Could not find a TcpTransport in switch"
+    const failure = "Could not find a TcpTransport in switch"
+    error failure
+    self.certFailure = Opt.some(failure)
+    self.certReady.fire()
     return
+
+  if self.cert.isNone():
+    self.resetCertWait()
 
   proc manageCert() {.async: (raises: []).} =
     try:

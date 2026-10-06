@@ -282,7 +282,7 @@ suite "WebSocket transport with autotls":
     check wstransport.secure
 
     # autotls should be used
-    let autotlsCert = await autotls.getCertWhenReady()
+    let autotlsCert = (await autotls.getCertWhenReady()).get()
     check wstransport.tlsCertificate == autotlsCert.cert
     check wstransport.tlsPrivateKey == autotlsCert.privkey
 
