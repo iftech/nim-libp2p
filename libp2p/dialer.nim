@@ -646,13 +646,28 @@ proc negotiateStream*(
   ## Raises DialFailedError when negotiation selects no supported protocol or
   ## the selected protocol's outgoing stream budget is exhausted.
 
-  var negotiated = false
+  var
+    negotiated = false
+    selectedStream = stream
   defer:
     if not negotiated:
-      await stream.reset()
+      await selectedStream.reset()
 
   trace "Protocol negotiation started", stream, protocols = protos
-  let selected = await MultistreamSelect.select(stream, protos)
+  var preferred: string
+  if not self.peerStore.isNil:
+    let supported = self.peerStore[ProtoBook][stream.peerId]
+    for proto in protos:
+      if proto in supported:
+        preferred = proto
+        break
+
+  let selected =
+    if preferred.len > 0:
+      selectedStream = await MultistreamSelect.selectOptimistic(stream, preferred)
+      preferred
+    else:
+      await MultistreamSelect.select(stream, protos)
   if not protos.contains(selected):
     raise newException(
       DialFailedError,
@@ -667,8 +682,8 @@ proc negotiateStream*(
       )
 
     proc releaseOnClose() {.async: (raises: []).} =
-      await noCancel stream.join()
-      protocol.releaseOutgoing(stream.peerId)
+      await noCancel selectedStream.join()
+      protocol.releaseOutgoing(selectedStream.peerId)
 
     let fut = releaseOnClose()
     self.ongoingReleaseOnClose.add(fut)
@@ -678,7 +693,7 @@ proc negotiateStream*(
         self.ongoingReleaseOnClose.del(idx)
 
   negotiated = true
-  return stream
+  return selectedStream
 
 proc tryDial*(
     self: Dialer, peerId: PeerId, addrs: seq[MultiAddress]
