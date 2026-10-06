@@ -42,6 +42,15 @@ template WsAutoAddressIP6*(): MultiAddress =
 template WsAutoAddress*(): MultiAddress =
   WsAutoAddressIP4()
 
+template WssAutoAddressIP4*(): MultiAddress =
+  ma("/ip4/127.0.0.1/tcp/0/wss")
+
+template WssAutoAddressIP6*(): MultiAddress =
+  ma("/ip6/::1/tcp/0/wss")
+
+template WssAutoAddress*(): MultiAddress =
+  WssAutoAddressIP4()
+
 template QuicAutoAddressIP4*(): MultiAddress =
   ma("/ip4/127.0.0.1/udp/0/quic-v1")
 

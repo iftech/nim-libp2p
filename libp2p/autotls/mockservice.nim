@@ -26,8 +26,8 @@ proc new*(
 
 method getCertWhenReady*(
     self: MockAutotlsService
-): Future[AutotlsCert] {.async: (raises: [AutoTLSError, CancelledError]).} =
-  AutotlsCert.new(self.mockedCert, self.mockedKey, now())
+): Future[LPResult[AutotlsCert]] {.async: (raises: [CancelledError]).} =
+  ok(AutotlsCert.new(self.mockedCert, self.mockedKey, now()))
 
 method setup*(self: MockAutotlsService) {.base, async.} =
   self.running.fire()

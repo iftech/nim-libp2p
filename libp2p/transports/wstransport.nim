@@ -402,11 +402,9 @@ proc loadAutotlsCertificate(
   defer:
     certFut.cancelSoon()
   try:
-    return ok(await certFut.wait(deadlineFut))
+    return await certFut.wait(deadlineFut)
   except AsyncTimeoutError:
     return err("autotls certificate was not available before the certificate deadline")
-  except AutoTLSError as e:
-    return err("failed to load autotls certificate: " & e.msg)
 
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]
