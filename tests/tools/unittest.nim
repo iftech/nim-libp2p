@@ -8,7 +8,7 @@ export checkTrackers # TODO: maybe consider importing it on demand?
 export unittest2 except suite
 
 const
-  asyncTestTimeoutDefault* = 30.seconds
+  asyncTestTimeoutDefault* = 15.seconds
   asyncTestCleanupTimeout = 1.seconds
 
 var
@@ -170,7 +170,7 @@ proc buildAndExpr(n: NimNode): NimNode =
     return n
 
 const
-  timeoutDefault: Duration = 30.seconds
+  checkTimeoutDefault: Duration = 5.seconds
   sleepIntervalDefault: Duration = 50.milliseconds
 
 macro checkUntilTimeoutCustom*(
@@ -223,7 +223,7 @@ macro checkUntilTimeoutCustom*(
     await checkExpiringInternal()
 
 macro checkUntilTimeout*(code: untyped): untyped =
-  ## Same as `checkUntilTimeoutCustom` but with a default timeout of 30s with 50ms interval.
+  ## Same as `checkUntilTimeoutCustom` but with a default timeout of 5s with 50ms interval.
   ##
   ## Examples:
   ##   ```nim
@@ -244,7 +244,7 @@ macro checkUntilTimeout*(code: untyped): untyped =
   ##       b == 1
   ##   ```
   quote:
-    checkUntilTimeoutCustom(timeoutDefault, sleepIntervalDefault, `code`)
+    checkUntilTimeoutCustom(checkTimeoutDefault, sleepIntervalDefault, `code`)
 
 template finalCheckTrackers*(): untyped =
   # finalCheckTrackers is a utility used for performing a final tracker check 
