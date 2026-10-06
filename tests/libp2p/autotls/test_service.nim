@@ -102,7 +102,7 @@ suite "AutoTLS certificate issuance and renewal":
     await service.start(switch)
 
     # Every attempt fails on its first ACME request, so a request is an attempt.
-    checkUntilTimeout:
+    checkUntilTimeoutCustom(30.seconds, 100.milliseconds):
       acmeApi.requestedUris.len == 4
 
   asyncTest "a failed round is retried on the next heartbeat":
