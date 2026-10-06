@@ -261,12 +261,12 @@ suite "Mplex":
 
   suite "channel reset":
     asyncTest "cleanup waits for the reset message":
-      proc newSignal(): Future[void] {.async: (raises: [], raw: true).} =
-        newFuture[void]()
+      proc newSignal(name: static[string]): Future[void] {.async: (raises: [], raw: true).} =
+        newFuture[void](name)
 
       let
-        resetStarted = newSignal()
-        releaseReset = newSignal()
+        resetStarted = newSignal("mplex-reset-started")
+        releaseReset = newSignal("mplex-release-reset")
 
       proc blockingWriteHandler(
           data: sink seq[byte]
@@ -283,7 +283,7 @@ suite "Mplex":
       await chann.reset()
       await resetStarted
 
-      await sleepAsync(10.millis)
+      await sleepAsync(10.millis) # sleep needed for negative assertion
       check not chann.cleanupFut.finished()
       check chann in mplex.getStreams()
 
