@@ -88,11 +88,19 @@ method readOnce(
     raise newLPStreamClosedError()
   if not s.confirmed:
     try:
-      let header = s.stream.readMessage()
-      if header.isErr or header.get() != Codec:
-        raise newException(LPStreamError, "Optimistic multistream handshake failed")
-      let response = s.stream.readMessage()
-      if response.isErr or response.get() != s.protocol:
+      let header = s.stream.readMessage().valueOr:
+        raise newException(
+          LPStreamError, "Optimistic multistream handshake failed: " & $error
+        )
+      if header != Codec:
+        raise newException(
+          LPStreamError, "Optimistic multistream handshake failed: unexpected codec"
+        )
+      let response = s.stream.readMessage().valueOr:
+        raise newException(
+          LPStreamError, "Optimistic multistream protocol negotiation failed: " & $error
+        )
+      if response != s.protocol:
         raise newException(LPStreamError, "Optimistic multistream protocol rejected")
       s.confirmed = true
       s.stream.protocol = s.protocol

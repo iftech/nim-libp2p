@@ -745,8 +745,7 @@ suite "Multistream :: optimistic selection":
 
   asyncTest "payload is sent before acknowledgement and responses are consumed once":
     let (client, server) = bufferedPair()
-    let selected =
-      await MultistreamSelect.selectOptimistic(client, codec).wait(1.seconds)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
     defer:
       await selected.close()
     await selected.writeLp("early payload")
@@ -769,19 +768,31 @@ suite "Multistream :: optimistic selection":
     defer:
       await selected.close()
     await selected.writeLp("request")
-    check (await handling.wait(1.seconds)) == codec
+    check (await handling) == codec
     check string.fromBytes(await server.readLp(1024)) == "request"
     await server.writeLp("response")
     check string.fromBytes(await selected.readLp(1024)) == "response"
 
   asyncTest "invalid acknowledgements reset the stream and prevent further IO":
-    for responses in [
-      @["/wrong/header\n"],
-      @["/multistream/1.0.0"],
-      @[header, "na\n"],
-      @[header, "/wrong/protocol\n"],
-      @[header, codec],
-      @[header, ""],
+    for (responses, expectedError) in [
+      (
+        @["/wrong/header\n"],
+        "Optimistic multistream handshake failed: unexpected codec",
+      ),
+      (
+        @["/multistream/1.0.0"],
+        "Optimistic multistream handshake failed: MultistreamSelect failed, malformed message",
+      ),
+      (@[header, "na\n"], "Optimistic multistream protocol rejected"),
+      (@[header, "/wrong/protocol\n"], "Optimistic multistream protocol rejected"),
+      (
+        @[header, codec],
+        "Optimistic multistream protocol negotiation failed: MultistreamSelect failed, malformed message",
+      ),
+      (
+        @[header, ""],
+        "Optimistic multistream protocol negotiation failed: MultistreamSelect failed, malformed message",
+      ),
     ]:
       let (client, server) = bufferedPair()
       let selected = await MultistreamSelect.selectOptimistic(client, codec)
@@ -789,13 +800,13 @@ suite "Multistream :: optimistic selection":
         await selected.close()
       for response in responses:
         await server.writeLp(response)
-      expect LPStreamError:
-        discard await selected.readLp(1024).wait(1.seconds)
+      expectMsg LPStreamError, expectedError:
+        discard await selected.readLp(1024)
       check selected.wasResetLocally
       check client.wasResetLocally
-      expect LPStreamClosedError:
+      expectMsg LPStreamClosedError, "Stream Closed!":
         await selected.writeLp("must fail")
-      expect LPStreamClosedError:
+      expectMsg LPStreamClosedError, "Stream Closed!":
         discard await selected.readLp(1024)
 
   asyncTest "EOF during acknowledgement resets the stream":
@@ -805,8 +816,8 @@ suite "Multistream :: optimistic selection":
       await selected.close()
       await server.close()
     await client.pushEof()
-    expect LPStreamError:
-      discard await selected.readLp(1024).wait(1.seconds)
+    expectMsg LPStreamEOFError, "Stream EOF!":
+      discard await selected.readLp(1024)
     check client.wasResetLocally
 
   asyncTest "cancellation during acknowledgement resets instead of retrying partial data":
