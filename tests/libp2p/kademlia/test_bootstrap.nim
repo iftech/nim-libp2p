@@ -238,7 +238,7 @@ suite "KadDHT Bootstrap Component":
     checkUntilTimeoutCustom(30.seconds, 100.milliseconds):
       allPeersKnowEachOther()
 
-  asyncTest "bootstrap with unreachable peer completes gracefully":
+  asyncTest "bootstrap with unreachable peer completes gracefully", timeout = 30.seconds:
     # Fake bootstrap peer with valid address format
     let fakePeerId = randomPeerId()
     let fakeAddrs = @[ma("/ip4/127.0.0.1/tcp/59999")]
