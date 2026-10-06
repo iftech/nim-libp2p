@@ -5,8 +5,13 @@
 
 import chronos, std/[sequtils], stew/byteutils
 import ../../../../libp2p/protocols/pubsub/[gossipsub, mcache, peertable]
-import ../../../tools/[lifecycle, topology, unittest]
+import ../../../tools/[lifecycle, topology]
+import ../../../tools/unittest except checkUntilTimeout
 import ../utils
+
+template checkUntilTimeout(code: untyped) =
+  ## Checks here can need more time then default
+  checkUntilTimeoutCustom(15.seconds, 100.milliseconds, code)
 
 suite "GossipSub Component - Heartbeat", timeout = 30.seconds:
   const topic = "foobar"
