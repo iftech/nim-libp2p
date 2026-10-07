@@ -87,7 +87,7 @@ proc send*(
 
   let reply = Message.decode(replyBuf).valueOr:
     disco.recordDialFailure(peerId, addrs)
-    return err("failed to decode message response: " & $error)
+    return err(error, "failed to decode message response")
 
   disco.clearDialFailures(peerId)
   return ok(reply)

@@ -20,6 +20,9 @@ func toException*(e: cstring): ref LPError =
 func toException*(e: string): ref LPError =
   (ref LPError)(msg: e)
 
+func toException*(e: LPResultError): ref LPError =
+  (ref LPError)(msg: $e)
+
 func `==`*[E: enum](e: ref LPError, failure: E): bool =
   e.msg == $failure
 

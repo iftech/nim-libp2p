@@ -75,7 +75,7 @@ func extractField(data, key: string): LPResult[string] =
     let parts = segment.split("=", 1)
     if parts.len == 2 and parts[0].strip() == key:
       return ok(parts[1].strip(chars = {' ', '"'}))
-  err("Failed to find " & key & " in PeerID Auth header")
+  err(key, "Failed to find field in PeerID Auth header")
 
 func genDataToSign(
     parts: seq[SigParam], prefix: string = PeerIDAuthPrefix
@@ -93,7 +93,7 @@ proc getSigParams(
     clientSender: bool, hostname: string, challenge: string, publicKey: PublicKey
 ): LPResult[seq[SigParam]] =
   let keyBytes = publicKey.getBytes().valueOr:
-    return err("Failed to get public key bytes: " & $error)
+    return err(error, "Failed to get public key bytes")
   if clientSender:
     ok(
       @[
@@ -121,7 +121,7 @@ proc sign(
   let params = ?getSigParams(clientSender, hostname, challenge, publicKey)
   let bytesToSign = ?params.genDataToSign()
   let sig = privateKey.sign(bytesToSign).valueOr:
-    return err("Failed to sign: " & $error)
+    return err(error, "Failed to sign")
   ok(PeerIDAuthSignature(base64.encode(sig.getBytes(), safe = true)))
 
 proc tryCheckSignature*(
@@ -134,7 +134,7 @@ proc tryCheckSignature*(
   let params = ?getSigParams(false, hostname, challengeServer, clientPublicKey)
   let bytesToSign = ?params.genDataToSign()
   let sigBytes = serverSig.tryDecode().valueOr:
-    return err("Failed to decode server's signature: " & error)
+    return err(error, "Failed to decode server's signature")
 
   var serverSignature: Signature
   if not serverSignature.init(sigBytes):
@@ -216,7 +216,7 @@ proc tryRequestAuthentication*(
     async: (raises: [CancelledError])
 .} =
   let response = (await self.tryGet(uri)).valueOr:
-    return err("Failed to start PeerID Auth: " & error)
+    return err(error, "Failed to start PeerID Auth")
 
   let wwwAuthenticate = response.headers.getString("WWW-Authenticate")
   if wwwAuthenticate == "":
@@ -224,7 +224,7 @@ proc tryRequestAuthentication*(
 
   let encodedPubkey = ?wwwAuthenticate.extractField("public-key")
   let pubkeyBytes = encodedPubkey.tryDecode().valueOr:
-    return err("Failed to decode server public-key: " & error)
+    return err(error, "Failed to decode server public-key")
   let serverPubkey = PublicKey.init(pubkeyBytes).valueOr:
     return err("Failed to initialize server public-key")
 
@@ -246,8 +246,8 @@ proc requestAuthentication*(
 
 proc pubkeyBytes*(pubkey: PublicKey): seq[byte] {.raises: [PeerIDAuthError].} =
   pubkey.getBytes().valueOr:
-    raise newException(
-      PeerIDAuthError, "Failed to get bytes from PeerInfo's publicKey: " & $error
+    raise error.toException(
+      PeerIDAuthError, "Failed to get bytes from PeerInfo's publicKey"
     )
 
 proc parseBearerExpiry(value: string): Opt[DateTime] =
@@ -270,14 +270,14 @@ proc tryRequestAuthorization*(
     async: (raises: [CancelledError])
 .} =
   let clientPubkey = peerInfo.publicKey.getBytes().valueOr:
-    return err("Failed to get bytes from PeerInfo's publicKey: " & $error)
+    return err(error, "Failed to get bytes from PeerInfo's publicKey")
   let sig = ?peerInfo.privateKey.sign(challengeClient, serverPubkey, uri.hostname)
   let authHeader =
     PeerIDAuthPrefix & " public-key=\"" & clientPubkey.encode(safe = true) & "\"" &
     ", opaque=\"" & opaque & "\"" & ", challenge-server=\"" & challengeServer & "\"" &
     ", sig=\"" & sig & "\""
   let response = (await self.tryPost(uri, $payload, authHeader)).valueOr:
-    return err("Failed to send Authorization for PeerID Auth: " & error)
+    return err(error, "Failed to send Authorization for PeerID Auth")
 
   let authenticationInfo = response.headers.getString("authentication-info")
   let bearerExpires = authenticationInfo.extractField("expires").valueOr("")
@@ -346,7 +346,7 @@ proc sendWithBearer(
 
   let authHeader = PeerIDAuthPrefix & " bearer=\"" & bearer.token & "\""
   let response = (await self.tryPost(uri, $payload, authHeader)).valueOr:
-    return err("Failed to send request with bearer token for PeerID Auth: " & error)
+    return err(error, "Failed to send request with bearer token for PeerID Auth")
 
   ok((bearer, response))
 

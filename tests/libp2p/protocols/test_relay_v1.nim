@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/strutils, bearssl, chronos, stew/byteutils
+import bearssl, chronos, stew/byteutils
 import
   ../../../libp2p/[
     protocols/connectivity/relay/relay,
@@ -308,14 +308,14 @@ suite "Circuit Relay":
     let tooShort = await transport.tryDial(ma("/ip4/127.0.0.1/tcp/1"))
     check:
       tooShort.isErr()
-      tooShort.error.startsWith("dial address not valid")
+      tooShort.isOfError("dial address not valid")
 
     let noRelay = await transport.tryDial(
       ma("/ip4/127.0.0.1/tcp/1/p2p-circuit/p2p/" & $dst.peerInfo.peerId)
     )
     check:
       noRelay.isErr()
-      noRelay.error.contains("Relay doesn't exist")
+      noRelay.isOfError("Relay doesn't exist")
 
     let noCircuit = await transport.tryDial(
       ma(
@@ -325,4 +325,4 @@ suite "Circuit Relay":
     )
     check:
       noCircuit.isErr()
-      noCircuit.error.contains("missing p2p-circuit")
+      noCircuit.isOfError("missing p2p-circuit")

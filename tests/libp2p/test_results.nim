@@ -145,6 +145,24 @@ suite "LPResultError":
       DemoResult[int].err(NotEnoughMemory, PeerGone).error ==
         "peer gone: not enough memory"
 
+  test "err with two strings sets the detail and the cause":
+    proc parse(T: type): T =
+      err("/ip4/1.2.3.4", "too few parts")
+
+    check:
+      parse(DemoResult[int]).error == "too few parts (/ip4/1.2.3.4)"
+      parse(DemoResult[int]).isOfError("too few parts")
+      parse(DemoResult[int]).error.detail == "/ip4/1.2.3.4"
+      parse(Result[int, string]).error == "too few parts (/ip4/1.2.3.4)"
+
+  test "err with an inner error puts the outer message first in a string error":
+    proc connect(): Result[int, string] =
+      reserve(2).isOkOr:
+        return err(error, "reservation failed")
+      ok(1)
+
+    check connect().error == "reservation failed: not enough memory (missing: 2MB)"
+
   test "err with an exception wraps its message":
     proc parse(T: type): T =
       try:
@@ -157,7 +175,7 @@ suite "LPResultError":
       parse(DemoResult[int]).isOfError("parse failed")
       parse(LPResult[int]).error == "parse failed: bad digit"
 
-  test "err with an exception or cstring gives its message to a string error":
+  test "err with an exception, cstring or LPResultError gives its message to a string error":
     proc fromException(): LPResult[int] =
       try:
         raise newException(ValueError, "bad digit")
@@ -182,12 +200,34 @@ suite "LPResultError":
     proc keepsCString(): Result[int, cstring] =
       err(cstring("bad peer"))
 
+    proc fromLPResultError(): Result[int, string] =
+      err(NotEnoughMemory.withDetail("missing: 2MB"))
+
+    proc keepsLPResultError(): DemoResult[int] =
+      err(PeerGone)
+
     check:
       fromException().error == "bad digit"
       fromExceptionToError().error == "bad digit"
       keepsException().error.msg == "bad digit"
       fromCString().error == "bad peer"
       keepsCString().error == "bad peer"
+      fromLPResultError().error == "not enough memory (missing: 2MB)"
+      keepsLPResultError().isOfError(PeerGone)
+
+  test "err with an inner error of another type wraps its text":
+    type Stage = enum
+      readStage
+
+    proc fail(T: type): T =
+      err(readStage, "send failed")
+
+    check:
+      DemoResult[int].err(readStage).error == "readStage"
+      fail(DemoResult[int]).error == "send failed: readStage"
+      fail(DemoResult[int]).isOfError("send failed")
+      fail(DemoResult[int]).isOfError("readStage")
+      fail(Result[int, string]).error == "send failed: readStage"
 
   test "isOfError matches every error of the chain":
     let r = DemoResult[int].err(NotEnoughMemory.withDetail("missing: 2MB"), PeerGone)

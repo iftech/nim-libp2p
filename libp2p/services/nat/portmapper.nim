@@ -7,6 +7,8 @@ import std/net
 import chronos
 import ../../results
 
+export results
+
 type
   MapProto* = enum
     mpTcp

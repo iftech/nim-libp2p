@@ -235,7 +235,7 @@ proc parseCertificate(certificatesDer: seq[seq[byte]]): LPResult[P2pCertificate]
 proc certificatePeerId(certificatesDer: seq[seq[byte]]): LPResult[PeerId] =
   let cert = ?parseCertificate(certificatesDer)
   let peerId = PeerId.init(cert.publicKey()).valueOr:
-    return err("cannot derive peer ID from certificate. " & $error)
+    return err(error, "cannot derive peer ID from certificate")
   ok(peerId)
 
 proc tryNew*(
@@ -247,7 +247,7 @@ proc tryNew*(
   let session = QuicSession(conn)
   session.peerId = peerId.valueOr:
     certificatePeerId(session.connection.certificates()).valueOr:
-      return err("QuicMuxer.new called with invalid peer certificate. " & error)
+      return err(error, "QuicMuxer.new called with invalid peer certificate")
   ok(QuicMuxer(session: session, connection: conn))
 
 proc new*(
@@ -434,7 +434,7 @@ method handles*(transport: QuicTransport, address: MultiAddress): bool {.raises:
 
 proc makeConfig(self: QuicTransport): LPResult[TLSConfig] =
   let pubkey = self.privateKey.getPublicKey().valueOr:
-    return err("cannot obtain public key. " & $error)
+    return err(error, "cannot obtain public key")
 
   let cert =
     try:
@@ -496,7 +496,7 @@ method start*(
   let listenMAs = self.listen(addrsTa).valueOr:
     await noCancel allFutures(self.listeners.mapIt(it.stop()))
     self.listeners = @[]
-    raise (ref QuicTransportError)(msg: "QuicTransport.start failed. " & error)
+    raise error.toException(QuicTransportError, "QuicTransport.start failed")
 
   await procCall Transport(self).start(listenMAs)
   info "QUIC transport started", addresses = self.addrs
@@ -602,7 +602,7 @@ method accept*(
 
   self.wrapConnection(conn, Direction.In).valueOr:
     conn.close()
-    raise (ref QuicTransportError)(msg: "QuicTransport.accept failed. " & error)
+    raise error.toException(QuicTransportError, "QuicTransport.accept failed")
 
 proc listenerEndpointFor(
     self: QuicTransport, address: TransportAddress
@@ -681,14 +681,14 @@ method dial*(
     dir: Direction = Direction.Out,
 ): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
   let taAddress = initTAddress(address).valueOr:
-    raise newException(
+    raise error.toException(
       QuicTransportDialError,
-      "QuicTransport.dial called with invalid address " & $address & ". " & error,
+      "QuicTransport.dial called with invalid address " & $address,
     )
 
   if dir == Direction.In:
     let listenerEndpoint = self.listenerEndpointFor(taAddress).valueOr:
-      raise newException(QuicTransportDialError, "QuicTransport.dial failed. " & error)
+      raise error.toException(QuicTransportDialError, "QuicTransport.dial failed")
     let endpoint = listenerEndpoint.valueOr:
       raise newException(
         QuicTransportDialError,
@@ -697,7 +697,7 @@ method dial*(
     await self.holePunch(endpoint, taAddress)
 
   let endpoint = self.dialEndpointFor(taAddress).valueOr:
-    raise newException(QuicTransportDialError, "QuicTransport.dial failed. " & error)
+    raise error.toException(QuicTransportDialError, "QuicTransport.dial failed")
 
   let quicConnection =
     try:
@@ -719,7 +719,7 @@ method dial*(
 
   self.wrapConnection(quicConnection, Direction.Out).valueOr:
     quicConnection.close()
-    raise newException(QuicTransportDialError, "QuicTransport.dial failed. " & error)
+    raise error.toException(QuicTransportDialError, "QuicTransport.dial failed")
 
 method upgrade*(
     self: QuicTransport, conn: RawConn, peerId: Opt[PeerId]

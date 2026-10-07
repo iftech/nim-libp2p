@@ -141,7 +141,7 @@ proc toTransportAddress*(
       return err("unsupported address: " & $maAddr)
 
     addrsTa[i] = initTAddress(maAddr).valueOr:
-      return err("cannot use non-wire address: " & $maAddr & ". " & error)
+      return err(error, "cannot use non-wire address: " & $maAddr)
 
   if addrsTa.len == 0:
     return err("no addr was provided.")

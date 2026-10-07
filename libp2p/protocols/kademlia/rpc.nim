@@ -45,7 +45,7 @@ proc dispatchRpc*(
   sendRes.countSent(msgType, sentBytes)
 
   let replyBuf = sendRes.valueOr:
-    return err($error)
+    return err(error.msg, $error.stage)
 
   kad_message_bytes_received.inc(replyBuf.len.int64, labelValues = [$msgType])
 

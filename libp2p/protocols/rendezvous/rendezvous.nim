@@ -151,7 +151,7 @@ proc checkPeerRecord*(_: PeerRecord, spr: seq[byte], peerId: PeerId): LPResult[v
   if spr.len == 0:
     return err("Empty peer record")
   let signedEnv = SignedPeerRecord.decode(spr).valueOr:
-    return err($error)
+    return err(error)
   if signedEnv.data.peerId != peerId:
     return err("Bad Peer ID")
   return ok()
@@ -249,12 +249,12 @@ proc register*[E](
   if ttl < rdv.config.minTTL or ttl > rdv.config.maxTTL:
     return stream.sendRegisterResponseError(InvalidTTL)
   rdv.peerRecordValidator(peerRecord, r.signedPeerRecord, stream.peerId).isOkOr:
-    return stream.sendRegisterResponseError(InvalidSignedPeerRecord, error)
+    return stream.sendRegisterResponseError(InvalidSignedPeerRecord, $error)
   if rdv.countRegister(stream.peerId) >= RegistrationLimitPerPeer:
     return stream.sendRegisterResponseError(NotAuthorized, "Registration limit reached")
 
   rdv.save(r.ns, stream.peerId, r).isOkOr:
-    return stream.sendRegisterResponseError(NotAuthorized, error)
+    return stream.sendRegisterResponseError(NotAuthorized, $error)
   libp2p_rendezvous_registered.inc()
   libp2p_rendezvous_namespaces.set(int64(rdv.namespaces.len))
   stream.sendRegisterResponse(ttl)
@@ -357,7 +357,7 @@ proc sendRegister[E](
       return err("Failed to communicate: " & e.msg)
 
   let msgRecv = Message.decode(buf).valueOr:
-    return err("Failed to decode Message: " & $error)
+    return err(error, "Failed to decode Message")
   if msgRecv.msgType != MessageType.RegisterResponse:
     return err("Unexpected register response: " & $msgRecv.msgType)
   let response = msgRecv.registerResponse.valueOr:
@@ -401,17 +401,14 @@ proc advertise*[E](
     peers: seq[PeerId],
     sprBuff: seq[byte],
 ) {.async: (raises: [CancelledError, AdvertiseError]).} =
-  ns.checkNamespace().isOkOr:
-    raise newException(AdvertiseError, error)
-  rdv.config.checkTtl(ttl).isOkOr:
-    raise newException(AdvertiseError, error)
+  ns.checkNamespace().onErrorRaise(AdvertiseError)
+  rdv.config.checkTtl(ttl).onErrorRaise(AdvertiseError)
 
   let
     r = Register(ns: ns, signedPeerRecord: sprBuff, ttl: Opt.some(ttl.seconds.uint64))
     msg = encode(Message(msgType: MessageType.Register, register: Opt.some(r)))
 
-  rdv.save(ns, rdv.switch.peerInfo.peerId, r).isOkOr:
-    raise newException(AdvertiseError, error)
+  rdv.save(ns, rdv.switch.peerInfo.peerId, r).onErrorRaise(AdvertiseError)
 
   let futs = peers.mapIt(rdv.advertisePeer(it, msg))
   await allFutures(futs.mapIt(it.withTimeout(5.seconds)))
@@ -466,7 +463,7 @@ proc requestPeer[E](
       return err("Failed to communicate: " & e.msg)
 
   let msgRcv = Message.decode(buf).valueOr:
-    return err("Message undecodable: " & $error)
+    return err(error, "Message undecodable")
   if msgRcv.msgType != MessageType.DiscoverResponse:
     return err("Unexpected discover response: " & $msgRcv.msgType)
   let resp = msgRcv.discoverResponse.valueOr:
@@ -487,8 +484,7 @@ proc request*[E](
     limit: uint64
   let l = lt.get(DiscoverLimit.int)
   let peers = peersOpt.get(rdv.peers)
-  checkRequest(ns, l).isOkOr:
-    raise newException(AdvertiseError, error)
+  checkRequest(ns, l).onErrorRaise(AdvertiseError)
 
   limit = l.uint64
 
@@ -533,8 +529,7 @@ proc unsubscribeLocally*[E](rdv: GenericRendezVous[E], ns: string) =
 proc unsubscribe*[E](
     rdv: GenericRendezVous[E], ns: string, peerIds: seq[PeerId]
 ) {.async: (raises: [RendezVousError, CancelledError]).} =
-  ns.checkNamespace().isOkOr:
-    raise newException(RendezVousError, error)
+  ns.checkNamespace().onErrorRaise(RendezVousError)
 
   let msg = encode(
     Message(msgType: MessageType.Unregister, unregister: Opt.some(Unregister(ns: ns)))

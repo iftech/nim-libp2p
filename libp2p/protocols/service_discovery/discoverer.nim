@@ -82,7 +82,7 @@ proc dispatchGetAds(
       await disco.send(peerId, msg)
 
   let reply = replyRes.valueOr:
-    return err($error)
+    return err(error)
 
   let getAdsMsg = reply.getAds.valueOr:
     return err("get ads message response not found")

@@ -46,7 +46,7 @@ proc mux(
     of Direction.In:
       await MultistreamSelect.tryHandle(secureConn, self.muxers.mapIt(it.codec))
   let muxerName = negotiated.valueOr:
-    return err($error)
+    return err(error)
   let muxerProvider = self.getMuxerByCodec(muxerName).valueOr:
     trace "Mux negotiation failed", secureConn, protocol = muxerName
     return err(MuxerRequired)

@@ -245,8 +245,7 @@ method dial*(
 
   handshake.isOkOr:
     safeCloseWait(transp)
-    raise
-      newException(transport.TransportDialError, "TorTransport.dial failed. " & error)
+    raise error.toException(transport.TransportDialError, "TorTransport.dial failed")
 
   self.tcpTransport.connHandler(
     transp, Opt.none(MultiAddress), Opt.none(MultiAddress), Direction.Out
