@@ -78,6 +78,8 @@ proc cleanupChann(m: Mplex, chann: LPChannel) {.async: (raises: []).} =
   ##
   try:
     await chann.join()
+    if not chann.resetMessageFut.isNil():
+      await noCancel chann.resetMessageFut.join()
     m.channels[chann.initiator].del(chann.id)
     trace "Cleaned up channel", muxer = m, chann
 
