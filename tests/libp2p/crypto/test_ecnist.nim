@@ -3,9 +3,10 @@
 
 {.used.}
 
+import std/sequtils
 import results, nimcrypto/utils
-import ../../../libp2p/crypto/[crypto, ecnist]
-import ../../tools/[unittest, crypto]
+import ../../../libp2p/crypto/[crypto, ecnist, minasn1]
+import ../../tools/[unittest, crypto, der]
 
 const
   TestsCount = 10 # number of random tests
@@ -648,3 +649,140 @@ suite "EC NIST-P256/384/521 test suite":
       var small = newSeq[byte](needed - 1)
       check:
         pair.pubkey.toBytes(small) == EcResult[int].err(EcInsufficientTargetSize)
+
+  test "Private key DER with a malformed field is rejected":
+    proc parse(data: seq[byte]): Result[void, Asn1Error] =
+      var seckey: EcPrivateKey
+      seckey.init(data)
+
+    var scalar = newSeq[byte](SecKey256Length)
+    scalar[^1] = 0x01
+    let
+      version = derUint(1)
+      key = derField(Asn1Tag.OctetString, scalar)
+      curve = derContext(0, [derField(Asn1Tag.Oid, Asn1OidSecp256r1)])
+      shortKey = derField(Asn1Tag.OctetString, scalar[1 .. ^1])
+      zeroKey = derField(Asn1Tag.OctetString, newSeq[byte](SecKey256Length))
+      orderKey = derField(Asn1Tag.OctetString, newSeqWith(SecKey256Length, 0xFF'u8))
+      unknownCurve = derContext(0, [derField(Asn1Tag.Oid, Asn1OidSecp256k1)])
+      curveIn1 = derContext(1, [derField(Asn1Tag.Oid, Asn1OidSecp256r1)])
+      bareCurve = derField(Asn1Tag.Oid, Asn1OidSecp256r1)
+
+    check:
+      parse(derSequence([version, key, curve])).isOk()
+      parse(@[0x30'u8]).error == Asn1Error.Incomplete
+      parse(version).error == Asn1Error.Incorrect
+      parse(derSequence([derNull(), key, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([derUint(2), key, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, derUint(1), curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, derContext(0, [derUint(1)])])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([version, shortKey, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, unknownCurve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, curveIn1])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, bareCurve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, zeroKey, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, orderKey, curve])).error == Asn1Error.Incorrect
+      EcPrivateKey.init(version).error == EcKeyIncorrectError
+
+  test "Public key DER with a malformed field is rejected":
+    proc parse(data: seq[byte]): Result[void, Asn1Error] =
+      var pubkey: EcPublicKey
+      pubkey.init(data)
+
+    let pair = EcKeyPair.random(Secp256r1, rng()).expect("random key")
+    var offCurve = newSeq[byte](PubKey256Length)
+    offCurve[0] = 0x04
+    offCurve[SecKey256Length] = 0x01
+    offCurve[^1] = 0x01
+    let
+      ecPublicKey = derField(Asn1Tag.Oid, Asn1OidEcPublicKey)
+      curve = derField(Asn1Tag.Oid, Asn1OidSecp256r1)
+      algorithm = derSequence([ecPublicKey, curve])
+      point = pair.pubkey.getRawBytes().expect("raw bytes")
+      key = derBitString(point)
+      rsaAlgorithm = derSequence([derField(Asn1Tag.Oid, Asn1OidRsaEncryption), curve])
+      unknownCurve = derSequence([ecPublicKey, derField(Asn1Tag.Oid, Asn1OidSecp256k1)])
+
+    check:
+      EcPublicKey.init(derSequence([algorithm, key])).expect("public key") == pair.pubkey
+      parse(derUint(1)).error == Asn1Error.Incorrect
+      parse(derSequence([derUint(1), key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([derNull(), curve]), key])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([rsaAlgorithm, key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([ecPublicKey, derNull()]), key])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([unknownCurve, key])).error == Asn1Error.Incorrect
+      parse(derSequence([algorithm, derField(Asn1Tag.OctetString, point)])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(offCurve)])).error ==
+        Asn1Error.Incorrect
+      EcPublicKey.init(derUint(1)).error == EcKeyIncorrectError
+
+  test "Nil and uninitialized keys and signatures":
+    var buf = newSeq[byte](256)
+    let
+      nilSeckey = EcPrivateKey(nil)
+      nilPubkey = EcPublicKey(nil)
+      nilSig = EcSignature(nil)
+      emptySeckey = EcPrivateKey()
+      emptyPubkey = EcPublicKey()
+
+    check:
+      nilSeckey.toBytes(buf).error == EcKeyIncorrectError
+      nilPubkey.toBytes(buf).error == EcKeyIncorrectError
+      nilSig.toBytes(buf).error == EcSignatureError
+      nilSeckey.getBytes().error == EcKeyIncorrectError
+      nilPubkey.getBytes().error == EcKeyIncorrectError
+      nilSig.getBytes().error == EcSignatureError
+      nilSeckey.getRawBytes().error == EcKeyIncorrectError
+      nilPubkey.getRawBytes().error == EcKeyIncorrectError
+      nilSig.getRawBytes().error == EcSignatureError
+      nilSeckey.getPublicKey().error == EcKeyIncorrectError
+      nilSeckey.sign("message").error == EcKeyIncorrectError
+      emptySeckey.toBytes(buf).error == EcKeyIncorrectError
+      emptySeckey.getBytes().error == EcKeyIncorrectError
+      emptySeckey.getRawBytes().error == EcKeyIncorrectError
+      emptySeckey.getPublicKey().error == EcKeyIncorrectError
+      emptySeckey.sign("message").error == EcKeyIncorrectError
+      emptyPubkey.toBytes(buf).error == EcKeyIncorrectError
+      emptyPubkey.getBytes().error == EcKeyIncorrectError
+      emptyPubkey.getRawBytes().error == EcKeyIncorrectError
+      $nilPubkey == "Empty or uninitialized ECNIST key"
+      $emptyPubkey == "Empty or uninitialized ECNIST key"
+      $nilSig == "Empty or uninitialized ECNIST signature"
+      $EcSignature(buffer: @[]) == "Empty or uninitialized ECNIST signature"
+
+  test "Equality and copy with nil or empty values":
+    let pair = EcKeyPair.random(Secp256r1, rng()).expect("random key")
+    let sig = EcSignature.init(@[0x01'u8, 0x02, 0x03]).expect("signature")
+    var pubkey: EcPublicKey
+    var signature: EcSignature
+
+    check:
+      EcPublicKey(nil) == EcPublicKey(nil)
+      EcPublicKey(nil) != pair.pubkey
+      pair.pubkey != EcPublicKey(nil)
+      EcPrivateKey(nil) == EcPrivateKey(nil)
+      EcPrivateKey(nil) != pair.seckey
+      pair.seckey != EcPrivateKey(nil)
+      EcSignature(nil) == EcSignature(nil)
+      EcSignature(nil) != sig
+      sig != EcSignature(nil)
+      EcSignature(buffer: @[]) == EcSignature(buffer: @[])
+      EcSignature(buffer: @[]) != sig
+      sig != EcSignature(buffer: @[])
+      EcSignature(buffer: @[0x01'u8, 0x02]) != sig
+      not pubkey.copy(EcPublicKey(nil))
+      not signature.copy(EcSignature(buffer: @[]))
+
+  test "Signature init and shared secret error paths":
+    let p256 = EcKeyPair.random(Secp256r1, rng()).expect("random key")
+    let p384 = EcKeyPair.random(Secp384r1, rng()).expect("random key")
+
+    check:
+      EcSignature.init(newSeq[byte]()).error == EcSignatureError
+      EcSignature.initRaw(newSeq[byte](10)).error == EcSignatureError
+      getSecret(p256.pubkey, p384.seckey).len == 0
+      getSecret(p256.pubkey, p256.seckey).len == Secret256Length

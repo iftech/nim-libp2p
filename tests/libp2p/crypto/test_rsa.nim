@@ -6,7 +6,7 @@
 import nimcrypto/utils
 import protobuf_serialization
 import ../../../libp2p/crypto/[crypto, minasn1, rsa]
-import ../../tools/[unittest, crypto]
+import ../../tools/[unittest, crypto, der]
 
 const
   NotAllowedPrivateKeys = [
@@ -615,6 +615,11 @@ suite "RSA 2048/3072/4096 test suite":
       modulus[i] = 0xFF'u8
     return modulus
 
+  proc rsa2048BitModulus(): array[MinKeySize shr 3, byte] =
+    var modulus = rsa2047BitModulus()
+    modulus[0] = 0x80'u8
+    modulus
+
   proc rsaOversizedModulus(): seq[byte] =
     let cap = (MaxKeySize + 1 + 7) shr 3
     var modulus = newSeq[byte](cap)
@@ -701,3 +706,113 @@ suite "RSA 2048/3072/4096 test suite":
       key2.error == RsaKeyIncorrectError
       key3.error == RsaKeyIncorrectError
       key4.error == KeyError
+
+  test "PKCS#1 private key DER with a malformed field is rejected":
+    proc parse(data: seq[byte]): Result[void, Asn1Error] =
+      var key: RsaPrivateKey
+      key.init(data)
+
+    var fields = @[
+      derUint(0),
+      derField(Asn1Tag.Integer, rsa2048BitModulus()),
+      derUint(uint64(DefaultPublicExponent)),
+    ]
+    for _ in 0 ..< 6:
+      fields.add(derUint(1))
+    var badVersion = fields
+    badVersion[0] = derUint(1)
+
+    check:
+      parse(derSequence(fields)).isOk()
+      parse(derUint(0)).error == Asn1Error.Incorrect
+      parse(derSequence(badVersion)).error == Asn1Error.Incorrect
+      RsaPrivateKey.init(derUint(0)).error == RsaKeyIncorrectError
+
+    for i in 0 ..< len(fields):
+      var bad = fields
+      bad[i] = derNull()
+      check parse(derSequence(bad)).error == Asn1Error.Incorrect
+
+  test "SPKI public key DER with a malformed field is rejected":
+    proc parse(data: seq[byte]): Result[void, Asn1Error] =
+      var key: RsaPublicKey
+      key.init(data)
+
+    let
+      rsaOid = derField(Asn1Tag.Oid, Asn1OidRsaEncryption)
+      algorithm = derSequence([rsaOid, derNull()])
+      n = derField(Asn1Tag.Integer, rsa2048BitModulus())
+      e = derUint(uint64(DefaultPublicExponent))
+      key = derBitString(derSequence([n, e]))
+      ecAlgorithm = derSequence([derField(Asn1Tag.Oid, Asn1OidEcPublicKey), derNull()])
+      negativeExponent = @[0x02'u8, 0x01, 0x81]
+      paddedExponent = @[0x02'u8, 0x02, 0x00, 0x81]
+
+    check:
+      parse(derSequence([algorithm, key])).isOk()
+      parse(derSequence([algorithm, derBitString(derSequence([n, paddedExponent]))]))
+        .isOk()
+      parse(derUint(0)).error == Asn1Error.Incorrect
+      parse(derSequence([derUint(0), key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([derNull(), derNull()]), key])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([ecAlgorithm, key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([rsaOid, derUint(0)]), key])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derSequence([n, e])])).error == Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derUint(0))])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derSequence([derNull(), e]))])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derSequence([n, derNull()]))])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derSequence([n, negativeExponent]))])).error ==
+        Asn1Error.Incorrect
+      RsaPublicKey.init(derUint(0)).error == RsaKeyIncorrectError
+
+  test "Nil and empty keys and signatures":
+    let pubkey =
+      RsaPublicKey.init(spkiPublicKeyDer(rsa2048BitModulus())).expect("public key")
+    var buf = newSeq[byte](16)
+
+    check:
+      RsaPrivateKey(nil).toBytes(buf).error == RsaKeyIncorrectError
+      RsaPublicKey(nil).toBytes(buf).error == RsaKeyIncorrectError
+      RsaSignature(nil).toBytes(buf).error == RsaSignatureError
+      RsaPrivateKey(nil).getBytes().error == RsaKeyIncorrectError
+      RsaPublicKey(nil).getBytes().error == RsaKeyIncorrectError
+      RsaSignature(nil).getBytes().error == RsaSignatureError
+      RsaPrivateKey().toBytes(buf).error == RsaKeyIncorrectError
+      RsaPrivateKey().getBytes().error == RsaKeyIncorrectError
+      RsaPublicKey().toBytes(buf).error == RsaKeyIncorrectError
+      RsaPublicKey().getBytes().error == RsaKeyIncorrectError
+      RsaPrivateKey(nil).sign("message").error == RsaKeyIncorrectError
+      RsaSignature.init(newSeq[byte]()).error == RsaSignatureError
+      not RsaSignature(buffer: @[]).verify("message", pubkey)
+      $RsaPublicKey(nil) == "Empty or uninitialized RSA key"
+      $RsaPublicKey() == "Empty or uninitialized RSA key"
+      $RsaSignature(nil) == "Empty or uninitialized RSA signature"
+      $RsaSignature(buffer: @[]) == "Empty or uninitialized RSA signature"
+      pubkey.copy() == pubkey
+      RsaPublicKey().copy().isNil()
+
+  test "Equality with nil or empty values":
+    let pubkey =
+      RsaPublicKey.init(spkiPublicKeyDer(rsa2048BitModulus())).expect("public key")
+    let sig = RsaSignature.init(@[0x01'u8, 0x02, 0x03]).expect("signature")
+
+    check:
+      RsaPrivateKey(nil) == RsaPrivateKey(nil)
+      RsaPrivateKey(nil) != RsaPrivateKey()
+      RsaPrivateKey() != RsaPrivateKey(nil)
+      RsaPrivateKey() == RsaPrivateKey()
+      RsaPublicKey(nil) == RsaPublicKey(nil)
+      RsaPublicKey(nil) != pubkey
+      pubkey != RsaPublicKey(nil)
+      RsaSignature(nil) == RsaSignature(nil)
+      RsaSignature(nil) != sig
+      sig != RsaSignature(nil)
+      RsaSignature(buffer: @[]) == RsaSignature(buffer: @[])
+      RsaSignature(buffer: @[]) != sig
+      sig != RsaSignature(buffer: @[])
+      RsaSignature(buffer: @[0x01'u8]) != sig
