@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[sequtils, net], stew/byteutils
+import std/[sequtils, net], stew/byteutils, chronos
 import protobuf_serialization, protobuf_serialization/pkg/results
 import ../../../libp2p/[multicodec, multiaddress, peerid, protobuf/minprotobuf]
 import ../../tools/[unittest, multiaddress]
@@ -56,12 +56,12 @@ const
   ]
 
   FailureVectors = [
-    "", "/", "/ip4", "/ip4/::1", "/ip4/fdpsofodsajfdoisa", "/ip6", "/ip6zone",
-    "/ip6zone/", "/ip6zone//ip6/fe80::1", "/udp", "/tcp", "/sctp", "/udp/65536",
-    "/tcp/65536", "/quic/65536", "/quic-v1/65536", "/onion/9imaq4ygg2iegci7:80",
-    "/onion/aaimaq4ygg2iegci7:80", "/onion/timaq4ygg2iegci7:0",
-    "/onion/timaq4ygg2iegci7:-1", "/onion/timaq4ygg2iegci7",
-    "/onion/timaq4ygg2iegci@:666",
+    "", "/", "/ip4", "/ip4/::1", "/ip4/fdpsofodsajfdoisa", "/ip6", "/ip6/zzzz",
+    "/ip6/1.2.3.4", "/ip6zone", "/ip6zone/", "/ip6zone//ip6/fe80::1", "/udp", "/tcp",
+    "/sctp", "/udp/65536", "/tcp/65536", "/quic/65536", "/quic-v1/65536",
+    "/onion/9imaq4ygg2iegci7:80", "/onion/aaimaq4ygg2iegci7:80",
+    "/onion/timaq4ygg2iegci7:0", "/onion/timaq4ygg2iegci7:-1",
+    "/onion/timaq4ygg2iegci7", "/onion/timaq4ygg2iegci@:666",
     "/onion3/9ww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd:80",
     "/onion3/vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd7:80",
     "/onion3/vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd:0",
@@ -605,6 +605,28 @@ suite "MultiAddress test suite":
         MultiAddress.init("/dns4/example.com/tcp/4040").get(),
         MultiAddress.init("/ip6/::1/tcp/4040").get(),
       )
+
+  test "MultiAddress init with a value for a marker":
+    check MultiAddress.init(multiCodec("p2p-circuit"), @[1'u8]).error() ==
+      "multiaddress: Value must be empty for markers"
+    check $MultiAddress.init(multiCodec("p2p-circuit")).get() == "/p2p-circuit"
+
+  test "MultiAddress init from TransportAddress":
+    let ta = initTAddress("1.2.3.4:5")
+    check:
+      $MultiAddress.init(ta).get() == "/ip4/1.2.3.4/tcp/5"
+      $MultiAddress.init(ta, Protocol.IPPROTO_UDP).get() == "/ip4/1.2.3.4/udp/5"
+      MultiAddress.init(ta, Protocol.IPPROTO_ICMP).error() ==
+        "multiaddress: protocol should be either TCP or UDP"
+      $MultiAddress.init(initTAddress("[::1]:5")).get() == "/ip6/::1/tcp/5"
+
+    let unix = MultiAddress.init(initTAddress("/tmp/sock")).get()
+    check:
+      unix.protoCode().get() == multiCodec("unix")
+      unix.protoArgument().get() == "/tmp/sock".toBytes()
+      unix == MultiAddress.init("/unix/tmp/sock").get()
+      MultiAddress.init(TransportAddress(family: AddressFamily.Unix)).error() ==
+        "multiaddress: Unix path must not be empty"
 
 suite "parseIpAddress":
   test "valid IPv4 addresses parse to IPv4 family":

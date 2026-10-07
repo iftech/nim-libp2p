@@ -320,7 +320,7 @@ proc handle*(
       trace "Multistream negotiation failed", err = e.msg, stream
       return
   let ms = negotiated.valueOr:
-    trace "Multistream negotiation failed", err = $error, stream
+    trace "Multistream negotiation failed", err = error, stream
     return
 
   m.lookupProtocol(ms).ifValue(p):

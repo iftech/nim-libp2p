@@ -21,6 +21,7 @@ import
 import ../../tools/[unittest, crypto, multiaddress]
 import ../../stubs/torstub
 import ./basic_tests
+import ./cancellation_tests
 import ./connection_tests
 import ./stream_tests
 
@@ -87,6 +88,8 @@ suite "Tor transport":
     invalidAddresses,
   )
   connectionTransportTest(torTransProvider, address, address2)
+  cancellationTransportTest(torTransProvider, address)
+  upgradeCancellationTransportTest(torTransProvider, address)
   streamTransportTest(
     torTransProvider, ma(address), Opt.none(MultiAddress), streamProvider
   )

@@ -353,6 +353,14 @@ suite "Variable integer test suite":
       LP.putUVarint(buffer, length, 0xFFFF_FFFF_FFFF_FFFF'u64).error() ==
         VarintError.Overflow
 
+  test "[LibP2P] encodeVarint for small widths and 64-bit overflow":
+    check:
+      LP.encodeVarint(1'u8).get() == @[0x01'u8]
+      LP.encodeVarint(1'u16).get() == @[0x01'u8]
+      LP.encodeVarint(1'u32).get() == @[0x01'u8]
+      LP.encodeVarint(high(uint8)).get() == @[0xFF'u8, 0x01]
+      LP.encodeVarint(1'u64 shl 63).error() == VarintError.Overflow
+
   test "[LibP2P] Overlong values test":
     const OverlongValues = [
       # Zero bytes at the end

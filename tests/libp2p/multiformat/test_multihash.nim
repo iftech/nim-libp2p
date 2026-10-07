@@ -78,3 +78,56 @@ suite "MultiHash test suite":
   test "gets digest size":
     let mcodec = MultiCodec.codec("sha2-256")
     check mcodec.digestSize.get == sha256.sizeDigest
+
+  test "digest round-trips through decode":
+    let data = @[byte 1, 2, 3, 4, 5]
+    for name in [
+      "identity", "dbl-sha2-256", "blake2b-8", "blake2b-512", "blake2s-8",
+      "blake2s-256", "shake-128", "shake-256",
+    ]:
+      let mh = MultiHash.digest(name, data).get()
+      let expectedSize =
+        if name == "identity":
+          len(data)
+        else:
+          digestSize(name).get()
+      check:
+        mh.size == expectedSize
+        MultiHash.init(mh.data.buffer).get() == mh
+        MultiHash.validate(mh.data.buffer)
+
+  test "digest matches the underlying hash":
+    let data = @[byte 1, 2, 3, 4, 5]
+    check:
+      MultiHash.digest("identity", data).get().data.buffer == @[byte 0x00, 0x05] & data
+      MultiHash.digest("dbl-sha2-256", data).get() ==
+        sha256.digest(sha256.digest(data).data)
+      MultiHash.digest("blake2b-512", data).get() == blake2_512.digest(data)
+      MultiHash.digest("blake2s-256", data).get() == blake2_256.digest(data)
+
+  test "decode rejects malformed input":
+    for data in [
+      @[byte 0x12], # no size
+      @[byte 0x80, 0x80], # truncated code
+      @[byte 0x12, 0x80], # truncated size
+      @[byte 0x00, 0x80, 0x80, 0x80, 0x80, 0x08], # size 2^31
+      @[byte 0x70, 0x00], # dag-pb is not a hash
+      @[byte 0x00, 0x05, 0x01], # size 5, one byte of digest
+      @[byte 0x12, 0x01, 0x00], # sha2-256 with a 1-byte digest
+    ]:
+      var mh: MultiHash
+      check:
+        $MultiHash.decode(data, mh).error() == "Decoding error from bytes"
+        $MultiHash.init(data).error() == "Decoding error from bytes"
+
+  test "validate rejects a truncated code or a missing size":
+    check:
+      not MultiHash.validate([byte 0x80, 0x80])
+      not MultiHash.validate([byte 0x80, 0x01])
+
+  test "unknown names and non-hash codecs are rejected":
+    check:
+      $multiCodec("dag-pb").digestSize.error() == "Hash not supported"
+      $digestSize("no-such-hash").error() == "Incorrect hash name"
+      $MultiHash.digest("no-such-hash", [byte 1]).error() == "Incorrect hash name"
+      $MultiHash.digest("dag-pb", [byte 1]).error() == "Hash not supported"

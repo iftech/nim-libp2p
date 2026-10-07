@@ -66,6 +66,10 @@ const Asn1UIntegerExpects64 = [
   "0209008000000000000000", "020900FFFFFFFFFFFFFFFF",
 ]
 
+proc decodeHex(data: string): Asn1Result[Asn1Field] =
+  var ab = Asn1Buffer.init(data)
+  ab.read()
+
 suite "Minimal ASN.1 encode/decode suite":
   test "Length encoding edge values":
     var empty = newSeq[byte](0)
@@ -126,15 +130,11 @@ suite "Minimal ASN.1 encode/decode suite":
         decodeBuffer(buffer) == uint64(Asn1UIntegerValues64[i])
 
   test "ASN.1 DER INTEGER incorrect values decoding test":
-    proc decodeBuffer(data: string): Asn1Result[Asn1Field] =
-      var ab = Asn1Buffer.init(fromHex(data))
-      ab.read()
-
     check:
-      decodeBuffer("0200").error == Asn1Error.Incorrect
-      decodeBuffer("0201").error == Asn1Error.Incomplete
-      decodeBuffer("02020000").error == Asn1Error.Incorrect
-      decodeBuffer("0203000001").error == Asn1Error.Incorrect
+      decodeHex("0200").error == Asn1Error.Incorrect
+      decodeHex("0201").error == Asn1Error.Incomplete
+      decodeHex("02020000").error == Asn1Error.Incorrect
+      decodeHex("0203000001").error == Asn1Error.Incorrect
 
   test "ASN.1 DER BITSTRING encoding/decoding with unused bits test":
     proc encodeBits(value: string, bitsUsed: int): seq[byte] =
@@ -195,13 +195,83 @@ suite "Minimal ASN.1 encode/decode suite":
       toHex(f7b) == "80"
 
   test "ASN.1 DER BITSTRING incorrect values decoding test":
-    proc decodeBuffer(data: string): Asn1Result[Asn1Field] =
-      var ab = Asn1Buffer.init(fromHex(data))
-      ab.read()
+    check:
+      decodeHex("0300").error == Asn1Error.Incorrect
+      decodeHex("030180").error == Asn1Error.Incorrect
+      decodeHex("030107").error == Asn1Error.Incorrect
+      decodeHex("030200").error == Asn1Error.Incomplete
+      decodeHex("030208FF").error == Asn1Error.Incorrect
+
+  test "ASN.1 DER BOOLEAN decoding test":
+    check:
+      decodeHex("0101FF").get().vbool == true
+      decodeHex("010100").get().vbool == false
+      decodeHex("010101").error == Asn1Error.Incorrect
+      decodeHex("01020000").error == Asn1Error.Incorrect
+      decodeHex("0101").error == Asn1Error.Incomplete
+
+  test "ASN.1 DER malformed TLV decoding test":
+    check:
+      decodeHex("").error == Asn1Error.Incomplete
+      decodeHex("02").error == Asn1Error.Incomplete
+      decodeHex("0280").error == Asn1Error.Indefinite
+      decodeHex("02FF").error == Asn1Error.Incorrect
+      decodeHex("0289").error == Asn1Error.Overflow
+      decodeHex("0288FFFFFFFFFFFFFFFF").error == Asn1Error.Overflow
+      decodeHex("0402AA").error == Asn1Error.Incomplete
+      decodeHex("050100").error == Asn1Error.Incorrect
+      decodeHex("030201FF").error == Asn1Error.Incorrect
+      decodeHex("0C00").error == Asn1Error.NoSupport
+      decodeHex("4100").error == Asn1Error.NoSupport
+      decodeHex("A005A003020101").error == Asn1Error.Incorrect
+      decodeHex("A00302030101").error == Asn1Error.Incorrect
+      decodeHex("030100").get().length == 0
+      decodeHex("0201FF").get().vint == 0xFFFF_FFFF_FFFF_FFFF'u64
+
+  test "ASN.1 DER field string representation":
+    check:
+      $decodeHex("0101FF").get() == "[Boolean] true"
+      $decodeHex("02017F").get() == "[Integer] 127"
+      $decodeHex("02097F0102030405060708").get() == "[Integer] 7F0102030405060708"
+      $decodeHex("030100").get() == "[BitString] (0 bits) "
+      $decodeHex("03020780").get() == "[BitString] (7 bits) 80"
+      $decodeHex("0401AA").get() == "[OctetString] AA"
+      $decodeHex("0500").get() == "[Null] NULL"
+      $decodeHex("06032A8648").get() == "[Oid] 2A8648"
+      $decodeHex("3003020101").get() == "[Sequence] 020101"
+      $Asn1Field(kind: Asn1Tag.Context, buffer: @[0x01'u8, 0x02], length: 2) ==
+        "[Context] 0102"
+      $Asn1Field(buffer: @[0x01'u8, 0x02], length: 2) == "[NoSupport] 0102"
+      $Asn1Buffer.init("0500") == "0500"
+
+  test "ASN.1 DER write of empty values":
+    var b = Asn1Buffer.init()
+    b.write(Asn1Tag.Integer)
+    b.write(Asn1Tag.BitString)
+    b.write(Asn1Tag.OctetString)
+    b.write(Asn1Tag.Null)
+    b.finish()
+
+    check $b == "02010003010004000500"
+
+  test "ASN.1 tag codes":
+    check:
+      Asn1Tag.NoSupport.code() == 0x00'u8
+      Asn1Tag.Boolean.code() == 0x01'u8
+      Asn1Tag.Integer.code() == 0x02'u8
+      Asn1Tag.BitString.code() == 0x03'u8
+      Asn1Tag.OctetString.code() == 0x04'u8
+      Asn1Tag.Null.code() == 0x05'u8
+      Asn1Tag.Oid.code() == 0x06'u8
+      Asn1Tag.Sequence.code() == 0x30'u8
+      Asn1Tag.Context.code() == 0xA0'u8
+
+  test "ASN.1 field comparison with byte arrays":
+    let oid = decodeHex("06032A8648").get()
 
     check:
-      decodeBuffer("0300").error == Asn1Error.Incorrect
-      decodeBuffer("030180").error == Asn1Error.Incorrect
-      decodeBuffer("030107").error == Asn1Error.Incorrect
-      decodeBuffer("030200").error == Asn1Error.Incomplete
-      decodeBuffer("030208FF").error == Asn1Error.Incorrect
+      Asn1Field() == newSeq[byte]()
+      Asn1Field() != [0x01'u8]
+      oid == [0x2A'u8, 0x86, 0x48]
+      oid != [0x2A'u8, 0x86]
+      oid != [0x2A'u8, 0x86, 0x49]

@@ -67,6 +67,9 @@ type
 func maErr*(msg: string): ref MaError =
   (ref MaError)(msg: msg)
 
+func maErr*(e: LPResultError): ref MaError =
+  maErr($e)
+
 const libp2p_multiaddress_exts* {.strdefine.} = ""
 
 const
@@ -786,11 +789,8 @@ proc toString*(value: MultiAddress): MaResult[string] =
 
 proc `$`*(value: MultiAddress): string =
   ## Return string representation of MultiAddress ``value``.
-  let s = value.toString()
-  if s.isErr:
-    s.error
-  else:
-    s.get()
+  value.toString().valueOr:
+    $error
 
 proc protocols*(value: MultiAddress): MaResult[seq[MultiCodec]] =
   ## Returns list of protocol codecs inside of MultiAddress ``value``.
@@ -1068,7 +1068,15 @@ proc init*(
     discard protoProto.coder.stringToBuffer($address.port, res.data)
   elif address.family == AddressFamily.Unix:
     res.data.write(getProtocol("unix").mcodec)
-    res.data.writeSeq(address.address_un)
+    let nul = address.address_un.find(0'u8)
+    let pathLen =
+      if nul < 0:
+        len(address.address_un)
+      else:
+        nul
+    if pathLen == 0:
+      return err("multiaddress: Unix path must not be empty")
+    res.data.writeSeq(address.address_un.toOpenArray(0, pathLen - 1))
   res.data.finish()
   ok(res)
 

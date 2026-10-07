@@ -45,7 +45,7 @@ proc recordingDispatch(
     if peer in undialable:
       if holdDials:
         await held.holdDial(peer, cancelled)
-      return err($refusedStage & ": connection refused")
+      return err("connection refused", $refusedStage)
     if peer in failing:
       return err("peer is not answering")
     let closer = closerPeers.getOrDefault(peer).mapIt(Peer(id: it.getBytes()))

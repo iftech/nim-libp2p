@@ -24,6 +24,12 @@ It is by default added to `tests/config.nims`.
 -d:libp2p_testing
 ```
 
+Use the compile-time flag `libp2p_testing_slow` for test environments that run substantially slower than normal, such as the coverage workflow. It increases the default test timeouts to account for coverage instrumentation, which makes tests approximately twice as slow.
+
+```bash
+-d:libp2p_testing_slow
+```
+
 ## Flags that extend `MultiFormats`
 
 | Multi format   | Compiler flag<br>(path to extensions file) | Expected definition in extension file |

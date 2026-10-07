@@ -257,3 +257,36 @@ suite "MultiBase test suite":
       MultiBase.decode("\x01\x00", dbuffer, outlen) == MultiBaseStatus.BadCodec
       MultiBase.encode("unknwon", data).isErr()
       MultiBase.decode("\x01\x00").isErr()
+
+  test "identity encode into a short buffer overruns":
+    var ebuffer = newString(2)
+    var outlen = 0
+    check:
+      MultiBase.encode("identity", [byte 1, 2, 3], ebuffer, outlen) ==
+        MultiBaseStatus.Overrun
+      outlen == 4
+
+  test "base58flickr round-trip":
+    let data = @[byte 0, 1, 2, 0xFE, 0xFF]
+    let encoded = MultiBase.encode("base58flickr", data).get()
+    check:
+      encoded[0] == 'Z'
+      MultiBase.decode(encoded).get() == data
+
+  test "decode and encode errors":
+    var dbuffer = newSeq[byte](100)
+    var ebuffer = newString(10)
+    var outlen = 0
+    check:
+      MultiBase.decode("zI0").error() == "multibase: Decoding error [Incorrect]"
+      MultiBase.decode("zI0", dbuffer, outlen) == MultiBaseStatus.Incorrect
+      MultiBase.decode("m!!!").error() == "multibase: Decoding error [Incorrect]"
+      MultiBase.decode("m!!!", dbuffer, outlen) == MultiBaseStatus.Incorrect
+      MultiBase.decode("").error() == "multibase: Could not decode zero-length string"
+      MultiBase.decode("", dbuffer, outlen) == MultiBaseStatus.Incorrect
+      MultiBase.decode("0101").error() == "multibase: MultiBase scheme is not supported!"
+      MultiBase.decode("0101", dbuffer, outlen) == MultiBaseStatus.NotSupported
+      MultiBase.encode("base2", [byte 1]).error() ==
+        "multibase: Encoding scheme is not supported!"
+      MultiBase.encode("base2", [byte 1], ebuffer, outlen) ==
+        MultiBaseStatus.NotSupported
