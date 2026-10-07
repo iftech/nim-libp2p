@@ -716,3 +716,107 @@ suite "MinProtobuf test suite":
       cast[uint32](fixed32Value) == Fixed32Values[1]
       cast[uint64](fixed64Value) == Fixed64Values[1]
       lengthValue == LengthValues[1]
+
+  test "Malformed input fails every getter":
+    type MalformedCase = object
+      name: string
+      data: seq[byte]
+      error: ProtoError
+
+    let cases = [
+      MalformedCase(name: "bad wire type", data: @[0x0F'u8], error: BadWireType),
+      MalformedCase(
+        name: "other field, truncated varint",
+        data: @[0x10'u8, 0x80],
+        error: VarintDecode,
+      ),
+      MalformedCase(
+        name: "other field, truncated fixed32",
+        data: @[0x15'u8, 0x01],
+        error: MessageIncomplete,
+      ),
+      MalformedCase(
+        name: "other field, truncated length",
+        data: @[0x12'u8, 0x05, 0x01],
+        error: MessageIncomplete,
+      ),
+      MalformedCase(
+        name: "target field, truncated varint",
+        data: @[0x08'u8, 0x80],
+        error: VarintDecode,
+      ),
+      MalformedCase(
+        name: "target field, truncated length",
+        data: @[0x0A'u8, 0x05, 0x01],
+        error: MessageIncomplete,
+      ),
+    ]
+
+    for c in cases:
+      checkpoint c.name
+      let pb = initProtoBuffer(c.data)
+      let expected = ProtoResult[bool].err(c.error)
+
+      var bytesValue = @[1'u8, 2, 3]
+      check:
+        pb.getField(1, bytesValue) == expected
+        bytesValue.len == 0
+
+      var fixedBuf = [0xAA'u8, 0xAA, 0xAA, 0xAA]
+      var outlen = 7
+      check:
+        pb.getField(1, fixedBuf, outlen) == expected
+        outlen == 0
+        fixedBuf == [0'u8, 0, 0, 0]
+
+      var repeatedBytes = @[@[1'u8]]
+      check:
+        pb.getRepeatedField(1, repeatedBytes) == expected
+        repeatedBytes.len == 0
+
+      var repeatedVarint = @[1'u64]
+      check:
+        pb.getRepeatedField(1, repeatedVarint) == expected
+        repeatedVarint.len == 0
+
+      var packedVarint = @[1'u64]
+      check:
+        pb.getPackedRepeatedField(1, packedVarint) == expected
+        packedVarint.len == 0
+
+  test "Truncated fixed64 fails float64 getters":
+    let pb = initProtoBuffer(@[0x09'u8, 0x01])
+    let expected = ProtoResult[bool].err(MessageIncomplete)
+
+    var value = 1.0'f64
+    check:
+      pb.getField(1, value) == expected
+      value == 1.0'f64
+
+    var repeated = @[1.0'f64]
+    check:
+      pb.getRepeatedField(1, repeated) == expected
+      repeated.len == 0
+
+    var packed = @[1.0'f64]
+    check:
+      pb.getPackedRepeatedField(1, packed) == expected
+      packed.len == 0
+
+  test "Target field with another scalar wire type is skipped":
+    let pb = initProtoBuffer(@[0x09'u8, 1, 0, 0, 0, 0, 0, 0, 0, 0x08, 0x05])
+
+    var value = 1'u64
+    check:
+      pb.getField(1, value) == ProtoResult[bool].ok(true)
+      value == 5'u64
+
+    var repeated = @[1'u64]
+    check:
+      pb.getRepeatedField(1, repeated) == ProtoResult[bool].ok(true)
+      repeated == @[5'u64]
+
+    var repeatedFloat = @[1.0'f32]
+    check:
+      pb.getRepeatedField(1, repeatedFloat) == ProtoResult[bool].ok(false)
+      repeatedFloat.len == 0
