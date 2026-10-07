@@ -53,7 +53,7 @@ template readMessage(stream: Stream): MultiStreamResult[string] =
 type OptimisticStream = ref object of Connection
   stream: Stream
   confirmed: bool
-  confirmation: Future[void].Raising([CancelledError, LPStreamError])
+  confirmFut: Future[void].Raising([CancelledError, LPStreamError])
 
 method getWrapped(s: OptimisticStream): Connection =
   s.stream
@@ -71,11 +71,7 @@ method join(s: OptimisticStream) {.async: (raises: [CancelledError]).} =
   else:
     await s.close()
 
-proc confirmImpl(
-    s: OptimisticStream
-) {.async: (raises: [CancelledError, LPStreamError]).} =
-  if s.confirmed:
-    return
+proc confirm(s: OptimisticStream) {.async: (raises: [CancelledError, LPStreamError]).} =
   let header = s.stream.readMessage().valueOr:
     raise
       newException(LPStreamError, "Optimistic multistream handshake failed: " & $error)
@@ -92,19 +88,14 @@ proc confirmImpl(
   s.confirmed = true
   s.stream.protocol = s.protocol
 
-proc confirm(
-    s: OptimisticStream
-): Future[void].Raising([CancelledError, LPStreamError]) =
-  if s.confirmation.isNil:
-    s.confirmation = s.confirmImpl()
-  s.confirmation
-
 method closeImpl(s: OptimisticStream) {.async: (raises: []).} =
   if not s.confirmed and not s.stream.closed:
     # Let the responder finish negotiation before signalling that reads ended.
     # Otherwise it may discard already-written application data.
     try:
-      await s.confirm()
+      if s.confirmFut.isNil:
+        s.confirmFut = s.confirm()
+      await s.confirmFut
     except CancelledError, LPStreamError:
       discard
   await s.stream.close()
@@ -131,7 +122,9 @@ method readOnce(
     raise newLPStreamClosedError()
   if not s.confirmed:
     try:
-      await s.confirm()
+      if s.confirmFut.isNil:
+        s.confirmFut = s.confirm()
+      await s.confirmFut
     except CancelledError as exc:
       await noCancel s.reset()
       raise exc
