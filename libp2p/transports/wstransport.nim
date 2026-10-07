@@ -150,6 +150,7 @@ type WsTransport* = ref object of Transport
   tlsPrivateKey*: TLSPrivateKey
   tlsCertificate*: TLSCertificate
   autotls: Opt[AutotlsService]
+  usingAutotls: bool
   tlsFlags: set[TLSFlags]
   flags: set[ServerFlags]
   headersTimeout: Duration
@@ -427,7 +428,7 @@ proc updateAutotlsCertificate(
   (await autotls.getCertWhenReady()).ifValue(currentCert):
     install(currentCert)
 
-  while self.running:
+  while self.running and autotls.isRunning:
     let certificates = await subscription.waitUpdates()
     for cert in certificates:
       install(cert)
@@ -441,7 +442,6 @@ method start*(
     return
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
-  var usingAutotls = false
 
   if not self.secure and addrs.anyIt(WSS.match(it)):
     if self.autotls.isNone():
@@ -459,7 +459,7 @@ method start*(
 
     self.tlsCertificate = autotlsCert.cert
     self.tlsPrivateKey = autotlsCert.privkey
-    usingAutotls = true
+    self.usingAutotls = true
 
   self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
 
@@ -474,7 +474,7 @@ method start*(
 
   await procCall Transport(self).start(resolvedAddrs)
   self.acceptLoop = self.wsAcceptDispatcher()
-  if usingAutotls:
+  if self.usingAutotls:
     self.autotlsUpdateLoop = self.updateAutotlsCertificate(self.autotls.get())
 
   info "WebSocket transport started", addresses = self.addrs

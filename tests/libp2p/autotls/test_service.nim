@@ -172,6 +172,19 @@ suite "AutoTLS certificate issuance and renewal":
     lateSubscriber.unsubscribe()
     check (await staleUpdates).len == 0
 
+  asyncTest "certificate update subscribers are unblocked when the service stops":
+    service = newService()
+    let subscriber = service.subscribeCertificateUpdates()
+    defer:
+      subscriber.unsubscribe()
+
+    let updates = subscriber.waitUpdates()
+    check not updates.finished
+
+    await service.stop(switch)
+
+    check (await updates).len == 0
+
   asyncTest "the certificate in place is handed over while its renewal is in flight":
     acmeApi.stalls = true
     service = newService()

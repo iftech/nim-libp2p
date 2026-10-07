@@ -121,6 +121,7 @@ proc waitUpdates*(
     self: CertSubscription
 ): Future[seq[AutotlsCert]] {.async: (raises: [CancelledError]).} =
   ## Wait for certificates issued since the previous call to this procedure.
+  ## Returns an empty sequence when the service stops.
   try:
     await self.updates.waitEvents(self.key)
   except AsyncEventQueueFullError:
@@ -197,6 +198,9 @@ proc new*(
     peerInfo: nil,
     rng: rng,
   )
+
+proc isRunning*(self: AutotlsService): bool =
+  self.running.isSet()
 
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
@@ -461,6 +465,10 @@ method start*(
 method stop*(
     self: AutotlsService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
+  self.running.clear()
+  if not self.certUpdates.isNil():
+    self.certUpdates.close()
+    self.certUpdates = nil
   if not self.acmeClient.isNil():
     await self.acmeClient.close()
   if not self.broker.isNil():

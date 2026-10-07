@@ -426,6 +426,10 @@ suite "WebSocket transport with autotls":
 
     check wstransport.tlsCertificate == secureCert
 
+    # autotls should still reach even after transport restarts 
+    await wstransport.stop()
+    await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
+
     # what issueCertificate does once a renewal completes
     let renewedKeyPair = KeyPair.random(PKScheme.RSA, rng()).get()
     let renewedPeerId = PeerId.init(renewedKeyPair.pubkey).tryGet()
