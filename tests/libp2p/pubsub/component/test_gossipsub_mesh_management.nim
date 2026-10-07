@@ -8,7 +8,7 @@ import ../../../../libp2p/protocols/pubsub/[gossipsub, mcache, peertable, pubsub
 import ../../../tools/[lifecycle, topology, unittest, futures]
 import ../utils
 
-suite "GossipSub Component - Mesh Management", timeout = 30.seconds:
+suite "GossipSub Component - Mesh Management":
   const topic = "foobar"
 
   teardown:

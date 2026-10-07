@@ -65,7 +65,7 @@ jobs:
       - name: Build test_all
         run: |
           NIMFLAGS="--nimcache:nimcache/test_all --lineDir:on --passC:-fprofile-arcs --passC:-ftest-coverage --passL:-fprofile-arcs --passL:-ftest-coverage --threads:on --skipUserCfg"
-          NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=INFO"
+          NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=INFO -d:libp2p_testing_slow"
           nim c $NIMFLAGS ./tests/test_all
 
       - name: Run tests

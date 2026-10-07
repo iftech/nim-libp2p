@@ -8,7 +8,8 @@ export checkTrackers # TODO: maybe consider importing it on demand?
 export unittest2 except suite
 
 const
-  asyncTestTimeoutDefault* = 15.seconds
+  asyncTestTimeoutDefault* =
+    when defined(libp2p_testing_slow): 30.seconds else: 15.seconds
   asyncTestCleanupTimeout = 1.seconds
 
 var
@@ -170,8 +171,8 @@ proc buildAndExpr(n: NimNode): NimNode =
     return n
 
 const
-  checkTimeoutDefault: Duration = 5.seconds
-  sleepIntervalDefault: Duration = 50.milliseconds
+  checkTimeoutDefault = when defined(libp2p_testing_slow): 15.seconds else: 5.seconds
+  sleepIntervalDefault = 50.milliseconds
 
 macro checkUntilTimeoutCustom*(
     timeout: Duration, sleepInterval: Duration, code: untyped

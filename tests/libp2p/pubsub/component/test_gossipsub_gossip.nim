@@ -8,7 +8,7 @@ import ../../../../libp2p/protocols/pubsub/[gossipsub, mcache, rpc/message]
 import ../../../tools/[lifecycle, topology, unittest]
 import ../utils
 
-suite "GossipSub Component - Gossip Protocol", timeout = 30.seconds:
+suite "GossipSub Component - Gossip Protocol":
   const topic = "foobar"
 
   teardown:
