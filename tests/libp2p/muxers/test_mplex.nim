@@ -261,14 +261,13 @@ suite "Mplex":
 
   suite "channel reset":
     asyncTest "cleanup waits for the reset message":
-      proc newSignal(
-          name: static[string]
-      ): Future[void] {.async: (raises: [], raw: true).} =
-        newFuture[void](name)
-
       let
-        resetStarted = newSignal("mplex-reset-started")
-        releaseReset = newSignal("mplex-release-reset")
+        resetStarted = Future[void].Raising([]).init(
+          "mplex-reset-started", {FutureFlag.OwnCancelSchedule}
+        )
+        releaseReset = Future[void].Raising([]).init(
+          "mplex-release-reset", {FutureFlag.OwnCancelSchedule}
+        )
 
       proc blockingWriteHandler(
           data: sink seq[byte]
