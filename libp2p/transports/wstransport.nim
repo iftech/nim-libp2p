@@ -408,8 +408,7 @@ proc loadAutotlsCertificate(
     return err("autotls certificate was not available before the certificate deadline")
 
 proc updateAutotlsCertificate(
-    self: WsTransport,
-    autotls: AutotlsService,
+    self: WsTransport, autotls: AutotlsService
 ) {.async: (raises: [CancelledError]).} =
   let subscription = autotls.subscribeCertificateUpdates()
   defer:

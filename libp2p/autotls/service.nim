@@ -112,8 +112,9 @@ proc installCertificate(self: AutotlsService, cert: AutotlsCert) =
   if not self.certUpdates.isNil:
     self.certUpdates.emit(cert)
 
-proc subscribeCertificateUpdates*(self: AutotlsService):
-    tuple[updates: AsyncEventQueue[AutotlsCert], key: EventQueueKey] =
+proc subscribeCertificateUpdates*(
+    self: AutotlsService
+): tuple[updates: AsyncEventQueue[AutotlsCert], key: EventQueueKey] =
   ## Subscribe to certificates issued after this call.
   if self.certUpdates.isNil:
     self.certUpdates = newAsyncEventQueue[AutotlsCert]()
