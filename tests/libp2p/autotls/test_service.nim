@@ -57,8 +57,7 @@ suite "AutoTLS certificate issuance and renewal":
     )
 
   proc installCert(service: AutotlsService, expiresIn: times.Duration) =
-    service.cert = Opt.some(AutotlsCert.new(cert, certKey, now() + expiresIn))
-    service.certReady.fire()
+    service.installCertificate(AutotlsCert.new(cert, certKey, now() + expiresIn))
 
   asyncSetup:
     acmeApi = ACMEApiStub.new()
@@ -149,6 +148,29 @@ suite "AutoTLS certificate issuance and renewal":
     check:
       autotlsCert.cert == cert
       autotlsCert.privkey == certKey
+
+  asyncTest "certificate updates are delivered only to current subscribers":
+    service = newService()
+    let currentSubscriber = service.subscribeCertificateUpdates()
+    defer:
+      currentSubscriber.unsubscribe()
+
+    service.installCert(initDuration(hours = 2))
+
+    let updates = await currentSubscriber.waitUpdates()
+    check:
+      updates.len == 1
+      updates[0].cert == cert
+      updates[0].privkey == certKey
+
+    let lateSubscriber = service.subscribeCertificateUpdates()
+    defer:
+      lateSubscriber.unsubscribe()
+
+    let staleUpdates = lateSubscriber.waitUpdates()
+    check not staleUpdates.finished
+    lateSubscriber.unsubscribe()
+    check (await staleUpdates).len == 0
 
   asyncTest "the certificate in place is handed over while its renewal is in flight":
     acmeApi.stalls = true
