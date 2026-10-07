@@ -5,8 +5,12 @@
 {.push raises: [].}
 
 import chronos, stew/byteutils
-import ../../../libp2p/[transports/memorytransport, multiaddress]
+import ../../../libp2p/[transports/memorytransport, transports/transport, multiaddress]
 import ../../tools/[unittest, crypto, multiaddress]
+import ./cancellation_tests
+
+proc memoryTransProvider(): Transport =
+  MemoryTransport.new(rng = rng())
 
 suite "Memory transport":
   teardown:
@@ -30,6 +34,11 @@ suite "Memory transport":
     # Closing one end closes the other, so the accepted side goes with it.
     let accepted = await acceptFut
     check accepted.closed()
+
+  asyncTest "a dial cancelled at any point leaves no socket open":
+    check (await countCancelledDials(memoryTransProvider, MemoryAutoAddress)) == 0
+
+  upgradeCancellationTransportTest(memoryTransProvider, MemoryAutoAddress)
 
   asyncTest "memory multiaddress":
     let maddr = ma("/memorytransport/addr-1")
