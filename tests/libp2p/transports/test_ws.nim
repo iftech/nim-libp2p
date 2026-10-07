@@ -439,7 +439,11 @@ suite "WebSocket transport with autotls":
     # A fresh handshake verifies that the HttpServer, not just the transport
     # fields above, now presents the renewed certificate.
     let client = WsTransport.new(
-      Upgrade(), nil, nil, Opt.none(AutotlsService), rng(),
+      Upgrade(),
+      nil,
+      nil,
+      Opt.none(AutotlsService),
+      rng(),
       tlsFlags = {TLSFlags.NoVerifyHost},
     )
     let inboundFut = wstransport.accept()
