@@ -210,7 +210,7 @@ suite "KadDHT Bootstrap Component":
   teardown:
     checkTrackers()
 
-  asyncTest "bootstrap discovers new peers through network":
+  asyncTest "bootstrap discovers new peers through network", timeout = 30.seconds:
     # 1 hub + 9 nodes bootstrapping from hub
     let hubKad = setupKad()
     startAndDeferStop(@[hubKad])
@@ -235,10 +235,10 @@ suite "KadDHT Bootstrap Component":
             return false
       true
 
-    checkUntilTimeout:
+    checkUntilTimeoutCustom(15.seconds, 500.milliseconds):
       allPeersKnowEachOther()
 
-  asyncTest "bootstrap with unreachable peer completes gracefully":
+  asyncTest "bootstrap with unreachable peer completes gracefully", timeout = 30.seconds:
     # Fake bootstrap peer with valid address format
     let fakePeerId = randomPeerId()
     let fakeAddrs = @[ma("/ip4/127.0.0.1/tcp/59999")]
