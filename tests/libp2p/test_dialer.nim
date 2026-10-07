@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, metrics, sequtils, results
+import chronos, metrics, sequtils, results, stew/byteutils
 import
   ../../libp2p/[
     builders,
@@ -915,6 +915,86 @@ suite "Dialer":
     expect MultiStreamError:
       discard await negotiation
     check stream.wasResetLocally
+
+  asyncTest "Known peer protocol uses optimistic negotiation":
+    const codec = "/test/optimistic/1.0.0"
+    let (stream, remote) = bridgedConnections()
+    var selected: Stream
+    defer:
+      if selected.isNil:
+        await stream.close()
+      else:
+        await selected.close()
+      await remote.close()
+
+    stream.readQueue = newAsyncQueue[seq[byte]](16)
+    remote.readQueue = newAsyncQueue[seq[byte]](16)
+    let peerStore = PeerStore.new(nil)
+    peerStore[ProtoBook][stream.peerId] = @[codec]
+    let dialer =
+      Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
+
+    selected = await dialer.negotiateStream(stream, @[codec])
+
+    check selected.getWrapped() == stream
+    await selected.writeLp("early payload")
+    check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
+    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await remote.readLp(1024)) == "early payload"
+
+    await remote.writeLp("/multistream/1.0.0\n")
+    await remote.writeLp(codec & "\n")
+    await remote.writeLp("response")
+    check string.fromBytes(await selected.readLp(1024)) == "response"
+
+  asyncTest "Stale peer protocol fails on first read and resets the stream":
+    const codec = "/test/stale/1.0.0"
+    let (stream, remote) = bridgedConnections()
+    var selected: Stream
+    defer:
+      if selected.isNil:
+        await stream.close()
+      else:
+        await selected.close()
+      await remote.close()
+
+    stream.readQueue = newAsyncQueue[seq[byte]](16)
+    remote.readQueue = newAsyncQueue[seq[byte]](16)
+    let peerStore = PeerStore.new(nil)
+    peerStore[ProtoBook][stream.peerId] = @[codec]
+    let dialer =
+      Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
+
+    selected = await dialer.negotiateStream(stream, @[codec])
+    check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
+    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+
+    await remote.writeLp("/multistream/1.0.0\n")
+    await remote.writeLp("na\n")
+    expectMsg LPStreamError, "Optimistic multistream protocol rejected":
+      discard await selected.readLp(1024)
+    check stream.wasResetLocally
+
+  asyncTest "Unknown peer protocol uses blocking negotiation":
+    const codec = "/test/blocking/1.0.0"
+    let (stream, remote) = bridgedConnections()
+    let peerStore = PeerStore.new(nil)
+    peerStore[ProtoBook][stream.peerId] = @["/test/other/1.0.0"]
+    let dialer =
+      Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
+
+    let negotiation = dialer.negotiateStream(stream, @[codec])
+    defer:
+      await stream.close()
+      await remote.close()
+
+    check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
+    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+    check not negotiation.finished()
+
+    await remote.writeLp("/multistream/1.0.0\n")
+    await remote.writeLp(codec & "\n")
+    check (await negotiation) == stream
 
   asyncTest "tryDial raises DialFailedError when every dial fails":
     let src = makeStandardSwitch()

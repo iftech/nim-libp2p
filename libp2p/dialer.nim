@@ -637,33 +637,50 @@ method connect*(
 proc negotiateStream*(
     self: Dialer, stream: Stream, protos: seq[string]
 ): Future[Stream] {.async: (raises: [CancelledError, LPError]).} =
-  ## Negotiate one of `protos` over an open stream.
-  ## Raises DialFailedError when negotiation selects no supported protocol or
-  ## the selected protocol's outgoing stream budget is exhausted.
+  ## Negotiates one protocol from `protos` on an open stream.
+  ##
+  ## If the peer store indicates that the peer supports a requested protocol,
+  ## returns before the peer acknowledges. If the peer then rejects the protocol,
+  ## the first read raises LPStreamError. Because the caller may write immediately,
+  ## rejection cannot fall back to another protocol.
+  ##
+  ## Raises DialFailedError if blocking negotiation selects no protocol, or
+  ## if the selected protocol has no outgoing stream budget left.
 
-  var negotiated = false
+  var
+    negotiated = false
+    selectedStream = stream
   defer:
     if not negotiated:
-      await stream.reset()
+      await selectedStream.reset()
 
   trace "Protocol negotiation started", stream, protocols = protos
-  let selected = await MultistreamSelect.select(stream, protos)
-  if not protos.contains(selected):
+  let preferredProto =
+    if self.peerStore.isNil:
+      Opt.none(string)
+    else:
+      self.peerStore.firstSupportedProtocol(stream.peerId, protos)
+
+  let selection = await MultistreamSelect.select(stream, protos, preferredProto)
+  selectedStream = selection.stream
+  let selectedProto = selection.protocol
+  if not protos.contains(selectedProto):
     raise newException(
       DialFailedError,
       "Unable to select sub-protocol. None of the offered protocols were accepted: " &
         $protos,
     )
 
-  self.ms.lookupProtocol(selected).ifValue(protocol):
-    if not protocol.reserveOutgoing(stream.peerId):
+  self.ms.lookupProtocol(selectedProto).ifValue(protocol):
+    if not protocol.reserveOutgoing(selectedStream.peerId):
       raise newException(
-        DialFailedError, "Outbound stream budget exceeded for protocol: " & selected
+        DialFailedError,
+        "Outbound stream budget exceeded for protocol: " & selectedProto,
       )
 
     proc releaseOnClose() {.async: (raises: []).} =
-      await noCancel stream.join()
-      protocol.releaseOutgoing(stream.peerId)
+      await noCancel selectedStream.join()
+      protocol.releaseOutgoing(selectedStream.peerId)
 
     let fut = releaseOnClose()
     self.ongoingReleaseOnClose.add(fut)
@@ -673,7 +690,7 @@ proc negotiateStream*(
         self.ongoingReleaseOnClose.del(idx)
 
   negotiated = true
-  return stream
+  return selectedStream
 
 proc tryDial*(
     self: Dialer, peerId: PeerId, addrs: seq[MultiAddress]

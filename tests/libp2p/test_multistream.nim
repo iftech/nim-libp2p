@@ -827,10 +827,56 @@ suite "Multistream :: optimistic selection":
     check reading.cancelled
     check client.wasResetLocally
 
-  asyncTest "closing without reading releases both streams":
+  asyncTest "close waits for acknowledgement before closing the stream":
     let (client, server) = bufferedPair()
     let selected = await MultistreamSelect.selectOptimistic(client, codec)
-    await selected.close()
+    await selected.writeLp("request")
+    let closing = selected.close()
+    check not closing.finished()
+
+    check string.fromBytes(await server.readLp(1024)) == header
+    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+    check string.fromBytes(await server.readLp(1024)) == "request"
+
+    await closing
     await selected.close()
     check client.closed
     check server.closed
+
+  asyncTest "read and close share acknowledgement confirmation":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+
+    let reading = selected.readLp(1024)
+    let closing = selected.close()
+    check:
+      not reading.finished()
+      not closing.finished()
+
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+
+    await closing
+    expect LPStreamClosedError:
+      discard await reading
+    check:
+      client.protocol == codec
+      client.closed
+
+  asyncTest "join completes when the underlying stream closes":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+
+    let joined = selected.join()
+    check not joined.finished()
+    await client.close()
+    await joined
+    check selected.closed

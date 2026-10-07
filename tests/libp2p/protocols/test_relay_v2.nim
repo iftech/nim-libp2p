@@ -445,7 +445,7 @@ suite "Circuit Relay V2":
         proto.handler = proc(
             stream: Stream, proto: string
         ) {.async: (raises: [CancelledError]).} =
-          raiseAssert "Should not receive connection"
+          await stream.reset()
 
         let
           rel2Cl = RelayClient.new(canHop = true)
@@ -476,8 +476,9 @@ suite "Circuit Relay V2":
         rsvp = await rel2Cl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         discard await dstCl.reserve(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
 
-        expect DialFailedError:
-          stream = await src.dial(dst.peerInfo.peerId, addrs, customProtoCodec)
+        stream = await src.dial(dst.peerInfo.peerId, addrs, customProtoCodec)
+        expect LPStreamError:
+          discard await stream.readLp(1024)
         if not stream.isNil():
           await allFutures(stream.close())
         await allFutures(src.stop(), dst.stop(), rel.stop(), rel2.stop())
