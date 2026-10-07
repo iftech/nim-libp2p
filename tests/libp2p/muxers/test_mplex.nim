@@ -266,8 +266,8 @@ suite "Mplex":
             "mplex-reset-started", {FutureFlag.OwnCancelSchedule}
           )
         releaseReset = Future[void].Raising([]).init(
-          "mplex-release-reset", {FutureFlag.OwnCancelSchedule}
-        )
+            "mplex-release-reset", {FutureFlag.OwnCancelSchedule}
+          )
 
       proc blockingWriteHandler(
           data: sink seq[byte]
