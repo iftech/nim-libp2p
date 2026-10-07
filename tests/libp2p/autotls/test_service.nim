@@ -250,8 +250,7 @@ suite "AutoTLS certificate issuance and renewal":
     service = newService(AutotlsConfig.new(issueRetries = 0))
     await service.start(switch)
 
-    let issued = await service.issueCertificateForTest(switch)
-
+    let issued = await service.issueCertificate(switch)
     check:
       issued.isErr
       acmeApi.requestedUris.len == 0

@@ -142,6 +142,7 @@ type WsTransport* = ref object of Transport
   connections: array[Direction, seq[WsStream]]
   connectionCleanupFuts: seq[Future[void]]
   acceptLoop: Future[void]
+  autotlsUpdateLoop: Future[void]
   handshakeFuts: seq[Future[void]]
   acceptResults: AsyncQueue[RawConn]
   acceptSem: AsyncSemaphore
@@ -406,6 +407,35 @@ proc loadAutotlsCertificate(
   except AsyncTimeoutError:
     return err("autotls certificate was not available before the certificate deadline")
 
+proc updateAutotlsCertificate(
+    self: WsTransport,
+    autotls: AutotlsService,
+) {.async: (raises: [CancelledError]).} =
+  let subscription = autotls.subscribeCertificateUpdates()
+  defer:
+    subscription.updates.unregister(subscription.key)
+
+  proc install(cert: AutotlsCert) =
+    self.tlsCertificate = cert.cert
+    self.tlsPrivateKey = cert.privkey
+    for server in self.httpservers:
+      if server.secure:
+        server.tlsCertificate = cert.cert
+        server.tlsPrivateKey = cert.privkey
+
+  # Apply the current certificate after subscribing, so a renewal completed
+  # while the transport was starting is installed even if no event was seen.
+  (await autotls.getCertWhenReady()).ifValue(currentCert):
+    install(currentCert)
+
+  while self.running:
+    try:
+      let certificates = await subscription.updates.waitEvents(subscription.key)
+      for cert in certificates:
+        install(cert)
+    except AsyncEventQueueFullError:
+      warn "AutoTLS certificate update queue overflowed"
+
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]
 ) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
@@ -415,6 +445,7 @@ method start*(
     return
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
+  var usingAutotls = false
 
   if not self.secure and addrs.anyIt(WSS.match(it)):
     if self.autotls.isNone():
@@ -432,6 +463,7 @@ method start*(
 
     self.tlsCertificate = autotlsCert.cert
     self.tlsPrivateKey = autotlsCert.privkey
+    usingAutotls = true
 
   self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
 
@@ -446,6 +478,8 @@ method start*(
 
   await procCall Transport(self).start(resolvedAddrs)
   self.acceptLoop = self.wsAcceptDispatcher()
+  if usingAutotls:
+    self.autotlsUpdateLoop = self.updateAutotlsCertificate(self.autotls.get())
 
   info "WebSocket transport started", addresses = self.addrs
 
@@ -464,6 +498,8 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
     var toWait: seq[Future[void]]
     if not self.acceptLoop.isNil:
       toWait.add(self.acceptLoop.cancelAndWait())
+    if not self.autotlsUpdateLoop.isNil:
+      toWait.add(self.autotlsUpdateLoop.cancelAndWait())
 
     for fut in self.handshakeFuts:
       toWait.add(fut.cancelAndWait())
@@ -486,6 +522,7 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
     self.handshakeFuts = @[]
     self.connectionCleanupFuts = @[]
     self.acceptLoop = nil
+    self.autotlsUpdateLoop = nil
     if wasRunning:
       info "WebSocket transport stopped", addresses = self.addrs
   except CatchableError as e:

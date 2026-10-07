@@ -403,8 +403,7 @@ suite "WebSocket transport with autotls":
       not wstransport.running
       wstransport.addrs.len == 0
 
-  asyncTest "a renewed certificate does not reach a running transport":
-    # TODO: vacp2p/nim-libp2p#2994
+  asyncTest "a renewed certificate reaches a running transport":
     let autotls = AutotlsService(
       cert: Opt.some(AutotlsCert.new(secureCert, secureKey, now())),
       certReady: newAsyncEvent(),
@@ -429,9 +428,9 @@ suite "WebSocket transport with autotls":
 
     # what issueCertificate does once a renewal completes
     let (renewedKey, renewedCert) = tlsCertGenerator()
-    autotls.cert = Opt.some(AutotlsCert.new(renewedCert, renewedKey, now()))
-    autotls.certReady.fire()
+    autotls.installCertificate(AutotlsCert.new(renewedCert, renewedKey, now()))
+    await sleepAsync(0.milliseconds)
 
     check:
-      wstransport.tlsCertificate == secureCert
-      wstransport.tlsPrivateKey == secureKey
+      wstransport.tlsCertificate == renewedCert
+      wstransport.tlsPrivateKey == renewedKey

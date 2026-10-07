@@ -74,6 +74,7 @@ type AutotlsService* = ref object of Service
   cert*: Opt[AutotlsCert]
   certFailure: Opt[string]
   certReady*: AsyncEvent
+  certUpdates: AsyncEventQueue[AutotlsCert]
   running*: AsyncEvent
   config*: AutotlsConfig
   managerFut: Future[void]
@@ -92,6 +93,8 @@ proc new*(
 method getCertWhenReady*(
     self: AutotlsService
 ): Future[LPResult[AutotlsCert]] {.base, async: (raises: [CancelledError]).} =
+  if self.cert.isSome():
+    return ok(self.cert.get())
   await self.certReady.wait()
   if self.cert.isSome():
     return ok(self.cert.get())
@@ -100,6 +103,21 @@ method getCertWhenReady*(
 proc resetCertWait(self: AutotlsService) =
   self.certFailure = Opt.none(string)
   self.certReady.clear()
+
+proc installCertificate(self: AutotlsService, cert: AutotlsCert) =
+  ## Install a certificate and notify listeners that terminate TLS themselves.
+  self.cert = Opt.some(cert)
+  self.certFailure = Opt.none(string)
+  self.certReady.fire()
+  if not self.certUpdates.isNil:
+    self.certUpdates.emit(cert)
+
+proc subscribeCertificateUpdates*(self: AutotlsService):
+    tuple[updates: AsyncEventQueue[AutotlsCert], key: EventQueueKey] =
+  ## Subscribe to certificates issued after this call.
+  if self.certUpdates.isNil:
+    self.certUpdates = newAsyncEventQueue[AutotlsCert]()
+  (self.certUpdates, self.certUpdates.register())
 
 proc new*(
     T: typedesc[AutotlsConfig],
@@ -152,6 +170,7 @@ proc new*(
     cert: Opt.none(AutotlsCert),
     certFailure: Opt.none(string),
     certReady: newAsyncEvent(),
+    certUpdates: newAsyncEventQueue[AutotlsCert](),
     running: newAsyncEvent(),
     config: config,
     managerFut: nil,
@@ -339,9 +358,7 @@ proc issueCertificate(
   let certificate = ?(await self.requestCertificate(baseDomain, certKeyPair, addrs))
 
   trace "Installing certificate"
-  self.cert = Opt.some(?newAutotlsCert(certificate, certKeyPair))
-  self.certFailure = Opt.none(string)
-  self.certReady.fire()
+  self.installCertificate(?newAutotlsCert(certificate, certKeyPair))
   info "AutoTLS successfully renewed certificate"
   ok()
 
@@ -433,10 +450,7 @@ method stop*(
     self.managerFut = nil
 
 when defined(libp2p_testing):
+  export installCertificate, issueCertificate
+
   func ipAddress*(config: AutotlsConfig): Opt[IpAddress] =
     config.ipAddress
-
-  proc issueCertificateForTest*(
-      self: AutotlsService, switch: Switch
-  ): Future[Result[void, LPResultError]] =
-    self.issueCertificate(switch)
