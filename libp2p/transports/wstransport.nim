@@ -433,7 +433,7 @@ proc updateAutotlsCertificate(
       for cert in certificates:
         install(cert)
     except AsyncEventQueueFullError:
-      warn "AutoTLS certificate update queue overflowed"
+      discard # cert updates are unbounded, error can never happen
 
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]
