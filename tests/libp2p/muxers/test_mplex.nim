@@ -260,6 +260,39 @@ suite "Mplex":
       await chann.reset()
 
   suite "channel reset":
+    asyncTest "cleanup waits for the reset message":
+      let
+        resetStarted = Future[void].Raising([]).init(
+            "mplex-reset-started", {FutureFlag.OwnCancelSchedule}
+          )
+        releaseReset = Future[void].Raising([]).init(
+            "mplex-release-reset", {FutureFlag.OwnCancelSchedule}
+          )
+
+      proc blockingWriteHandler(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        resetStarted.complete()
+        await releaseReset
+
+      let
+        conn = TestBufferStream.new(blockingWriteHandler)
+        mplex = Mplex.new(conn)
+        chann = mplex.newStreamInternal(timeout = 1.seconds)
+
+      chann.isOpen = true
+      await chann.reset()
+      await resetStarted
+
+      await sleepAsync(10.millis) # sleep needed for negative assertion
+      check not chann.cleanupFut.finished()
+      check chann in mplex.getStreams()
+
+      releaseReset.complete()
+      await chann.cleanupFut
+      check chann notin mplex.getStreams()
+      await conn.close()
+
     asyncTest "channel should fail reading":
       let
         conn = TestBufferStream.new(noopWriteHandler)

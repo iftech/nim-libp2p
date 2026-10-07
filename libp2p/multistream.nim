@@ -5,7 +5,7 @@
 
 import std/[strutils, sequtils]
 import chronos, results, chronicles, stew/byteutils
-import stream/connection, protocols/protocol
+import stream/connection, protocols/protocol, utils/opt
 
 logScope:
   topics = "libp2p multistream"
@@ -53,6 +53,7 @@ template readMessage(stream: Stream): MultiStreamResult[string] =
 type OptimisticStream = ref object of Connection
   stream: Stream
   confirmed: bool
+  confirmFut: Future[void].Raising([CancelledError, LPStreamError])
 
 method getWrapped(s: OptimisticStream): Connection =
   s.stream
@@ -63,7 +64,40 @@ method atEof(s: OptimisticStream): bool =
 method closed(s: OptimisticStream): bool =
   s.isClosed or s.stream.closed
 
+method join(s: OptimisticStream) {.async: (raises: [CancelledError]).} =
+  await s.stream.join()
+  if s.isClosed:
+    await s.closeEvent.wait()
+  else:
+    await s.close()
+
+proc confirm(s: OptimisticStream) {.async: (raises: [CancelledError, LPStreamError]).} =
+  let header = s.stream.readMessage().valueOr:
+    raise
+      newException(LPStreamError, "Optimistic multistream handshake failed: " & $error)
+  if header != Codec:
+    raise newException(
+      LPStreamError, "Optimistic multistream handshake failed: unexpected codec"
+    )
+  let response = s.stream.readMessage().valueOr:
+    raise newException(
+      LPStreamError, "Optimistic multistream protocol negotiation failed: " & $error
+    )
+  if response != s.protocol:
+    raise newException(LPStreamError, "Optimistic multistream protocol rejected")
+  s.confirmed = true
+  s.stream.protocol = s.protocol
+
 method closeImpl(s: OptimisticStream) {.async: (raises: []).} =
+  if not s.confirmed and not s.stream.closed:
+    # Let the responder finish negotiation before signalling that reads ended.
+    # Otherwise it may discard already-written application data.
+    try:
+      if s.confirmFut.isNil:
+        s.confirmFut = s.confirm()
+      await s.confirmFut
+    except CancelledError, LPStreamError:
+      discard
   await s.stream.close()
   await procCall Connection(s).closeImpl()
 
@@ -88,22 +122,9 @@ method readOnce(
     raise newLPStreamClosedError()
   if not s.confirmed:
     try:
-      let header = s.stream.readMessage().valueOr:
-        raise newException(
-          LPStreamError, "Optimistic multistream handshake failed: " & $error
-        )
-      if header != Codec:
-        raise newException(
-          LPStreamError, "Optimistic multistream handshake failed: unexpected codec"
-        )
-      let response = s.stream.readMessage().valueOr:
-        raise newException(
-          LPStreamError, "Optimistic multistream protocol negotiation failed: " & $error
-        )
-      if response != s.protocol:
-        raise newException(LPStreamError, "Optimistic multistream protocol rejected")
-      s.confirmed = true
-      s.stream.protocol = s.protocol
+      if s.confirmFut.isNil:
+        s.confirmFut = s.confirm()
+      await s.confirmFut
     except CancelledError as exc:
       await noCancel s.reset()
       raise exc
@@ -190,6 +211,22 @@ proc select*(
     _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: seq[string]
 ): Future[string] {.async: (raises: [CancelledError, LPStreamError, MultiStreamError]).} =
   (await MultistreamSelect.trySelect(stream, proto)).valueOrRaise(MultiStreamError)
+
+proc select*(
+    _: MultistreamSelect | type MultistreamSelect,
+    stream: Stream,
+    protos: seq[string],
+    preferredProto: Opt[string],
+): Future[tuple[protocol: string, stream: Stream]] {.
+    async: (raises: [CancelledError, LPStreamError, MultiStreamError])
+.} =
+  ## Select optimistically when `preferredProto` is present, otherwise use
+  ## blocking negotiation. The preferred protocol must belong to `protos`.
+  preferredProto.ifValue(proto):
+    doAssert proto in protos,
+      "Preferred protocol must be one of the requested protocols"
+    return (proto, await MultistreamSelect.selectOptimistic(stream, proto))
+  (await MultistreamSelect.select(stream, protos), stream)
 
 proc select*(
     _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: string
