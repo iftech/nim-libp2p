@@ -263,8 +263,8 @@ suite "Mplex":
     asyncTest "cleanup waits for the reset message":
       let
         resetStarted = Future[void].Raising([]).init(
-          "mplex-reset-started", {FutureFlag.OwnCancelSchedule}
-        )
+            "mplex-reset-started", {FutureFlag.OwnCancelSchedule}
+          )
         releaseReset = Future[void].Raising([]).init(
           "mplex-release-reset", {FutureFlag.OwnCancelSchedule}
         )
