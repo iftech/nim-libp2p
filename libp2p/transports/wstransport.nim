@@ -412,7 +412,7 @@ proc updateAutotlsCertificate(
 ) {.async: (raises: [CancelledError]).} =
   let subscription = autotls.subscribeCertificateUpdates()
   defer:
-    subscription.updates.unregister(subscription.key)
+    subscription.unsubscribe()
 
   proc install(cert: AutotlsCert) =
     self.tlsCertificate = cert.cert
@@ -428,12 +428,9 @@ proc updateAutotlsCertificate(
     install(currentCert)
 
   while self.running:
-    try:
-      let certificates = await subscription.updates.waitEvents(subscription.key)
-      for cert in certificates:
-        install(cert)
-    except AsyncEventQueueFullError:
-      discard # cert updates are unbounded, error can never happen
+    let certificates = await subscription.waitUpdates()
+    for cert in certificates:
+      install(cert)
 
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]

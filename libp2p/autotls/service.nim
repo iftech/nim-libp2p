@@ -49,6 +49,11 @@ type AutotlsCert* = ref object
   privkey*: TLSPrivateKey
   expiry*: DateTime
 
+type CertSubscription* = ref object
+  ## A subscription to certificates issued after it is created.
+  updates: AsyncEventQueue[AutotlsCert]
+  key: EventQueueKey
+
 type AutotlsConfig* = object
   acmeDirectoryURL*: Uri
   acmeHttpFlags*: HttpClientFlags
@@ -112,13 +117,27 @@ proc installCertificate(self: AutotlsService, cert: AutotlsCert) =
   if not self.certUpdates.isNil:
     self.certUpdates.emit(cert)
 
-proc subscribeCertificateUpdates*(
-    self: AutotlsService
-): tuple[updates: AsyncEventQueue[AutotlsCert], key: EventQueueKey] =
+proc waitUpdates*(
+    self: CertSubscription
+): Future[seq[AutotlsCert]] {.async: (raises: [CancelledError]).} =
+  ## Wait for certificates issued since the previous call to this procedure.
+  try:
+    await self.updates.waitEvents(self.key)
+  except AsyncEventQueueFullError:
+    # Certificate update queues are always unbounded, so this is unreachable.
+    return @[]
+
+proc unsubscribe*(self: CertSubscription) =
+  ## Stop receiving certificate updates. This procedure is idempotent.
+  if not self.updates.isNil:
+    self.updates.unregister(self.key)
+    self.updates = nil
+
+proc subscribeCertificateUpdates*(self: AutotlsService): CertSubscription =
   ## Subscribe to certificates issued after this call.
   if self.certUpdates.isNil:
     self.certUpdates = newAsyncEventQueue[AutotlsCert]()
-  (self.certUpdates, self.certUpdates.register())
+  CertSubscription(updates: self.certUpdates, key: self.certUpdates.register())
 
 proc new*(
     T: typedesc[AutotlsConfig],
