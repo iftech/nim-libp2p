@@ -353,7 +353,7 @@ proc toRawBytes*(
   of PKScheme.RSA:
     when supported(PKScheme.RSA):
       let size = key.rsakey.toBytes(data).valueOr:
-        return err(KeyError)
+        return err(CryptoError.KeyError)
       ok(size)
     else:
       err(SchemeError)
@@ -365,14 +365,14 @@ proc toRawBytes*(
   of PKScheme.ECDSA:
     when supported(PKScheme.ECDSA):
       let size = key.eckey.toBytes(data).valueOr:
-        return err(KeyError)
+        return err(CryptoError.KeyError)
       ok(size)
     else:
       err(SchemeError)
   of PKScheme.Secp256k1:
     when supported(PKScheme.Secp256k1):
       let size = key.skkey.toBytes(data).valueOr:
-        return err(KeyError)
+        return err(CryptoError.KeyError)
       ok(size)
     else:
       err(SchemeError)
