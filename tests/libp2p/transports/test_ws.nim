@@ -427,10 +427,24 @@ suite "WebSocket transport with autotls":
     check wstransport.tlsCertificate == secureCert
 
     # what issueCertificate does once a renewal completes
-    let (renewedKey, renewedCert) = tlsCertGenerator()
+    let renewedKeyPair = KeyPair.random(PKScheme.RSA, rng()).get()
+    let renewedPeerId = PeerId.init(renewedKeyPair.pubkey).tryGet()
+    let (renewedKey, renewedCert) = tlsCertGenerator(Opt.some(renewedKeyPair))
     autotls.installCertificate(AutotlsCert.new(renewedCert, renewedKey, now()))
-    await sleepAsync(0.milliseconds)
 
-    check:
+    checkUntilTimeout:
       wstransport.tlsCertificate == renewedCert
       wstransport.tlsPrivateKey == renewedKey
+
+    # A fresh handshake verifies that the HttpServer, not just the transport
+    # fields above, now presents the renewed certificate.
+    let client = WsTransport.new(
+      Upgrade(), nil, nil, Opt.none(AutotlsService), rng(),
+      tlsFlags = {TLSFlags.NoVerifyHost},
+    )
+    let inboundFut = wstransport.accept()
+    let outbound = await client.dial($renewedPeerId, wstransport.addrs[0])
+    let inbound = await inboundFut
+    let closing = outbound.close()
+    await inbound.close()
+    await closing
