@@ -173,7 +173,7 @@ proc isValidAdvertisement*(
     return err("oversized")
 
   let ad = Advertisement.decode(advertisment).valueOr:
-    return err("cannot decode: " & $error)
+    return err(error, "cannot decode")
 
   for svc in ad.data.services:
     if not svc.isValid():

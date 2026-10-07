@@ -13,6 +13,8 @@ import tables
 import ./results
 import stew/[base32, base58, base64]
 
+export results
+
 type
   MultiBaseStatus* {.pure.} = enum
     Error

@@ -101,6 +101,8 @@ suite "WebSocket transport":
 
   cancellationTransportTest(wsTransProvider, wsAddress)
   cancellationTransportTest(wsSecureTransProvider, wsSecureAddress)
+  upgradeCancellationTransportTest(wsTransProvider, wsAddress)
+  upgradeCancellationTransportTest(wsSecureTransProvider, wsSecureAddress)
 
   asyncTest "slow WebSocket headers do not block valid accepts":
     let headersTimeout = 3.seconds

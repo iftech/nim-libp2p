@@ -235,12 +235,12 @@ proc copy*[T: RsaPKI](key: T): T =
       let length = key.key.nlen + key.key.elen
       var res = new RsaPublicKey
       res.buffer = newSeqUninit[byte](length)
-      let no = 0
+      let no: uint = 0
       let eo = no + key.key.nlen
       copyMem(addr res.buffer[no], key.key.n, key.key.nlen)
       copyMem(addr res.buffer[eo], key.key.e, key.key.elen)
-      res.key.n = cast[ptr char](addr res.buffer[no])
-      res.key.e = cast[ptr char](addr res.buffer[eo])
+      res.key.n = addr res.buffer[no]
+      res.key.e = addr res.buffer[eo]
       res.key.nlen = key.key.nlen
       res.key.elen = key.key.elen
       return res

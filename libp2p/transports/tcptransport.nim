@@ -125,7 +125,7 @@ proc listen(
     self.servers &= server
 
     let localAddr = MultiAddress.init(server.sock.getLocalAddress()).valueOr:
-      return err("TcpTransport.start got invalid local address. " & error)
+      return err(error, "TcpTransport.start got invalid local address")
     trace "Listening on", address = localAddr
     supported.add(localAddr)
 
@@ -305,9 +305,8 @@ method dial*(
     raise newTransportClosedError()
 
   let ta = initTAddress(address).valueOr:
-    raise (ref TcpTransportError)(
-      msg:
-        "TcpTransport.dial called with unsupported address " & $address & ". " & error
+    raise error.toException(
+      TcpTransportError, "TcpTransport.dial called with unsupported address " & $address
     )
   let local =
     if self.networkReachability == NetworkReachability.NotReachable:
@@ -342,7 +341,7 @@ method dial*(
 
   let addrs = transp.connAddrs().valueOr:
     safeCloseWait(transp)
-    raise (ref TcpTransportError)(msg: "TcpTransport.dial failed. " & error)
+    raise error.toException(TcpTransportError, "TcpTransport.dial failed")
 
   self.connHandler(
     transp, Opt.some(addrs.observed), Opt.some(addrs.local), Direction.Out

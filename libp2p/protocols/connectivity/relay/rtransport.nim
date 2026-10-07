@@ -58,20 +58,20 @@ type RelayAddr = object
 
 proc peerIdOf(part: MultiAddress): LPResult[PeerId] =
   let peerId = PeerId.init(?part.protoAddress()).valueOr:
-    return err($error)
+    return err(error)
   ok(peerId)
 
 proc parseRelayAddr(ma: MultiAddress): LPResult[RelayAddr] =
   let parts = ?ma.len()
   if parts < 4:
-    return err("too few parts in " & $ma)
+    return err($ma, "too few parts")
   if not CircuitRelay.match(?ma[parts - 2]):
-    return err("missing p2p-circuit in " & $ma)
+    return err($ma, "missing p2p-circuit")
 
   let relayPeerId = peerIdOf(?ma[parts - 3]).valueOr:
-    return err("Relay doesn't exist: " & error)
+    return err(error, "Relay doesn't exist")
   let dstPeerId = peerIdOf(?ma[parts - 1]).valueOr:
-    return err("Destination doesn't exist: " & error)
+    return err(error, "Destination doesn't exist")
 
   ok(
     RelayAddr(
@@ -83,7 +83,7 @@ proc tryDial*(
     self: RelayTransport, ma: MultiAddress
 ): Future[LPResult[RawConn]] {.async: (raises: [CancelledError]).} =
   let address = parseRelayAddr(ma).valueOr:
-    return err("dial address not valid: " & error)
+    return err(error, "dial address not valid")
 
   trace "Dial", relayPeerId = address.relayPeerId, dstPeerId = address.dstPeerId
 
@@ -114,7 +114,7 @@ proc tryDial*(
 
   if dialed.isErr():
     safeClose(dialedConn)
-    return err("dial relay " & conn.protocol & " failed: " & dialed.error)
+    return err(dialed.error, "dial relay " & conn.protocol & " failed")
 
   dialed
 
@@ -132,9 +132,9 @@ method dial*(
 ): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
   peerId.ifValue(pid):
     let address = MultiAddress.init($ma & "/p2p/" & $pid).valueOr:
-      raise newException(transport.TransportDialError, "relay dial failed: " & error)
+      raise error.toException(transport.TransportDialError, "relay dial failed")
     let conn = (await self.tryDial(address)).valueOr:
-      raise newException(transport.TransportDialError, "relay dial failed: " & error)
+      raise error.toException(transport.TransportDialError, "relay dial failed")
     return conn
 
 method handles*(self: RelayTransport, ma: MultiAddress): bool {.gcsafe.} =

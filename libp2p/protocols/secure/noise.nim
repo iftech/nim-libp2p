@@ -519,9 +519,9 @@ method handshake*(
   let signedPayload =
     p.localPrivateKey.sign(PayloadString & p.noiseKeys.publicKey.getBytes)
   if signedPayload.isErr():
-    raise (ref NoiseHandshakeError)(
-      msg: "Failed to sign public key: " & $signedPayload.error()
-    )
+    raise signedPayload.error().toException(
+        NoiseHandshakeError, "Failed to sign public key"
+      )
 
   let msg = NoiseHandshakePayloadMsg(
     identityKey: Opt.some(p.localPublicKey),
@@ -566,7 +566,7 @@ method handshake*(
         trace "Remote Noise signature verified", conn
 
       let pid = PeerId.init(remotePubKey).valueOr:
-        raise (ref NoiseHandshakeError)(msg: "Invalid remote peer id: " & $error)
+        raise error.toException(NoiseHandshakeError, "Invalid remote peer id")
 
       trace "Remote Noise peer identified", peerId = pid
 

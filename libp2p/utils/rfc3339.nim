@@ -21,7 +21,7 @@ proc parseRfc3339DateTime*(value: string): Result[DateTime, LPResultError] =
   ## Parses an RFC 3339 timestamp and normalizes it to UTC. Fractions more precise
   ## than Nim's nanosecond-resolution DateTime are truncated.
   template invalid(): untyped =
-    return err(LPResultError.init(InvalidRfc3339DateTime, value))
+    return err(value, InvalidRfc3339DateTime)
 
   if value.len < 20:
     invalid()

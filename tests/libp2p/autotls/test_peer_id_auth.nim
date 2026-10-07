@@ -4,7 +4,7 @@
 {.used.}
 {.push raises: [].}
 
-import chronos, chronos/apps/http/httpclient, uri, base64, times, strutils
+import chronos, chronos/apps/http/httpclient, uri, base64, times
 import
   ../../../libp2p/
     [stream/connection, upgrademngrs/upgrade, peeridauth/client, wire, crypto/crypto]
@@ -170,7 +170,7 @@ suite "PeerID Auth Client":
     let authentication = await client.tryRequestAuthentication(parseUri(ExampleURL))
 
     check authentication.isErr()
-    check "public-key" in authentication.error
+    check authentication.error.detail == "public-key"
 
   asyncTest "trySend reports an expired bearer without a request":
     let expired = BearerToken(token: "somebearer", expires: Opt.some(now() - 1.hours))
@@ -188,7 +188,7 @@ suite "PeerID Auth Client":
     let checked = tryCheckSignature("!!!", key, "challenge", key, "example.com")
 
     check checked.isErr()
-    check "Failed to decode server's signature" in checked.error
+    check checked.isOfError("Failed to decode server's signature")
 
   asyncTest "authentication fields match names rather than substrings":
     client.authenticationInfo = Opt.some(

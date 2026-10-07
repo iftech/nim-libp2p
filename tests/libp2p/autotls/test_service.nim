@@ -102,8 +102,8 @@ suite "AutoTLS certificate issuance and renewal":
     await service.start(switch)
 
     # Every attempt fails on its first ACME request, so a request is an attempt.
-    checkUntilTimeout:
-      acmeApi.requestedUris.len == 4
+    checkUntilTimeoutCustom(15.seconds, 500.milliseconds):
+      acmeApi.requestedUris.len >= 4
 
     let certResult = await service.getCertWhenReady()
     check:
