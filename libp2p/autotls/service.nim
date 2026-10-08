@@ -49,6 +49,11 @@ type AutotlsCert* = ref object
   privkey*: TLSPrivateKey
   expiry*: DateTime
 
+type CertSubscription* = ref object
+  ## A subscription to certificates issued after it is created.
+  updates: AsyncEventQueue[Opt[AutotlsCert]]
+  key: EventQueueKey
+
 type AutotlsConfig* = object
   acmeDirectoryURL*: Uri
   acmeHttpFlags*: HttpClientFlags
@@ -74,6 +79,7 @@ type AutotlsService* = ref object of Service
   cert*: Opt[AutotlsCert]
   certFailure: Opt[string]
   certReady*: AsyncEvent
+  certUpdates: AsyncEventQueue[Opt[AutotlsCert]]
   running*: AsyncEvent
   config*: AutotlsConfig
   managerFut: Future[void]
@@ -92,6 +98,8 @@ proc new*(
 method getCertWhenReady*(
     self: AutotlsService
 ): Future[LPResult[AutotlsCert]] {.base, async: (raises: [CancelledError]).} =
+  if self.cert.isSome():
+    return ok(self.cert.get())
   await self.certReady.wait()
   if self.cert.isSome():
     return ok(self.cert.get())
@@ -100,6 +108,41 @@ method getCertWhenReady*(
 proc resetCertWait(self: AutotlsService) =
   self.certFailure = Opt.none(string)
   self.certReady.clear()
+
+proc installCertificate(self: AutotlsService, cert: AutotlsCert) =
+  ## Install a certificate and notify listeners that terminate TLS themselves.
+  self.cert = Opt.some(cert)
+  self.certFailure = Opt.none(string)
+  self.certReady.fire()
+  if not self.certUpdates.isNil:
+    self.certUpdates.emit(Opt.some(cert))
+
+proc waitUpdates*(
+    self: CertSubscription
+): Future[seq[AutotlsCert]] {.async: (raises: [CancelledError]).} =
+  ## Wait for certificates issued since the previous call to this procedure.
+  ## Returns an empty sequence when the service stops. The subscription remains
+  ## active and will receive certificates issued after the service restarts.
+  if self.updates.isNil: # The subscription was already unsubscribed
+    return @[]
+
+  try:
+    (await self.updates.waitEvents(self.key)).filterIt(it.isSome()).mapIt(it.get())
+  except AsyncEventQueueFullError:
+    # Certificate update queues are always unbounded, so this is unreachable.
+    return @[]
+
+proc unsubscribe*(self: CertSubscription) =
+  ## Stop receiving certificate updates. This procedure is idempotent.
+  if not self.updates.isNil:
+    self.updates.unregister(self.key)
+    self.updates = nil
+
+proc subscribeCertificateUpdates*(self: AutotlsService): CertSubscription =
+  ## Subscribe to certificates issued after this call.
+  if self.certUpdates.isNil:
+    self.certUpdates = newAsyncEventQueue[Opt[AutotlsCert]]()
+  CertSubscription(updates: self.certUpdates, key: self.certUpdates.register())
 
 proc new*(
     T: typedesc[AutotlsConfig],
@@ -152,12 +195,16 @@ proc new*(
     cert: Opt.none(AutotlsCert),
     certFailure: Opt.none(string),
     certReady: newAsyncEvent(),
+    certUpdates: newAsyncEventQueue[Opt[AutotlsCert]](),
     running: newAsyncEvent(),
     config: config,
     managerFut: nil,
     peerInfo: nil,
     rng: rng,
   )
+
+proc isRunning*(self: AutotlsService): bool =
+  self.running.isSet()
 
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
@@ -339,9 +386,7 @@ proc issueCertificate(
   let certificate = ?(await self.requestCertificate(baseDomain, certKeyPair, addrs))
 
   trace "Installing certificate"
-  self.cert = Opt.some(?newAutotlsCert(certificate, certKeyPair))
-  self.certFailure = Opt.none(string)
-  self.certReady.fire()
+  self.installCertificate(?newAutotlsCert(certificate, certKeyPair))
   info "AutoTLS successfully renewed certificate"
   ok()
 
@@ -428,6 +473,9 @@ method start*(
 method stop*(
     self: AutotlsService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
+  self.running.clear()
+  if not self.certUpdates.isNil():
+    self.certUpdates.emit(Opt.none(AutotlsCert))
   if not self.acmeClient.isNil():
     await self.acmeClient.close()
   if not self.broker.isNil():
@@ -437,10 +485,7 @@ method stop*(
     self.managerFut = nil
 
 when defined(libp2p_testing):
+  export installCertificate, issueCertificate
+
   func ipAddress*(config: AutotlsConfig): Opt[IpAddress] =
     config.ipAddress
-
-  proc issueCertificateForTest*(
-      self: AutotlsService, switch: Switch
-  ): Future[Result[void, LPResultError]] =
-    self.issueCertificate(switch)

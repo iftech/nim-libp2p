@@ -405,8 +405,7 @@ suite "WebSocket transport with autotls":
       not wstransport.running
       wstransport.addrs.len == 0
 
-  asyncTest "a renewed certificate does not reach a running transport":
-    # TODO: vacp2p/nim-libp2p#2994
+  asyncTest "a renewed certificate reaches a running transport":
     let autotls = AutotlsService(
       cert: Opt.some(AutotlsCert.new(secureCert, secureKey, now())),
       certReady: newAsyncEvent(),
@@ -430,10 +429,31 @@ suite "WebSocket transport with autotls":
     check wstransport.tlsCertificate == secureCert
 
     # what issueCertificate does once a renewal completes
-    let (renewedKey, renewedCert) = tlsCertGenerator()
-    autotls.cert = Opt.some(AutotlsCert.new(renewedCert, renewedKey, now()))
-    autotls.certReady.fire()
+    let renewedKeyPair = KeyPair.random(PKScheme.RSA, rng()).get()
+    let (renewedKey, renewedCert) = tlsCertGenerator(Opt.some(renewedKeyPair))
+    autotls.installCertificate(AutotlsCert.new(renewedCert, renewedKey, now()))
+
+    checkUntilTimeout:
+      wstransport.tlsCertificate == renewedCert
+      wstransport.tlsPrivateKey == renewedKey
+      wstransport.serverTlsCredentials == @[(key: renewedKey, cert: renewedCert)]
+
+    await wstransport.stop()
+
+    # A replacement transport must load the current AutoTLS certificate rather
+    # than relying on credentials retained by a previously running instance.
+    let restartedTransport = WsTransport.new(
+      Upgrade(),
+      nil, # TLSPrivateKey
+      nil, # TLSCertificate
+      Opt.some(autotls),
+      rng(),
+    )
+    defer:
+      await restartedTransport.stop()
+    await restartedTransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
 
     check:
-      wstransport.tlsCertificate == secureCert
-      wstransport.tlsPrivateKey == secureKey
+      restartedTransport.tlsCertificate == renewedCert
+      restartedTransport.tlsPrivateKey == renewedKey
+      restartedTransport.serverTlsCredentials == @[(key: renewedKey, cert: renewedCert)]

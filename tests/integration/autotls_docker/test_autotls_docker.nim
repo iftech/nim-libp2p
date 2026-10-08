@@ -59,6 +59,10 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     startAndDeferStop(@[switch])
 
     let certBefore = (await service.getCertWhenReady().wait(IssueTimeout)).get()
+    let certificateUpdates = service.subscribeCertificateUpdates()
+    defer:
+      certificateUpdates.unsubscribe()
+
     service.certReady.clear()
     service.cert = Opt.some(
       AutotlsCert.new(
@@ -66,7 +70,10 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
       )
     )
 
-    let certAfter = (await service.getCertWhenReady().wait(IssueTimeout)).get()
+    let certificates = await certificateUpdates.waitUpdates().wait(IssueTimeout)
+    check certificates.len > 0
+
+    let certAfter = certificates[^1]
     check:
       certAfter.cert != certBefore.cert
       certAfter.expiry > now()

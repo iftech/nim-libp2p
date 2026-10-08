@@ -57,8 +57,7 @@ suite "AutoTLS certificate issuance and renewal":
     )
 
   proc installCert(service: AutotlsService, expiresIn: times.Duration) =
-    service.cert = Opt.some(AutotlsCert.new(cert, certKey, now() + expiresIn))
-    service.certReady.fire()
+    service.installCertificate(AutotlsCert.new(cert, certKey, now() + expiresIn))
 
   asyncSetup:
     acmeApi = ACMEApiStub.new()
@@ -149,6 +148,60 @@ suite "AutoTLS certificate issuance and renewal":
     check:
       autotlsCert.cert == cert
       autotlsCert.privkey == certKey
+
+  asyncTest "certificate updates are delivered only to current subscribers":
+    service = newService()
+    let currentSubscriber = service.subscribeCertificateUpdates()
+    defer:
+      currentSubscriber.unsubscribe()
+
+    service.installCert(initDuration(hours = 2))
+
+    let updates = await currentSubscriber.waitUpdates()
+    check:
+      updates.len == 1
+      updates[0].cert == cert
+      updates[0].privkey == certKey
+
+    let lateSubscriber = service.subscribeCertificateUpdates()
+    defer:
+      lateSubscriber.unsubscribe()
+
+    let staleUpdates = lateSubscriber.waitUpdates()
+    check not staleUpdates.finished
+    lateSubscriber.unsubscribe()
+    check (await staleUpdates).len == 0
+
+  asyncTest "certificate update subscribers are unblocked when the service stops":
+    service = newService()
+    let subscriber = service.subscribeCertificateUpdates()
+    defer:
+      subscriber.unsubscribe()
+
+    let updates = subscriber.waitUpdates()
+    check not updates.finished
+
+    await service.stop(switch)
+
+    check (await updates).len == 0
+
+  asyncTest "certificate update subscribers survive a service restart":
+    service = newService()
+    service.installCert(initDuration(hours = 2))
+    let subscriber = service.subscribeCertificateUpdates()
+    defer:
+      subscriber.unsubscribe()
+
+    await service.start(switch)
+    let stopped = subscriber.waitUpdates()
+    await service.stop(switch)
+    check (await stopped).len == 0
+
+    await service.start(switch)
+    let updates = subscriber.waitUpdates()
+    service.installCert(initDuration(hours = 3))
+
+    check (await updates).len == 1
 
   asyncTest "the certificate in place is handed over while its renewal is in flight":
     acmeApi.stalls = true
@@ -250,8 +303,7 @@ suite "AutoTLS certificate issuance and renewal":
     service = newService(AutotlsConfig.new(issueRetries = 0))
     await service.start(switch)
 
-    let issued = await service.issueCertificateForTest(switch)
-
+    let issued = await service.issueCertificate(switch)
     check:
       issued.isErr
       acmeApi.requestedUris.len == 0

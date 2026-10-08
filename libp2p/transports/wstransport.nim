@@ -7,6 +7,7 @@
 
 import ../logging
 import std/[sequtils]
+from times import format
 import chronos, chronicles, metrics, stew/byteutils
 import ../results
 import
@@ -142,6 +143,7 @@ type WsTransport* = ref object of Transport
   connections: array[Direction, seq[WsStream]]
   connectionCleanupFuts: seq[Future[void]]
   acceptLoop: Future[void]
+  autotlsUpdateLoop: Future[void]
   handshakeFuts: seq[Future[void]]
   acceptResults: AsyncQueue[RawConn]
   acceptSem: AsyncSemaphore
@@ -149,6 +151,7 @@ type WsTransport* = ref object of Transport
   tlsPrivateKey*: TLSPrivateKey
   tlsCertificate*: TLSCertificate
   autotls: Opt[AutotlsService]
+  manualCredentials: bool
   tlsFlags: set[TLSFlags]
   flags: set[ServerFlags]
   headersTimeout: Duration
@@ -406,6 +409,37 @@ proc loadAutotlsCertificate(
   except AsyncTimeoutError:
     return err("autotls certificate was not available before the certificate deadline")
 
+proc updateAutotlsCertificate(
+    self: WsTransport, autotls: AutotlsService
+) {.async: (raises: [CancelledError]).} =
+  let subscription = autotls.subscribeCertificateUpdates()
+  defer:
+    subscription.unsubscribe()
+    if self.running:
+      warn "AutoTLS certificate update loop stopped while transport is running",
+        serviceRunning = autotls.isRunning
+
+  proc install(cert: AutotlsCert) =
+    self.tlsCertificate = cert.cert
+    self.tlsPrivateKey = cert.privkey
+    for server in self.httpservers:
+      if server.secure:
+        server.tlsCertificate = cert.cert
+        server.tlsPrivateKey = cert.privkey
+    info "Installed AutoTLS certificate in WebSocket transport",
+      expiry = cert.expiry.format("yyyy-MM-dd'T'HH:mm:ss'.'fffzzz"),
+      secureServers = self.httpservers.countIt(it.secure)
+
+  # Apply the current certificate after subscribing, so a renewal completed
+  # while the transport was starting is installed even if no event was seen.
+  (await autotls.getCertWhenReady()).ifValue(currentCert):
+    install(currentCert)
+
+  while self.running and autotls.isRunning:
+    let certificates = await subscription.waitUpdates()
+    for cert in certificates:
+      install(cert)
+
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]
 ) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
@@ -416,13 +450,11 @@ method start*(
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
 
-  if not self.secure and addrs.anyIt(WSS.match(it)):
-    if self.autotls.isNone():
-      raise newException(
-        TransportStartError,
-        "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
-      )
-
+  let hasWss = addrs.anyIt(WSS.match(it))
+  # AutoTLS credentials are retained after a stop, so `secure` cannot tell us
+  # whether credentials were supplied by the caller on subsequent starts.
+  let usingAutotls = self.autotls.isSome() and not self.manualCredentials and hasWss
+  if usingAutotls:
     let autotlsCert = (await loadAutotlsCertificate(self.autotls.get())).valueOr:
       raise error.toException(
         TransportStartError,
@@ -431,6 +463,11 @@ method start*(
 
     self.tlsCertificate = autotlsCert.cert
     self.tlsPrivateKey = autotlsCert.privkey
+  elif not self.secure and hasWss:
+    raise newException(
+      TransportStartError,
+      "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
+    )
 
   self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
 
@@ -445,6 +482,8 @@ method start*(
 
   await procCall Transport(self).start(resolvedAddrs)
   self.acceptLoop = self.wsAcceptDispatcher()
+  if usingAutotls:
+    self.autotlsUpdateLoop = self.updateAutotlsCertificate(self.autotls.get())
 
   info "WebSocket transport started", addresses = self.addrs
 
@@ -463,6 +502,8 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
     var toWait: seq[Future[void]]
     if not self.acceptLoop.isNil:
       toWait.add(self.acceptLoop.cancelAndWait())
+    if not self.autotlsUpdateLoop.isNil:
+      toWait.add(self.autotlsUpdateLoop.cancelAndWait())
 
     for fut in self.handshakeFuts:
       toWait.add(fut.cancelAndWait())
@@ -485,6 +526,7 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
     self.handshakeFuts = @[]
     self.connectionCleanupFuts = @[]
     self.acceptLoop = nil
+    self.autotlsUpdateLoop = nil
     if wasRunning:
       info "WebSocket transport stopped", addresses = self.addrs
   except CatchableError as e:
@@ -619,6 +661,7 @@ proc new*(
     tlsPrivateKey: tlsPrivateKey,
     tlsCertificate: tlsCertificate,
     autotls: autotls,
+    manualCredentials: not (isNil(tlsPrivateKey) or isNil(tlsCertificate)),
     tlsFlags: tlsFlags,
     flags: flags,
     factories: @factories,
@@ -651,3 +694,12 @@ proc new*(
     headersTimeout = headersTimeout,
     concurrentAccepts = concurrentAccepts,
   )
+
+when defined(libp2p_testing):
+  proc serverTlsCredentials*(
+      self: WsTransport
+  ): seq[tuple[key: TLSPrivateKey, cert: TLSCertificate]] =
+    ## TLS credentials installed in the currently running secure HTTP servers.
+    for server in self.httpservers:
+      if server.secure:
+        result.add((key: server.tlsPrivateKey, cert: server.tlsCertificate))
