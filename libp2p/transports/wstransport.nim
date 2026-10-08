@@ -151,7 +151,7 @@ type WsTransport* = ref object of Transport
   tlsPrivateKey*: TLSPrivateKey
   tlsCertificate*: TLSCertificate
   autotls: Opt[AutotlsService]
-  usingAutotls: bool
+  manualCredentials: bool
   tlsFlags: set[TLSFlags]
   flags: set[ServerFlags]
   headersTimeout: Duration
@@ -450,13 +450,11 @@ method start*(
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
 
-  if not self.secure and addrs.anyIt(WSS.match(it)):
-    if self.autotls.isNone():
-      raise newException(
-        TransportStartError,
-        "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
-      )
-
+  let hasWss = addrs.anyIt(WSS.match(it))
+  # AutoTLS credentials are retained after a stop, so `secure` cannot tell us
+  # whether credentials were supplied by the caller on subsequent starts.
+  let usingAutotls = self.autotls.isSome() and not self.manualCredentials and hasWss
+  if usingAutotls:
     let autotlsCert = (await loadAutotlsCertificate(self.autotls.get())).valueOr:
       raise newException(
         TransportStartError,
@@ -466,7 +464,11 @@ method start*(
 
     self.tlsCertificate = autotlsCert.cert
     self.tlsPrivateKey = autotlsCert.privkey
-    self.usingAutotls = true
+  elif not self.secure and hasWss:
+    raise newException(
+      TransportStartError,
+      "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
+    )
 
   self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
 
@@ -481,7 +483,7 @@ method start*(
 
   await procCall Transport(self).start(resolvedAddrs)
   self.acceptLoop = self.wsAcceptDispatcher()
-  if self.usingAutotls:
+  if usingAutotls:
     self.autotlsUpdateLoop = self.updateAutotlsCertificate(self.autotls.get())
 
   info "WebSocket transport started", addresses = self.addrs
@@ -660,6 +662,7 @@ proc new*(
     tlsPrivateKey: tlsPrivateKey,
     tlsCertificate: tlsCertificate,
     autotls: autotls,
+    manualCredentials: not (isNil(tlsPrivateKey) or isNil(tlsCertificate)),
     tlsFlags: tlsFlags,
     flags: flags,
     factories: @factories,
