@@ -955,6 +955,33 @@ suite "Mplex":
       await mplexDialFut
       await acceptFut
 
+    asyncTest "concurrent close waits for channel cleanup":
+      let closeGate = newAsyncEvent()
+      var writes = 0
+
+      proc writeHandler(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        writes.inc()
+        if writes == 2:
+          await closeGate.wait()
+
+      let
+        conn = TestBufferStream.new(writeHandler)
+        mplex = Mplex.new(conn)
+        stream = await mplex.newStream()
+        firstClose = mplex.close()
+
+      checkUntilTimeout:
+        writes == 2
+
+      let secondClose = mplex.close()
+      check not secondClose.finished
+
+      closeGate.fire()
+      await allFutures(firstClose, secondClose)
+      await stream.join()
+
     asyncTest "dialing mplex closes both ends":
       let transport1 = TcpTransport.new(upgrade = Upgrade())
 
