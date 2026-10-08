@@ -797,6 +797,36 @@ suite "AddressManager address mapper":
       manager.candidates().len == 1
       manager.candidates()[0].address == listenAddr
 
+  asyncTest "removed mappers are skipped by an in-flight resolution pass":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+    var otherCalls = 0
+
+    let slow: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      await gate
+      input
+    let other: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc otherCalls
+      input
+
+    startAndDeferStop(manager, peerInfo)
+    manager.addMapper(slow, AddrSource.PortMapped)
+    manager.addMapper(other, AddrSource.Autonat)
+
+    let pass = peerInfo.expandAddrs()
+    manager.removeMapper(other)
+    gate.complete()
+    discard await pass
+
+    check otherCalls == 0
+
   asyncTest "a withdrawal tells the observers without waiting for the heartbeat":
     let
       listenAddr = ma("/ip4/192.168.0.2/tcp/1")

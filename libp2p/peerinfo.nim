@@ -108,7 +108,13 @@ proc expandAddrs*(
   ## pass only a subset of addresses that remain bound.
   withLock p.ensureExpandAddrsLock():
     var addrs = listenAddrs
-    for mapper in p.addressMappers:
+    # An owner may remove a mapper while this pass is suspended in an earlier
+    # mapper's await. Iterate a snapshot to avoid changing the sequence during
+    # iteration, and do not call a mapper removed meanwhile.
+    let snapshot = p.addressMappers
+    for mapper in snapshot:
+      if mapper notin p.addressMappers:
+        continue
       addrs = await mapper(addrs)
 
     # a port mapper maps the bound ports even when the operator picks

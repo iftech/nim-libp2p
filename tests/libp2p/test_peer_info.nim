@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
+import std/sequtils
 import chronos
 import
   ../../libp2p/crypto/crypto,
@@ -125,6 +126,32 @@ suite "PeerInfo":
     let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[addressMapper])
     await allFutures(peerInfo.expandAddrs(), peerInfo.expandAddrs(listenAddrs))
     check maxActive == 1
+
+  asyncTest "removed address mappers are skipped by an in-flight pass":
+    let
+      seckey = PrivateKey.random(ECDSA, rng()).get()
+      listenAddrs = @[ma("/ip4/0.0.0.0/tcp/24")]
+      gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+    var otherCalls = 0
+
+    let slow: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      await gate
+      input
+    let other: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc otherCalls
+      input
+    let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[slow, other])
+
+    let pass = peerInfo.expandAddrs()
+    peerInfo.addressMappers.keepItIf(it != other)
+    gate.complete()
+    discard await pass
+
+    check otherCalls == 0
 
   test "Announced addresses win over the mapper chain":
     let

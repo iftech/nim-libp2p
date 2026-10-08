@@ -492,7 +492,13 @@ proc resolve(
   for address in addrs:
     produced.mgetOrPut(address, {}).incl(AddrSource.Listen)
 
-  for sourced in self.mappers:
+  # An owner may remove a mapper while this pass is suspended in an earlier
+  # mapper's await. Iterate a snapshot to avoid changing the sequence during
+  # iteration, and do not call a mapper removed meanwhile.
+  let snapshot = self.mappers
+  for sourced in snapshot:
+    if not self.mappers.anyIt(it.mapper == sourced.mapper):
+      continue
     let mapped = await sourced.mapper(addrs)
     for address in mapped.filterIt(it notin addrs):
       produced.mgetOrPut(address, {}).incl(sourced.source)
