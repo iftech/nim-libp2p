@@ -255,6 +255,37 @@ proc getPeers(prune: ControlPrune, peer: PubSubPeer): seq[(PeerId, Opt[PeerRecor
 
   routingRecords
 
+const
+  MaxPruneBackoff = 1.days.seconds.uint64
+  GraftResponseTimeout = 1.minutes
+
+proc recordPruneBackoff(
+    g: GossipSub, topic: string, peer: PubSubPeer, backoffSeconds: uint64
+) =
+  let
+    requested =
+      if backoffSeconds == 0:
+        g.parameters.pruneBackoff.seconds.uint64
+      else:
+        backoffSeconds
+    clamped = min(requested, MaxPruneBackoff) + BackoffSlackTime
+    backoff = Moment.fromNow(clamped.int64.seconds)
+    current = g.backingOff.getOrDefault(topic).getOrDefault(peer.peerId)
+  if backoff > current:
+    g.backingOff.mgetOrPut(topic)[peer.peerId] = backoff
+
+proc setLastGraftSent(g: GossipSub, peerId: PeerId, topic: string, moment: Moment) =
+  g.withPeerStats(peerId) do(stats: var PeerStats):
+    stats.topicInfos.mgetOrPut(topic).lastGraftSent = moment
+
+proc hasRecentGraftSent(g: GossipSub, peerId: PeerId, topic: string): bool =
+  g.peerStats.withValue(peerId, stats):
+    stats.topicInfos.withValue(topic, info):
+      return
+        info.lastGraftSent != Moment() and
+        Moment.now() - info.lastGraftSent < GraftResponseTimeout
+  false
+
 proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) =
   for prune in prunes:
     let topic = prune.topicID
@@ -265,21 +296,17 @@ proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) =
       trace "ignoring prune for unsubscribed topic", peer, topic
       continue
 
-    if not g.mesh.hasPeer(topic, peer):
-      trace "ignoring prune for peer outside mesh", peer, topic
+    let inMesh = g.mesh.hasPeer(topic, peer)
+    if not inMesh and not g.hasRecentGraftSent(peer.peerId, topic):
+      trace "ignoring unsolicited prune from peer outside mesh", peer, topic
       continue
 
-    # add peer backoff
-    if prune.backoff > 0:
-      let
-        # avoid overflows and clamp to reasonable value
-        backoffSeconds =
-          clamp(prune.backoff + BackoffSlackTime, 0'u64, 1.days.seconds.uint64)
-        backoff = Moment.fromNow(backoffSeconds.int64.seconds)
-        current = g.backingOff.getOrDefault(topic).getOrDefault(peer.peerId)
-      if backoff > current:
-        g.backingOff.mgetOrPut(topic, initTable[PeerId, Moment]())[peer.peerId] =
-          backoff
+    g.recordPruneBackoff(topic, peer, prune.backoff)
+    g.setLastGraftSent(peer.peerId, topic, Moment())
+
+    if not inMesh:
+      trace "ignoring prune for peer outside mesh", peer, topic
+      continue
 
     trace "pruning rpc received peer", peer, score = peer.score
     g.pruned(peer, topic, setBackoff = false)
@@ -602,6 +629,9 @@ proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil)
 
   # Send changes to peers after table updates to avoid stale state
   if grafts.len > 0:
+    let now = Moment.now()
+    for peer in grafts:
+      g.setLastGraftSent(peer.peerId, topic, now)
     let graft = RPCMsg.withControl(ControlMessage.withGraft(topic))
     g.broadcastResponse(grafts, graft, MessagePriority.High)
   if prunes.len > 0:
