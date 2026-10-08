@@ -30,7 +30,7 @@ suite "Service Discovery Component - Dial Backoff":
     startAndDeferStop(@[disco])
 
     let service = makeServiceInfo()
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
     let table = disco.rtManager.getTable(service.id.hashServiceId()).get()
 
     let deadPeerId = randomPeerId()

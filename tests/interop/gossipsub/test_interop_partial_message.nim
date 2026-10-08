@@ -22,12 +22,12 @@ suite "GossipSub Interop - InteropPartialMessage":
 
   test "interopUnionPartsMetadata performs OR":
     let res = interopUnionPartsMetadata(@[0b00001111'u8], @[0b11110000'u8])
-    check res.isOk()
+    check res
     check res.get() == @[0b11111111'u8]
 
   test "interopUnionPartsMetadata treats empty as bitmap 0":
     let res = interopUnionPartsMetadata(@[0b00000101'u8], @[])
-    check res.isOk()
+    check res
     check res.get() == @[0b00000101'u8]
 
   test "interopUnionPartsMetadata rejects wrong length":
@@ -115,7 +115,7 @@ suite "GossipSub Interop - Wire Format":
 
     # Peer has part 0 (bitmap = 0b00000001), needs parts 1 and 2
     let res = pm.materializeParts(@[0b00000001'u8])
-    check res.isOk()
+    check res
 
     let data = res.get()
     # Format: [bitmap: 1][part1: PartLen][part2: PartLen][groupId: GroupIdLen]
@@ -134,7 +134,7 @@ suite "GossipSub Interop - Wire Format":
 
     # Peer has both parts
     let res = pm.materializeParts(@[0b00000011'u8])
-    check res.isOk()
+    check res
     check res.get().len == 0
 
   test "materializeParts skips parts we don't have":
@@ -143,7 +143,7 @@ suite "GossipSub Interop - Wire Format":
 
     # Peer has nothing
     let res = pm.materializeParts(@[0b00000000'u8])
-    check res.isOk()
+    check res
 
     let data = res.get()
     check data.len == MetadataLen + PartLen + GroupIdLen
@@ -154,7 +154,7 @@ suite "GossipSub Interop - Wire Format":
     pm.fillParts(InteropPartsMetadata.init(0b00000101)) # parts 0 and 2
 
     let res = pm.materializeParts(@[])
-    check res.isOk()
+    check res
 
     let data = res.get()
     check data.len == MetadataLen + 2 * PartLen + GroupIdLen
@@ -175,7 +175,7 @@ suite "GossipSub Interop - Wire Format":
     # Receiver decodes
     let receiver = InteropPartialMessage.new(42)
     let res = receiver.extend(encoded)
-    check res.isOk()
+    check res
     check receiver.partsMetadata() == @[0b00000011'u8]
     check receiver.parts[0] == sender.parts[0]
     check receiver.parts[1] == sender.parts[1]
@@ -196,7 +196,7 @@ suite "GossipSub Interop - Wire Format":
     receiver.parts[0] = sentinel
 
     let res = receiver.extend(encoded)
-    check res.isOk()
+    check res
     check receiver.partsMetadata() == @[0b00000011'u8]
     check receiver.parts[0] == sentinel # part 0 not overwritten by extend
     check receiver.parts[1] == sender.parts[1]
@@ -213,7 +213,7 @@ suite "GossipSub Interop - Wire Format":
     receiver.fillParts(InteropPartsMetadata.init(0b00000001)) # already has part 0
 
     let res = receiver.extend(encoded)
-    check res.isOk()
+    check res
     check receiver.partsMetadata() == @[0b00000101'u8]
     check receiver.parts[2] == sender.parts[2]
       # part 2 read from correct offset, not part 0's bytes
@@ -243,11 +243,11 @@ suite "GossipSub Interop - Wire Format":
     let receiver = InteropPartialMessage.new(42)
 
     let enc1 = pm1.materializeParts(@[0b00000000'u8]).get()
-    check receiver.extend(enc1).isOk()
+    check receiver.extend(enc1)
     check receiver.partsMetadata() == @[0b00000001'u8]
 
     let enc2 = pm2.materializeParts(@[0b00000001'u8]).get()
-    check receiver.extend(enc2).isOk()
+    check receiver.extend(enc2)
     check receiver.partsMetadata() == @[0b00000011'u8]
 
   test "extend rejects bitmap claiming more parts than data contains":
@@ -281,5 +281,5 @@ suite "GossipSub Interop - Wire Format":
     var wire = newSeq[byte](MetadataLen + GroupIdLen)
     wire[0] = 0b00000000'u8
     let receiver = InteropPartialMessage.new(0)
-    check receiver.extend(wire).isOk()
+    check receiver.extend(wire)
     check receiver.partsMetadata() == @[0b00000000'u8]

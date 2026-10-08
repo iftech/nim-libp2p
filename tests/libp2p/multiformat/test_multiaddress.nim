@@ -528,7 +528,7 @@ suite "MultiAddress test suite":
     pb.finish()
 
     var decoded = newSeq[MultiAddress]()
-    check pb.getRepeatedField(1, decoded).isOk()
+    check pb.getRepeatedField(1, decoded)
     check decoded == mas
 
   test "getRepeatedField does not fail when some addresses are invalid":
@@ -539,7 +539,7 @@ suite "MultiAddress test suite":
     pb.finish()
 
     var decoded = newSeq[MultiAddress]()
-    check pb.getRepeatedField(1, decoded).isOk()
+    check pb.getRepeatedField(1, decoded)
     check decoded == @[MultiAddress.init("/ip4/1.2.3.4").get()]
 
   test "getRepeatedField fails when all addresses are invalid":

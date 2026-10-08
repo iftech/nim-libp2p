@@ -87,4 +87,4 @@ suite "KadDHT Switch Builder":
     defer:
       await allFutures(switch1.stop(), switch2.stop())
 
-    check (await kad2.putValue(kad2.rtable.selfId, @[1.byte, 2, 3, 4, 5])).isOk()
+    check (await kad2.putValue(kad2.rtable.selfId, @[1.byte, 2, 3, 4, 5]))

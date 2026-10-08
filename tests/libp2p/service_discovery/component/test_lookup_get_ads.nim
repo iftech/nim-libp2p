@@ -29,7 +29,7 @@ suite "Service Discovery Component - Lookup Get Ads":
 
     let serviceId = "empty-service".hashServiceId()
     let lookupResp = await discovererNode.lookup(serviceId)
-    check lookupResp.isOk()
+    check lookupResp
     check lookupResp.get().len == 0
 
   asyncTest "GET_ADS returns ads stored in registrar cache":
@@ -52,11 +52,10 @@ suite "Service Discovery Component - Lookup Get Ads":
     let regResult = await advertiserNode.sendRegister(
       registrarNode.switch.peerInfo.peerId, serviceId, adBytes
     )
-    check regResult.isOk()
+    check regResult
     check regResult.get().status == kad_protobuf.RegistrationStatus.Confirmed
 
-    let found = await discovererNode.lookup(serviceId)
-    check found.isOk()
+    check await discovererNode.lookup(serviceId)
     check found.get().len == 1
     check found.containsPeer(advertiserNode)
 
@@ -81,14 +80,14 @@ suite "Service Discovery Component - Lookup Get Ads":
     let regResult = await advertiserNode.sendRegister(
       holderNode.switch.peerInfo.peerId, serviceId, adBytes
     )
-    check regResult.isOk()
+    check regResult
     check regResult.get().status == kad_protobuf.RegistrationStatus.Confirmed
 
     # Only the relay's reply can tell the discoverer about the holder.
     check not discovererNode.rtable.hasPeer(holderNode.switch.peerInfo.peerId.toKey())
 
     let found = await discovererNode.lookup(serviceId)
-    check found.isOk()
+    check found
     check found.get().len == 1
     check found.containsPeer(advertiserNode)
 
@@ -131,7 +130,7 @@ suite "Service Discovery Component - Lookup Get Ads":
       registrarNode.acceptAd(now, serviceId, ad)
 
     let found = await discovererNode.lookup(serviceId)
-    check found.isOk()
+    check found
     check found.get().len <= 2
 
   asyncTest "discoverer discards ads with the service not matching the key":
@@ -147,7 +146,7 @@ suite "Service Discovery Component - Lookup Get Ads":
     registrarNode.registrar.seedAd(serviceIdA, adB)
 
     let found = await discovererNode.lookup(serviceIdA)
-    check found.isOk()
+    check found
     check found.get().len == 0
 
   asyncTest "lookup stops querying once F_lookup ads are found":
@@ -286,7 +285,7 @@ suite "Service Discovery Component - Lookup Get Ads":
       not sharedBucketKeys.anyIt(discovererNode.rtable.hasPeer(it))
 
     let found = await discovererNode.lookup(serviceId)
-    check found.isOk()
+    check found
 
     let serviceTable = discovererNode.rtManager.getTable(serviceId).get()
     checkUntilTimeout:

@@ -26,22 +26,22 @@ suite "MyPartialMessage":
 
     # exists: 1
     dataRes = pm.materializeParts(MyPartsMetadata.want(@[1]))
-    check dataRes.isOk()
+    check dataRes
     check dataRes.get() == pm.data[1]
 
     # does not exist: 5
     dataRes = pm.materializeParts(MyPartsMetadata.want(@[5]))
-    check dataRes.isOk()
+    check dataRes
     check dataRes.get().len == 0
 
     # exists: 2 + 3
     dataRes = pm.materializeParts(MyPartsMetadata.want(@[2, 3]))
-    check dataRes.isOk()
+    check dataRes
     check dataRes.get() == pm.data[2] & pm.data[3]
 
     # exists: 2 + 3; ignored: 5, 6, 7, 9, 10
     dataRes = pm.materializeParts(MyPartsMetadata.want(@[2, 5, 6, 7, 3, 9, 10]))
-    check dataRes.isOk()
+    check dataRes
     check dataRes.get() == pm.data[2] & pm.data[3]
 
     # metadata is not valid
@@ -64,19 +64,19 @@ suite "MyPartialMessage":
       MyPartsMetadata.want(@[1]), #
       MyPartsMetadata.want(@[2]),
     )
-    check res.isOk()
+    check res
     check res.get() == MyPartsMetadata.want(@[1, 2])
 
     res = unionPartsMetadata(
       MyPartsMetadata.want(@[1, 2, 3]), #
       MyPartsMetadata.have(@[1, 2]),
     )
-    check res.isOk()
+    check res
     check res.get() == MyPartsMetadata.have(@[1, 2]) & MyPartsMetadata.want(@[3])
 
     res = unionPartsMetadata(
       MyPartsMetadata.want(@[1, 2, 3]), #
       MyPartsMetadata.have(@[1, 2]) & MyPartsMetadata.want(@[3]),
     )
-    check res.isOk()
+    check res
     check res.get() == MyPartsMetadata.have(@[1, 2]) & MyPartsMetadata.want(@[3])

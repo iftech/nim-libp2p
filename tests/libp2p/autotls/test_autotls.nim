@@ -78,7 +78,7 @@ suite "AutoTLS ACME API":
 
   asyncTest "challenge completed successful":
     api.queueChallengeCompleted()
-    check (await api.sendChallengeCompleted(parseUri(ChallengeURL), key, "kid")).isOk()
+    check (await api.sendChallengeCompleted(parseUri(ChallengeURL), key, "kid"))
 
     api.queueStatus("valid")
     let completed =
@@ -98,7 +98,7 @@ suite "AutoTLS ACME API":
 
   asyncTest "challenge completed max retries reached":
     api.queueChallengeCompleted()
-    check (await api.sendChallengeCompleted(parseUri(ChallengeURL), key, "kid")).isOk()
+    check (await api.sendChallengeCompleted(parseUri(ChallengeURL), key, "kid"))
 
     # retries is the number of checks after the first one, so two polls
     api.queueStatus("pending")
@@ -114,7 +114,7 @@ suite "AutoTLS ACME API":
 
   asyncTest "challenge completed invalid":
     api.queueChallengeCompleted()
-    check (await api.sendChallengeCompleted(parseUri(ChallengeURL), key, "kid")).isOk()
+    check (await api.sendChallengeCompleted(parseUri(ChallengeURL), key, "kid"))
 
     api.queueStatus("invalid")
     check (await api.checkChallengeCompleted(parseUri(ChallengeURL), key, "kid")).isErr()
@@ -250,8 +250,8 @@ suite "AutoTLS ACME API":
       )
 
     # The stub overrides requestNonce, so call the real one that consults the directory.
-    check (await procCall requestNonce(ACMEApi(api))).isOk()
-    check (await procCall requestNonce(ACMEApi(api))).isOk()
+    check (await procCall requestNonce(ACMEApi(api)))
+    check (await procCall requestNonce(ACMEApi(api)))
 
     check api.requestedUris ==
       @[
@@ -271,28 +271,28 @@ suite "AutoTLS ACME API":
   asyncTest "the register request is signed with a jwk":
     api.queueRegister()
 
-    check (await api.requestRegister(key)).isOk()
+    check (await api.requestRegister(key))
 
     check api.protectedHeader(0).hasKey("jwk")
 
   asyncTest "the register request agrees to the terms of service":
     api.queueRegister()
 
-    check (await api.requestRegister(key)).isOk()
+    check (await api.requestRegister(key))
 
     check api.signedPayload(0)["termsOfServiceAgreed"].getBool
 
   asyncTest "an order request is signed with the account kid":
     api.queueOrder("pending", %*[AuthorizationsURL])
 
-    check (await api.requestNewOrder(@[WildcardDomain], key, AccountURL)).isOk()
+    check (await api.requestNewOrder(@[WildcardDomain], key, AccountURL))
 
     check api.protectedHeader(0)["kid"].getStr == AccountURL
 
   asyncTest "the order payload names the domain as a dns identifier":
     api.queueOrder("pending", %*[AuthorizationsURL])
 
-    check (await api.requestNewOrder(@[WildcardDomain], key, AccountURL)).isOk()
+    check (await api.requestNewOrder(@[WildcardDomain], key, AccountURL))
 
     check api.signedPayload(0)["identifiers"] ==
       %*[{"type": "dns", "value": WildcardDomain}]
@@ -301,8 +301,8 @@ suite "AutoTLS ACME API":
     api.queueRegister()
     api.queueOrder("pending", %*[AuthorizationsURL])
 
-    check (await api.requestRegister(key)).isOk()
-    check (await api.requestNewOrder(@[WildcardDomain], key, AccountURL)).isOk()
+    check (await api.requestRegister(key))
+    check (await api.requestNewOrder(@[WildcardDomain], key, AccountURL))
 
     check api.protectedHeader(0)["nonce"] != api.protectedHeader(1)["nonce"]
 
@@ -387,9 +387,9 @@ suite "AutoTLS ACME API":
     api.queueStatus("valid")
     api.queueGetOrder("https://acme.example/cert/1", "2099-01-01T00:00:00Z")
 
-    check (await api.requestAuthorizations(@[AuthorizationsURL], key, AccountURL)).isOk()
-    check (await api.requestCheck(parseUri(OrderURL), ACMEOrderCheck, key, AccountURL)).isOk()
-    check (await api.requestGetOrder(parseUri(OrderURL), key, AccountURL)).isOk()
+    check (await api.requestAuthorizations(@[AuthorizationsURL], key, AccountURL))
+    check (await api.requestCheck(parseUri(OrderURL), ACMEOrderCheck, key, AccountURL))
+    check (await api.requestGetOrder(parseUri(OrderURL), key, AccountURL))
 
     check api.payloads.len == 3
     for index in 0 ..< api.payloads.len:
