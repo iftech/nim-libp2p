@@ -475,14 +475,14 @@ proc withPrivateAddressFilter*(b: SwitchBuilder): SwitchBuilder =
   b.withAddressPolicy(publicRoutableAddressPolicy)
 
 proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
-  if isNil(b.rng):
+  if b.rng.isNil:
     b.rng = newRng()
-
-  if b.rng == nil: # newRng could fail
-    raise newException(Defect, "Cannot initialize RNG")
+    if b.rng.isNil: # newRng could fail
+      return err("Could not initialize RNG")
 
   let seckey = b.privKey.valueOr:
-    PrivateKey.random(b.rng).expect("Expected default Private Key")
+    PrivateKey.random(b.rng).valueOr:
+      return err("Could not create new private key, reason: " & $error)
 
   if b.secureManagers.len == 0:
     debug "No secure managers configured; using Noise by default"
