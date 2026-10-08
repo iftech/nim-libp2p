@@ -8,13 +8,14 @@ import ./trackers
 export checkTrackers # TODO: maybe consider importing it on demand?
 export u2 except suite, check
 
+proc acceptsResult[V, E](res: Result[V, E]) =
+  # used to check if condition passed to check is of Result[V, E] type
+  discard
+
 macro check*(conditions: untyped): untyped =
   ## Allows `check result` to assert that a Result contains a value.
-  quote do:
-    when compiles((block:
-      proc acceptsResult[V, E](res: Result[V, E]) = discard
-      acceptsResult(`conditions`)
-    )):
+  quote:
+    when compiles(acceptsResult(`conditions`)):
       u2.check(`conditions`.isOk())
     else:
       u2.check(`conditions`)
