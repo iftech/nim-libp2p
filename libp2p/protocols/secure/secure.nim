@@ -26,6 +26,7 @@ type
 
   SecureConn* = ref object of Connection
     stream*: RawConn
+    earlyMuxer*: string
     buf: ZeroQueue
     cleanupFut: Future[void]
 
