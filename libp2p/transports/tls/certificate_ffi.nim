@@ -454,6 +454,42 @@ proc cert_parse*(
     )
   )
 
+proc cert_valid_to*(cert: seq[byte], format: cert_format_t): Result[string, CertError] =
+  ## Returns the notAfter value without requiring a libp2p-specific extension.
+  ##
+  ## This is useful for certificates issued by external CAs, which do not carry
+  ## the extension parsed by `cert_parse`.
+  if cert.len == 0:
+    return err(CERT_ERROR_PARSE)
+
+  let bio =
+    BIO_new_mem_buf(cert[0].addr, ossl_ssize_t(cert.len)).notNil(CERT_ERROR_BIO_GEN)
+  defer:
+    discard BIO_free(bio)
+
+  let x509 = (
+    if format == CERT_FORMAT_DER:
+      d2i_X509_bio(bio, nil)
+    else:
+      PEM_read_bio_X509(bio, nil, nil, nil)
+  ).notNil(CERT_ERROR_X509_READ)
+  defer:
+    X509_free(x509)
+
+  let notAfter = X509_get0_notAfter(x509).notNil(CERT_ERROR_VALIDITY_PERIOD)
+  let timeBio = BIO_new(BIO_s_mem()).notNil(CERT_ERROR_MEMORY)
+  defer:
+    discard BIO_free(timeBio)
+  if ASN1_TIME_print(timeBio, notAfter) != 1:
+    return err(CERT_ERROR_VALIDITY_PERIOD)
+
+  let length = BIO_ctrl(timeBio, BIO_CTRL_PENDING, 0, nil)
+  if length <= 0:
+    return err(CERT_ERROR_VALIDITY_PERIOD)
+  var validTo = newString(length)
+  BIO_read(timeBio, validTo[0].addr, length.cint).checkIs1(CERT_ERROR_VALIDITY_PERIOD)
+  ok(validTo)
+
 proc cert_free_key*(key: CertificateKey): void =
   if key.pkey.isNil:
     return

@@ -4,6 +4,7 @@
 {.used.}
 
 import base64, sequtils, json, strutils, uri, chronos, chronos/apps/http/httpclient
+from stew/byteutils import toBytes
 from times import dateTime, format, initDuration, mNov, timezone, utc, `-`, `==`
 import
   ../../../libp2p/[
@@ -11,7 +12,8 @@ import
     upgrademngrs/upgrade,
     autotls/acme/client,
     crypto/rsa,
-    utils/rfc3339,
+    transports/tls/certificate,
+    transports/tls/certificate_ffi,
     wire,
   ]
 import ../../tools/[unittest, http_server, crypto]
@@ -395,47 +397,37 @@ suite "AutoTLS ACME API":
     for index in 0 ..< api.payloads.len:
       check api.encodedPayload(index) == ""
 
-  proc downloadWithExpires(
-      expires: string
+  proc downloadCertificate(
+      orderExpiry: string = "", certificate: string = certPem
   ): Future[Result[ACMECertificateResponse, LPResultError]] {.async.} =
-    let certServer = startTestHttpServer(certPem)
+    let certServer = startTestHttpServer(certificate)
     defer:
       await certServer.stop()
 
     api.directoryURL = parseUri(certServer.url)
-    api.queueGetOrder(certServer.url, expires)
+    api.queueGetOrder(certServer.url, orderExpiry)
     # A tail `await` is freed by the deferred `await` before its value is read.
     let response = await api.downloadCertificate(parseUri(OrderURL), key, AccountURL)
     response
 
-  asyncTest "the order's expires is parsed in UTC":
-    let expiry =
-      (await downloadWithExpires("2026-11-02T14:30:00Z")).get().certificateExpiry
-
-    check expiry.timezone == utc()
-    check expiry.format("yyyy-MM-dd'T'HH:mm:ss") == "2026-11-02T14:30:00"
-
-  asyncTest "an expires with a fractional second is accepted":
-    let expiry =
-      (await downloadWithExpires("2026-11-02T14:30:00.125Z")).get().certificateExpiry
-
-    check expiry - dateTime(2026, mNov, 2, 14, 30, zone = utc()) ==
-      initDuration(milliseconds = 125)
-
-  asyncTest "an expires with a numeric UTC offset is accepted":
-    let expiry =
-      (await downloadWithExpires("2026-11-02T16:30:00+02:00")).get().certificateExpiry
-
-    check expiry == dateTime(2026, mNov, 2, 14, 30, zone = utc())
-
-  asyncTest "a malformed expires is rejected":
-    let response = await downloadWithExpires("not-a-date")
+  asyncTest "the certificate's notAfter is used instead of the order's expires":
+    let cert = tlsCertPemGenerator()
+    let certificateExpiry =
+      parseCertTime(cert_valid_to(cert.toBytes(), CERT_FORMAT_PEM).get()).utc
+    let response = await downloadCertificate(
+      orderExpiry = "2026-11-02T14:30:00Z", certificate = cert
+    )
+    let expiry = response.get().certificateExpiry
 
     check:
-      response.isOfError(InvalidCertificateExpiry)
-      response.isOfError(InvalidRfc3339DateTime)
-      response.error ==
-        "Invalid certificate expiry: Invalid RFC 3339 date-time (not-a-date)"
+      expiry.timezone == utc()
+      expiry == certificateExpiry
+      expiry.format("yyyy-MM-dd'T'HH:mm:ss'Z'") == "4096-01-01T13:00:00Z"
+
+  asyncTest "an invalid certificate expiry is rejected":
+    let response = await downloadCertificate("2099-01-01T00:00:00Z", "not a PEM")
+
+    check response.isOfError(InvalidCertificateExpiry)
 
   asyncTest "an order whose certificate url is off the directory origin is refused":
     api.queueGetOrder("", "2026-11-02T14:30:00Z")

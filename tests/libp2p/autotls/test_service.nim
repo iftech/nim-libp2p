@@ -212,8 +212,7 @@ suite "AutoTLS certificate issuance and renewal":
     check:
       # One round is 8 requests, so more would be a second attempt.
       acmeApi.requestedUris.len == 8
-      # TODO: vacp2p/nim-libp2p#2977
-      autotlsCert.expiry.format("yyyy-MM-dd'T'HH:mm:ss'Z'") == OrderExpires
+      autotlsCert.expiry.format("yyyy-MM-dd'T'HH:mm:ss'Z'") == "4096-01-01T13:00:00Z"
       resolver.txtQueries == @["_acme-challenge." & baseDomain]
       resolver.ipQueries == @["127-0-0-1." & baseDomain]
       parseJson(authClient.payloads[0])["value"].getStr == keyAuth
