@@ -173,7 +173,7 @@ proc generateX509*(
 
   return CertificateX509(certificate: certificate, privateKey: privKDer)
 
-proc parseCertTime*(certTime: string): Time {.raises: [TimeParseError].} =
+proc parseCertTime(certTime: string): Time {.raises: [TimeParseError].} =
   if certTime.len <= 4 or not certTime.endsWith(" GMT"):
     raise newException(TimeParseError, "invalid certificate time")
 
@@ -184,6 +184,20 @@ proc parseCertTime*(certTime: string): Time {.raises: [TimeParseError].} =
   const certTimeFormat = "MMM d HH:mm:ss yyyy"
   const f = initTimeFormat(certTimeFormat)
   return parse(timeNoZone, f, utc()).toTime()
+
+proc validTo*(
+    cert: openArray[byte], format: EncodingFormat
+): Result[Time, CertError] =
+  ## Returns a certificate's notAfter value.
+  ##
+  ## Unlike `parse`, this accepts certificates without a libp2p-specific
+  ## extension, such as certificates issued by external CAs.
+  let certTime = cert_valid_to(@cert, format.cert_format_t()).valueOr:
+    return err(error)
+  try:
+    ok(parseCertTime(string(certTime)))
+  except TimeParseError:
+    err(CERT_ERROR_VALIDITY_PERIOD)
 
 proc parse*(
     certificateDer: seq[byte]

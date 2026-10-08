@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import json, parseutils, sequtils, strutils, uri
-from times import DateTime, TimeParseError, utc
+from times import DateTime, utc
 import chronos/apps/http/httpclient
 
 import ./jws
@@ -10,7 +10,7 @@ import ./utils
 import ../../crypto/rsa
 import ../../utils/opt
 import ../../results
-import ../../transports/tls/[certificate, certificate_ffi]
+import ../../transports/tls/certificate
 
 export results
 
@@ -99,7 +99,6 @@ type ACMEFinalizeResponse* = object
 
 type ACMEOrderResponse* = object
   certificate: string
-  expires: string
 
 type ACMECertificateResponse* = object
   rawCertificate*: string
@@ -427,12 +426,9 @@ func parseCheck(
 const InvalidCertificateExpiry* = "Invalid certificate expiry"
 
 proc parseCertificateExpiry(certificate: seq[byte]): Result[DateTime, LPResultError] =
-  let validTo = cert_valid_to(certificate, CERT_FORMAT_PEM).valueOr:
-    return err(InvalidCertificateExpiry)
-  try:
-    ok(parseCertTime(validTo).utc)
-  except TimeParseError as e:
-    err(e, InvalidCertificateExpiry)
+  let certificateValidTo = validTo(certificate, PEM).valueOr:
+    return err(error, InvalidCertificateExpiry)
+  ok(certificateValidTo.utc)
 
 proc requestRegister*(
     self: ACMEApi, key: RsaPrivateKey

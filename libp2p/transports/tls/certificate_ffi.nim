@@ -15,6 +15,7 @@ const
   MBSTRING_UNIV* = MBSTRING_FLAG or 4
 
 type CertError* = int32
+type CertificateTime* = distinct string
 
 const
   CERT_ERROR_NULL_PARAM* = CertError(-1)
@@ -320,9 +321,9 @@ proc cert_generate*(
 
   ok(?bioToSeq(bio))
 
-proc cert_parse*(
-    cert: seq[byte], format: cert_format_t
-): Result[ParsedCertificate, CertError] =
+proc readX509(
+    cert: openArray[byte], format: cert_format_t
+): Result[ptr X509, CertError] =
   if cert.len == 0:
     return err(CERT_ERROR_PARSE)
 
@@ -337,6 +338,30 @@ proc cert_parse*(
     else:
       PEM_read_bio_X509(bio, nil, nil, nil)
   ).notNil(CERT_ERROR_X509_READ)
+
+  ok(x509)
+
+proc asn1TimeToString(t: ptr ASN1_TIME): Result[string, CertError] =
+  if t.isNil:
+    return err(CERT_ERROR_VALIDITY_PERIOD)
+
+  let bio = BIO_new(BIO_s_mem()).notNil(CERT_ERROR_MEMORY)
+  defer:
+    discard BIO_free(bio)
+  if ASN1_TIME_print(bio, t) != 1:
+    return err(CERT_ERROR_VALIDITY_PERIOD)
+
+  let length = BIO_ctrl(bio, BIO_CTRL_PENDING, 0, nil)
+  if length <= 0:
+    return err(CERT_ERROR_VALIDITY_PERIOD)
+  let value = newString(length)
+  BIO_read(bio, value[0].addr, length.cint).checkIs1(CERT_ERROR_VALIDITY_PERIOD)
+  ok(value)
+
+proc cert_parse*(
+    cert: seq[byte], format: cert_format_t
+): Result[ParsedCertificate, CertError] =
+  let x509 = ?readX509(cert, format)
   defer:
     X509_free(x509)
 
@@ -418,31 +443,10 @@ proc cert_parse*(
   let cert_pubkey = newSeqUninit[byte](pubkey_len)
   copyMem(addr cert_pubkey[0], pubkey_buf, pubkey_len)
 
-  let not_before = X509_get0_notBefore(x509)
-  var valid_from = ""
-  if not not_before.isNil:
-    # Convert ASN1_TIME to a more usable format
-    let bio_nb = BIO_new(BIO_s_mem()).notNil(CERT_ERROR_MEMORY)
-    defer:
-      discard BIO_free(bio_nb)
-    if ASN1_TIME_print(bio_nb, not_before) == 1:
-      let plen = BIO_ctrl(bio_nb, BIO_CTRL_PENDING, 0, nil)
-      var s = newString(plen)
-      BIO_read(bio_nb, s[0].addr, plen.cint).checkIs1(CERT_ERROR_MEMORY)
-      valid_from = s
-
-  let not_after = X509_get0_notAfter(x509)
-  var valid_to = ""
-  if not not_after.isNil:
-    # Convert ASN1_TIME to a more usable format
-    let bio_nb = BIO_new(BIO_s_mem()).notNil(CERT_ERROR_MEMORY)
-    defer:
-      discard BIO_free(bio_nb)
-    if ASN1_TIME_print(bio_nb, not_after) == 1:
-      let plen = BIO_ctrl(bio_nb, BIO_CTRL_PENDING, 0, nil)
-      var s = newString(plen)
-      BIO_read(bio_nb, s[0].addr, plen.cint).checkIs1(CERT_ERROR_MEMORY)
-      valid_to = s
+  # Preserve the parser's historical behavior: validity-time conversion
+  # failures do not invalidate an otherwise parseable certificate.
+  let valid_from = asn1TimeToString(X509_get0_notBefore(x509)).valueOr("")
+  let valid_to = asn1TimeToString(X509_get0_notAfter(x509)).valueOr("")
 
   return ok(
     ParsedCertificate(
@@ -454,41 +458,16 @@ proc cert_parse*(
     )
   )
 
-proc cert_valid_to*(cert: seq[byte], format: cert_format_t): Result[string, CertError] =
+proc cert_valid_to*(cert: seq[byte], format: cert_format_t): Result[CertificateTime, CertError] =
   ## Returns the notAfter value without requiring a libp2p-specific extension.
   ##
   ## This is useful for certificates issued by external CAs, which do not carry
   ## the extension parsed by `cert_parse`.
-  if cert.len == 0:
-    return err(CERT_ERROR_PARSE)
-
-  let bio =
-    BIO_new_mem_buf(cert[0].addr, ossl_ssize_t(cert.len)).notNil(CERT_ERROR_BIO_GEN)
-  defer:
-    discard BIO_free(bio)
-
-  let x509 = (
-    if format == CERT_FORMAT_DER:
-      d2i_X509_bio(bio, nil)
-    else:
-      PEM_read_bio_X509(bio, nil, nil, nil)
-  ).notNil(CERT_ERROR_X509_READ)
+  let x509 = ?readX509(cert, format)
   defer:
     X509_free(x509)
 
-  let notAfter = X509_get0_notAfter(x509).notNil(CERT_ERROR_VALIDITY_PERIOD)
-  let timeBio = BIO_new(BIO_s_mem()).notNil(CERT_ERROR_MEMORY)
-  defer:
-    discard BIO_free(timeBio)
-  if ASN1_TIME_print(timeBio, notAfter) != 1:
-    return err(CERT_ERROR_VALIDITY_PERIOD)
-
-  let length = BIO_ctrl(timeBio, BIO_CTRL_PENDING, 0, nil)
-  if length <= 0:
-    return err(CERT_ERROR_VALIDITY_PERIOD)
-  var validTo = newString(length)
-  BIO_read(timeBio, validTo[0].addr, length.cint).checkIs1(CERT_ERROR_VALIDITY_PERIOD)
-  ok(validTo)
+  ok(CertificateTime(?asn1TimeToString(X509_get0_notAfter(x509))))
 
 proc cert_free_key*(key: CertificateKey): void =
   if key.pkey.isNil:

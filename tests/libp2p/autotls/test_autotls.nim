@@ -5,7 +5,7 @@
 
 import base64, sequtils, json, strutils, uri, chronos, chronos/apps/http/httpclient
 from stew/byteutils import toBytes
-from times import dateTime, format, initDuration, mNov, timezone, utc, `-`, `==`
+from times import fromUnix, timezone, utc, `==`
 import
   ../../../libp2p/[
     stream/connection,
@@ -13,7 +13,6 @@ import
     autotls/acme/client,
     crypto/rsa,
     transports/tls/certificate,
-    transports/tls/certificate_ffi,
     wire,
   ]
 import ../../tools/[unittest, http_server, crypto]
@@ -22,12 +21,13 @@ import ./rfc_vectors
 
 suite "AutoTLS ACME API":
   const WildcardDomain = "*.example.libp2p.direct"
+  let certificateExpiry = fromUnix(1893456000)
 
   # RSA generation dominates the runtime of every test here, so one pair for all.
   let
     key = RsaPrivateKey.random(rng()).get()
     certKey = RsaPrivateKey.random(rng()).get()
-    certPem = tlsCertPemGenerator()
+    certPem = tlsCertPemGenerator(validTo = certificateExpiry)
 
   var api {.threadvar.}: ACMEApiStub
 
@@ -411,18 +411,12 @@ suite "AutoTLS ACME API":
     response
 
   asyncTest "the certificate's notAfter is used instead of the order's expires":
-    let cert = tlsCertPemGenerator()
-    let certificateExpiry =
-      parseCertTime(cert_valid_to(cert.toBytes(), CERT_FORMAT_PEM).get()).utc
-    let response = await downloadCertificate(
-      orderExpiry = "2026-11-02T14:30:00Z", certificate = cert
-    )
+    let response = await downloadCertificate(orderExpiry = "2026-11-02T14:30:00Z")
     let expiry = response.get().certificateExpiry
 
     check:
       expiry.timezone == utc()
-      expiry == certificateExpiry
-      expiry.format("yyyy-MM-dd'T'HH:mm:ss'Z'") == "4096-01-01T13:00:00Z"
+      expiry == certificateExpiry.utc
 
   asyncTest "an invalid certificate expiry is rejected":
     let response = await downloadCertificate("2099-01-01T00:00:00Z", "not a PEM")

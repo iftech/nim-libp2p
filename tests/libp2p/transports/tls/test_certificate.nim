@@ -130,18 +130,12 @@ suite "Test vectors":
     check not cert.verify(cert.peerId())
 
 suite "utilities test":
-  test "parseCertTime":
-    var dt = parseCertTime("Mar 19 11:54:31 2025 GMT")
-    check 1742385271 == dt.toUnix()
+  test "validTo":
+    let keypair = KeyPair.random(Ed25519, rng()).tryGet()
+    let expiration = fromUnix(1735736706)
+    let cert = generateX509(keypair, validTo = expiration, encodingFormat = PEM)
 
-    dt = parseCertTime("Jan  1 00:00:00 1975 GMT")
-    check 157766400 == dt.toUnix()
-
-    dt = parseCertTime("Jan  1 13:05:06 2025 GMT")
-    check 1735736706 == dt.toUnix()
-
-    expect TimeParseError:
-      discard parseCertTime("")
+    check validTo(cert.certificate, PEM).get() == expiration
 
   test "KeyPair to cert_key_t":
     let key = KeyPair.random(PKScheme.RSA, rng()).get()
