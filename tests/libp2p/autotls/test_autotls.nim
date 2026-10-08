@@ -4,7 +4,6 @@
 {.used.}
 
 import base64, sequtils, json, strutils, uri, chronos, chronos/apps/http/httpclient
-from stew/byteutils import toBytes
 from times import fromUnix, timezone, utc, `==`
 import
   ../../../libp2p/[
@@ -12,7 +11,6 @@ import
     upgrademngrs/upgrade,
     autotls/acme/client,
     crypto/rsa,
-    transports/tls/certificate,
     wire,
   ]
 import ../../tools/[unittest, http_server, crypto]
