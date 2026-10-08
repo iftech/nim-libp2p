@@ -450,6 +450,9 @@ suite "WebSocket transport with autotls":
       rng(),
       tlsFlags = {TLSFlags.NoVerifyHost},
     )
+    defer: 
+      await client.stop()
+      
     let inboundFut = wstransport.accept()
     let outbound = await client.dial($renewedPeerId, wstransport.addrs[0])
     let inbound = await inboundFut

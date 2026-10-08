@@ -185,6 +185,24 @@ suite "AutoTLS certificate issuance and renewal":
 
     check (await updates).len == 0
 
+  asyncTest "certificate update subscribers survive a service restart":
+    service = newService()
+    service.installCert(initDuration(hours = 2))
+    let subscriber = service.subscribeCertificateUpdates()
+    defer:
+      subscriber.unsubscribe()
+
+    await service.start(switch)
+    let stopped = subscriber.waitUpdates()
+    await service.stop(switch)
+    check (await stopped).len == 0
+
+    await service.start(switch)
+    let updates = subscriber.waitUpdates()
+    service.installCert(initDuration(hours = 3))
+
+    check (await updates).len == 1
+
   asyncTest "the certificate in place is handed over while its renewal is in flight":
     acmeApi.stalls = true
     service = newService()

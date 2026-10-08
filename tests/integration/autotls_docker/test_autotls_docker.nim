@@ -71,6 +71,8 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     )
 
     let certificates = await certificateUpdates.waitUpdates().wait(IssueTimeout)
+    check certificates.len > 0
+
     let certAfter = certificates[^1]
     check:
       certAfter.cert != certBefore.cert

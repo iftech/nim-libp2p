@@ -7,6 +7,7 @@
 
 import ../logging
 import std/[sequtils]
+from times import format
 import chronos, chronicles, metrics, stew/byteutils
 import ../results
 import
@@ -414,6 +415,9 @@ proc updateAutotlsCertificate(
   let subscription = autotls.subscribeCertificateUpdates()
   defer:
     subscription.unsubscribe()
+    if self.running:
+      warn "AutoTLS certificate update loop stopped while transport is running",
+        serviceRunning = autotls.isRunning
 
   proc install(cert: AutotlsCert) =
     self.tlsCertificate = cert.cert
@@ -422,6 +426,9 @@ proc updateAutotlsCertificate(
       if server.secure:
         server.tlsCertificate = cert.cert
         server.tlsPrivateKey = cert.privkey
+    info "Installed AutoTLS certificate in WebSocket transport",
+      expiry = cert.expiry.format("yyyy-MM-dd'T'HH:mm:ss'.'fffzzz"),
+      secureServers = self.httpservers.countIt(it.secure)
 
   # Apply the current certificate after subscribing, so a renewal completed
   # while the transport was starting is installed even if no event was seen.

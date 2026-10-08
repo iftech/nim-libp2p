@@ -51,7 +51,7 @@ type AutotlsCert* = ref object
 
 type CertSubscription* = ref object
   ## A subscription to certificates issued after it is created.
-  updates: AsyncEventQueue[AutotlsCert]
+  updates: AsyncEventQueue[Opt[AutotlsCert]]
   key: EventQueueKey
 
 type AutotlsConfig* = object
@@ -79,7 +79,7 @@ type AutotlsService* = ref object of Service
   cert*: Opt[AutotlsCert]
   certFailure: Opt[string]
   certReady*: AsyncEvent
-  certUpdates: AsyncEventQueue[AutotlsCert]
+  certUpdates: AsyncEventQueue[Opt[AutotlsCert]]
   running*: AsyncEvent
   config*: AutotlsConfig
   managerFut: Future[void]
@@ -115,15 +115,19 @@ proc installCertificate(self: AutotlsService, cert: AutotlsCert) =
   self.certFailure = Opt.none(string)
   self.certReady.fire()
   if not self.certUpdates.isNil:
-    self.certUpdates.emit(cert)
+    self.certUpdates.emit(Opt.some(cert))
 
 proc waitUpdates*(
     self: CertSubscription
 ): Future[seq[AutotlsCert]] {.async: (raises: [CancelledError]).} =
   ## Wait for certificates issued since the previous call to this procedure.
-  ## Returns an empty sequence when the service stops.
+  ## Returns an empty sequence when the service stops. The subscription remains
+  ## active and will receive certificates issued after the service restarts.
+  if self.updates.isNil: # The subscription was already unsubscribed
+    return @[]
+
   try:
-    await self.updates.waitEvents(self.key)
+    (await self.updates.waitEvents(self.key)).filterIt(it.isSome()).mapIt(it.get())
   except AsyncEventQueueFullError:
     # Certificate update queues are always unbounded, so this is unreachable.
     return @[]
@@ -137,7 +141,7 @@ proc unsubscribe*(self: CertSubscription) =
 proc subscribeCertificateUpdates*(self: AutotlsService): CertSubscription =
   ## Subscribe to certificates issued after this call.
   if self.certUpdates.isNil:
-    self.certUpdates = newAsyncEventQueue[AutotlsCert]()
+    self.certUpdates = newAsyncEventQueue[Opt[AutotlsCert]]()
   CertSubscription(updates: self.certUpdates, key: self.certUpdates.register())
 
 proc new*(
@@ -191,7 +195,7 @@ proc new*(
     cert: Opt.none(AutotlsCert),
     certFailure: Opt.none(string),
     certReady: newAsyncEvent(),
-    certUpdates: newAsyncEventQueue[AutotlsCert](),
+    certUpdates: newAsyncEventQueue[Opt[AutotlsCert]](),
     running: newAsyncEvent(),
     config: config,
     managerFut: nil,
@@ -467,8 +471,7 @@ method stop*(
 ) {.async: (raises: [CancelledError]).} =
   self.running.clear()
   if not self.certUpdates.isNil():
-    self.certUpdates.close()
-    self.certUpdates = nil
+    self.certUpdates.emit(Opt.none(AutotlsCert))
   if not self.acmeClient.isNil():
     await self.acmeClient.close()
   if not self.broker.isNil():
