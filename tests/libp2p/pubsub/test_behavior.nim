@@ -930,6 +930,31 @@ suite "GossipSub Behavior":
     let gossipPeers = gossipSub.makeGossipControlMessages()
     check gossipPeers.len == 0
 
+  asyncTest "makeGossipControlMessages - no IHAVE for a subscribed topic once PRUNE removes its last mesh peer":
+    # TODO: vacp2p/nim-libp2p#3237
+    let (gossipSub, conns, peers) =
+      setupGossipSubWithPeers(2, topic, populateGossipsub = true)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    # A subscribed topic has no fanout entry
+    gossipSub.fanout.del(topic)
+    gossipSub.grafted(peers[0], topic)
+    gossipSub.mesh[topic].incl(peers[0])
+
+    let msg = Message.init(peers[1].peerId, "HELLO".toBytes(), topic, Opt.some(1'u64))
+    gossipSub.mcache.put(gossipSub.msgIdProvider(msg).expect(MsgIdSuccess), msg)
+
+    gossipSub.handlePrune(peers[0], @[ControlPrune(topicID: topic, backoff: 60'u64)])
+
+    check:
+      topic in gossipSub.topics
+      gossipSub.gossipsub.hasPeerId(topic, peers[1].peerId)
+      gossipSub.mcache.window(topic).len == 1
+      topic notin gossipSub.mesh
+      topic notin gossipSub.fanout
+      gossipSub.makeGossipControlMessages().len == 0
+
   asyncTest "makeGossipControlMessages - do not select peer for IHave broadcast if peer score is below GossipThreshold threshold":
     const gossipThreshold = -100.0
     let
