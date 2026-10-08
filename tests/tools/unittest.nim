@@ -8,9 +8,10 @@ import ./trackers
 export checkTrackers # TODO: maybe consider importing it on demand?
 export unittest2 except suite
 
-converter toBool*[V, E](res: Result[V, E]): bool =
+macro check*[V, E](res: Result[V, E]): untyped =
   ## Allows `check result` to assert that a Result contains a value.
-  res.isOk()
+  quote do:
+    unittest2.check(`res`.isOk())
 
 const
   asyncTestTimeoutDefault* =
