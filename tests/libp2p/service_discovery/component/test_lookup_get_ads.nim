@@ -56,8 +56,8 @@ suite "Service Discovery Component - Lookup Get Ads":
     check regResult.get().status == kad_protobuf.RegistrationStatus.Confirmed
 
     let found = await discovererNode.lookup(serviceId)
+    check found
     check:
-      found
       found.get().len == 1
       found.containsPeer(advertiserNode)
 
@@ -110,8 +110,8 @@ suite "Service Discovery Component - Lookup Get Ads":
     discovererNode.registrar.seedAd(serviceId, firstAd)
 
     let found = await discovererNode.lookup(serviceId)
+    check found
     check:
-      found
       found.get().len == 2
       ads[0] in found.get()
       ads[1] in found.get()
