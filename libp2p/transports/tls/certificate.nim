@@ -263,3 +263,6 @@ proc verify*(self: P2pCertificate, expectedPeerId: PeerId): bool =
     return false
 
   actualPeerId == expectedPeerId
+
+when defined(libp2p_testing):
+  export parseCertTime
