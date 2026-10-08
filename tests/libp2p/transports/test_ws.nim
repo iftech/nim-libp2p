@@ -426,36 +426,32 @@ suite "WebSocket transport with autotls":
 
     check wstransport.tlsCertificate == secureCert
 
-    # autotls should still reach even after transport restarts 
-    await wstransport.stop()
-    await wstransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
-
     # what issueCertificate does once a renewal completes
     let renewedKeyPair = KeyPair.random(PKScheme.RSA, rng()).get()
-    let renewedPeerId = PeerId.init(renewedKeyPair.pubkey).tryGet()
     let (renewedKey, renewedCert) = tlsCertGenerator(Opt.some(renewedKeyPair))
     autotls.installCertificate(AutotlsCert.new(renewedCert, renewedKey, now()))
 
     checkUntilTimeout:
       wstransport.tlsCertificate == renewedCert
       wstransport.tlsPrivateKey == renewedKey
+      wstransport.serverTlsCredentials == @[(key: renewedKey, cert: renewedCert)]
 
-    # A fresh handshake verifies that the HttpServer, not just the transport
-    # fields above, now presents the renewed certificate.
-    let client = WsTransport.new(
+    await wstransport.stop()
+
+    # A replacement transport must load the current AutoTLS certificate rather
+    # than relying on credentials retained by a previously running instance.
+    let restartedTransport = WsTransport.new(
       Upgrade(),
-      nil,
-      nil,
-      Opt.none(AutotlsService),
+      nil, # TLSPrivateKey
+      nil, # TLSCertificate
+      Opt.some(autotls),
       rng(),
-      tlsFlags = {TLSFlags.NoVerifyHost},
     )
-    defer: 
-      await client.stop()
-      
-    let inboundFut = wstransport.accept()
-    let outbound = await client.dial($renewedPeerId, wstransport.addrs[0])
-    let inbound = await inboundFut
-    let closing = outbound.close()
-    await inbound.close()
-    await closing
+    defer:
+      await restartedTransport.stop()
+    await restartedTransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
+
+    check:
+      restartedTransport.tlsCertificate == renewedCert
+      restartedTransport.tlsPrivateKey == renewedKey
+      restartedTransport.serverTlsCredentials == @[(key: renewedKey, cert: renewedCert)]

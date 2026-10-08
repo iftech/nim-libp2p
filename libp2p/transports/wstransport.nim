@@ -692,3 +692,12 @@ proc new*(
     headersTimeout = headersTimeout,
     concurrentAccepts = concurrentAccepts,
   )
+
+when defined(libp2p_testing):
+  proc serverTlsCredentials*(
+      self: WsTransport
+  ): seq[tuple[key: TLSPrivateKey, cert: TLSCertificate]] =
+    ## TLS credentials installed in the currently running secure HTTP servers.
+    for server in self.httpservers:
+      if server.secure:
+        result.add((key: server.tlsPrivateKey, cert: server.tlsCertificate))
