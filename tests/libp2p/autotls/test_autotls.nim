@@ -6,13 +6,8 @@
 import base64, sequtils, json, strutils, uri, chronos, chronos/apps/http/httpclient
 from times import fromUnix, timezone, utc, `==`
 import
-  ../../../libp2p/[
-    stream/connection,
-    upgrademngrs/upgrade,
-    autotls/acme/client,
-    crypto/rsa,
-    wire,
-  ]
+  ../../../libp2p/
+    [stream/connection, upgrademngrs/upgrade, autotls/acme/client, crypto/rsa, wire]
 import ../../tools/[unittest, http_server, crypto]
 import ../../stubs/acme_api_stub
 import ./rfc_vectors
