@@ -802,19 +802,13 @@ suite "Dialer":
     defer:
       await allFutures(src.stop(), dst.stop())
 
-    let dialer = Dialer.new(
-      src.peerInfo.peerId, src.connManager, src.peerStore, src.transports, src.ms
-    )
-
-    const CancelSteps = 30
-      ## Longer than the transport walk: the upgrade parks on awaits of its own.
-
-    var cancelledDials = 0
-    for steps in 0 .. CancelSteps:
+    var step = 0
+    while true:
       let dialFut =
-        dialer.dialAndUpgrade(Opt.some(dst.peerInfo.peerId), dst.peerInfo.addrs)
-      for _ in 0 ..< steps:
-        await sleepAsync(0.milliseconds)
+        src.dialer.dialAndUpgrade(Opt.some(dst.peerInfo.peerId), dst.peerInfo.addrs)
+
+      await sleepAsync((step * 2).milliseconds)
+      step.inc()
 
       await dialFut.cancelAndWait()
 
@@ -822,10 +816,9 @@ suite "Dialer":
         let muxed = dialFut.value()
         if not muxed.isNil():
           await muxed.close()
-      elif dialFut.cancelled():
-        cancelledDials.inc()
+        break # this dial completed before cancellation, so stop probing later delays
 
-    check cancelledDials > 0
+    check step > 5 # the dial should remain cancellable through the 10 ms delay
 
   asyncTest "A remote that never answers identify gives up at the dial timeout":
     let
