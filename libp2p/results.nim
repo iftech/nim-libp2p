@@ -17,11 +17,8 @@ type LPResultError* = ref object
 
 type LPResult*[T] = Result[T, LPResultError]
 
-func init*(T: type LPResultError, cause: string, detail = ""): T =
+func init(T: type LPResultError, cause: string, detail = ""): T =
   T(cause: cause, detail: detail)
-
-func withDetail*(e: LPResultError, detail: string): LPResultError =
-  LPResultError(cause: e.cause, detail: detail, wrapped: e.wrapped)
 
 func wrapError*(inner, outer: LPResultError): LPResultError =
   LPResultError(
@@ -55,74 +52,51 @@ func `==`*(msg: string, e: LPResultError): bool =
 chronicles.formatIt(LPResultError):
   $it
 
-func err*[T](R: type Result[T, LPResultError], cause: string): R =
-  R.err(LPResultError.init(cause))
-
-func err*[T](R: type Result[T, LPResultError], detail: string, cause: string): R =
-  R.err(LPResultError.init(cause, detail))
-
-func err*[T](
-    R: type Result[T, LPResultError], inner: LPResultError, outer: LPResultError
-): R =
-  R.err(inner.wrapError(outer))
-
-func err*[T](R: type Result[T, LPResultError], inner: LPResultError, outer: string): R =
-  R.err(inner.wrapError(outer))
-
-func err*[T](R: type Result[T, LPResultError], e: ref CatchableError, msg: string): R =
-  R.err(LPResultError.init(e.msg).wrapError(msg))
+func toLPResultError[E](e: E): LPResultError =
+  when E is LPResultError:
+    e
+  elif E is ref CatchableError:
+    LPResultError.init(e.msg)
+  else:
+    LPResultError.init($e)
 
 func err*[T, E: not LPResultError](R: type Result[T, LPResultError], inner: E): R =
-  R.err(LPResultError.init($inner))
-
-func err*[T, E: not ref CatchableError](
-    R: type Result[T, LPResultError], inner: E, outer: string
-): R =
-  R.err(LPResultError.init($inner).wrapError(outer))
-
-func err*[T](R: type Result[T, string], detail: string, cause: string): R =
-  R.err(cause & " (" & detail & ")")
-
-func err*[T](R: type Result[T, string], e: ref CatchableError, msg: string): R =
-  R.err(msg & ": " & e.msg)
-
-func err*[T, E: not ref CatchableError](
-    R: type Result[T, string], inner: E, outer: string
-): R =
-  R.err(outer & ": " & $inner)
+  ## `?` calls this to turn a foreign error into an `LPResultError`.
+  R.err(toLPResultError(inner))
 
 template err*(detail: string, cause: string): auto =
-  err(typeof(result), detail, cause)
-
-template err*(inner: LPResultError, outer: LPResultError): auto =
-  err(typeof(result), inner, outer)
-
-template err*(inner: LPResultError, outer: string): auto =
-  err(typeof(result), inner, outer)
+  when typeof(result.error) is LPResultError:
+    typeof(result).err(LPResultError.init(cause, detail))
+  else:
+    typeof(result).err(cause & " (" & detail & ")")
 
 template err*[E: not Result](inner: E, outer: string): auto =
-  err(typeof(result), inner, outer)
-
-template err*(e: ref CatchableError, msg: string): auto =
-  err(typeof(result), e, msg)
+  when typeof(result.error) is LPResultError:
+    typeof(result).err(toLPResultError(inner).wrapError(outer))
+  else:
+    typeof(result).err(outer & ": " & $toLPResultError(inner))
 
 template err*[X: CatchableError](e: ref X): auto =
-  when typeof(result.error) is string | LPResultError:
-    err(typeof(result), e.msg)
+  when typeof(result.error) is LPResultError:
+    typeof(result).err(LPResultError.init(e.msg))
+  elif typeof(result.error) is string:
+    typeof(result).err(e.msg)
   else:
-    err(typeof(result), e)
+    typeof(result).err(e)
 
 template err*(e: cstring): auto =
-  when typeof(result.error) is string | LPResultError:
-    err(typeof(result), $e)
+  when typeof(result.error) is LPResultError:
+    typeof(result).err(LPResultError.init($e))
+  elif typeof(result.error) is string:
+    typeof(result).err($e)
   else:
-    err(typeof(result), e)
+    typeof(result).err(e)
 
 template err*(e: LPResultError): auto =
   when typeof(result.error) is string:
-    err(typeof(result), $e)
+    typeof(result).err($e)
   else:
-    err(typeof(result), e)
+    typeof(result).err(e)
 
 func hasCause(e: LPResultError, cause: string): bool =
   if e.isNil():
@@ -133,9 +107,6 @@ func hasCause(e: LPResultError, cause: string): bool =
 func isOfError*[T](r: Result[T, LPResultError], cause: string): bool =
   ## True when any error of the chain has `cause`.
   r.isErr() and r.error.hasCause(cause)
-
-func isOfError*[T](r: Result[T, LPResultError], e: LPResultError): bool =
-  r.isOfError(e.cause)
 
 func toException*[E](e: E, X: typedesc): ref X =
   (ref X)(msg: $e)

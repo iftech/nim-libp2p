@@ -399,7 +399,7 @@ proc tryIssueCertificate(
   if self.cert.isNone():
     self.resetCertWait()
 
-  var lastError = LPResultError.init("certificate issuance not attempted")
+  var lastError: LPResultError
   let operation = if self.cert.isSome(): "renewal" else: "initial issuance"
   var attempts = 0
   var outcome = "cancelled"
