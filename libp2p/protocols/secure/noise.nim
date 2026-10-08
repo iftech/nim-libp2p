@@ -25,7 +25,7 @@ const
   # https://godoc.org/github.com/libp2p/go-libp2p-noise#pkg-constants
   NoiseCodec* = "/noise"
 
-  PayloadString = toBytes("noise-libp2p-static-key:")
+  PayloadString* = toBytes("noise-libp2p-static-key:")
 
   ProtocolXXName = "Noise_XX_25519_ChaChaPoly_SHA256"
 
@@ -35,23 +35,26 @@ const
   NoiseSize = 32
   MaxPlainSize = int(uint16.high - NoiseSize - ChaChaPolyTag.len)
 
-  HandshakeTimeout = 1.minutes
+  HandshakeTimeout* = 1.minutes
 
 type
-  KeyPair = object
-    privateKey: Curve25519Key
-    publicKey: Curve25519Key
+  # Exported so sibling handshake patterns (e.g. NoiseHFS in noisehfs.nim) can
+  # reuse the same DH keypair shape, cipher/symmetric state, and message
+  # framing without duplicating them.
+  KeyPair* = object
+    privateKey*: Curve25519Key
+    publicKey*: Curve25519Key
 
   # https://noiseprotocol.org/noise.html#the-cipherstate-object
-  CipherState = object
-    k: ChaChaPolyKey
-    n: uint64
+  CipherState* = object
+    k*: ChaChaPolyKey
+    n*: uint64
 
   # https://noiseprotocol.org/noise.html#the-symmetricstate-object
-  SymmetricState = object
-    cs: CipherState
-    ck: ChaChaPolyKey
-    h: MDigest[256]
+  SymmetricState* = object
+    cs*: CipherState
+    ck*: ChaChaPolyKey
+    h*: MDigest[256]
 
   # https://noiseprotocol.org/noise.html#the-handshakestate-object
   HandshakeState = object
@@ -61,11 +64,11 @@ type
     rs: Curve25519Key
     re: Curve25519Key
 
-  HandshakeResult = object
-    cs1: CipherState
-    cs2: CipherState
-    remoteP2psecret: seq[byte]
-    rs: Curve25519Key
+  HandshakeResult* = object
+    cs1*: CipherState
+    cs2*: CipherState
+    remoteP2psecret*: seq[byte]
+    rs*: Curve25519Key
 
   Noise* = ref object of Secure
     rng: Rng
@@ -76,8 +79,8 @@ type
     outgoing: bool
 
   NoiseConnection* = ref object of SecureConn
-    readCs: CipherState
-    writeCs: CipherState
+    readCs*: CipherState
+    writeCs*: CipherState
 
   NoiseError* = object of LPStreamError
   NoiseHandshakeError* = object of NoiseError
@@ -112,11 +115,11 @@ func shortLog*(conn: NoiseConnection): auto =
 chronicles.formatIt(NoiseConnection):
   shortLog(it)
 
-proc genKeyPair(rng: Rng): KeyPair =
+proc genKeyPair*(rng: Rng): KeyPair =
   let privateKey = Curve25519Key.random(rng)
   KeyPair(privateKey: privateKey, publicKey: privateKey.public())
 
-proc hashProtocol(name: string): MDigest[256] =
+proc hashProtocol*(name: string): MDigest[256] =
   # If protocol_name is less than or equal to HASHLEN bytes in length,
   # sets h to protocol_name with zero bytes appended to make HASHLEN bytes.
   # Otherwise sets h = HASH(protocol_name).
@@ -128,14 +131,14 @@ proc hashProtocol(name: string): MDigest[256] =
     h = sha256.digest(name)
   h
 
-proc dh(priv: Curve25519Key, pub: Curve25519Key): Curve25519Key =
+proc dh*(priv: Curve25519Key, pub: Curve25519Key): Curve25519Key =
   var key = pub
   Curve25519.mul(key, priv)
   key
 
 # Cipherstate
 
-proc hasKey(cs: CipherState): bool =
+proc hasKey*(cs: CipherState): bool =
   cs.k != EmptyKey
 
 proc encrypt(
@@ -186,18 +189,21 @@ proc decryptWithAd(
 
 # Symmetricstate
 
-proc init(_: type[SymmetricState]): SymmetricState =
-  let h = ProtocolXXName.hashProtocol
+proc init*(_: type[SymmetricState], protocolName: string = ProtocolXXName): SymmetricState =
+  ## `protocolName` defaults to the classical XX protocol name; other
+  ## handshake patterns (e.g. NoiseHFS) pass their own protocol name so the
+  ## initial handshake hash and chaining key derive from a distinct value.
+  let h = protocolName.hashProtocol
   SymmetricState(h: h, ck: h.data.intoChaChaPolyKey, cs: CipherState(k: EmptyKey))
 
-proc mixKey(ss: var SymmetricState, ikm: ChaChaPolyKey) =
+proc mixKey*(ss: var SymmetricState, ikm: ChaChaPolyKey) =
   var temp_keys: array[2, ChaChaPolyKey]
   sha256.hkdf(ss.ck, ikm, [], temp_keys)
   ss.ck = temp_keys[0]
   ss.cs = CipherState(k: temp_keys[1])
   trace "Noise handshake key mixed"
 
-proc mixHash(ss: var SymmetricState, data: openArray[byte]) =
+proc mixHash*(ss: var SymmetricState, data: openArray[byte]) =
   var ctx: sha256
   ctx.init()
   ctx.update(ss.h.data)
@@ -213,7 +219,7 @@ proc mixKeyAndHash(ss: var SymmetricState, ikm: openArray[byte]) {.used.} =
   ss.mixHash(temp_keys[1])
   ss.cs = CipherState(k: temp_keys[2])
 
-proc encryptAndHash(
+proc encryptAndHash*(
     ss: var SymmetricState, data: openArray[byte]
 ): seq[byte] {.raises: [NoiseNonceMaxError].} =
   # according to spec if key is empty leave plaintext
@@ -225,7 +231,7 @@ proc encryptAndHash(
   ss.mixHash(encrypted)
   encrypted
 
-proc decryptAndHash(
+proc decryptAndHash*(
     ss: var SymmetricState, data: openArray[byte]
 ): seq[byte] {.raises: [NoiseDecryptTagError, NoiseNonceMaxError].} =
   # according to spec if key is empty leave plaintext
@@ -237,7 +243,7 @@ proc decryptAndHash(
   ss.mixHash(data)
   decrypted
 
-proc split(ss: var SymmetricState): tuple[cs1, cs2: CipherState] =
+proc split*(ss: var SymmetricState): tuple[cs1, cs2: CipherState] =
   var temp_keys: array[2, ChaChaPolyKey]
   sha256.hkdf(ss.ck, [], [], temp_keys)
   return (CipherState(k: temp_keys[0]), CipherState(k: temp_keys[1]))
@@ -317,7 +323,7 @@ template read_s(): untyped =
 
   rsLen
 
-proc readFrame(
+proc readFrame*(
     sconn: RawConn
 ): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError]).} =
   var besize {.noinit.}: array[2, byte]
@@ -331,12 +337,12 @@ proc readFrame(
   await sconn.readExactly(addr buffer[0], buffer.len)
   return buffer
 
-proc receiveHSMessage(
+proc receiveHSMessage*(
     sconn: RawConn
 ): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
   readFrame(sconn)
 
-template sendHSMessage(sconn: RawConn, parts: varargs[seq[byte]]): untyped =
+template sendHSMessage*(sconn: RawConn, parts: varargs[seq[byte]]): untyped =
   # sends message (message frame) using multiple seq[byte] that 
   # concatenated represent entire mesage.
 

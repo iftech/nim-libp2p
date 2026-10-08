@@ -15,7 +15,7 @@ import
   crypto/crypto,
   transports/[transport, tcptransport, wstransport, quictransport, memorytransport],
   muxers/[muxer, mplex/mplex, yamux/yamux],
-  protocols/[identify, secure/secure, secure/noise, rendezvous, kademlia],
+  protocols/[identify, secure/secure, secure/noise, secure/noisehfs, rendezvous, kademlia],
   protocols/connectivity/[
     autonat/server,
     autonatv2/server,
@@ -62,6 +62,11 @@ type
 
   SecureProtocol* {.pure.} = enum
     Noise
+    NoiseHFS
+      ## Post-quantum hybrid Noise (`Noise_XXhfs_25519+MLKEM768_ChaChaPoly_SHA256`).
+      ## Mount alongside `Noise` (the default) so hybrid-capable peers
+      ## negotiate the quantum-resistant handshake while classical-only
+      ## peers still fall back to `/noise` transparently.
 
   KadMode* {.pure.} = enum
     Client ## never serves queries; only issues them
@@ -225,6 +230,12 @@ proc withYamux*(
 
 proc withNoise*(b: SwitchBuilder): SwitchBuilder =
   b.secureManagers.add(SecureProtocol.Noise)
+  b
+
+proc withNoiseHFS*(b: SwitchBuilder): SwitchBuilder =
+  ## Mount the post-quantum hybrid Noise handshake. Typically combined with
+  ## `withNoise` so a hybrid-capable peer still accepts classical-only peers.
+  b.secureManagers.add(SecureProtocol.NoiseHFS)
   b
 
 proc withTransport*(b: SwitchBuilder, prov: TransportBuilder): SwitchBuilder =
@@ -491,6 +502,8 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   var secureManagerInstances: seq[Secure]
   if SecureProtocol.Noise in b.secureManagers:
     secureManagerInstances.add(Noise.new(b.rng, seckey).Secure)
+  if SecureProtocol.NoiseHFS in b.secureManagers:
+    secureManagerInstances.add(NoiseHFS.new(b.rng, seckey).Secure)
 
   let peerInfo = ?PeerInfo.tryNew(
     seckey,
