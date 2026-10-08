@@ -458,7 +458,9 @@ proc cert_parse*(
     )
   )
 
-proc cert_valid_to*(cert: seq[byte], format: cert_format_t): Result[CertificateTime, CertError] =
+proc cert_valid_to*(
+    cert: seq[byte], format: cert_format_t
+): Result[CertificateTime, CertError] =
   ## Returns the notAfter value without requiring a libp2p-specific extension.
   ##
   ## This is useful for certificates issued by external CAs, which do not carry

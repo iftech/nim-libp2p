@@ -185,9 +185,7 @@ proc parseCertTime(certTime: string): Time {.raises: [TimeParseError].} =
   const f = initTimeFormat(certTimeFormat)
   return parse(timeNoZone, f, utc()).toTime()
 
-proc validTo*(
-    cert: openArray[byte], format: EncodingFormat
-): Result[Time, CertError] =
+proc validTo*(cert: openArray[byte], format: EncodingFormat): Result[Time, CertError] =
   ## Returns a certificate's notAfter value.
   ##
   ## Unlike `parse`, this accepts certificates without a libp2p-specific
