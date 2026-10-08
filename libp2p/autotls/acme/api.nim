@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import json, parseutils, sequtils, strutils, uri
-from times import DateTime
+from times import DateTime, utc
 import chronos/apps/http/httpclient
 
 import ./jws
@@ -10,7 +10,7 @@ import ./utils
 import ../../crypto/rsa
 import ../../utils/opt
 import ../../results
-import ../../utils/rfc3339
+import ../../transports/tls/certificate
 
 export results
 
@@ -99,7 +99,6 @@ type ACMEFinalizeResponse* = object
 
 type ACMEOrderResponse* = object
   certificate: string
-  expires: string
 
 type ACMECertificateResponse* = object
   rawCertificate*: string
@@ -426,10 +425,10 @@ func parseCheck(
 
 const InvalidCertificateExpiry* = "Invalid certificate expiry"
 
-proc parseExpiry(expires: string): Result[DateTime, LPResultError] =
-  let expiry = parseRfc3339DateTime(expires).valueOr:
+proc parseCertificateExpiry(certificate: seq[byte]): Result[DateTime, LPResultError] =
+  let certificateValidTo = validTo(certificate, PEM).valueOr:
     return err(error, InvalidCertificateExpiry)
-  ok(expiry)
+  ok(certificateValidTo.utc)
 
 proc requestRegister*(
     self: ACMEApi, key: RsaPrivateKey
@@ -598,13 +597,13 @@ proc downloadCertificate*(
     async: (raises: [CancelledError])
 .} =
   let orderResponse = ?(await self.requestGetOrder(order, key, kid))
-  let expiry = ?parseExpiry(orderResponse.expires)
 
   let certificateURL = parseUri(orderResponse.certificate)
   let payload = ?(await self.createPostAsGetRequest(certificateURL, key, kid))
   # not `self.post` as it reads the response as JSON, and a certificate is PEM
   let rawResponse = ?(await self.sendPost(certificateURL, payload))
   let certificate = ?(await rawResponse.tryGetBodyBytes())
+  let expiry = ?parseCertificateExpiry(certificate)
   ok(
     ACMECertificateResponse(
       rawCertificate: bytesToString(certificate), certificateExpiry: expiry

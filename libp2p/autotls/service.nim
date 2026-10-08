@@ -386,6 +386,11 @@ proc tryIssueCertificate(
     self.certFailure = Opt.some($lastError)
     self.certReady.fire()
 
+proc needsRenewal(expiry: DateTime, renewBufferTime: Duration): bool =
+  ## Compare absolute times to avoid overflowing Chronos's nanosecond Duration
+  ## for certificates that expire far in the future.
+  expiry.toTime.toUnix <= now().toTime.toUnix + renewBufferTime.seconds
+
 method start*(
     self: AutotlsService, switch: Switch
 ) {.async: (raises: [CancelledError, LPError]).} =
@@ -412,8 +417,7 @@ method start*(
           await self.tryIssueCertificate(switch)
 
         self.cert.ifValue(cert):
-          let timeUntilExpiry = seconds(cert.expiry.toTime.toUnix - now().toTime.toUnix)
-          if timeUntilExpiry <= self.config.renewBufferTime:
+          if needsRenewal(cert.expiry, self.config.renewBufferTime):
             await self.tryIssueCertificate(switch)
     except CancelledError:
       trace "Autotls management cancelled"

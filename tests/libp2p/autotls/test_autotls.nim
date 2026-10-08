@@ -4,28 +4,23 @@
 {.used.}
 
 import base64, sequtils, json, strutils, uri, chronos, chronos/apps/http/httpclient
-from times import dateTime, format, initDuration, mNov, timezone, utc, `-`, `==`
+from times import fromUnix, timezone, utc, `==`
 import
-  ../../../libp2p/[
-    stream/connection,
-    upgrademngrs/upgrade,
-    autotls/acme/client,
-    crypto/rsa,
-    utils/rfc3339,
-    wire,
-  ]
+  ../../../libp2p/
+    [stream/connection, upgrademngrs/upgrade, autotls/acme/client, crypto/rsa, wire]
 import ../../tools/[unittest, http_server, crypto]
 import ../../stubs/acme_api_stub
 import ./rfc_vectors
 
 suite "AutoTLS ACME API":
   const WildcardDomain = "*.example.libp2p.direct"
+  let certificateExpiry = fromUnix(1893456000)
 
   # RSA generation dominates the runtime of every test here, so one pair for all.
   let
     key = RsaPrivateKey.random(rng()).get()
     certKey = RsaPrivateKey.random(rng()).get()
-    certPem = tlsCertPemGenerator()
+    certPem = tlsCertPemGenerator(validTo = certificateExpiry)
 
   var api {.threadvar.}: ACMEApiStub
 
@@ -395,47 +390,31 @@ suite "AutoTLS ACME API":
     for index in 0 ..< api.payloads.len:
       check api.encodedPayload(index) == ""
 
-  proc downloadWithExpires(
-      expires: string
+  proc downloadCertificate(
+      orderExpiry: string = "", certificate: string = certPem
   ): Future[Result[ACMECertificateResponse, LPResultError]] {.async.} =
-    let certServer = startTestHttpServer(certPem)
+    let certServer = startTestHttpServer(certificate)
     defer:
       await certServer.stop()
 
     api.directoryURL = parseUri(certServer.url)
-    api.queueGetOrder(certServer.url, expires)
+    api.queueGetOrder(certServer.url, orderExpiry)
     # A tail `await` is freed by the deferred `await` before its value is read.
     let response = await api.downloadCertificate(parseUri(OrderURL), key, AccountURL)
     response
 
-  asyncTest "the order's expires is parsed in UTC":
-    let expiry =
-      (await downloadWithExpires("2026-11-02T14:30:00Z")).get().certificateExpiry
-
-    check expiry.timezone == utc()
-    check expiry.format("yyyy-MM-dd'T'HH:mm:ss") == "2026-11-02T14:30:00"
-
-  asyncTest "an expires with a fractional second is accepted":
-    let expiry =
-      (await downloadWithExpires("2026-11-02T14:30:00.125Z")).get().certificateExpiry
-
-    check expiry - dateTime(2026, mNov, 2, 14, 30, zone = utc()) ==
-      initDuration(milliseconds = 125)
-
-  asyncTest "an expires with a numeric UTC offset is accepted":
-    let expiry =
-      (await downloadWithExpires("2026-11-02T16:30:00+02:00")).get().certificateExpiry
-
-    check expiry == dateTime(2026, mNov, 2, 14, 30, zone = utc())
-
-  asyncTest "a malformed expires is rejected":
-    let response = await downloadWithExpires("not-a-date")
+  asyncTest "the certificate's notAfter is used instead of the order's expires":
+    let response = await downloadCertificate(orderExpiry = "2026-11-02T14:30:00Z")
+    let expiry = response.get().certificateExpiry
 
     check:
-      response.isOfError(InvalidCertificateExpiry)
-      response.isOfError(InvalidRfc3339DateTime)
-      response.error ==
-        "Invalid certificate expiry: Invalid RFC 3339 date-time (not-a-date)"
+      expiry.timezone == utc()
+      expiry == certificateExpiry.utc
+
+  asyncTest "an invalid certificate expiry is rejected":
+    let response = await downloadCertificate("2099-01-01T00:00:00Z", "not a PEM")
+
+    check response.isOfError(InvalidCertificateExpiry)
 
   asyncTest "an order whose certificate url is off the directory origin is refused":
     api.queueGetOrder("", "2026-11-02T14:30:00Z")

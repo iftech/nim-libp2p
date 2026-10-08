@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos, json, net, results, sequtils, uri
-from times import now, format, initDuration, `+`
+from times import fromUnix, now, initDuration, utc, `+`, `==`
 import
   ../../../libp2p/[
     autotls/service,
@@ -194,6 +194,7 @@ suite "AutoTLS certificate issuance and renewal":
       AutotlsConfig.new(
         ipAddress = Opt.some(parseIpAddress(NodeIP)),
         domainSuffix = DomainSuffix,
+        renewCheckTime = RenewCheckTime,
         issueRetries = 3,
         issueRetryTime = 1.milliseconds,
       )
@@ -212,8 +213,7 @@ suite "AutoTLS certificate issuance and renewal":
     check:
       # One round is 8 requests, so more would be a second attempt.
       acmeApi.requestedUris.len == 8
-      # TODO: vacp2p/nim-libp2p#2977
-      autotlsCert.expiry.format("yyyy-MM-dd'T'HH:mm:ss'Z'") == OrderExpires
+      autotlsCert.expiry == fromUnix(DefaultTlsCertValidToUnix).utc
       resolver.txtQueries == @["_acme-challenge." & baseDomain]
       resolver.ipQueries == @["127-0-0-1." & baseDomain]
       parseJson(authClient.payloads[0])["value"].getStr == keyAuth

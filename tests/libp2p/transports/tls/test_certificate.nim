@@ -143,6 +143,13 @@ suite "utilities test":
     expect TimeParseError:
       discard parseCertTime("")
 
+  test "validTo":
+    let keypair = KeyPair.random(Ed25519, rng()).tryGet()
+    let expiration = fromUnix(1735736706)
+    let cert = generateX509(keypair, validTo = expiration, encodingFormat = PEM)
+
+    check validTo(cert.certificate, PEM).get() == expiration
+
   test "KeyPair to cert_key_t":
     let key = KeyPair.random(PKScheme.RSA, rng()).get()
 
