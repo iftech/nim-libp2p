@@ -122,7 +122,7 @@ proc new*(
   disco.handler = proc(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
-    if not disco.isServer:
+    if not disco.started or not disco.isServer:
       trace "Refusing inbound query while not serving", stream
       await stream.reset()
       return
