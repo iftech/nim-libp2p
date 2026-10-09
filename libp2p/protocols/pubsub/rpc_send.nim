@@ -20,6 +20,7 @@ proc sendResponse*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
+    relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
 ) {.raises: [].} =
   ## Sends a protocol response `msg` (of type `RPCMsg`) to the specified remote
   ## peer. This is an internal, protocol-facing send path - messages that
@@ -29,7 +30,7 @@ proc sendResponse*(
   ## instead.
 
   trace "sending pubsub response to peer", peer, rpcMsg = msg
-  peer.sendResponse(msg, p.anonymize, priority, useCustomStream)
+  peer.sendResponse(msg, p.anonymize, priority, useCustomStream, relayedSaltedId)
 
 proc broadcastResponse*(
     p: PubSub,
@@ -37,6 +38,7 @@ proc broadcastResponse*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
+    relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
 ) {.raises: [].} =
   ## Sends a protocol response `msg` (of type `RPCMsg`) to a specified group of
   ## peers. This is an internal, protocol-facing broadcast path - messages that
@@ -51,10 +53,12 @@ proc broadcastResponse*(
 
   if anyIt(sendPeers, it.hasObservers) or msg.messages.len > 1:
     for peer in sendPeers:
-      p.sendResponse(peer, msg, priority, useCustomStream)
+      p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
   else:
     # Fast path that only encodes message once
     let encoded = msg.encode(p.anonymize)
     for peer in sendPeers:
       var peerEncoded = encoded
-      peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
+      peer.trackSend(
+        peer.sendEncoded(move(peerEncoded), priority, useCustomStream, relayedSaltedId)
+      )
