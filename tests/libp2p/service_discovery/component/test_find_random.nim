@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos, sequtils
-import ../../../../libp2p/[extended_peer_record, peerid]
+import ../../../../libp2p/[extended_peer_record, peerid, utils/future]
 import ../../../../libp2p/protocols/[kademlia, protocol, service_discovery]
 import ../../../../libp2p/stream/connection
 import ../../../tools/[lifecycle, topology, unittest]
@@ -88,11 +88,11 @@ suite "Service Discovery Component - Find Random":
         stream: Stream, proto: string
     ) {.async: (raises: [CancelledError]).} =
       defer:
-        handlerFinished.complete()
+        handlerFinished.completeOnce()
         await stream.close()
       try:
         discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
-        requestReceived.complete()
+        requestReceived.completeOnce()
         await stream.join()
       except LPStreamError as e:
         raiseAssert e.msg
