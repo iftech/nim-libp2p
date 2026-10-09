@@ -5,7 +5,8 @@
 
 import chronos, sequtils
 import ../../../../libp2p/[extended_peer_record, peerid]
-import ../../../../libp2p/protocols/[kademlia, service_discovery]
+import ../../../../libp2p/protocols/[kademlia, protocol, service_discovery]
+import ../../../../libp2p/stream/connection
 import ../../../tools/[lifecycle, topology, unittest]
 import ../utils
 
@@ -78,15 +79,31 @@ suite "Service Discovery Component - Find Random":
     check await discos[0].lookupRandom().withTimeout(5.seconds)
 
   asyncTest "lookupRandom can be cancelled while the lookup is in flight":
-    # Cancelling lookupRandom must propagate the cancellation cleanly without
-    # leaking transport resources, which teardown's checkTrackers verifies.
-    let discos = setupServiceDiscoveryNodes(9)
+    # Hold the peer's FIND_NODE request open. This is a synchronization point,
+    # so cancellation always happens while lookupRandom owns an active RPC stream.
+    let discos = setupServiceDiscoveryNodes(2)
+    let requestReceived = newFuture[void]("find-random-request-received")
+    let handlerFinished = newFuture[void]("find-random-handler-finished")
+    discos[1].handler = proc(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      defer:
+        handlerFinished.complete()
+        await stream.close()
+      try:
+        discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
+        requestReceived.complete()
+        await stream.join()
+      except LPStreamError as e:
+        raiseAssert e.msg
+
     startAndDeferStop(discos)
     await connectStar(discos)
 
     let fut = discos[0].lookupRandom()
-    await sleepAsync(1.millis)
+    await requestReceived
     await fut.cancelAndWait()
+    await handlerFinished
 
   asyncTest "a disco node answers a ping on its own codec":
     let discos = setupServiceDiscoveryNodes(2)
