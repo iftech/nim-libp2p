@@ -231,7 +231,7 @@ suite "KadDHT message sender":
     defer:
       await sender.stop()
 
-    await client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+    await client.connect(server)
 
     # The cancellation lands in the dial, which is where it hurts: `Dialer.dial`
     # closes the connection it reused when it is cancelled, which would take
@@ -241,7 +241,7 @@ suite "KadDHT message sender":
     )
     await cancelled.cancelAndWait()
 
-    check client.isConnected(server.peerInfo.peerId)
+    check client.isConnected(server)
 
     let reply = await sender.sendRequest(
       server.peerInfo.peerId, server.peerInfo.addrs, @[byte 2], 5.seconds

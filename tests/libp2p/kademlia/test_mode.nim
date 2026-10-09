@@ -15,9 +15,7 @@ proc dialFindNode(
   ## `Opt.none` when the target refuses to serve (stream reset, no reply).
   let stream =
     try:
-      await querier.switch.dial(
-        target.switch.peerInfo.peerId, target.switch.peerInfo.addrs, querier.codec
-      )
+      await querier.switch.dial(target.switch, querier.codec)
     except CatchableError:
       return Opt.none(Message)
   defer:
@@ -86,9 +84,7 @@ suite "KadDHT dynamic mode":
     let server = setupKad(isServer = true)
     startAndDeferStop(@[querier, server])
 
-    let stream = await querier.switch.dial(
-      server.switch.peerInfo.peerId, server.switch.peerInfo.addrs, querier.codec
-    )
+    let stream = await querier.switch.dial(server.switch, querier.codec)
     defer:
       await stream.close()
 
@@ -115,9 +111,7 @@ suite "KadDHT dynamic mode":
     let server = setupKad(isServer = true)
     startAndDeferStop(@[querier, server])
 
-    let stream = await querier.switch.dial(
-      server.switch.peerInfo.peerId, server.switch.peerInfo.addrs, querier.codec
-    )
+    let stream = await querier.switch.dial(server.switch, querier.codec)
     defer:
       await stream.close()
 
@@ -133,9 +127,7 @@ suite "KadDHT dynamic mode":
     let server = setupKad(isServer = true)
     startAndDeferStop(@[querier, server])
 
-    let stream = await querier.switch.dial(
-      server.switch.peerInfo.peerId, server.switch.peerInfo.addrs, querier.codec
-    )
+    let stream = await querier.switch.dial(server.switch, querier.codec)
     defer:
       await stream.close()
 

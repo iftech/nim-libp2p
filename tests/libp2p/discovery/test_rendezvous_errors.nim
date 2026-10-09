@@ -67,7 +67,7 @@ suite "RendezVous Errors":
     silentPeer.mount(LPProtocol.new(@[RendezVousCodec], neverRespond))
     startAndDeferStop(@[rdv.switch, silentPeer])
 
-    await rdv.switch.connect(silentPeer.peerInfo.peerId, silentPeer.peerInfo.addrs)
+    await rdv.switch.connect(silentPeer)
     await rdv.advertise("foo")
 
     check rdv.sema.availableSlots() == SemaphoreDefaultSize

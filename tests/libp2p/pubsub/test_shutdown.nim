@@ -117,7 +117,7 @@ suite "PubSub shutdown":
     defer:
       releaseUpgrade.fire()
 
-    let connecting = client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+    let connecting = client.connect(server)
     await registered.wait()
     await connecting
     let peer = gossip.getOrCreatePeer(client.peerInfo.peerId, @[GossipSubCodec_12])

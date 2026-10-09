@@ -105,7 +105,7 @@ suite "AutonatV2 Service":
     await allFuturesRaising(switch.start(), peer.start())
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
-    await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+    await switch.connect(peer)
 
     await first
     await second
@@ -126,7 +126,7 @@ suite "AutonatV2 Service":
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
     switch.addressManager.add(publicAddr, AddrSource.Upnp)
-    await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+    await switch.connect(peer)
 
     await notified
 
@@ -154,7 +154,7 @@ suite "AutonatV2 Service":
     await allFuturesRaising(switch.start(), peer.start())
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
-    await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+    await switch.connect(peer)
 
     await sleepAsync(VerifyInterval * 4)
     check service.networkReachability == NetworkReachability.Unknown
@@ -170,7 +170,7 @@ suite "AutonatV2 Service":
     await allFuturesRaising(switch.start(), peer.start())
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
-    await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+    await switch.connect(peer)
 
     await notReachable
     client.response = mockResponse(Reachable)
@@ -190,7 +190,7 @@ suite "AutonatV2 Service":
     await allFuturesRaising(switch.start(), peer.start())
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
-    await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+    await switch.connect(peer)
 
     let observedAddr = ma("/ip4/8.8.8.8/tcp/4040")
     for _ in 0 ..< 3:
@@ -211,7 +211,7 @@ suite "AutonatV2 Service":
     await allFuturesRaising(switch.start(), peer.start())
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
-    await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+    await switch.connect(peer)
 
     let observedAddr = ma("/ip4/8.8.8.8/tcp/4040")
     for _ in 0 ..< 3:
@@ -241,7 +241,7 @@ suite "AutonatV2 Service":
     await allFuturesRaising(switch.start(), peer.start())
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
-    await switch.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+    await switch.connect(peer)
 
     checkUntilTimeout:
       service.networkReachability == Reachable
@@ -255,7 +255,7 @@ suite "AutonatV2 Service":
     await allFuturesRaising(switch.start(), peer.start())
     defer:
       await allFuturesRaising(switch.stop(), peer.stop())
-    await peer.connect(switch.peerInfo.peerId, switch.peerInfo.addrs)
+    await peer.connect(switch)
 
     await sleepAsync(VerifyInterval * 4)
 

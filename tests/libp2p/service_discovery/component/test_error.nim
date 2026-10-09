@@ -52,10 +52,8 @@ method readOnce(
 proc sendRawMessage(
     clientSwitch: Switch, registrarNode: ServiceDiscovery, msgBytes: seq[byte]
 ): Future[seq[byte]] {.async.} =
-  let conn = await clientSwitch.dial(
-    registrarNode.switch.peerInfo.peerId, registrarNode.switch.peerInfo.addrs,
-    ExtendedServiceDiscoveryCodec,
-  )
+  let conn =
+    await clientSwitch.dial(registrarNode.switch, ExtendedServiceDiscoveryCodec)
   defer:
     await conn.close()
 

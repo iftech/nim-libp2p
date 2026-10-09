@@ -81,12 +81,8 @@ suite "Hole Punching":
       [ma("/dns4/localhost/") & publicPeerSwitch.peerInfo.addrs[0][1].tryGet()]
     )
 
-    await privatePeerSwitch.connect(
-      switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs
-    )
-    await privatePeerSwitch.connect(
-      peerSwitch.peerInfo.peerId, peerSwitch.peerInfo.addrs
-    ) # for autonat
+    await privatePeerSwitch.connect(switchRelay)
+    await privatePeerSwitch.connect(peerSwitch) # for autonat
 
     await publicPeerSwitch.connect(
       privatePeerSwitch.peerInfo.peerId, (await privatePeerRelayAddr)
@@ -144,12 +140,8 @@ suite "Hole Punching":
       [ma("/dns4/localhost/") & publicPeerSwitch.peerInfo.addrs[0][1].tryGet()]
     )
 
-    await privatePeerSwitch.connect(
-      switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs
-    )
-    await privatePeerSwitch.connect(
-      peerSwitch.peerInfo.peerId, peerSwitch.peerInfo.addrs
-    ) # for autonat
+    await privatePeerSwitch.connect(switchRelay)
+    await privatePeerSwitch.connect(peerSwitch) # for autonat
 
     await publicPeerSwitch.connect(
       privatePeerSwitch.peerInfo.peerId, (await privatePeerRelayAddr)
@@ -221,34 +213,18 @@ suite "Hole Punching":
       switchAux4.start(),
     )
 
-    await privatePeerSwitch1.connect(
-      switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs
-    )
-    await privatePeerSwitch2.connect(
-      switchAux.peerInfo.peerId, switchAux.peerInfo.addrs
-    )
+    await privatePeerSwitch1.connect(switchRelay)
+    await privatePeerSwitch2.connect(switchAux)
 
     await sleepAsync(100.millis)
 
-    await privatePeerSwitch1.connect(
-      switchAux2.peerInfo.peerId, switchAux2.peerInfo.addrs
-    )
-    await privatePeerSwitch1.connect(
-      switchAux3.peerInfo.peerId, switchAux3.peerInfo.addrs
-    )
-    await privatePeerSwitch1.connect(
-      switchAux4.peerInfo.peerId, switchAux4.peerInfo.addrs
-    )
+    await privatePeerSwitch1.connect(switchAux2)
+    await privatePeerSwitch1.connect(switchAux3)
+    await privatePeerSwitch1.connect(switchAux4)
 
-    await privatePeerSwitch2.connect(
-      switchAux2.peerInfo.peerId, switchAux2.peerInfo.addrs
-    )
-    await privatePeerSwitch2.connect(
-      switchAux3.peerInfo.peerId, switchAux3.peerInfo.addrs
-    )
-    await privatePeerSwitch2.connect(
-      switchAux4.peerInfo.peerId, switchAux4.peerInfo.addrs
-    )
+    await privatePeerSwitch2.connect(switchAux2)
+    await privatePeerSwitch2.connect(switchAux3)
+    await privatePeerSwitch2.connect(switchAux4)
 
     privatePeerSwitch1.connectStub = initiatorConnectStub
     await privatePeerSwitch2.connect(

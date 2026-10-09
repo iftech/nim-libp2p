@@ -96,13 +96,13 @@ suite "Dialer":
 
     await dst.start()
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs, true, false)
+    await src.connect(dst, true, false)
     check src.connManager.connCount(dst.peerInfo.peerId) == 2
 
     await allFutures(src.stop(), dst.stop())
@@ -120,14 +120,14 @@ suite "Dialer":
       let src = makeStandardSwitch()
       switches.add(src)
       await src.start()
-      await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs, true, false)
+      await src.connect(dst, true, false)
 
     let src = makeStandardSwitch()
     switches.add(src)
     await src.start()
 
     expect DialFailedError:
-      await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+      await src.connect(dst)
     check src.peerInfo.peerId notin dst.connManager.connectedPeers()
 
     await allFuturesRaising(switches.mapIt(it.stop()))
@@ -139,7 +139,7 @@ suite "Dialer":
       await src.stop()
 
     expect DialFailedError:
-      await src.connect(src.peerInfo.peerId, src.peerInfo.addrs)
+      await src.connect(src)
 
   asyncTest "Connect without addresses fails":
     let src = makeStandardSwitch()
@@ -787,9 +787,9 @@ suite "Dialer":
     defer:
       await allFutures(src.stop(), dst.stop())
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
-    await src.disconnect(dst.peerInfo.peerId)
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
+    await src.disconnect(dst)
+    await src.connect(dst)
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 

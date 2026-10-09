@@ -115,8 +115,8 @@ suite "Circuit Relay V2":
       await src1.start()
       await src2.start()
       await rel.start()
-      await src1.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-      await src2.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+      await src1.connect(rel)
+      await src2.connect(rel)
       rsvp = await cl1.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
       range = now().utc + (ttl - 3).seconds .. now().utc + (ttl + 3).seconds
       check:
@@ -125,8 +125,7 @@ suite "Circuit Relay V2":
         rsvp.limitData == ldata
 
     asyncTest "Too many reservations":
-      let stream =
-        await cl2.switch.dial(rel.peerInfo.peerId, rel.peerInfo.addrs, RelayV2HopCodec)
+      let stream = await cl2.switch.dial(rel, RelayV2HopCodec)
       let pb = encode(HopMessage(msgType: Opt.some(HopMessageType.Reserve)))
       await stream.writeLp(pb)
       let msg = HopMessage.decode(await stream.readLp(RelayMsgSize)).get()
@@ -143,7 +142,7 @@ suite "Circuit Relay V2":
     asyncTest "Too many reservations + Reconnect":
       expect ReservationError:
         discard await cl2.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
-      await rel.disconnect(src1.peerInfo.peerId)
+      await rel.disconnect(src1)
       rsvp = await cl2.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
       range = now().utc + (ttl - 3).seconds .. now().utc + (ttl + 3).seconds
       check:
@@ -251,8 +250,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
 
@@ -302,8 +301,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
@@ -366,8 +365,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
@@ -416,8 +415,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
@@ -427,12 +426,12 @@ suite "Circuit Relay V2":
         await stream.writeLp("test3")
         check:
           "test4" == string.fromBytes(await stream.readLp(1024))
-        await src.disconnect(rel.peerInfo.peerId)
+        await src.disconnect(rel)
         await sleepAsync(chronos.timer.seconds(ttl + 1))
 
         expect DialFailedError:
           await stream.close()
-          await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+          await src.connect(rel)
           stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
         await allFutures(stream.close())
         await allFutures(src.stop(), dst.stop(), rel.stop())
@@ -469,9 +468,9 @@ suite "Circuit Relay V2":
             .get()
         ]
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await rel2.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
+        await src.connect(rel)
+        await rel2.connect(rel)
+        await dst.connect(rel2)
 
         rsvp = await rel2Cl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         discard await dstCl.reserve(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
@@ -570,9 +569,9 @@ suite "Circuit Relay V2":
             )
             .get()
 
-        await switchA.connect(switchB.peerInfo.peerId, switchB.peerInfo.addrs)
-        await switchB.connect(switchC.peerInfo.peerId, switchC.peerInfo.addrs)
-        await switchC.connect(switchA.peerInfo.peerId, switchA.peerInfo.addrs)
+        await switchA.connect(switchB)
+        await switchB.connect(switchC)
+        await switchC.connect(switchA)
         discard await clientA.reserve(switchC.peerInfo.peerId, switchC.peerInfo.addrs)
         discard await clientB.reserve(switchA.peerInfo.peerId, switchA.peerInfo.addrs)
         discard await clientC.reserve(switchB.peerInfo.peerId, switchB.peerInfo.addrs)

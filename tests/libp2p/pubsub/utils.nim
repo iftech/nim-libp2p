@@ -316,7 +316,7 @@ proc getPeerTopicInfo*(node: GossipSub, peerId: PeerId, topic: string): TopicInf
 proc connect*[T: PubSub](dialer: T, target: T) {.async.} =
   doAssert dialer.switch.peerInfo.peerId != target.switch.peerInfo.peerId,
     "Could not connect same peer"
-  await dialer.switch.connect(target.peerInfo.peerId, target.peerInfo.addrs)
+  await dialer.switch.connect(target.switch)
   await sleepAsync(connectWarmup)
 
 template waitSubscribeChain*[T: PubSub](nodes: seq[T], topic: string): untyped =

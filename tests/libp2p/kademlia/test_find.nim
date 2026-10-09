@@ -408,7 +408,7 @@ suite "KadDHT Find":
     # machine, which would exhaust the responsive peer's retries too and leave
     # the lookup with nothing to return.
     for peer in [mockKad.KadDHT, responsiveKad]:
-      await kad.switch.connect(peer.switch.peerInfo.peerId, peer.switch.peerInfo.addrs)
+      await kad.switch.connect(peer.switch)
 
     check mockKad.handleFindNodeCalls == 0
 
@@ -448,14 +448,14 @@ suite "KadDHT Find":
       bListenAddrs = b.switch.peerInfo.addrs
 
     # B's inbound connection to A uses an ephemeral source port.
-    await b.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await b.switch.connect(a.switch)
     discard (await b.dispatchFindNode(a.switch.peerInfo.peerId, bKey)).expect(
       "FIND_NODE reply"
     )
 
     check a.switch.peerStore[AddressBook][bId].allIt(it in bListenAddrs)
 
-    await c.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await c.switch.connect(a.switch)
     let reply = (await c.dispatchFindNode(a.switch.peerInfo.peerId, bKey)).value()
     let bCloser =
       reply.closerPeers.filterIt(it.id.isSome and it.id.get() == bId.getBytes())

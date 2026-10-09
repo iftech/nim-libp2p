@@ -242,9 +242,7 @@ suite "Identify":
       await switch1.start()
       await switch2.start()
 
-      stream = await switch2.dial(
-        switch1.peerInfo.peerId, switch1.peerInfo.addrs, IdentifyPushCodec
-      )
+      stream = await switch2.dial(switch1, IdentifyPushCodec)
 
       check:
         # ensure both IPv4 and IPv6 addresses are used in switch.
@@ -357,7 +355,7 @@ suite "Identify":
       countAddressesWithPattern(server.peerInfo.addrs, QUIC_V1) == 1
 
     # Connect and request identify
-    await client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+    await client.connect(server)
 
     # The client's peerStore should now have the server's info including addresses via identify
     let storedAddrs = client.peerStore[AddressBook][server.peerInfo.peerId]

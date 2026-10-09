@@ -44,9 +44,7 @@ proc setupRendezvousNodeWithPeerNodes*(count: int): (RendezVous, seq[RendezVous]
   return (rendezvousRdv, peerRdvs)
 
 proc connect*(dialer: RendezVous, target: RendezVous) {.async.} =
-  await dialer.switch.connect(
-    target.switch.peerInfo.peerId, target.switch.peerInfo.addrs
-  )
+  await dialer.switch.connect(target.switch)
 
 proc buildProtobufCookie*(offset: uint64, namespace: string): seq[byte] =
   encode(Cookie(offset: offset, ns: Opt.some(namespace)))

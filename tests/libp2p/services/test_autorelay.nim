@@ -61,7 +61,7 @@ suite "Autorelay":
     autorelay = AutoRelayService.new(3, relayClient, checkMA, rng())
     switchClient = createSwitch(relayClient, autorelay)
     await allFutures(switchClient.start(), switchRelay.start())
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
     await fut
     let addresses = autorelay.getAddresses()
     check:
@@ -82,7 +82,7 @@ suite "Autorelay":
     switchClient = createSwitch(relayClient, autorelay)
     await allFutures(switchClient.start(), switchRelay.start())
     await sleepAsync(250.millis)
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
     await fut
     let addresses = autorelay.getAddresses()
 
@@ -99,7 +99,7 @@ suite "Autorelay":
     autorelay = AutoRelayService.new(3, relayClient, nil, rng())
     switchClient = createSwitch(relayClient, autorelay)
     startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
 
     # the relay listens on IPv4, so its circuit addresses are the IPv4 family
     let
@@ -156,7 +156,7 @@ suite "Autorelay":
     # registered before AutoRelay starts, so it produces before the relay mapper runs
     manager.addMapper(mappingMapper, AddrSource.Upnp)
     startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
     let relayMAs = buildRelayMA(switchRelay, switchClient)
 
     checkUntilTimeout:
@@ -196,7 +196,7 @@ suite "Autorelay":
     switchClient = createSwitch(relayClient, autorelay)
 
     startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
 
     # stop the service while the reservation is still unanswered
     await reservationRequested
@@ -218,7 +218,7 @@ suite "Autorelay":
     # the relay switch is stopped mid-test, so it is not in the deferred stop
     startAndDeferStop(@[switchClient])
     await switchRelay.start()
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
 
     let relayMAs = buildRelayMA(switchRelay, switchClient)
     checkUntilTimeout:
@@ -242,7 +242,7 @@ suite "Autorelay":
     autorelay = AutoRelayService.new(1, relayClient, nil, rng())
     switchClient = createSwitch(relayClient, autorelay)
     startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
     let relayMAs = buildRelayMA(switchRelay, switchClient)
     checkUntilTimeout:
       autorelay.getAddresses() == relayMAs
@@ -304,10 +304,10 @@ suite "Autorelay":
     let autorelay = AutoRelayService.new(maxNumRelays = 2, relayClient, checkMA, rng())
     switchClient = createSwitch(relayClient, autorelay)
     await allFutures(switchClient.start(), rel1.start(), rel2.start(), rel3.start())
-    await switchClient.connect(rel1.peerInfo.peerId, rel1.peerInfo.addrs)
+    await switchClient.connect(rel1)
     await rel1Checked
-    await switchClient.connect(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
-    await switchClient.connect(rel3.peerInfo.peerId, rel3.peerInfo.addrs)
+    await switchClient.connect(rel2)
+    await switchClient.connect(rel3)
     await rel1And2Checked
     await rel2.stop()
 

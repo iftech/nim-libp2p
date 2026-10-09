@@ -123,6 +123,6 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     await client.connect(
       server.peerInfo.peerId, @[ma("/dns4/" & serverDomain & "/tcp/" & $port & "/wss")]
     )
-    check client.isConnected(server.peerInfo.peerId)
+    check client.isConnected(server)
     checkUntilTimeout:
-      server.isConnected(client.peerInfo.peerId)
+      server.isConnected(client)

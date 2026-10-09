@@ -40,7 +40,7 @@ proc newSwitches(count: int): seq[Switch] {.raises: [LPError].} =
   (0 ..< count).mapIt(makeStandardSwitch())
 
 proc connect(dialer, listener: Switch) {.async.} =
-  await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
+  await dialer.connect(listener)
   # short wait between connects
   await sleepAsync(50.millis)
 
@@ -382,7 +382,7 @@ suite "Connection Manager Watermark/Scoring Component":
       node.peerCount == protectedPeers.len
 
     for peer in protectedPeers:
-      check node.isConnected(peer.peerInfo.peerId)
+      check node.isConnected(peer)
 
   asyncTest "hard cap and watermark run together":
     # the semaphore caps total connections while the watermark trims toward lowWater.
