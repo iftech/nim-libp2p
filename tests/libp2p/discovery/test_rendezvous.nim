@@ -893,9 +893,7 @@ suite "RendezVous":
     await rendezvousNode.switch.start()
     await peerNode.switch.start()
 
-    await peerNode.switch.connect(
-      rendezvousNode.switch.peerInfo.peerId, rendezvousNode.switch.peerInfo.addrs
-    )
+    await peerNode.switch.connect(rendezvousNode.switch)
 
     const namespace = "foo"
     let custRecord = CustomPeerRecord.init(peerNode.switch.peerInfo.peerId, 1)

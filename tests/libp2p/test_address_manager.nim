@@ -1093,7 +1093,7 @@ suite "Switch-owned AddressManager":
       await allFutures(dialer.stop(), listener.stop())
 
     # the dialer identifies the listener, which reports back the address it sees
-    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
+    await dialer.connect(listener)
 
     let observed = dialer.addressManager.mostObservedProtosAndPorts()
     check:

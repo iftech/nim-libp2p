@@ -105,7 +105,7 @@ suite "Switch accept-loop failure handling":
     check transport.addrs[0] in server.peerInfo.listenAddrs
     # but nothing is accepting, so an inbound dial fails
     expect DialFailedError:
-      await client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+      await client.connect(server)
 
   asyncTest "nil accepts do not consume a slot and a one-slot transport recovers":
     const nilCount = 3
@@ -119,8 +119,8 @@ suite "Switch accept-loop failure handling":
     check server.connManager.availableSlots(Direction.In) == 1
 
     # the recovered accept serves a real inbound connection, and the one slot is used
-    await client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
-    check client.isConnected(server.peerInfo.peerId)
+    await client.connect(server)
+    check client.isConnected(server)
     check server.connManager.availableSlots(Direction.In) == 0
 
   asyncTest "rejecting a connection does not wait for its close":
@@ -165,7 +165,7 @@ suite "Switch accept-loop failure handling":
     # but the TCP transport still accepts connections
     let tcpAddrs = server.peerInfo.addrs.filterIt(TCP.match(it))
     await client.connect(server.peerInfo.peerId, tcpAddrs)
-    check client.isConnected(server.peerInfo.peerId)
+    check client.isConnected(server)
 
   asyncTest "accepts and registered upgrades drain before slow protocol teardown":
     let
@@ -188,7 +188,7 @@ suite "Switch accept-loop failure handling":
       releaseUpgrade.fire()
       protocol.release.fire()
 
-    let connecting = client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+    let connecting = client.connect(server)
     await registered.wait()
     await connecting
     let conn = server.connManager.selectMuxer(client.peerInfo.peerId).connection

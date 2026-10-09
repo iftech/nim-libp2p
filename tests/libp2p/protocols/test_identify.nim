@@ -242,9 +242,7 @@ suite "Identify":
       await switch1.start()
       await switch2.start()
 
-      stream = await switch2.dial(
-        switch1.peerInfo.peerId, switch1.peerInfo.addrs, IdentifyPushCodec
-      )
+      stream = await switch2.dial(switch1, IdentifyPushCodec)
       checkUntilTimeout:
         IdentifyPushCodec in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
         IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
@@ -360,7 +358,7 @@ suite "Identify":
       countAddressesWithPattern(server.peerInfo.addrs, QUIC_V1) == 1
 
     # Connect and request identify
-    await client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+    await client.connect(server)
 
     # The client's peerStore should now have the server's info including addresses via identify
     let storedAddrs = client.peerStore[AddressBook][server.peerInfo.peerId]

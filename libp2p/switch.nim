@@ -135,9 +135,29 @@ proc isConnected*(s: Switch, peerId: PeerId): bool =
 
   peerId in s.connManager
 
+proc isConnected*(s: Switch, peerInfo: PeerInfo): bool =
+  ## Returns true if `peerInfo` has one or more associated connections.
+
+  s.isConnected(peerInfo.peerId)
+
+proc isConnected*(s, other: Switch): bool =
+  ## Returns true if `other` has one or more associated connections.
+
+  s.isConnected(other.peerInfo)
+
 proc disconnect*(s: Switch, peerId: PeerId) {.async: (raises: [CancelledError]).} =
   ## Disconnect from a peer, waiting for the connection(s) to be dropped
   await s.connManager.dropPeer(peerId)
+
+proc disconnect*(s: Switch, peerInfo: PeerInfo) {.async: (raises: [CancelledError]).} =
+  ## Disconnect from a peer described by `peerInfo`.
+
+  await s.disconnect(peerInfo.peerId)
+
+proc disconnect*(s, other: Switch) {.async: (raises: [CancelledError]).} =
+  ## Disconnect from another switch.
+
+  await s.disconnect(other.peerInfo)
 
 method connect*(
     s: Switch,
@@ -150,6 +170,24 @@ method connect*(
   ## Connects to a peer without opening a stream to it
 
   s.dialer.connect(peerId, addrs, forceDial, reuseConnection, dir)
+
+method connect*(
+    s: Switch,
+    peerInfo: PeerInfo,
+    forceDial = false,
+    reuseConnection = true,
+    dir = Direction.Out,
+): Future[void] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to a peer described by `peerInfo` without opening a stream to it
+
+  s.connect(peerInfo.peerId, peerInfo.addrs, forceDial, reuseConnection, dir)
+
+method connect*(
+    s, other: Switch, forceDial = false, reuseConnection = true, dir = Direction.Out
+): Future[void] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to another switch without opening a stream to it
+
+  s.connect(other.peerInfo, forceDial, reuseConnection, dir)
 
 method connect*(
     s: Switch, address: MultiAddress, allowUnknownPeerId = false
@@ -188,6 +226,20 @@ method dial*(
 
   s.dialer.dial(peerId, addrs, protos, forceDial)
 
+method dial*(
+    s: Switch, peerInfo: PeerInfo, protos: seq[string], forceDial = false
+): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to a peer described by `peerInfo` and opens a stream with `protos`
+
+  s.dial(peerInfo.peerId, peerInfo.addrs, protos, forceDial)
+
+method dial*(
+    s, other: Switch, protos: seq[string], forceDial = false
+): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to another switch and opens a stream with the specified `protos`
+
+  s.dial(other.peerInfo, protos, forceDial)
+
 proc dial*(
     s: Switch, peerId: PeerId, addrs: seq[MultiAddress], proto: string
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
@@ -195,6 +247,20 @@ proc dial*(
   ## with the specified `proto`
 
   dial(s, peerId, addrs, @[proto])
+
+proc dial*(
+    s: Switch, peerInfo: PeerInfo, proto: string, forceDial = false
+): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to a peer described by `peerInfo` and opens a stream with `proto`
+
+  dial(s, peerInfo.peerId, peerInfo.addrs, @[proto], forceDial)
+
+proc dial*(
+    s, other: Switch, proto: string, forceDial = false
+): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to another switch and opens a stream with the specified `proto`
+
+  dial(s, other.peerInfo, proto, forceDial)
 
 proc add*(
     s: Switch, service: Service

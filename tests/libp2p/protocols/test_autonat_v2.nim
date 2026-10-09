@@ -25,7 +25,7 @@ proc startAndConnect(src, dst: Switch, client: AutonatV2Client) {.async.} =
   src.mount(client)
   await src.start()
   await dst.start()
-  await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+  await src.connect(dst)
 
 proc setupAutonat(
     srcAddrs: seq[MultiAddress] = @[TcpAutoAddress],
@@ -75,15 +75,15 @@ template dialbackConnectionTest(transport, scenario: string) =
 
   proc sendBack(nonce: Nonce): Future[bool] {.async.} =
     if fresh:
-      await backPeer.connect(src.peerInfo.peerId, src.peerInfo.addrs)
+      await backPeer.connect(src)
     elif scenario == "fresh outbound":
-      await src.connect(backPeer.peerInfo.peerId, backPeer.peerInfo.addrs)
+      await src.connect(backPeer)
     let back =
       await backPeer.dialer.dial(src.peerInfo.peerId, @[$AutonatV2Codec.DialBack])
     defer:
       await back.close()
       if separatePeer:
-        await backPeer.disconnect(src.peerInfo.peerId)
+        await backPeer.disconnect(src)
     await back.writeLp(DialBack(nonce: nonce).encode())
     try:
       let response = await back.readLp(AutonatV2MsgLpSize)
@@ -138,9 +138,9 @@ template dialbackConnectionTest(transport, scenario: string) =
       await backPeer.stop()
     await allFutures(src.stop(), dst.stop())
   if scenario == "existing inbound":
-    await dst.connect(src.peerInfo.peerId, src.peerInfo.addrs)
+    await dst.connect(src)
   else:
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
 
   if fresh:
     let response = await client.sendDialRequest(dst.peerInfo.peerId, src.peerInfo.addrs)
@@ -509,7 +509,7 @@ suite "AutonatV2":
     await dst.start()
     defer:
       await allFutures(src.stop(), dst.stop())
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     let stream =
       await src.dialer.dial(dst.peerInfo.peerId, @[$AutonatV2Codec.DialRequest])
     defer:
@@ -636,7 +636,7 @@ suite "AutonatV2":
     defer:
       await allFutures(src.stop(), dst.stop())
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
 
     # 1. invalid autonatv2msg
     autonatV2Mock.response = DialBackResponse(status: DialBackStatus.Ok).encode()

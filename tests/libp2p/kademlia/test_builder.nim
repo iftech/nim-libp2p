@@ -52,7 +52,7 @@ suite "KadDHT Switch Builder":
       await allFutures(@[node.stop()] & peers.mapIt(it.stop()))
 
     for peer in peers:
-      await node.connect(peer.peerInfo.peerId, peer.peerInfo.addrs)
+      await node.connect(peer)
 
     checkUntilTimeout:
       kad.isServer
