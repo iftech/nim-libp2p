@@ -64,7 +64,7 @@ suite "Autonat":
     await src.start()
     await dst.start()
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     let maddr =
       await AutonatClient.new().dialMe(src, dst.peerInfo.peerId, dst.peerInfo.addrs)
     check maddr in src.peerInfo.addrs
@@ -78,7 +78,7 @@ suite "Autonat":
     await src.start()
     await dst.start()
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     expect AutonatUnreachableError:
       discard
         await AutonatClient.new().dialMe(src, dst.peerInfo.peerId, dst.peerInfo.addrs)
@@ -96,7 +96,7 @@ suite "Autonat":
     await dst.start()
     await doesNothingListener.start(@[TcpWildcardAddress])
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     let stream = await src.dial(dst.peerInfo.peerId, @[AutonatCodec])
     let buffer = AutonatMsg(
       msgType: Opt.some(MsgType.Dial),
@@ -132,7 +132,7 @@ suite "Autonat":
     await dst.start()
     await doesNothingListener.start(@[TcpWildcardAddress])
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     let stream = await src.dial(dst.peerInfo.peerId, @[AutonatCodec])
     let buffer = AutonatMsg(
       dial: Opt.some(
@@ -161,7 +161,7 @@ suite "Autonat":
 
     let testAddr = ma("/dns4/localhost/") & dst.peerInfo.addrs[0][1].tryGet()
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     let maddr = await AutonatClient.new().dialMe(src, dst.peerInfo.peerId, @[testAddr])
 
     check maddr in src.peerInfo.addrs

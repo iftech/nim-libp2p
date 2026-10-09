@@ -71,9 +71,9 @@ suite "Autonat Service":
     await switch3.start()
     await switch4.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
-    await switch1.connect(switch3.peerInfo.peerId, switch3.peerInfo.addrs)
-    await switch1.connect(switch4.peerInfo.peerId, switch4.peerInfo.addrs)
+    await switch1.connect(switch2)
+    await switch1.connect(switch3)
+    await switch1.connect(switch4)
 
     await autonatClientStub.finished
 
@@ -132,7 +132,7 @@ suite "Autonat Service":
 
     await switch1.start()
     await switch2.start()
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
+    await switch1.connect(switch2)
 
     check:
       (await first) == autonatClientStub.answer
@@ -171,9 +171,9 @@ suite "Autonat Service":
     await switch3.start()
     await switch4.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
-    await switch1.connect(switch3.peerInfo.peerId, switch3.peerInfo.addrs)
-    await switch1.connect(switch4.peerInfo.peerId, switch4.peerInfo.addrs)
+    await switch1.connect(switch2)
+    await switch1.connect(switch3)
+    await switch1.connect(switch4)
 
     await awaiter
 
@@ -229,9 +229,9 @@ suite "Autonat Service":
     await switch3.start()
     await switch4.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
-    await switch1.connect(switch3.peerInfo.peerId, switch3.peerInfo.addrs)
-    await switch1.connect(switch4.peerInfo.peerId, switch4.peerInfo.addrs)
+    await switch1.connect(switch2)
+    await switch1.connect(switch3)
+    await switch1.connect(switch4)
 
     await notReachableAwaiter
 
@@ -278,9 +278,9 @@ suite "Autonat Service":
     await switch3.start()
     await switch4.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
-    await switch1.connect(switch3.peerInfo.peerId, switch3.peerInfo.addrs)
-    await switch1.connect(switch4.peerInfo.peerId, switch4.peerInfo.addrs)
+    await switch1.connect(switch2)
+    await switch1.connect(switch3)
+    await switch1.connect(switch4)
 
     await awaiter
 
@@ -324,9 +324,9 @@ suite "Autonat Service":
     await switch3.start()
     await switch4.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
-    await switch1.connect(switch3.peerInfo.peerId, switch3.peerInfo.addrs)
-    await switch1.connect(switch4.peerInfo.peerId, switch4.peerInfo.addrs)
+    await switch1.connect(switch2)
+    await switch1.connect(switch3)
+    await switch1.connect(switch4)
 
     await awaiter
 
@@ -374,7 +374,7 @@ suite "Autonat Service":
 
     await switch2.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
+    await switch1.connect(switch2)
 
     await awaiter
 
@@ -431,9 +431,9 @@ suite "Autonat Service":
     await switch2.start()
     await switch3.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
-    await switch2.connect(switch3.peerInfo.peerId, switch3.peerInfo.addrs)
+    await switch1.connect(switch2)
+    await switch2.connect(switch1)
+    await switch2.connect(switch3)
 
     await awaiter1
     await awaiter2
@@ -473,14 +473,12 @@ suite "Autonat Service":
     await switch1.start()
     await switch2.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
+    await switch1.connect(switch2)
     try:
       # We allow a temp conn for the peer to dial us. It could use this conn to just connect to us and not dial.
       # We don't care if it fails at this point or not. But this conn must be closed eventually.
       # Bellow we check that there's only one connection between the peers
-      await switch2.connect(
-        switch1.peerInfo.peerId, switch1.peerInfo.addrs, reuseConnection = false
-      )
+      await switch2.connect(switch1, reuseConnection = false)
     except DialFailedError:
       discard
 
@@ -526,13 +524,13 @@ suite "Autonat Service":
     await switch4.start()
     await switch5.start()
 
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
+    await switch1.connect(switch2)
 
     await awaiter
 
-    await switch1.connect(switch3.peerInfo.peerId, switch3.peerInfo.addrs)
-    await switch1.connect(switch4.peerInfo.peerId, switch4.peerInfo.addrs)
-    await switch5.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+    await switch1.connect(switch3)
+    await switch1.connect(switch4)
+    await switch5.connect(switch1)
     # switch1 is now full, should stick to last observation
     awaiter = newFuture[void]()
     await autonatService.start(switch1)
@@ -566,7 +564,7 @@ suite "Autonat Service":
     await switch1.start()
     await switch2.start()
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+    await switch2.connect(switch1)
 
     await sleepAsync(250.milliseconds)
 

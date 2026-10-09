@@ -367,9 +367,7 @@ proc sendAddProviderAndGetStatus*(
     sender: KadDHT, receiver: KadDHT, key: Key
 ): Future[LPResult[AddProviderStatus]] {.async: (raises: [CancelledError]).} =
   let streamRes = catch:
-    await sender.switch.dial(
-      receiver.switch.peerInfo.peerId, receiver.switch.peerInfo.addrs, sender.codec
-    )
+    await sender.switch.dial(receiver.switch, sender.codec)
   if streamRes.isErr:
     return err(streamRes.error.msg)
   let stream = streamRes.value()

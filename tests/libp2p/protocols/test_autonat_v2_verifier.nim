@@ -51,7 +51,7 @@ proc stop(self: VerifierPair) {.async.} =
   await allFutures(self.switch.stop(), self.peer.stop())
 
 proc dialPeer(self: VerifierPair) {.async.} =
-  await self.switch.connect(self.peer.peerInfo.peerId, self.peer.peerInfo.addrs)
+  await self.switch.connect(self.peer)
 
 suite "AutonatV2 verifier":
   teardown:
@@ -102,7 +102,7 @@ suite "AutonatV2 verifier":
     await pair.start()
     defer:
       await pair.stop()
-    await pair.peer.connect(pair.switch.peerInfo.peerId, pair.switch.peerInfo.addrs)
+    await pair.peer.connect(pair.switch)
 
     check:
       (await pair.verifier.verify(ma("/ip4/1.2.3.4/tcp/1"))).isNone()

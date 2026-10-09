@@ -229,8 +229,7 @@ suite "Noise":
     switch1.mount(testProto)
     await switch1.start()
     await switch2.start()
-    let conn =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    let conn = await switch2.dial(switch1, TestCodec)
     await conn.writeLp("Hello!")
     let msg = string.fromBytes(await conn.readLp(1024))
     check "Hello!" == msg
@@ -327,7 +326,6 @@ suite "Noise":
     await switch1.start()
     await switch2.start()
     expect DialFailedError:
-      discard
-        await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+      discard await switch2.dial(switch1, TestCodec)
 
     await allFuturesRaising(switch1.stop(), switch2.stop())

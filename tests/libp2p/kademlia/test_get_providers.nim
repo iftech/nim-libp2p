@@ -311,7 +311,7 @@ suite "KadDHT - Get Providers":
       bListenAddrs = b.switch.peerInfo.addrs
       providerKey = @[1.byte, 2, 3, 4, 5]
 
-    await b.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await b.switch.connect(a.switch)
     discard (await b.dispatchFindNode(a.switch.peerInfo.peerId, bId.toKey())).expect(
       "FIND_NODE reply"
     )
@@ -323,7 +323,7 @@ suite "KadDHT - Get Providers":
     checkUntilTimeout:
       bListenAddrs.allIt(it in a.switch.peerStore[AddressBook][bId])
 
-    await c.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await c.switch.connect(a.switch)
     let reply =
       (await c.dispatchGetProviders(a.switch.peerInfo.peerId, providerKey)).value()
     let bProvider =
