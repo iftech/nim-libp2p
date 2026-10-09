@@ -271,6 +271,50 @@ suite "AutoTLS certificate issuance and renewal":
       resolver.ipQueries == @["127-0-0-1." & baseDomain]
       parseJson(authClient.payloads[0])["value"].getStr == keyAuth
 
+  asyncTest "persisted state prevents issuance after a process restart":
+    const OrderExpires = "2099-01-01T00:00:00Z"
+    let certPem = tlsCertPemGenerator()
+    let certServer = startTestHttpServer(certPem)
+    defer:
+      await certServer.stop()
+
+    let storage = AutotlsMemoryStorage.new()
+    var config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      renewCheckTime = RenewCheckTime,
+      issueRetries = 0,
+      dnsRetries = 0,
+      storage = Opt.some(AutotlsStorage(storage)),
+    )
+    acmeApi.directoryURL = parseUri(certServer.url)
+    acmeApi.scriptChallenge(ChallengeToken)
+    acmeApi.scriptCertificate(certServer.url, OrderExpires)
+
+    # The first service stands in for the original process and uses the stub
+    # API to issue the certificate. Its account and certificate are saved.
+    service = newService(config)
+    let keyAuth = service.acmeClient.genKeyAuthorization(ChallengeToken)
+    service.config.nameResolver =
+      StubNameResolver.new(txtRecords = @[keyAuth], ipAddresses = @[NodeIP])
+    await service.start(switch)
+    let issued = (await service.getCertWhenReady()).get()
+    await service.stop(switch)
+    let requestCount = acmeApi.requestedUris.len
+
+    # A fresh service has no injected ACME client. It must restore both the
+    # certificate and account from storage before it could contact ACME.
+    service = AutotlsService.new(rng(), config)
+    await service.start(switch)
+    let restored = (await service.getCertWhenReady()).get()
+    await sleepAsync(3 * RenewCheckTime)
+
+    check:
+      restored.expiry == issued.expiry
+      service.acmeClient.key == accountKey
+      service.acmeClient.kid == AccountURL
+      acmeApi.requestedUris.len == requestCount
+
   asyncTest "the certificate is not requested until the DNS records are published":
     acmeApi.scriptChallenge(ChallengeToken)
 
