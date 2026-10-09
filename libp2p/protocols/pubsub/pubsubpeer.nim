@@ -203,6 +203,7 @@ type
     sendStreamRetryMaxDelay*: Duration
     sendStreamWarnings: LogRateLimit
     rng: Rng
+    validationSlots*: AsyncSemaphore
     stopped: bool
     customStreamCallbacks*: Opt[CustomStreamCallbacks]
     connectFut: Future[void]
