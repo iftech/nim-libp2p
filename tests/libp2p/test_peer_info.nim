@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
+import std/sequtils
 import chronos
 import
   ../../libp2p/crypto/crypto,
@@ -125,6 +126,137 @@ suite "PeerInfo":
     let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[addressMapper])
     await allFutures(peerInfo.expandAddrs(), peerInfo.expandAddrs(listenAddrs))
     check maxActive == 1
+
+  asyncTest "address mapper removals are handled by an in-flight pass":
+    let
+      seckey = PrivateKey.random(ECDSA, rng()).get()
+      listenAddrs = @[ma("/ip4/0.0.0.0/tcp/24")]
+      mappedAddrs = @[ma("/ip4/8.8.8.8/tcp/33")]
+
+    block removeEarlierMapper:
+      let gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+      var beforeCalls, slowCalls, otherCalls = 0
+
+      let before: AddressMapper = proc(
+          input: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        inc beforeCalls
+        mappedAddrs
+      let slow: AddressMapper = proc(
+          input: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        inc slowCalls
+        await gate
+        input
+      let other: AddressMapper = proc(
+          input: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        inc otherCalls
+        input
+      let peerInfo =
+        PeerInfo.new(seckey, listenAddrs, addressMappers = @[before, slow, other])
+
+      let pass = peerInfo.expandAddrs()
+      check:
+        beforeCalls == 1
+        slowCalls == 1
+        otherCalls == 0
+      peerInfo.addressMappers.keepItIf(it != before)
+      gate.complete()
+      let resolved = await pass
+
+      check:
+        beforeCalls == 1
+        slowCalls == 2
+        otherCalls == 1
+        resolved == listenAddrs
+
+    block removeLaterMapper:
+      let gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+      var slowCalls, otherCalls = 0
+
+      let slow: AddressMapper = proc(
+          input: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        inc slowCalls
+        await gate
+        input
+      let other: AddressMapper = proc(
+          input: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        inc otherCalls
+        input
+      let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[slow, other])
+
+      let pass = peerInfo.expandAddrs()
+      check slowCalls == 1
+      peerInfo.addressMappers.keepItIf(it != other)
+      gate.complete()
+      discard await pass
+
+      check:
+        slowCalls == 1
+        otherCalls == 0
+
+    block removeInFlightMapper:
+      let gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+      var mapperCalls = 0
+
+      let mapper: AddressMapper = proc(
+          input: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        inc mapperCalls
+        await gate
+        mappedAddrs
+      let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[mapper])
+
+      let pass = peerInfo.expandAddrs()
+      check mapperCalls == 1
+      peerInfo.addressMappers.keepItIf(it != mapper)
+      gate.complete()
+      let resolved = await pass
+
+      check:
+        mapperCalls == 1
+        resolved == listenAddrs
+
+  asyncTest "address mappers added in flight take effect on the next pass":
+    let
+      seckey = PrivateKey.random(ECDSA, rng()).get()
+      listenAddrs = @[ma("/ip4/0.0.0.0/tcp/24")]
+      mappedAddrs = @[ma("/ip4/8.8.8.8/tcp/33")]
+      gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+    var slowCalls, addedCalls = 0
+
+    let slow: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc slowCalls
+      await gate
+      input
+    let added: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc addedCalls
+      mappedAddrs
+    let peerInfo = PeerInfo.new(seckey, listenAddrs, addressMappers = @[slow])
+
+    let pass = peerInfo.update()
+    check slowCalls == 1
+    peerInfo.addressMappers.add(added)
+    gate.complete()
+    await pass
+
+    check:
+      peerInfo.addrs == listenAddrs
+      slowCalls == 1
+      addedCalls == 0
+
+    await peerInfo.update()
+    check:
+      peerInfo.addrs == mappedAddrs
+      slowCalls == 2
+      addedCalls == 1
 
   test "Announced addresses win over the mapper chain":
     let

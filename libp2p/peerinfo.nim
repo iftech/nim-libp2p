@@ -107,16 +107,37 @@ proc expandAddrs*(
   ## Mappers may maintain state based on the supplied set, so callers must not
   ## pass only a subset of addresses that remain bound.
   withLock p.ensureExpandAddrsLock():
-    var addrs = listenAddrs
-    for mapper in p.addressMappers:
-      addrs = await mapper(addrs)
+    # An owner may remove a mapper while this pass is suspended in an await.
+    # Iterate a snapshot to avoid changing the sequence during iteration. If an
+    # already-applied mapper disappears, restart the snapshot without it so its
+    # output cannot flow through the rest of the chain. Additions take effect on
+    # the next pass, so their owners must request another update when needed.
+    let snapshot = p.addressMappers
+    while true:
+      var
+        addrs = listenAddrs
+        applied: seq[AddressMapper]
+        restart = false
 
-    # a port mapper maps the bound ports even when the operator picks
-    # what is announced, so the chain runs first
-    if p.announcedAddrs.len > 0:
-      addrs = p.announcedAddrs
+      for mapper in snapshot:
+        if mapper notin p.addressMappers:
+          continue
+        let mapped = await mapper(addrs)
+        applied.add(mapper)
+        if applied.anyIt(it notin p.addressMappers):
+          restart = true
+          break
+        addrs = mapped
 
-    return p.addressPolicy.filterAddrs(addrs)
+      if restart:
+        continue
+
+      # a port mapper maps the bound ports even when the operator picks
+      # what is announced, so the chain runs first
+      if p.announcedAddrs.len > 0:
+        addrs = p.announcedAddrs
+
+      return p.addressPolicy.filterAddrs(addrs)
 
 proc expandAddrs*(
     p: PeerInfo
