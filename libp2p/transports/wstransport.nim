@@ -6,7 +6,7 @@
 {.push raises: [].}
 
 import ../logging
-import std/[sequtils]
+import std/[sequtils, strformat]
 from times import format
 import chronos, chronicles, metrics, stew/byteutils
 import ../results
@@ -370,8 +370,7 @@ proc listen(
         else:
           HttpServer.create(addrsTa[i], headersTimeout = self.headersTimeout)
       except TransportOsError as e:
-        return
-          err("WsTransport.start failed to listen on " & $addrsTa[i] & ". " & e.msg)
+        return err(e, fmt"WsTransport.start failed to listen on {addrsTa[i]}")
     self.httpservers &= httpserver
 
     let codec =

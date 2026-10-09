@@ -3,7 +3,7 @@
 
 {.push raises: [].}
 
-import std/[hashes, sets, sequtils]
+import std/[hashes, sets, sequtils, strformat]
 import chronos, chronicles, metrics
 import ../results
 import lsquic
@@ -225,12 +225,12 @@ type QuicMuxer* = ref object of Muxer
 
 proc parseCertificate(certificatesDer: seq[seq[byte]]): LPResult[P2pCertificate] =
   if certificatesDer.len != 1:
-    return err("expected one certificate, got " & $certificatesDer.len)
+    return err($certificatesDer.len, "certificate count is not one")
 
   try:
     ok(parse(certificatesDer[0]))
   except CertificateParsingError as e:
-    err("cannot parse certificate. " & e.msg)
+    err(e, "cannot parse certificate")
 
 proc certificatePeerId(certificatesDer: seq[seq[byte]]): LPResult[PeerId] =
   let cert = ?parseCertificate(certificatesDer)
@@ -440,7 +440,7 @@ proc makeConfig(self: QuicTransport): LPResult[TLSConfig] =
     try:
       self.certGenerator(KeyPair(seckey: self.privateKey, pubkey: pubkey))
     except TLSCertificateError as e:
-      return err("cannot generate certificate. " & e.msg)
+      return err(e, "cannot generate certificate")
 
   let certVerifier = CustomCertificateVerifier.init(certificateVerifier)
   try:
@@ -453,7 +453,7 @@ proc makeConfig(self: QuicTransport): LPResult[TLSConfig] =
       )
     )
   except QuicConfigError as e:
-    err("invalid TLS config. " & e.msg)
+    err(e, "invalid TLS config")
 
 proc toMultiAddress(ta: TransportAddress): MaResult[MultiAddress] =
   concat(?MultiAddress.init(ta, IPPROTO_UDP), ?MultiAddress.init("/quic-v1"))
@@ -469,16 +469,16 @@ proc listen(
       try:
         QuicEndpoint.new(tlsConfig, ta, engineConfig = self.engineConfig)
       except QuicError as e:
-        return err("cannot listen on " & $ta & ". " & e.msg)
+        return err(e, fmt"cannot listen on {ta}")
       except TransportOsError as e:
-        return err("cannot listen on " & $ta & ". " & e.msg)
+        return err(e, fmt"cannot listen on {ta}")
     self.listeners.add(endpoint)
 
     let local =
       try:
         endpoint.localAddress()
       except TransportOsError as e:
-        return err("cannot read local address. " & e.msg)
+        return err(e, "cannot read local address")
     listenMAs.add(?toMultiAddress(local))
 
   ok(listenMAs)
@@ -613,7 +613,7 @@ proc listenerEndpointFor(
       try:
         endpoint.localAddress()
       except TransportOsError as e:
-        return err("cannot read listener address. " & e.msg)
+        return err(e, "cannot read listener address")
     if local.family == address.family:
       if matchedEndpoint.isSome():
         return ok(Opt.none(QuicEndpoint))
@@ -628,9 +628,9 @@ proc newDialEndpoint(
   try:
     ok(QuicEndpoint.new(tlsConfig, family, engineConfig = self.engineConfig))
   except QuicError as e:
-    err("cannot create dial endpoint. " & e.msg)
+    err(e, "cannot create dial endpoint")
   except TransportOsError as e:
-    err("cannot create dial endpoint. " & e.msg)
+    err(e, "cannot create dial endpoint")
 
 proc dialOnlyEndpointFor(
     self: QuicTransport, family: AddressFamily

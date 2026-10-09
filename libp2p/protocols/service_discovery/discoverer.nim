@@ -252,7 +252,7 @@ proc lookup*(
   )
 
   let searchTable = disco.rtManager.getTable(serviceId).valueOr:
-    return err("service table not found for service id: " & $serviceId)
+    return err($serviceId, "service table not found for service id")
 
   var found = initHashSet[Advertisement]()
   let stats = LookupLog()

@@ -86,7 +86,7 @@ proc getCertificate*(
     )
   )
   if not finalized:
-    return err("Failed to finalize certificate for domain " & domain)
+    return err(domain, "Failed to finalize certificate for domain")
 
   trace "Downloading certificate"
   await self.api.downloadCertificate(orderURL, self.key, kid)

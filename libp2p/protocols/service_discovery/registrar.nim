@@ -204,7 +204,7 @@ proc isValidTicket(
     return err("message & ticket advertisement mismatch")
 
   let registrarPubKey = disco.switch.peerInfo.privateKey.getPublicKey().valueOr:
-    return err("failed to get registrar public key")
+    return err(error, "failed to get registrar public key")
 
   if not ticket.verify(registrarPubKey):
     return err("ticket fails verification")

@@ -316,7 +316,9 @@ suite "Tor CONNECT reply":
     await checkRejectedReply(@[4'u8, 0, 0, 1], "Unsupported socks version")
 
   asyncTest "CONNECT reply with a failure code is a dial error":
-    await checkRejectedReply(@[5'u8, 5, 0, 1], "Server reply error: Connection Refused")
+    await checkRejectedReply(
+      @[5'u8, 5, 0, 1], "Server reply error (Connection Refused)"
+    )
 
   asyncTest "CONNECT reply with an unknown code is a dial error":
     await checkRejectedReply(@[5'u8, 42, 0, 1], "Unexpected server reply")

@@ -33,6 +33,7 @@ macro decodeFor*(
   var stmts = newStmtList()
   for T in Types:
     let decodeName = ident("decode" & $T)
+    let decodeError = newLit("failed to decode " & $T & " from protobuf bytes")
     let metricLabel = newLit(makeLabel(domain.strVal, $T))
     stmts.add quote do:
       proc `decodeName`(buf2: seq[byte]): `T` {.raises: [SerializationError].} =
@@ -48,7 +49,7 @@ macro decodeFor*(
         try:
           ok(`decodeName`(buf))
         except SerializationError as e:
-          err("failed to decode " & $(`T`) & " from protobuf bytes. " & e.msg)
+          err(`decodeError` & ": " & e.msg)
 
   stmts
 
@@ -61,6 +62,7 @@ macro serializerFor*(
   var stmts = newStmtList()
   for T in Types:
     let decodeName = ident("decode" & $T)
+    let decodeError = newLit("failed to decode " & $T & " from protobuf bytes")
     let metricLabel = newLit(makeLabel(domain.strVal, $T))
     stmts.add quote do:
       proc encode*(c: `T`): seq[byte] =
@@ -84,15 +86,13 @@ macro serializerFor*(
           try:
             `decodeName`(buf)
           except SerializationError as e:
-            return err("failed to decode " & $(`T`) & " from protobuf bytes. " & e.msg)
+            return err(`decodeError` & ": " & e.msg)
 
         when compiles(`T`.validateDecoded(decoded)):
           # Let types reject proto3 defaults or other invalid decoded values.
           let validation = `T`.validateDecoded(decoded)
           if validation.isErr:
-            return err(
-              validation.error, "failed to decode " & $(`T`) & " from protobuf bytes"
-            )
+            return err(`decodeError` & ": " & $validation.error)
 
         ok(decoded)
 

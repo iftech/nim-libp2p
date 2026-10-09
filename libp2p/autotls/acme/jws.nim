@@ -31,7 +31,7 @@ proc toFlattenedJws*(
   ## affect verification.
   let alg = protectedHeader{"alg"}.getStr()
   if alg != SupportedAlg:
-    return err("Unsupported JWS algorithm: " & alg)
+    return err(alg, "Unsupported JWS algorithm")
 
   let
     protectedB64 = base64UrlEncode(($protectedHeader).toBytes)
@@ -39,9 +39,9 @@ proc toFlattenedJws*(
     signingInput = protectedB64 & "." & payloadB64
 
   let signature = key.sign(signingInput).valueOr:
-    return err("Failed to create JWS signature")
+    return err(error, "Failed to create JWS signature")
   let signatureBytes = signature.getBytes().valueOr:
-    return err("Failed to encode JWS signature bytes")
+    return err(error, "Failed to encode JWS signature bytes")
 
   ok(
     %*{

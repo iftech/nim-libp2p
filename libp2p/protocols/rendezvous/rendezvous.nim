@@ -3,7 +3,7 @@
 
 {.push raises: [].}
 
-import tables, sequtils, sugar, sets
+import tables, sequtils, strformat, sugar, sets
 import metrics except collect
 import chronos, chronicles, stew/[byteutils, objects]
 import
@@ -123,20 +123,16 @@ type
 
 func checkNamespace(ns: string): LPResult[void] =
   if ns.len < MinimumNamespaceLen:
-    return err(
-      "namespace length " & $ns.len & " is shorter than minimum " & $MinimumNamespaceLen
-    )
+    return err(fmt"{ns.len} < {MinimumNamespaceLen}", "namespace too short")
   if ns.len > MaximumNamespaceLen:
-    return err(
-      "namespace length " & $ns.len & " is longer than maximum " & $MaximumNamespaceLen
-    )
+    return err(fmt"{ns.len} > {MaximumNamespaceLen}", "namespace too long")
   ok()
 
 func checkTtl(config: RendezVousConfig, ttl: Duration): LPResult[void] =
   if ttl < config.minDuration or ttl > config.maxDuration:
     return err(
-      "time to live " & $ttl & " is not in valid range [" & $config.minDuration & "-" &
-        $config.maxDuration & "]"
+      fmt"{ttl} not in [{config.minDuration}-{config.maxDuration}]",
+      "time to live out of range",
     )
   ok()
 
@@ -345,7 +341,7 @@ proc sendRegister[E](
     try:
       await rdv.switch.dial(peer, rdv.codec)
     except DialFailedError as e:
-      return err("Failed to dial: " & e.msg)
+      return err(e, "Failed to dial")
   defer:
     await stream.close()
 
@@ -354,12 +350,12 @@ proc sendRegister[E](
       await stream.writeLp(msg)
       await stream.readLp(4096)
     except LPStreamError as e:
-      return err("Failed to communicate: " & e.msg)
+      return err(e, "Failed to communicate")
 
   let msgRecv = Message.decode(buf).valueOr:
     return err(error, "Failed to decode Message")
   if msgRecv.msgType != MessageType.RegisterResponse:
-    return err("Unexpected register response: " & $msgRecv.msgType)
+    return err($msgRecv.msgType, "Unexpected register response")
   let response = msgRecv.registerResponse.valueOr:
     return err("Register response is empty")
   ok(response)
@@ -444,7 +440,7 @@ proc requestPeer[E](
     try:
       await rdv.switch.dial(peer, rdv.codec)
     except DialFailedError as e:
-      return err("Failed to dial: " & e.msg)
+      return err(e, "Failed to dial")
   defer:
     await stream.close()
 
@@ -460,16 +456,17 @@ proc requestPeer[E](
       )
       await stream.readLp(MaximumMessageLen)
     except LPStreamError as e:
-      return err("Failed to communicate: " & e.msg)
+      return err(e, "Failed to communicate")
 
   let msgRcv = Message.decode(buf).valueOr:
     return err(error, "Message undecodable")
   if msgRcv.msgType != MessageType.DiscoverResponse:
-    return err("Unexpected discover response: " & $msgRcv.msgType)
+    return err($msgRcv.msgType, "Unexpected discover response")
   let resp = msgRcv.discoverResponse.valueOr:
     return err("Discover response is empty")
   if resp.status != ResponseStatus.Ok:
-    return err("Cannot discover: " & $resp.status & " " & resp.text.get(""))
+    let text = resp.text.get("")
+    return err(fmt"{resp.status} {text}", "Cannot discover")
   resp.cookie.ifValue(cookie):
     if ns.isSome() and cookie.len() < 1000:
       rdv.cookiesSaved.mgetOrPut(peer, initTable[string, seq[byte]]())[ns.get()] =
@@ -542,14 +539,14 @@ proc unsubscribe*[E](
       try:
         await rdv.switch.dial(peerId, RendezVousCodec)
       except DialFailedError as e:
-        return err("Failed to dial: " & e.msg)
+        return err(e, "Failed to dial")
     defer:
       await stream.close()
 
     try:
       await stream.writeLp(msg)
     except LPStreamError as e:
-      return err("Failed to write: " & e.msg)
+      return err(e, "Failed to write")
     ok()
 
   proc unsubscribePeer(peerId: PeerId) {.async: (raises: [CancelledError]).} =

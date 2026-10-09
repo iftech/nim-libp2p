@@ -90,15 +90,13 @@ proc build*(
 ): LPResult[SignedExtendedPeerRecord] =
   for svc in record.services:
     if not svc.isValid():
-      return err(
-        "ServiceInfo.data exceeds maximum size of " & $MaxServiceDataSize & " bytes"
-      )
+      return err($MaxServiceDataSize, "ServiceInfo.data exceeds the byte limit")
 
   let signed = SignedExtendedPeerRecord.init(privateKey, record).valueOr:
     return err(error, "failed to create signed extended peer record")
 
   if not signed.isValid():
-    return err("encoded XPR exceeds maximum size of " & $MaxXPRSize & " bytes")
+    return err($MaxXPRSize, "encoded XPR exceeds the byte limit")
 
   ok(signed)
 
