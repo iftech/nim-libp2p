@@ -80,7 +80,7 @@ suite "Service Discovery Component - Find Random":
   asyncTest "lookupRandom can be cancelled while the lookup is in flight":
     # Cancelling lookupRandom must propagate the cancellation cleanly without
     # leaking transport resources, which teardown's checkTrackers verifies.
-    let discos = setupServiceDiscoveryNodes(3)
+    let discos = setupServiceDiscoveryNodes(9)
     startAndDeferStop(discos)
     await connectStar(discos)
 
