@@ -40,7 +40,7 @@ proc newSwitches(count: int): seq[Switch] {.raises: [LPError].} =
   (0 ..< count).mapIt(makeStandardSwitch())
 
 proc connect(dialer, listener: Switch) {.async.} =
-  await dialer.connect(listener)
+  await switch.connect(dialer, listener)
   # short wait between connects
   await sleepAsync(50.millis)
 
