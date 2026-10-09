@@ -1233,9 +1233,9 @@ suite "Switch":
     for _ in 0 ..< NumPeers:
       clients.add(makeStandardSwitch(TcpAutoAddress))
     await allFuturesRaising(clients.mapIt(it.start()))
-    
+
     await allFuturesRaising(clients.mapIt(it.connect(server)))
-    
+
     await allFuturesRaising(clients.mapIt(it.stop()) & @[server.stop()])
 
 suite "Switch :: IdentifyPusher Service":
