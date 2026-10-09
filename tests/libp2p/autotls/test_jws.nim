@@ -62,6 +62,6 @@ suite "ACME JWS":
 
   test "rejects an unsupported algorithm":
     check toFlattenedJws(%*{"alg": "ES256"}, %*{"a": 1}, key).error ==
-      "Unsupported JWS algorithm: ES256"
+      "Unsupported JWS algorithm (ES256)"
     check toFlattenedJws(%*{"typ": "JWT"}, %*{"a": 1}, key).error ==
-      "Unsupported JWS algorithm: "
+      "Unsupported JWS algorithm"

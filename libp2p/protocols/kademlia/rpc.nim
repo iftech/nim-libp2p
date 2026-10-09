@@ -50,13 +50,16 @@ proc dispatchRpc*(
   kad_message_bytes_received.inc(replyBuf.len.int64, labelValues = [$msgType])
 
   let reply = Message.decode(replyBuf).valueOr:
-    return err($msgType & " reply decode fail")
+    return err(error, "reply decode fail")
 
   # Peers share one stream and the wire format carries no request ids, so a reply
   # of another type means the stream desynced. Taking it would answer this RPC
   # with the response to a different one.
   if reply.msgType.valueOr(msgType) != msgType:
-    return err($msgType & " reply type mismatch")
+    return err(
+      "expected " & $msgType & ", got " & $reply.msgType.valueOr(msgType),
+      "reply type mismatch",
+    )
 
   if reply.closerPeers.len > 0:
     kad_responses_with_closer_peers.inc(labelValues = [$msgType])

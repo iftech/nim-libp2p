@@ -18,7 +18,7 @@ proc decode*(_: type Message, buf: seq[byte]): LPResult[Message] =
   try:
     ok(decodeMessage(buf))
   except SerializationError as e:
-    err("failed to decode Message from protobuf bytes. " & e.msg)
+    err(e, "failed to decode Message from protobuf bytes")
 
 proc encode*(msg: RPCMsg, anonymize: bool): seq[byte] =
   let encoded = encode(Protobuf, msg.anonymize(anonymize))
@@ -35,7 +35,7 @@ proc decode*(_: type RPCMsg, buf: seq[byte]): LPResult[RPCMsg] =
     ?msg.validate()
     ok(msg)
   except SerializationError as e:
-    err("failed to decode RPCMsg from protobuf bytes. " & e.msg)
+    err(e, "failed to decode RPCMsg from protobuf bytes")
 
 proc encodedSize*(rpc: RPCMsg): int =
   Protobuf.computeSize(rpc)

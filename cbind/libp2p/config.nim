@@ -135,7 +135,7 @@ proc parseMultiaddrs(raw: openArray[string]): Result[seq[MultiAddress], string] 
   var addrs: seq[MultiAddress]
   for a in raw:
     let ma = MultiAddress.init(a).valueOr:
-      return err("invalid multiaddress '" & a & "': " & $error)
+      return err(error, fmt"invalid multiaddress '{a}'")
     addrs.add(ma)
   ok(addrs)
 
@@ -145,7 +145,7 @@ proc parseBootstrapNodes(
   var parsed: seq[(PeerId, seq[MultiAddress])]
   for node in nodes:
     let peerId = PeerId.init(node.peerId).valueOr:
-      return err("invalid bootstrap peer id: " & $error)
+      return err(error, "invalid bootstrap peer id")
     let addrs = ?parseMultiaddrs(node.multiaddrs)
     parsed.add((peerId, addrs))
   ok(parsed)
@@ -156,13 +156,13 @@ proc resolveDnsServers(dnsResolver: string): Result[seq[TransportAddress], strin
   try:
     ok(@[initTAddress(dnsResolver)])
   except TransportAddressError as e:
-    err("invalid dnsResolver address: " & e.msg)
+    err(e, "invalid dnsResolver address")
 
 proc parsePrivateKey(raw: seq[byte]): Result[Opt[PrivateKey], string] =
   if raw.len == 0:
     return ok(Opt.none(PrivateKey))
   let key = PrivateKey.init(raw).valueOr:
-    return err("invalid private key: " & $error)
+    return err(error, "invalid private key")
   ok(Opt.some(key))
 
 const
@@ -185,7 +185,7 @@ func parseMaxMessageSize(size: int): Result[int, string] =
   if size == 0:
     return ok(DefaultPubSubMaxMessageSize)
   if size > MaxGossipsubMessageSize:
-    return err("maxMessageSize must be at most " & $MaxGossipsubMessageSize & " bytes")
+    return err($MaxGossipsubMessageSize, "maxMessageSize exceeds the byte limit")
   ok(size)
 
 func validateLimit(limit: RateLimitConfig): Result[void, string] =
@@ -193,7 +193,7 @@ func validateLimit(limit: RateLimitConfig): Result[void, string] =
   ## the limit itself.
   if limit.intervalMs > MaxOverheadRateLimitIntervalMs:
     return err(
-      "overheadRateLimit.intervalMs must be at most " & $MaxOverheadRateLimitIntervalMs
+      $MaxOverheadRateLimitIntervalMs, "overheadRateLimit.intervalMs exceeds the limit"
     )
   if limit.bytes == 0 and limit.intervalMs != 0:
     return err("overheadRateLimit.intervalMs requires overheadRateLimit.bytes")
@@ -273,7 +273,7 @@ proc parsePortMappingConfig(
         )
       )
     except ValueError as e:
-      return err("invalid natExplicitIp: " & e.msg)
+      return err(e, "invalid natExplicitIp")
   if config.natPortMappingUpnp:
     return ok(
       Opt.some(

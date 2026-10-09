@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import json, parseutils, sequtils, strutils, uri
+import json, parseutils, sequtils, strformat, strutils, uri
 from times import DateTime, utc
 import chronos/apps/http/httpclient
 
@@ -183,7 +183,8 @@ func checkOrigin*(self: ACMEApi, uri: Uri): Result[void, LPResultError] =
   ## The directory is the only URL the caller chooses; the rest come from the server.
   if uri.origin != self.directoryURL.origin:
     return err(
-      "ACME URL " & $uri & " is not on the directory origin " & self.directoryURL.origin
+      fmt"{uri}, origin {self.directoryURL.origin}",
+      "ACME URL is not on the directory origin",
     )
   ok()
 
@@ -192,9 +193,8 @@ func checkAPIError(resp: HTTPResponse): Result[void, LPResultError] =
   if not respType.contains("acme:error"):
     return ok()
 
-  err(
-    "API request failed. type: " & respType & " detail: " & resp.body{"detail"}.getStr()
-  )
+  let detail = resp.body{"detail"}.getStr()
+  err(fmt"type: {respType}, detail: {detail}", "API request failed")
 
 proc toHTTPResponse(
     raw: HttpClientResponseRef
@@ -377,7 +377,7 @@ func parseAuthorizations(
   if challenges.len > 0:
     return ok(ACMEAuthorizationsResponse(challenges: challenges))
   if decodeErrors.len > 0:
-    return err("Failed to decode challenges: " & decodeErrors.join("; "))
+    return err(decodeErrors.join("; "), "Failed to decode challenges")
   err("No challenges received")
 
 func dns01Challenge(
@@ -478,7 +478,7 @@ proc requestChallenge*(
 .} =
   let orderResp = ?(await self.requestNewOrder(domains, key, kid))
   if orderResp.status notin [ACMEOrderStatus.PENDING, ACMEOrderStatus.READY]:
-    return err("Invalid new order status: " & $orderResp.status)
+    return err($orderResp.status, "Invalid new order status")
 
   let authResp = ?(await self.requestAuthorizations(orderResp.authorizations, key, kid))
   dns01Challenge(orderResp, authResp)
@@ -515,10 +515,7 @@ proc checkChallengeCompleted*(
     of ACMEChallengeStatus.VALID:
       return ok(true)
     else:
-      return err(
-        "Failed challenge completion: expected 'valid', got '" &
-          $checkResponse.chalStatus & "'"
-      )
+      return err($checkResponse.chalStatus, "Failed challenge completion")
   ok(false)
 
 proc completeChallenge*(
@@ -563,10 +560,7 @@ proc checkCertFinalized*(
     of ACMEOrderStatus.PROCESSING:
       await sleepAsync(checkResponse.retryAfter) # try again after some delay
     else:
-      return err(
-        "Failed certificate finalization: expected 'valid', got '" &
-          $checkResponse.orderStatus & "'"
-      )
+      return err($checkResponse.orderStatus, "Failed certificate finalization")
   ok(false)
 
 proc certificateFinalized*(

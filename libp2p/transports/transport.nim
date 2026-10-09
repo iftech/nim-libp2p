@@ -4,7 +4,7 @@
 
 {.push raises: [].}
 
-import std/oserrors
+import std/[oserrors, strformat]
 import chronos, chronicles
 import ../results
 import
@@ -45,9 +45,9 @@ proc newTransportClosedError*(parent: ref Exception = nil): ref TransportError =
 
 proc connAddrs*(transp: StreamTransport): LPResult[ConnAddrs] =
   let remote = transp.remoteAddress2().valueOr:
-    return err("cannot read remote address. " & osErrorMsg(error))
+    return err(osErrorMsg(error), "cannot read remote address")
   let local = transp.localAddress2().valueOr:
-    return err("cannot read local address. " & osErrorMsg(error))
+    return err(osErrorMsg(error), "cannot read local address")
 
   ok(ConnAddrs(observed: ?MultiAddress.init(remote), local: ?MultiAddress.init(local)))
 
@@ -138,10 +138,10 @@ proc toTransportAddress*(
   var addrsTa = newSeq[TransportAddress](addrsMa.len)
   for i, maAddr in addrsMa:
     if not self.handles(maAddr):
-      return err("unsupported address: " & $maAddr)
+      return err($maAddr, "unsupported address")
 
     addrsTa[i] = initTAddress(maAddr).valueOr:
-      return err(error, "cannot use non-wire address: " & $maAddr)
+      return err(error, fmt"cannot use non-wire address {maAddr}")
 
   if addrsTa.len == 0:
     return err("no addr was provided.")

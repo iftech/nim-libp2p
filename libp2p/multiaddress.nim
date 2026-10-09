@@ -8,7 +8,7 @@
 import pkg/[chronos, chronicles, protobuf_serialization]
 import ./results
 import std/[nativesockets, net, hashes, unicode]
-import tables, strutils, sets
+import tables, strformat, strutils, sets
 import
   multicodec,
   multibase,
@@ -552,7 +552,7 @@ proc protoCode*(ma: MultiAddress): MaResult[MultiCodec] =
   else:
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
     if proto.kind == None:
-      err("multiaddress: Unsupported protocol '" & $header & "'")
+      err($header, "multiaddress: Unsupported protocol")
     else:
       ok(proto.mcodec)
 
@@ -565,7 +565,7 @@ proc protoName*(ma: MultiAddress): MaResult[string] =
   else:
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
     if proto.kind == None:
-      err("multiaddress: Unsupported protocol '" & $header & "'")
+      err($header, "multiaddress: Unsupported protocol")
     else:
       ok($(proto.mcodec))
 
@@ -581,7 +581,7 @@ proc protoArgument*(ma: MultiAddress, value: var openArray[byte]): MaResult[int]
   else:
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
     if proto.kind == None:
-      err("multiaddress: Unsupported protocol '" & $header & "'")
+      err($header, "multiaddress: Unsupported protocol")
     else:
       var res: int
       if proto.kind == Fixed:
@@ -638,7 +638,7 @@ proc getPart(ma: MultiAddress, index: int): MaResult[MultiAddress] =
 
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
     if proto.kind == None:
-      return err("multiaddress: Unsupported protocol '" & $header & "'")
+      return err($header, "multiaddress: Unsupported protocol")
     elif proto.kind == Fixed:
       data.setLen(proto.size)
       if cursor.readArray(data) != proto.size:
@@ -692,6 +692,9 @@ proc `[]`*(ma: MultiAddress, slice: HSlice): MaResult[MultiAddress] =
   ## Returns parts with slice ``slice`` of MultiAddress ``ma``.
   ma.getParts(slice)
 
+func unsupportedProtocol(header: uint64): MaResult[MultiAddress] =
+  err($header, "multiaddress: Unsupported protocol")
+
 iterator items*(ma: MultiAddress): MaResult[MultiAddress] =
   ## Iterates over all addresses inside of MultiAddress ``ma``.
   var header: uint64
@@ -706,7 +709,7 @@ iterator items*(ma: MultiAddress): MaResult[MultiAddress] =
 
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
     if proto.kind == None:
-      yield err(MaResult[MultiAddress], "Unsupported protocol '" & $header & "'")
+      yield unsupportedProtocol(header)
       break
     else:
       # preallocate enough capacity for common small parts; larger parts may
@@ -771,12 +774,12 @@ proc toString*(value: MultiAddress): MaResult[string] =
       return err("multiaddress: Malformed binary address!")
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
     if proto.kind == None:
-      return err("multiaddress: Unsupported protocol '" & $header & "'")
+      return err($header, "multiaddress: Unsupported protocol")
     res.add('/')
     res.add($(proto.mcodec))
     if proto.kind in {Fixed, Length, Path}:
       if isNil(proto.coder.bufferToString):
-        return err("multiaddress: Missing protocol '" & $(proto.mcodec) & "' coder")
+        return err($proto.mcodec, "multiaddress: Missing protocol coder")
       if not proto.coder.bufferToString(cursor, part):
         return err("multiaddress: Decoding protocol error")
       if len(part) > 0:
@@ -951,19 +954,18 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     let part = parts[offset]
     let proto = getProtocol(part)
     if proto.kind == None:
-      return err("multiaddress: Unsupported protocol '" & part & "'")
+      return err(part, "multiaddress: Unsupported protocol")
 
     if proto.kind in {Fixed, Length, Path}:
       if isNil(proto.coder.stringToBuffer):
-        return err("multiaddress: Missing protocol '" & part & "' transcoder")
+        return err(part, "multiaddress: Missing protocol transcoder")
       if offset + 1 >= len(parts):
-        return err("multiaddress: Missing protocol '" & part & "' argument")
+        return err(part, "multiaddress: Missing protocol argument")
 
     if proto.kind in {Fixed, Length}:
       res.data.write(proto.mcodec)
       if not proto.coder.stringToBuffer(parts[offset + 1], res.data):
-        return
-          err("multiaddress: Error encoding `" & part & "/" & parts[offset + 1] & "`")
+        return err(fmt"{part}/{parts[offset + 1]}", "multiaddress: Error encoding")
       offset += 2
     elif proto.kind == Path:
       # Reconstruct path from trimmed string to avoid seq slice + join overhead.
@@ -978,7 +980,7 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
           "/" & parts[(offset + 1) .. ^1].join("/")
       res.data.write(proto.mcodec)
       if not proto.coder.stringToBuffer(path, res.data):
-        return err("multiaddress: Error encoding `" & part & "/" & path & "`")
+        return err(fmt"{part}/{path}", "multiaddress: Error encoding")
       break
     elif proto.kind == Marker:
       res.data.write(proto.mcodec)

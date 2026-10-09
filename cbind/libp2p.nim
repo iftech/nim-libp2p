@@ -7,7 +7,7 @@
 
 import ffi
 
-import std/[tables, sequtils, sets, json, jsonutils, strutils, locks, net]
+import std/[tables, sequtils, sets, json, jsonutils, strformat, strutils, locks, net]
 from std/times import getTime, toUnix, Time, nanosecond
 import chronos
 import chronicles
@@ -270,11 +270,11 @@ proc mountGossipsub(lib: LibP2P, cfg: ParsedGossipsub): Result[void, string] =
         ),
       )
     except InitializationError as e:
-      return err(e.msg)
+      return err(e)
   try:
     lib.switch.mount(gs)
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   lib.gossipSub = Opt.some(gs)
   ok()
 
@@ -297,7 +297,7 @@ proc mountKad(
     lib.switch.mount(k)
     lib.kad = Opt.some(k)
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok()
 
 proc mountServiceDiscovery(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
@@ -314,7 +314,7 @@ proc mountServiceDiscovery(lib: LibP2P, cfg: ParsedConfig): Result[void, string]
     lib.switch.mount(sd)
     lib.kad = Opt.some(KadDHT(sd))
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok()
 
 proc mountProtocols(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
@@ -329,7 +329,7 @@ proc mountProtocols(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
   try:
     lib.switch.mount(Ping.new(rng = lib.rng))
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok()
 
 proc withConfiguredTransport(
@@ -389,7 +389,7 @@ proc createLibp2pNode(config: Libp2pConfig): Result[LibP2P, string] =
     try:
       switchBuilder.build()
     except LPError as e:
-      return err("could not create libp2p node: " & e.msg)
+      return err(e, "could not create libp2p node")
 
   let lib = LibP2P(
     switch: switch, rng: rng, relayClient: relayClientOpt, streams: StreamRegistry()
@@ -401,7 +401,7 @@ proc createLibp2pNode(config: Libp2pConfig): Result[LibP2P, string] =
 
 proc applyLogLevel(level: int): Result[void, string] =
   if level < ord(low(chronicles.LogLevel)) or level > ord(high(chronicles.LogLevel)):
-    return err("invalid log level: " & $level)
+    return err($level, "invalid log level")
 
   when chronicles.runtimeFilteringEnabled:
     logging.setLogLevel(chronicles.LogLevel(level))
@@ -418,7 +418,7 @@ proc libp2pNew*(config: Libp2pConfig): Future[Result[LibP2P, string]] {.ffiCtor.
   try:
     createLibp2pNode(config)
   except LPError as e:
-    err("could not create libp2p node: " & e.msg)
+    err(e, "could not create libp2p node")
 
 proc shutdownSwitch(lib: LibP2P) {.async.} =
   ## Single source of truth for graceful shutdown. Idempotent: safe to call from
@@ -437,7 +437,7 @@ proc libp2pStart*(lib: LibP2P): Future[Result[bool, string]] {.ffi.} =
   try:
     await lib.switch.start()
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   lib.running = true
   ok(true)
 
@@ -545,7 +545,7 @@ proc libp2pConnect*(
   except AsyncTimeoutError:
     return err("dial timeout")
   except DialFailedError as e:
-    return err(e.msg)
+    return err(e)
 
   ok(true)
 
@@ -566,7 +566,7 @@ proc libp2pPeerInfo*(lib: LibP2P): Future[Result[PeerInfoResponse, string]] {.ff
   try:
     ok(PeerInfoResponse(peerId: $peerInfo.peerId, addrs: peerInfo.addrs.mapIt($it)))
   except LPError as e:
-    err(e.msg)
+    err(e)
 
 proc libp2pConnectedPeers*(
     lib: LibP2P, direction: PeerDirection
@@ -611,7 +611,7 @@ proc libp2pDial*(
     except AsyncTimeoutError:
       return err("dial timeout")
     except DialFailedError as e:
-      return err(e.msg)
+      return err(e)
   ok(DialResponse(streamId: lib.streams.register(stream)))
 
 proc libp2pDialCircuitRelay*(
@@ -631,7 +631,7 @@ proc libp2pDialCircuitRelay*(
     except AsyncTimeoutError:
       return err("dial timeout")
     except DialFailedError as e:
-      return err(e.msg)
+      return err(e)
   ok(DialResponse(streamId: lib.streams.register(stream)))
 
 func validateReadLength(n: int64): Result[int, string] =
@@ -658,7 +658,7 @@ proc libp2pStreamReadExactly*(
   try:
     await stream.readExactly(addr buf[0], expected)
   except LPStreamError as e:
-    return err(e.msg)
+    return err(e)
   ok(ReadResponse(data: buf))
 
 proc libp2pStreamReadLp*(
@@ -671,7 +671,7 @@ proc libp2pStreamReadLp*(
     try:
       await stream.readLp(maxSize)
     except LPStreamError as e:
-      return err(e.msg)
+      return err(e)
   ok(ReadResponse(data: data))
 
 proc libp2pStreamWrite*(
@@ -682,7 +682,7 @@ proc libp2pStreamWrite*(
   try:
     await stream.write(req.data)
   except LPStreamError as e:
-    return err(e.msg)
+    return err(e)
   ok(true)
 
 proc libp2pStreamWriteLp*(
@@ -693,7 +693,7 @@ proc libp2pStreamWriteLp*(
   try:
     await stream.writeLp(req.data)
   except LPStreamError as e:
-    return err(e.msg)
+    return err(e)
   ok(true)
 
 proc libp2pStreamClose*(
@@ -732,7 +732,7 @@ proc libp2pMountProtocol*(
 
   let peerInfo = lib.switch.peerInfo
   if lib.customProtocols.hasKey(proto) or proto in peerInfo.protocols:
-    return err("protocol already mounted: " & proto)
+    return err(proto, "protocol already mounted")
 
   # Capture the registry ref, not `lib`: a closure over `lib` stored back into `lib.customProtocols` would cycle and leak under `--mm:refc`.
   let streams = lib.streams
@@ -759,7 +759,7 @@ proc libp2pMountProtocol*(
     lib.switch.mount(mountedProtocol)
   except LPError as e:
     await mountedProtocol.stop()
-    return err(e.msg)
+    return err(e)
 
   lib.customProtocols[proto] = mountedProtocol
   ok(true)
@@ -823,7 +823,7 @@ proc libp2pKadFindNode*(
     try:
       await kad.findNode(target.toKey())
     except LPError as e:
-      return err(e.msg)
+      return err(e)
   ok(PeersResponse(peerIds: peers.mapIt($it)))
 
 proc libp2pKadWaitBootstrap*(
@@ -873,7 +873,7 @@ proc libp2pKadGetValue*(
     try:
       await kad.getValue(key, quorum)
     except LPError as e:
-      return err(e.msg)
+      return err(e)
   let entry = res.valueOr:
     return err(error)
   ok(ReadResponse(data: entry.value.toBytes()))
@@ -922,7 +922,7 @@ proc libp2pKadGetProviders*(
     try:
       await kad.getProviders(c.toKey())
     except LPError as e:
-      return err(e.msg)
+      return err(e)
 
   var providers: seq[ProviderInfo]
   for provider in providersSet.toSeq():
@@ -1101,7 +1101,7 @@ proc libp2pPeerstoreGetPeers*(
     for peerId in keys(lib.switch.peerStore[AddressBook].book):
       peerIds.add($peerId)
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok(PeersResponse(peerIds: peerIds))
 
 proc libp2pPeerstoreGetPeerInfo*(
@@ -1122,7 +1122,7 @@ proc libp2pPeerstoreGetPeerInfo*(
     entry.protoVersion = peerStore[ProtoVersionBook][pid]
     ok(entry)
   except LPError as e:
-    err(e.msg)
+    err(e)
 
 proc libp2pPeerstoreAddPeer*(
     lib: LibP2P, req: AddPeerRequest
@@ -1189,7 +1189,7 @@ proc libp2pCreateCid*(
 
   let mc = MultiCodec.codec(req.multicodec)
   if mc == InvalidMultiCodec:
-    return err("invalid multicodec: " & req.multicodec)
+    return err(req.multicodec, "invalid multicodec")
 
   let mh = MultiHash.digest(req.hash, req.data).valueOr:
     return err(error, "multihash error")
@@ -1210,10 +1210,10 @@ proc libp2pNewPrivateKey*(
 
   let rng = newRng()
   let key = PrivateKey.random(scheme, rng).valueOr:
-    return err("could not generate private key")
+    return err(error, "could not generate private key")
 
   let keyData = key.getBytes().valueOr:
-    return err("could not get bytes for private key")
+    return err(error, "could not get bytes for private key")
 
   ok(keyData)
 
@@ -1306,7 +1306,7 @@ proc libp2pCollectMetrics*(): Future[Result[string, string]] {.ffiStatic.} =
     {.cast(gcsafe).}:
       jsonText = $collectRegistryMetrics(defaultRegistry).toJson()
   except CatchableError as e:
-    return err("failed to serialize metrics: " & e.msg)
+    return err(e, "failed to serialize metrics")
   ok(jsonText)
 
 genBindings()

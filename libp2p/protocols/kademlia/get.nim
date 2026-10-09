@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/tables
+import std/[strformat, tables]
 import chronos, chronicles, results
 import ../../[peerid, switch, multihash]
 import ../../utils/future
@@ -29,12 +29,12 @@ proc bestValidRecord(
 
   if validRecords.len() < quorum:
     return err(
-      "Not enough valid records to achieve quorum, needed " & $quorum & " got " &
-        $validRecords.len()
+      fmt"needed {quorum}, got {validRecords.len()}",
+      "Not enough valid records to achieve quorum",
     )
 
   let selectedIdx = kad.config.selector.select(key, validRecords).valueOr:
-    return err("Could not select best value")
+    return err(error, "Could not select best value")
 
   ok(validRecords[selectedIdx])
 

@@ -80,7 +80,7 @@ proc handleRelayedConnect(
   try:
     await stream.writeLp(encode(msg))
   except LPStreamError as e:
-    return err("error writing stop status: " & e.msg)
+    return err(e, "error writing stop status")
 
   # This sound redundant but the callback could, in theory, be set to nil during
   # stream.writeLp so it's safer to double check
@@ -129,7 +129,7 @@ proc tryReserve*(
     try:
       await cl.switch.dial(peerId, addrs, RelayV2HopCodec)
     except DialFailedError as e:
-      return err("dial relay peer failed: " & e.msg)
+      return err(e, "dial relay peer failed")
   defer:
     await stream.close()
 
@@ -139,10 +139,10 @@ proc tryReserve*(
         encode(HopMessage(msgType: Opt.some(HopMessageType.Reserve)))
       )
       HopMessage.decode(await stream.readLp(RelayClientMsgSize)).valueOr:
-        return err("Invalid reservation response: " & error)
+        return err(error, "Invalid reservation response")
     except LPStreamError as e:
       trace "error writing or reading reservation message", err = e.msg
-      return err(e.msg)
+      return err(e)
 
   msg.toRsvp(peerId)
 
@@ -153,7 +153,7 @@ proc reserve*(
 
 func checkHopResponse(msg: Result[RelayMessage, string]): LPResult[void] =
   let response = msg.valueOr:
-    return err("Hop can't open destination stream: " & error)
+    return err(error, "Hop can't open destination stream")
   if response.msgType != Opt.some(RelayType.Status):
     return err("Hop can't open destination stream: wrong message type")
   if response.status != Opt.some(StatusV1.Success):
@@ -177,7 +177,7 @@ proc tryDialPeerV1*(
     await stream.writeLp(encode(msg))
   except LPStreamError as e:
     trace "error writing hop request", err = e.msg
-    return err("error writing hop request: " & e.msg)
+    return err(e, "error writing hop request")
 
   let response =
     try:
@@ -185,7 +185,7 @@ proc tryDialPeerV1*(
     except LPStreamError as e:
       trace "error reading stop response", err = e.msg
       await sendStatus(stream, StatusV1.HopCantOpenDstStream)
-      return err("error reading stop response: " & e.msg)
+      return err(e, "error reading stop response")
 
   checkHopResponse(response).isOkOr:
     await sendStatus(stream, StatusV1.HopCantOpenDstStream)
@@ -221,10 +221,10 @@ proc tryDialPeerV2*(
         encode(HopMessage(msgType: Opt.some(HopMessageType.Connect), peer: Opt.some(p)))
       )
       HopMessage.decode(await relayConn.readLp(RelayClientMsgSize)).valueOr:
-        return err("invalid stop response: " & error)
+        return err(error, "invalid stop response")
     except LPStreamError as e:
       trace "error exchanging stop messages", err = e.msg
-      return err("error exchanging stop messages: " & e.msg)
+      return err(e, "error exchanging stop messages")
 
   checkStopResponse(response).isOkOr:
     trace "Relay stop failed", description = response.status
@@ -251,12 +251,12 @@ proc handleStopStreamV2(
     try:
       StopMessage.decode(await stream.readLp(RelayClientMsgSize))
     except LPStreamError as e:
-      return err("error reading stop message: " & e.msg)
+      return err(e, "error reading stop message")
   let msg = decoded.valueOr:
     try:
       await sendHopStatus(stream, MalformedMessage)
     except LPStreamError as e:
-      return err("error writing hop status: " & e.msg)
+      return err(e, "error writing hop status")
     return ok()
   trace "client circuit relay v2 handle stream", msg
 
@@ -303,7 +303,7 @@ proc handleStreamV1(
     try:
       RelayMessage.decode(await stream.readLp(RelayClientMsgSize))
     except LPStreamError as e:
-      return err("error reading relay message: " & e.msg)
+      return err(e, "error reading relay message")
   let msg = decoded.valueOr:
     await sendStatus(stream, StatusV1.MalformedMessage)
     return ok()
@@ -367,9 +367,9 @@ proc new*(
         await cl.handleHopStreamV2(stream)
         ok()
       except LPStreamError as e:
-        err(e.msg)
+        err(e)
     else:
-      err("unexpected protocol " & proto)
+      err(proto, "unexpected protocol")
 
   proc handleStream(
       stream: Stream, proto: string
