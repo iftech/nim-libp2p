@@ -3,7 +3,8 @@
 
 {.used.}
 
-import chronos, stew/byteutils
+import std/tables
+import chronos, stew/byteutils, protobuf_serialization
 import
   ../../../libp2p/[
     errors,
@@ -56,6 +57,15 @@ suite "Noise":
     checkTrackers()
 
   let maddr = TcpWildcardAddress
+
+  test "stream muxers use the registered Noise extension field":
+    let
+      muxer = "/yamux/1.0.0"
+      encoded = Protobuf.encode(NoiseExtensionsMsg(streamMuxers: @[muxer]))
+      expected = @[0x12'u8, 0x0C'u8] & muxer.toBytes()
+
+    check encoded == expected
+    check Protobuf.decode(expected, NoiseExtensionsMsg).streamMuxers == @[muxer]
 
   asyncTest "e2e: handle write + noise":
     let
@@ -224,6 +234,83 @@ suite "Noise":
     let msg = string.fromBytes(await conn.readLp(1024))
     check "Hello!" == msg
     await conn.close()
+
+    await allFuturesRaising(switch1.stop(), switch2.stop())
+
+  asyncTest "e2e: early muxer negotiation uses initiator preference":
+    var switch1 = makeStandardSwitchBuilder(maddr).withYamux().build()
+    var switch2 = SwitchBuilder
+      .new()
+      .withRng(rng())
+      .withNoise()
+      .withAddress(maddr)
+      .withTcpTransport()
+      .withYamux()
+      .withMplex()
+      .build()
+
+    let testProto = new TestProto
+    testProto.init()
+    switch1.mount(testProto)
+    await switch1.start()
+    await switch2.start()
+
+    let conn =
+      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    await conn.writeLp("Hello!")
+    check string.fromBytes(await conn.readLp(1024)) == "Hello!"
+    await conn.close()
+
+    let
+      initiatorMuxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
+      responderMuxer = switch1.connManager.getConnections()[switch2.peerInfo.peerId][0]
+    check SecureConn(initiatorMuxer.connection).earlyMuxer == "/yamux/1.0.0"
+    check SecureConn(responderMuxer.connection).earlyMuxer == "/yamux/1.0.0"
+
+    await allFuturesRaising(switch1.stop(), switch2.stop())
+
+  asyncTest "e2e: early muxer negotiation over WebSocket":
+    var switch1 = makeStandardSwitchBuilder(WsAutoAddress).build()
+    var switch2 = makeStandardSwitchBuilder(WsAutoAddress).build()
+
+    let testProto = new TestProto
+    testProto.init()
+    switch1.mount(testProto)
+    await switch1.start()
+    await switch2.start()
+
+    let conn =
+      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    await conn.writeLp("Hello!")
+    let msg = string.fromBytes(await conn.readLp(1024))
+    check "Hello!" == msg
+    await conn.close()
+    let muxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
+    check SecureConn(muxer.connection).earlyMuxer == "/mplex/6.7.0"
+
+    await allFuturesRaising(switch1.stop(), switch2.stop())
+
+  asyncTest "e2e: early muxer negotiation falls back without advertised muxers":
+    var switch1 = makeStandardSwitchBuilder(maddr).build()
+    var switch2 = makeSwitch(maddr, true)
+
+    let testProto = new TestProto
+    testProto.init()
+    switch1.mount(testProto)
+    await switch1.start()
+    await switch2.start()
+
+    let conn =
+      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    await conn.writeLp("Hello!")
+    let msg = string.fromBytes(await conn.readLp(1024))
+    check "Hello!" == msg
+    await conn.close()
+    let
+      initiatorMuxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
+      responderMuxer = switch1.connManager.getConnections()[switch2.peerInfo.peerId][0]
+    check SecureConn(initiatorMuxer.connection).earlyMuxer.len == 0
+    check SecureConn(responderMuxer.connection).earlyMuxer.len == 0
 
     await allFuturesRaising(switch1.stop(), switch2.stop())
 

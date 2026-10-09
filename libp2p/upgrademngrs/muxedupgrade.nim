@@ -39,19 +39,22 @@ proc mux(
     warn "Mux negotiation skipped", secureConn, reason = "no registered muxers"
     return err(MuxerRequired)
 
-  let negotiated =
-    case secureConn.dir
-    of Direction.Out:
-      await self.ms.trySelect(secureConn, self.muxers.mapIt(it.codec))
-    of Direction.In:
-      await MultistreamSelect.tryHandle(secureConn, self.muxers.mapIt(it.codec))
-  let muxerName = negotiated.valueOr:
-    return err(error)
+  var muxerName = secureConn.earlyMuxer
+  if muxerName.len == 0:
+    let negotiated =
+      case secureConn.dir
+      of Direction.Out:
+        await self.ms.trySelect(secureConn, self.muxers.mapIt(it.codec))
+      of Direction.In:
+        await MultistreamSelect.tryHandle(secureConn, self.muxers.mapIt(it.codec))
+    muxerName = negotiated.valueOr:
+      return err(error)
   let muxerProvider = self.getMuxerByCodec(muxerName).valueOr:
     trace "Mux negotiation failed", secureConn, protocol = muxerName
     return err(MuxerRequired)
 
-  trace "Mux negotiation completed", secureConn, protocol = muxerName
+  trace "Mux negotiation completed",
+    secureConn, protocol = muxerName, early = secureConn.earlyMuxer.len > 0
 
   # create new muxer for connection
   let muxer = muxerProvider.newMuxer(secureConn)

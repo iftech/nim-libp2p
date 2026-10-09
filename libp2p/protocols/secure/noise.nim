@@ -36,6 +36,7 @@ const
   MaxPlainSize = int(uint16.high - NoiseSize - ChaChaPolyTag.len)
 
   HandshakeTimeout = 1.minutes
+  MaxEarlyMuxerProtocols = 100
 
 type
   KeyPair = object
@@ -67,12 +68,16 @@ type
     remoteP2psecret: seq[byte]
     rs: Curve25519Key
 
+  NoiseExtensionsMsg* {.proto2.} = object
+    streamMuxers* {.fieldNumber: 2.}: seq[string]
+
   Noise* = ref object of Secure
     rng: Rng
     localPrivateKey: PrivateKey
     localPublicKey: seq[byte]
     noiseKeys: KeyPair
     commonPrologue: seq[byte]
+    muxers: seq[string]
     outgoing: bool
 
   NoiseConnection* = ref object of SecureConn
@@ -88,6 +93,7 @@ type
   NoiseHandshakePayloadMsg* {.proto2.} = object
     identityKey* {.fieldNumber: 1.}: Opt[seq[byte]]
     identitySig* {.fieldNumber: 2.}: Opt[seq[byte]]
+    extensions* {.fieldNumber: 4.}: Opt[NoiseExtensionsMsg]
 
 redactType(KeyPair, exported = false)
 redactType(CipherState, exported = false)
@@ -98,7 +104,18 @@ redactType(Noise)
 
 # Utility
 
-Protobuf.serializerFor([NoiseHandshakePayloadMsg], withMetrics = true, domain = "noise")
+Protobuf.serializerFor(
+  [NoiseExtensionsMsg, NoiseHandshakePayloadMsg], withMetrics = true, domain = "noise"
+)
+
+func matchMuxers(local, remote: seq[string], initiator: bool): string =
+  let
+    preferred = if initiator: local else: remote
+    supported = if initiator: remote else: local
+
+  for muxer in preferred:
+    if muxer in supported:
+      return muxer
 
 func shortLog*(conn: NoiseConnection): auto =
   try:
@@ -526,6 +543,11 @@ method handshake*(
   let msg = NoiseHandshakePayloadMsg(
     identityKey: Opt.some(p.localPublicKey),
     identitySig: Opt.some(signedPayload.get().getBytes()),
+    extensions:
+      if p.muxers.len > 0:
+        Opt.some(NoiseExtensionsMsg(streamMuxers: p.muxers))
+      else:
+        Opt.none(NoiseExtensionsMsg),
   )
 
   var handshakeRes =
@@ -590,6 +612,9 @@ method handshake*(
 
       var tmp =
         NoiseConnection.new(conn, conn.peerId, conn.observedAddr, conn.localAddr)
+      remoteMsg.extensions.ifValue(extensions):
+        if extensions.streamMuxers.len <= MaxEarlyMuxerProtocols:
+          tmp.earlyMuxer = matchMuxers(p.muxers, extensions.streamMuxers, initiator)
       if initiator:
         tmp.readCs = handshakeRes.cs2
         tmp.writeCs = handshakeRes.cs1
@@ -622,6 +647,7 @@ proc new*(
     privateKey: PrivateKey,
     outgoing: bool = true,
     commonPrologue: seq[byte] = @[],
+    muxers: seq[string] = @[],
 ): T =
   let pkBytes = privateKey
     .getPublicKey()
@@ -636,6 +662,7 @@ proc new*(
     localPublicKey: pkBytes,
     noiseKeys: genKeyPair(rng),
     commonPrologue: commonPrologue,
+    muxers: muxers,
   )
 
   noise.init()

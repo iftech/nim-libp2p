@@ -11,21 +11,30 @@ type DemoError = object of LPError
 
 type DemoResult[T] = Result[T, LPResultError]
 
-let
-  NotEnoughMemory = LPResultError.init("not enough memory")
-  PeerGone = LPResultError.init("peer gone")
+const
+  NotEnoughMemory = "not enough memory"
+  PeerGone = "peer gone"
 
 proc reserve(missingMb: int): DemoResult[void] =
   if missingMb > 0:
-    return err(NotEnoughMemory.withDetail(fmt"missing: {missingMb}MB"))
+    return err(fmt"missing: {missingMb}MB", NotEnoughMemory)
   ok()
+
+proc errorOf(cause: string, detail: string): LPResultError =
+  proc fail(): DemoResult[void] =
+    err(detail, cause)
+
+  fail().error
+
+proc errorOf(cause: string): LPResultError =
+  DemoResult[void].err(cause).error
 
 suite "LPResultError":
   test "$ returns the message":
-    check $LPResultError.init("bad peer") == "bad peer"
+    check $errorOf("bad peer") == "bad peer"
 
   test "== compares the message with a string on either side":
-    let e = LPResultError.init("bad peer")
+    let e = errorOf("bad peer")
     check:
       e == "bad peer"
       "bad peer" == e
@@ -33,7 +42,7 @@ suite "LPResultError":
       "other" != e
 
   test "chronicles prints the full message":
-    let e = NotEnoughMemory.withDetail(newString(1000))
+    let e = errorOf(NotEnoughMemory, newString(1000))
     check chroniclesFormatItIMPL(e) == $e
 
   test "err on the type wraps a string":
@@ -47,7 +56,7 @@ suite "LPResultError":
     check r.error == "bad peer"
 
   test "err on the type still takes an LPResultError":
-    let r = DemoResult[int].err(LPResultError.init("bad peer"))
+    let r = DemoResult[int].err(errorOf("bad peer"))
     check r.error == "bad peer"
 
   test "bare err with a concatenation compiles in a proc":
@@ -89,8 +98,8 @@ suite "LPResultError":
 
   test "$ joins the cause and the detail":
     check:
-      $NotEnoughMemory == "not enough memory"
-      $NotEnoughMemory.withDetail("missing: 2MB") == "not enough memory (missing: 2MB)"
+      $errorOf(NotEnoughMemory) == "not enough memory"
+      $errorOf(NotEnoughMemory, "missing: 2MB") == "not enough memory (missing: 2MB)"
 
   test "isOfError matches the cause and ignores the detail":
     check:
@@ -103,31 +112,23 @@ suite "LPResultError":
   test "isOfError matches an ad hoc string error by its text":
     let r = DemoResult[int].err("bad peer")
     check:
-      r.isOfError(LPResultError.init("bad peer"))
+      r.isOfError("bad peer")
       not r.isOfError(NotEnoughMemory)
 
   test "wrapError chains the inner error under the outer one":
-    let e = NotEnoughMemory.withDetail("missing: 2MB").wrapError(PeerGone)
+    let e = errorOf(NotEnoughMemory, "missing: 2MB").wrapError(PeerGone)
     check e == "peer gone: not enough memory (missing: 2MB)"
 
   test "wrapError keeps the chain of an already wrapped outer error":
-    let e = NotEnoughMemory.wrapError(PeerGone.wrapError("start failed"))
+    let e =
+      errorOf(NotEnoughMemory).wrapError(errorOf(PeerGone).wrapError("start failed"))
     check e == "start failed: peer gone: not enough memory"
 
   test "an unset error renders as not set":
     var e: LPResultError
     check:
       $e == "<not set>"
-      $LPResultError.init("") == "<not set>"
-
-  test "withDetail on the outer error keeps the inner error":
-    let
-      inner = NotEnoughMemory
-      outer = inner.wrapError(PeerGone).withDetail("16U")
-    check:
-      outer == "peer gone (16U): not enough memory"
-      outer.cause == PeerGone.cause
-      outer.detail == "16U"
+      $errorOf("") == "<not set>"
 
   test "err with an inner error wraps it":
     proc connect(): DemoResult[int] =
@@ -140,10 +141,7 @@ suite "LPResultError":
         return err(error, "start failed")
       ok(conn)
 
-    check:
-      start().error == "start failed: peer gone: not enough memory (missing: 2MB)"
-      DemoResult[int].err(NotEnoughMemory, PeerGone).error ==
-        "peer gone: not enough memory"
+    check start().error == "start failed: peer gone: not enough memory (missing: 2MB)"
 
   test "err with two strings sets the detail and the cause":
     proc parse(T: type): T =
@@ -174,9 +172,10 @@ suite "LPResultError":
       parse(DemoResult[int]).error == "parse failed: bad digit"
       parse(DemoResult[int]).isOfError("parse failed")
       parse(LPResult[int]).error == "parse failed: bad digit"
+      parse(Result[int, string]).error == "parse failed: bad digit"
 
   test "err with an exception, cstring or LPResultError gives its message to a string error":
-    proc fromException(): LPResult[int] =
+    proc fromException(): Result[int, string] =
       try:
         raise newException(ValueError, "bad digit")
       except ValueError as e:
@@ -194,23 +193,27 @@ suite "LPResultError":
       except ValueError as e:
         err(e)
 
-    proc fromCString(): LPResult[int] =
+    proc fromCString(): Result[int, string] =
+      err(cstring("bad peer"))
+
+    proc fromCStringToError(): DemoResult[int] =
       err(cstring("bad peer"))
 
     proc keepsCString(): Result[int, cstring] =
       err(cstring("bad peer"))
 
     proc fromLPResultError(): Result[int, string] =
-      err(NotEnoughMemory.withDetail("missing: 2MB"))
+      err(errorOf(NotEnoughMemory, "missing: 2MB"))
 
     proc keepsLPResultError(): DemoResult[int] =
-      err(PeerGone)
+      err(errorOf(PeerGone))
 
     check:
       fromException().error == "bad digit"
       fromExceptionToError().error == "bad digit"
       keepsException().error.msg == "bad digit"
       fromCString().error == "bad peer"
+      fromCStringToError().error == "bad peer"
       keepsCString().error == "bad peer"
       fromLPResultError().error == "not enough memory (missing: 2MB)"
       keepsLPResultError().isOfError(PeerGone)
@@ -223,17 +226,16 @@ suite "LPResultError":
       err(readStage, "send failed")
 
     check:
-      DemoResult[int].err(readStage).error == "readStage"
       fail(DemoResult[int]).error == "send failed: readStage"
       fail(DemoResult[int]).isOfError("send failed")
       fail(DemoResult[int]).isOfError("readStage")
       fail(Result[int, string]).error == "send failed: readStage"
 
   test "isOfError matches every error of the chain":
-    let r = DemoResult[int].err(NotEnoughMemory.withDetail("missing: 2MB"), PeerGone)
+    let r =
+      DemoResult[int].err(errorOf(NotEnoughMemory, "missing: 2MB").wrapError(PeerGone))
     check:
       r.isOfError(PeerGone)
       r.isOfError(NotEnoughMemory)
-      r.isOfError("not enough memory")
       not r.isOfError("missing: 2MB")
       not DemoResult[int].ok(1).isOfError(PeerGone)

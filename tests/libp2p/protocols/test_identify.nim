@@ -243,6 +243,9 @@ suite "Identify":
       await switch2.start()
 
       stream = await switch2.dial(switch1, IdentifyPushCodec)
+      checkUntilTimeout:
+        IdentifyPushCodec in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
+        IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
 
       check:
         # ensure both IPv4 and IPv6 addresses are used in switch.
