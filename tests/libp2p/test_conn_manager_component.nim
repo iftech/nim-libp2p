@@ -438,8 +438,13 @@ suite "Connection Manager Watermark/Scoring Component":
       highWater = 2
       maxConnections = 3
       gracePeriod = 1.seconds
+    # a periodic tick between staggered grace expiries trims only part of the peers
     let node = newWatermarkSwitch(
-      lowWater, highWater, gracePeriod = gracePeriod, maxConnections = maxConnections
+      lowWater,
+      highWater,
+      gracePeriod = gracePeriod,
+      periodicTrimInterval = 1.hours,
+      maxConnections = maxConnections,
     )
     let peers = newSwitches(maxConnections + 1)
     let all = @[node] & peers
@@ -453,7 +458,7 @@ suite "Connection Manager Watermark/Scoring Component":
       node.peerCount == maxConnections
       node.connManager.availableSlots(Direction.In) == 0
 
-    await sleepAsync(gracePeriod)
+    await sleepAsync(gracePeriod + 200.millis)
     let rejectedDial = peers[^1].connect(node.peerInfo.peerId, node.peerInfo.addrs)
     defer:
       await rejectedDial.cancelAndWait()
