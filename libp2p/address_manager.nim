@@ -502,7 +502,7 @@ proc resolve(
 
   while true:
     if not self.started or self.lifecycleId != lifecycleId:
-      return inputAddrs
+      return self.expandWildcards(inputAddrs)
 
     var
       addrs = self.expandWildcards(inputAddrs)
