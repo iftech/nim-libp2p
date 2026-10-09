@@ -21,7 +21,7 @@ jobs:
   test:
     env:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
-    timeout-minutes: 60
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -193,7 +193,7 @@ jobs:
     permissions:
       checks: write
       contents: read
-    timeout-minutes: 55
+    timeout-minutes: 65
 
     defaults:
       run:

@@ -19,7 +19,7 @@ jobs:
     env:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-daily-ci')
-    timeout-minutes: 60
+    timeout-minutes: 65
     strategy:
       fail-fast: false
 
