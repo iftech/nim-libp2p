@@ -20,7 +20,7 @@ jobs:
   codecov:
     name: Run coverage and upload to codecov
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 65
     env:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
       CICOV: YES
