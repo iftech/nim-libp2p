@@ -803,11 +803,12 @@ suite "AddressManager address mapper":
       peerInfo = makePeerInfo(@[listenAddr])
       manager = makeManager()
       gate = Future[void].Raising([CancelledError]).init("address mapper gate")
-    var otherCalls = 0
+    var slowCalls, otherCalls = 0
 
     let slow: AddressMapper = proc(
         input: seq[MultiAddress]
     ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc slowCalls
       await gate
       input
     let other: AddressMapper = proc(
@@ -821,11 +822,113 @@ suite "AddressManager address mapper":
     manager.addMapper(other, AddrSource.Autonat)
 
     let pass = peerInfo.expandAddrs()
+    check slowCalls == 1
     manager.removeMapper(other)
     gate.complete()
     discard await pass
 
-    check otherCalls == 0
+    check:
+      slowCalls == 1
+      otherCalls == 0
+
+  asyncTest "removing an applied mapper restarts the resolution chain":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+    var firstCalls, slowCalls = 0
+
+    let first: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc firstCalls
+      @[mappedAddr]
+    let slow: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc slowCalls
+      await gate
+      input
+
+    startAndDeferStop(manager, peerInfo)
+    manager.addMapper(first, AddrSource.PortMapped)
+    manager.addMapper(slow, AddrSource.Autonat)
+
+    let pass = peerInfo.expandAddrs()
+    check:
+      firstCalls == 1
+      slowCalls == 1
+    manager.removeMapper(first)
+    gate.complete()
+    let resolved = await pass
+
+    check:
+      firstCalls == 1
+      slowCalls == 2
+      resolved == @[listenAddr]
+      manager.candidates().allIt(it.address != mappedAddr)
+
+  asyncTest "an in-flight removed mapper's result is discarded":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+    var mapperCalls = 0
+
+    let mapper: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc mapperCalls
+      await gate
+      @[mappedAddr]
+
+    startAndDeferStop(manager, peerInfo)
+    manager.addMapper(mapper, AddrSource.PortMapped)
+
+    let pass = peerInfo.expandAddrs()
+    check mapperCalls == 1
+    manager.removeMapper(mapper)
+    gate.complete()
+    let resolved = await pass
+
+    check:
+      mapperCalls == 1
+      resolved == @[listenAddr]
+      manager.candidates().allIt(it.address != mappedAddr)
+
+  asyncTest "stopping invalidates an in-flight resolution pass":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      gate = Future[void].Raising([CancelledError]).init("address mapper gate")
+    var mapperCalls = 0
+
+    let mapper: AddressMapper = proc(
+        input: seq[MultiAddress]
+    ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+      inc mapperCalls
+      await gate
+      input
+
+    manager.setPeerInfo(peerInfo)
+    manager.start()
+    manager.addMapper(mapper, AddrSource.PortMapped)
+
+    let pass = peerInfo.expandAddrs()
+    check mapperCalls == 1
+    manager.stop()
+    gate.complete()
+    discard await pass
+
+    check:
+      manager.candidates().len == 0
+      manager.mapperSources().len == 0
+      peerInfo.addressMappers.len == 0
 
   asyncTest "a withdrawal tells the observers without waiting for the heartbeat":
     let

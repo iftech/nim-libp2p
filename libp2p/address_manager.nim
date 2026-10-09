@@ -99,6 +99,7 @@ type
     maxSize: int
     minCount: int
     started: bool
+    lifecycleId: uint64
 
 method verify*(
     self: Verifier, address: MultiAddress
@@ -284,13 +285,18 @@ func isChainProduced(self: AddressManager, address: MultiAddress): bool =
 
 proc addMapper*(self: AddressManager, mapper: AddressMapper, source: AddrSource) =
   ## Each address this mapper adds becomes a candidate of `source`. `stop` drops
-  ## every mapper: an owner registers its own again on `start`.
+  ## every mapper: an owner registers its own again on `start`. A mapper added
+  ## during a resolution pass takes effect on the next pass, so its owner must
+  ## trigger a PeerInfo update when it needs the new mapping immediately.
   if mapper.isNil():
     return
   self.mappers.add(SourcedMapper(mapper: mapper, source: source))
 
 proc removeMapper*(self: AddressManager, mapper: AddressMapper) =
   self.mappers.keepItIf(it.mapper != mapper)
+
+func hasMapper(self: AddressManager, mapper: AddressMapper): bool =
+  self.mappers.anyIt(it.mapper == mapper)
 
 func mapperSources*(self: AddressManager): seq[AddrSource] =
   ## In the order the chain runs them.
@@ -484,38 +490,58 @@ func explicitAddrs(self: AddressManager): seq[MultiAddress] =
 proc resolve(
     self: AddressManager, inputAddrs: seq[MultiAddress]
 ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
-  let announced = self.explicitAddrs()
-  var
-    addrs = self.expandWildcards(inputAddrs)
-    produced: Table[MultiAddress, set[AddrSource]]
+  # An owner may remove a mapper while this pass is suspended in an await.
+  # Iterate a snapshot to avoid changing the sequence during iteration. If an
+  # already-applied mapper disappears, restart the snapshot without it so its
+  # output cannot flow through the rest of the chain. Additions take effect on
+  # the next pass.
+  let
+    announced = self.explicitAddrs()
+    snapshot = self.mappers
+    lifecycleId = self.lifecycleId
 
-  for address in addrs:
-    produced.mgetOrPut(address, {}).incl(AddrSource.Listen)
+  while true:
+    if not self.started or self.lifecycleId != lifecycleId:
+      return inputAddrs
 
-  # An owner may remove a mapper while this pass is suspended in an earlier
-  # mapper's await. Iterate a snapshot to avoid changing the sequence during
-  # iteration, and do not call a mapper removed meanwhile.
-  let snapshot = self.mappers
-  for sourced in snapshot:
-    if not self.mappers.anyIt(it.mapper == sourced.mapper):
+    var
+      addrs = self.expandWildcards(inputAddrs)
+      produced: Table[MultiAddress, set[AddrSource]]
+      applied: seq[AddressMapper]
+      restart = false
+
+    for address in addrs:
+      produced.mgetOrPut(address, {}).incl(AddrSource.Listen)
+
+    for sourced in snapshot:
+      if not self.hasMapper(sourced.mapper):
+        continue
+      let mapped = await sourced.mapper(addrs)
+      if not self.started or self.lifecycleId != lifecycleId:
+        return inputAddrs
+      applied.add(sourced.mapper)
+      if applied.anyIt(not self.hasMapper(it)):
+        restart = true
+        break
+      for address in mapped.filterIt(it notin addrs):
+        produced.mgetOrPut(address, {}).incl(sourced.source)
+      addrs = mapped
+
+    if restart:
       continue
-    let mapped = await sourced.mapper(addrs)
-    for address in mapped.filterIt(it notin addrs):
-      produced.mgetOrPut(address, {}).incl(sourced.source)
-    addrs = mapped
 
-  for address in announced:
-    produced.mgetOrPut(address, {}).incl(AddrSource.Announced)
+    for address in announced:
+      produced.mgetOrPut(address, {}).incl(AddrSource.Announced)
 
-  self.track(produced, addrs & announced)
-  # a withdrawal changes the summary without a verdict: tell the observers now
-  self.notifyReachabilitySoon()
+    self.track(produced, addrs & announced)
+    # a withdrawal changes the summary without a verdict: tell the observers now
+    self.notifyReachabilitySoon()
 
-  # the operator picks what is announced; no mapper rewrites that choice
-  if announced.len > 0:
-    return announced
+    # the operator picks what is announced; no mapper rewrites that choice
+    if announced.len > 0:
+      return announced
 
-  self.announceSet(addrs)
+    return self.announceSet(addrs)
 
 proc resolveMapper(self: AddressManager): AddressMapper =
   ## Built here, not inside `new`: `new` is generic over its `typedesc`, so an
@@ -676,7 +702,10 @@ proc `verifyInterval=`*(self: AddressManager, interval: Duration) =
   self.restartHeartbeat()
 
 proc setPeerInfo*(self: AddressManager, peerInfo: PeerInfo) =
-  ## Installs the manager's mapper as the first one `peerInfo` runs.
+  ## Installs the manager's mapper as the first one `peerInfo` runs. The caller
+  ## must run `peerInfo.update()` afterwards; Switch.start does so after all
+  ## services and transports have started.
+  inc self.lifecycleId
   self.peerInfo = peerInfo
   peerInfo.addressMappers.keepItIf(it != self.addressMapper)
   peerInfo.addressMappers.insert(self.addressMapper, 0)
@@ -684,10 +713,12 @@ proc setPeerInfo*(self: AddressManager, peerInfo: PeerInfo) =
 proc start*(self: AddressManager) =
   if self.started:
     return
+  inc self.lifecycleId
   self.started = true
   self.verifyFut = self.verifyHeartbeat()
 
 proc stop*(self: AddressManager) =
+  inc self.lifecycleId
   self.started = false
   if not self.verifyFut.isNil():
     self.verifyFut.cancelSoon()
