@@ -17,7 +17,7 @@ import
     upgrademngrs/upgrade,
     utils/future,
   ]
-import ../tools/[unittest, sync, multiaddress]
+import ../tools/[unittest, sync, multiaddress, stream]
 
 {.push raises: [].}
 
@@ -862,11 +862,32 @@ suite "Multistream :: optimistic selection":
     await server.writeLp(codec & "\n")
 
     await closing
-    expect LPStreamClosedError:
+    expect LPStreamEOFError:
       discard await reading
     check:
       client.protocol == codec
       client.closed
+
+  asyncTest "reads the response after a half-close":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected =
+      await MultistreamSelect.selectOptimistic(newHalfCloseStream(client), codec)
+    defer:
+      await client.close()
+      await server.close()
+
+    await selected.writeLp("request")
+    let closing = selected.close()
+
+    check string.fromBytes(await server.readLp(1024)) == header
+    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await server.readLp(1024)) == "request"
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+    await server.writeLp("response")
+
+    await closing
+    check string.fromBytes(await selected.readLp(1024)) == "response"
 
   asyncTest "join completes when the underlying stream closes":
     let (client, server) = bufferedPair(closeTogether = false)

@@ -118,7 +118,8 @@ method write(
 method readOnce(
     s: OptimisticStream, pbytes: pointer, nbytes: int
 ): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
-  if s.isClosed:
+  # close() is a half-close, so reads continue until the remote side ends.
+  if s.wasResetLocally():
     raise newLPStreamClosedError()
   if not s.confirmed:
     try:
