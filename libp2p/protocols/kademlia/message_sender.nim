@@ -323,6 +323,7 @@ proc exchange(
       await noCancel readFut.cancelAndWait()
       raise e
   if not replied:
+    await noCancel readFut.cancelAndWait()
     return err(SendError.init(readStage, "timed out waiting for reply"))
 
   try:

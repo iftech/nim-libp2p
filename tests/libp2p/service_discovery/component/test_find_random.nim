@@ -26,6 +26,12 @@ suite "Service Discovery - XPR key binding":
       replyXpr(ownKey, reply).isSome()
       replyXpr(randomPeerId().toKey(), reply).isNone()
 
+  test "replyXpr rejects a reply with no record or a record with no value":
+    let key = randomPeerId().toKey()
+    check:
+      replyXpr(key, Message()).isNone()
+      replyXpr(key, Message(record: Opt.some(Record(key: Opt.some(key))))).isNone()
+
   asyncTest "lookupRandom drops a record whose subject is not the queried peer":
     let discos = setupServiceDiscoveryNodes(3, xprPublishing = false)
     startAndDeferStop(discos)
