@@ -122,7 +122,7 @@ proc new*(
   disco.handler = proc(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
-    if not disco.started or not disco.isServer:
+    if disco.stopping or not disco.started or not disco.isServer:
       trace "Refusing inbound query while not serving", stream
       await stream.reset()
       return
@@ -193,6 +193,11 @@ method start*(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
 method stop*(disco: ServiceDiscovery) {.async: (raises: []).} =
   if not disco.started:
     return
+
+  # Set before any await so no service-discovery RPC can be accepted against
+  # partially cleared advertiser, registrar, or routing-table state. `started`
+  # remains true until KadDHT.stop runs below, which owns the base teardown.
+  disco.stopping = true
 
   # every loop that schedules advertiser tasks stops before the drain below
   if not disco.addressObserver.isNil():
