@@ -294,6 +294,52 @@ suite "GossipSub Component - Mesh Management":
     checkUntilTimeout:
       node0.mesh.getOrDefault(topic).len == dValues.get.d.get
 
+  asyncTest "Peer restarted with the same peer id within pruneBackoff is penalised for its GRAFT and not regrafted after the backoff":
+    # TODO: vacp2p/nim-libp2p#3236
+    let
+      nodes =
+        generateNodes(2, gossip = true, decayInterval = 200.milliseconds).toGossipSub()
+      peerId0 = nodes[0].peerInfo.peerId
+      peerId1 = nodes[1].peerInfo.peerId
+
+    startAndDeferStop(nodes)
+
+    await connect(nodes[1], nodes[0])
+    subscribeAllNodes(nodes, topic, voidTopicHandler)
+    checkUntilTimeout:
+      nodes[0].mesh.hasPeerId(topic, peerId1)
+      nodes[1].mesh.hasPeerId(topic, peerId0)
+
+    # When Node1 restarts
+    await stopNodes(@[nodes[1]])
+
+    # Then Node0 backs off Node1 without having pruned it
+    checkUntilTimeout:
+      nodes[0].backingOff.getOrDefault(topic).hasKey(peerId1)
+
+    nodes[1].backingOff.clear() # A restarted process keeps no backoff
+    await startNodes(@[nodes[1]])
+    await connect(nodes[1], nodes[0])
+
+    # Then Node0 answers its GRAFT with a PRUNE and a behaviour penalty
+    checkUntilTimeout:
+      nodes[1].backingOff.getOrDefault(topic).hasKey(peerId0)
+    await nodes[0].waitForScoringHeartbeatByEvent(1)
+    check:
+      not nodes[0].mesh.hasPeerId(topic, peerId1)
+      nodes[0].getPeerStats(peerId1).behaviourPenalty > 0.0
+      nodes[0].getPeerScore(peerId1) < 0.0
+
+    # When Node0's backoff for Node1 expires
+    nodes[0].backingOff[topic][peerId1] = Moment.now()
+    await nodes[0].waitForHeartbeatByEvent(2)
+
+    # Then Node0 still leaves Node1 out of its mesh
+    check:
+      not nodes[0].backingOff.getOrDefault(topic).hasKey(peerId1)
+      nodes[0].gossipsub.hasPeerId(topic, peerId1)
+      not nodes[0].mesh.hasPeerId(topic, peerId1)
+
   asyncTest "Outbound peers are marked correctly":
     let
       numberOfNodes = 4
