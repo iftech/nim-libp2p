@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos, std/[sequtils], stew/byteutils
-import ../../../../libp2p/protocols/pubsub/[gossipsub, mcache, peertable]
+import ../../../../libp2p/protocols/pubsub/[floodsub, gossipsub, mcache, peertable]
 import ../../../tools/[lifecycle, topology, unittest]
 import ../utils
 
@@ -293,6 +293,40 @@ suite "GossipSub Component - Heartbeat":
     # Finally after historyLength iterations history is cleared
     checkUntilTimeout:
       peer.iDontWants.allIt(it.len == 0)
+
+  asyncTest "requestedIWants history - last element is pruned during heartbeat":
+    let nodes = generateNodes(2, gossip = true, heartbeatInterval = 300.milliseconds)
+      .toGossipSub()
+
+    startAndDeferStop(nodes)
+
+    await connectChain(nodes)
+    subscribeAllNodes(nodes, topic, voidTopicHandler)
+    waitSubscribeChain(nodes, topic)
+
+    # When Node1 handles an IHave for an unknown message
+    let
+      peer = nodes[1].mesh[topic].toSeq()[0]
+      id = toBytes("never delivered")
+      ihave = ControlIHave(topicID: topic, messageIDs: @[id])
+      iWant = nodes[1].handleIHave(peer, @[ihave])
+
+    # Then the request is recorded
+    check:
+      iWant.messageIDs == @[id]
+      nodes[1].requestedIWants[nodes[1].salt(id)].mapIt(it.peerId) == @[peer.peerId]
+
+    # And it is forgotten once the history moves past it
+    checkUntilTimeout:
+      nodes[1].salt(id) notin nodes[1].requestedIWants
+
+    # And the unanswered request carries no penalty
+    check:
+      peer.behaviourPenalty == 0.0
+
+    # And the message can be requested again
+    check:
+      nodes[1].handleIHave(peer, @[ihave]).messageIDs == @[id]
 
   asyncTest "sentIHaves history - last element is pruned during heartbeat":
     # 3 Nodes, Node 0 <==> Node 1 and Node 0 <==> Node 2
