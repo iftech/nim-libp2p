@@ -105,6 +105,18 @@ suite "Service Discovery Component - Find Random":
     await fut.cancelAndWait()
     await handlerFinished
 
+  asyncTest "lookupRandom cancellation cleans up concurrent requests":
+    # Keep the scheduler-sensitive case as a stress regression: on a slow
+    # runner, the lookup can have several FIND_NODE and GET_VALUE requests in
+    # flight when cancellation arrives.
+    let discos = setupServiceDiscoveryNodes(9)
+    startAndDeferStop(discos)
+    await connectStar(discos)
+
+    let fut = discos[0].lookupRandom()
+    await sleepAsync(1.millis)
+    await fut.cancelAndWait()
+
   asyncTest "a disco node answers a ping on its own codec":
     let discos = setupServiceDiscoveryNodes(2)
     startAndDeferStop(discos)
