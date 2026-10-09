@@ -407,7 +407,7 @@ proc new*(
   kad.handler = proc(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
-    if not kad.isServer:
+    if kad.stopping or not kad.started or not kad.isServer:
       trace "Refusing inbound query while not serving", stream
       await stream.reset()
       return
@@ -552,3 +552,8 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
 
   # After the drain: nothing is left to reuse a stream, and `stop` refuses new ones.
   await kad.msgSender.stop()
+
+  # Do not rely on the remote peer to close its half of an RPC stream. In
+  # particular, a cancelled lookup can leave the remote handler waiting for
+  # another request while both peers are stopping concurrently.
+  await kad.resetServerStreams()
