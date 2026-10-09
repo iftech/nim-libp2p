@@ -407,7 +407,7 @@ proc new*(
   kad.handler = proc(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
-    if not kad.started or not kad.isServer:
+    if kad.stopping or not kad.started or not kad.isServer:
       trace "Refusing inbound query while not serving", stream
       await stream.reset()
       return
