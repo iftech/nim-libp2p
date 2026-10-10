@@ -862,7 +862,7 @@ suite "Multistream :: optimistic selection":
     await server.writeLp(codec & "\n")
 
     await closing
-    expect LPStreamClosedError:
+    expect LPStreamEOFError:
       discard await reading
     check:
       client.protocol == codec

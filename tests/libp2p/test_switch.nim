@@ -23,6 +23,7 @@ import
     muxers/mplex/lpchannel,
     stream/lpstream,
     nameresolving/mockresolver,
+    peerstore,
     stream/chronosstream,
     transports/tcptransport,
     transports/wstransport,
@@ -77,6 +78,42 @@ suite "Switch":
 
     check not switch1.isConnected(switch2)
     check not switch2.isConnected(switch1)
+
+  asyncTest "optimistic stream reads the response after a half-close":
+    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      try:
+        let request = string.fromBytes(await stream.readLp(1024))
+        await stream.writeLp("re: " & request)
+      except LPStreamError:
+        raiseAssert "Unexpected LPStreamError in half-close protocol handler"
+      finally:
+        await stream.close()
+
+    proc requestAfterHalfClose(address: MultiAddress) {.async.} =
+      let testProto = new TestProto
+      testProto.codec = TestCodec
+      testProto.handler = handle
+
+      let switch1 = makeStandardSwitch(address)
+      switch1.mount(testProto)
+      let switch2 = makeStandardSwitch(address)
+      await switch1.start()
+      await switch2.start()
+      defer:
+        await allFutures(switch1.stop(), switch2.stop())
+
+      await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+      checkUntilTimeout:
+        TestCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
+
+      let stream = await switch2.dial(switch1.peerInfo.peerId, TestCodec)
+
+      await stream.writeLp("ping")
+      await stream.close()
+      check string.fromBytes(await stream.readLp(1024)) == "re: ping"
+
+    await requestAfterHalfClose(TcpAutoAddress)
+    await requestAfterHalfClose(QuicAutoAddress)
 
   asyncTest "e2e use switch dial proto string with custom matcher":
     let handleFinished = newWaitGroup(1)
