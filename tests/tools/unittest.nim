@@ -1,11 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import chronos, unittest2, std/[macros, strutils]
+import chronos, pkg/results, std/[macros, strutils]
+import unittest2 as u2
 import ./trackers
 
 export checkTrackers # TODO: maybe consider importing it on demand?
-export unittest2 except suite
+export u2 except suite, check
+
+proc acceptsResult[V, E](res: Result[V, E]) =
+  # used to check if condition passed to check is of Result[V, E] type
+  discard
+
+macro check*(conditions: untyped): untyped =
+  ## Allows `check result` to assert that a Result contains a value.
+  quote:
+    when compiles(acceptsResult(`conditions`)):
+      u2.check(`conditions`.isOk())
+    else:
+      u2.check(`conditions`)
 
 const
   asyncTestTimeoutDefault* =
@@ -32,7 +45,7 @@ template suite*(name: string, timeout: untyped, body: untyped): untyped =
   block:
     proc testSuite() =
       withSuiteAsyncTestTimeout(timeout):
-        unittest2.suite name:
+        u2.suite name:
           body
 
     testSuite()
@@ -41,7 +54,7 @@ template suite*(name: string, body: untyped): untyped =
   block:
     proc testSuite() =
       withSuiteAsyncTestTimeout(asyncTestTimeoutDefault):
-        unittest2.suite name:
+        u2.suite name:
           body
 
     testSuite()
@@ -213,7 +226,7 @@ macro checkUntilTimeoutCustom*(
             "[TIMEOUT] Timeout was reached and the conditions were not true. Check if the code is working as " &
               "expected or consider increasing the timeout param."
           )
-          check `code`
+          u2.check `code`
           return
         else:
           if `combinedBoolExpr`:
@@ -253,7 +266,7 @@ template finalCheckTrackers*(): untyped =
   # (typically containing a bundle of tests) to ensure that no tests have left 
   # any trackers open.
 
-  unittest2.suite "Final checkTrackers":
+  u2.suite "Final checkTrackers":
     test "test":
       # checkTrackers must be executed within a suite or test. otherwise, 
       # its output won't appear on stdout.

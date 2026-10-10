@@ -664,7 +664,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     # Receiver already has 1 provider for key (= maxProvidersPerKey) → reject
     let cidKey = key.toCid().toKey()
     let status = await sender2Kad.sendAddProviderAndGetStatus(receiverKad, cidKey)
-    check status.isOk()
+    check status
     check status.value() == AddProviderStatus.rejected
 
   asyncTest "Existing provider refresh is allowed even at per-key limit":
@@ -787,7 +787,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     let status =
       await sender2Kad.sendAddProviderAndGetStatus(receiverKad, key.toCid().toKey())
-    check status.isOk()
+    check status
     # No reply sent by receiver → sender treats absence of reply as accepted
     check status.value() == AddProviderStatus.accepted
     # Limit enforced silently: still only one record at the receiver.
@@ -815,7 +815,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     let status =
       await sender2Kad.sendAddProviderAndGetStatus(receiverKad, key.toCid().toKey())
-    check status.isOk()
+    check status
     check status.value() == AddProviderStatus.rejected
     # Limit enforced: still only one record
     check receiverKad.providerManager.providerRecords.len == 1

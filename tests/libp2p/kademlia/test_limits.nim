@@ -341,7 +341,7 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxReceivedSize = 1
     let res = await kads[0].getValue(key, quorumOverride = Opt.some(1))
 
-    check res.isOk()
+    check res
     check res.value().value == value
 
   asyncTest "rpcSem bounds concurrent in-flight RPCs":

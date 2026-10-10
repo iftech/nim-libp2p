@@ -45,7 +45,7 @@ suite "Service Discovery - XPR key binding":
     let signer = discos[2].switch.peerInfo
     let service = makeServiceInfo()
     let advert = makeAdvertisement(service.id, signer.privateKey, signer.addrs)
-    check discos[0].startAdvertising(service, Opt.some(advert.encode())).isOk()
+    check discos[0].startAdvertising(service, Opt.some(advert.encode()))
 
     checkUntilTimeout:
       discos[2].dataTable.get(signer.peerId.toKey()).isSome()

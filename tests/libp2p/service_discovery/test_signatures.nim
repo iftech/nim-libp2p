@@ -112,7 +112,7 @@ suite "Ticket - timestamp encoding":
       @[0x10'u8, 0x80, 0xE2, 0xCF, 0xAA, 0x06, 0x18, 0x81, 0xE2, 0xCF, 0xAA, 0x06]
     check ticket.toBytes() ==
       @[0'u8, 0, 0, 0, 0x65, 0x53, 0xF1, 0, 0, 0, 0, 0, 0x65, 0x53, 0xF1, 1, 0, 0, 0, 0]
-    check ticket.sign(key).isOk()
+    check ticket.sign(key)
     let decoded = Protobuf.decode(Protobuf.encode(ticket), Ticket)
     check:
       decoded.tInit == ticket.tInit

@@ -67,7 +67,7 @@ proc sendMessage(
   let responseBytes =
     await clientNode.switch.sendRawMessage(registrarNode, msg.encode())
   let response = kad_protobuf.Message.decode(responseBytes)
-  check response.isOk()
+  check response
   return response.get()
 
 suite "Service Discovery Component - Error Handling":
@@ -322,7 +322,7 @@ suite "Service Discovery Component - Error Handling":
       tWaitFor: 1.secs,
       signature: Opt.none(seq[byte]),
     )
-    check badTicket.sign(registrarNode.switch.peerInfo.privateKey).isOk()
+    check badTicket.sign(registrarNode.switch.peerInfo.privateKey)
 
     let msg = kad_protobuf.Message(
       msgType: kad_protobuf.MessageType.register,
@@ -362,7 +362,7 @@ suite "Service Discovery Component - Error Handling":
       tWaitFor: 10.secs,
       signature: Opt.none(seq[byte]),
     )
-    check badTicket.sign(otherNode.switch.peerInfo.privateKey).isOk()
+    check badTicket.sign(otherNode.switch.peerInfo.privateKey)
 
     let msg = kad_protobuf.Message(
       msgType: kad_protobuf.MessageType.register,

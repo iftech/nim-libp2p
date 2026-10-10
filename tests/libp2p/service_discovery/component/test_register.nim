@@ -28,7 +28,7 @@ suite "Service Discovery Component - Register":
     let regResp = await advertiserNode.sendRegister(
       registrarNode.switch.peerInfo.peerId, serviceId, adBytes
     )
-    check regResp.isOk()
+    check regResp
     check regResp.get().status == kad_protobuf.RegistrationStatus.Confirmed
 
   asyncTest "REGISTER with out-of-window ticket ignores ticket and returns Rejected":
@@ -53,12 +53,12 @@ suite "Service Discovery Component - Register":
       tWaitFor: 0.secs,
       signature: Opt.none(seq[byte]),
     )
-    check ticket.sign(registrarKey).isOk()
+    check ticket.sign(registrarKey)
 
     let regResp = await advertiserNode.sendRegister(
       registrarNode.switch.peerInfo.peerId, serviceId, adBytes, Opt.some(ticket)
     )
-    check regResp.isOk()
+    check regResp
     check regResp.get().status == kad_protobuf.RegistrationStatus.Rejected
 
   asyncTest "back-to-back REGISTERs return identical waits":
@@ -202,7 +202,7 @@ suite "Service Discovery Component - Register":
       tWaitFor: 0.secs,
       signature: Opt.none(seq[byte]),
     )
-    check invalidTicket.sign(maloryNode.switch.peerInfo.privateKey).isOk()
+    check invalidTicket.sign(maloryNode.switch.peerInfo.privateKey)
 
     let maliciousResp = await maloryNode.sendRegister(
       registrarPeerId, serviceId, maloryAdBytes, Opt.some(invalidTicket)
@@ -215,12 +215,12 @@ suite "Service Discovery Component - Register":
 
     let maloryResp =
       await maloryNode.sendRegister(registrarPeerId, serviceId, maloryAdBytes)
-    check maloryResp.isOk()
+    check maloryResp
     check maloryResp.get().status == kad_protobuf.RegistrationStatus.Confirmed
 
     let legitimateResp =
       await legitimateNode.sendRegister(registrarPeerId, serviceId, legitimateAdBytes)
-    check legitimateResp.isOk()
+    check legitimateResp
     check legitimateResp.get().status == kad_protobuf.RegistrationStatus.Wait
 
   asyncTest "self-registration refresh after Wait-Confirmed does not present a stale ticket":

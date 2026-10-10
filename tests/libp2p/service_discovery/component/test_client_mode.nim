@@ -102,7 +102,7 @@ suite "Service Discovery Component - Client Mode":
     let service = makeServiceInfo("service")
     let serviceId = service.id.hashServiceId()
 
-    check serverAdvertiser.addProvidedService(service).isOk()
+    check serverAdvertiser.addProvidedService(service)
 
     checkUntilTimeout:
       serverRegistrar.countAdsInCache(serviceId) == 1
@@ -129,7 +129,7 @@ suite "Service Discovery Component - Client Mode":
     let service = makeServiceInfo("service")
     let serviceId = service.id.hashServiceId()
 
-    check advertiserNode.addProvidedService(service).isOk()
+    check advertiserNode.addProvidedService(service)
     checkUntilTimeout:
       registrarNode.countAdsInCache(serviceId) == 1
 
@@ -150,7 +150,7 @@ suite "Service Discovery Component - Client Mode":
     let service = makeServiceInfo("service")
     let serviceId = service.id.hashServiceId()
 
-    check advertiserNode.addProvidedService(service).isOk()
+    check advertiserNode.addProvidedService(service)
     check advertiserNode.advertiser.running.len() > 0
     checkUntilTimeout:
       advertiserNode.countAdsInCache(serviceId) == 1

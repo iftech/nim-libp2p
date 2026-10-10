@@ -41,7 +41,7 @@ suite "KadDHT - Network Size Estimator":
       check est.networkSize().isErr() # no measurements yet
       est.seedLinearMeasurements(netSize)
       let res = est.networkSize()
-      check res.isOk()
+      check res
       if res.isOk():
         # Float rounding around the integer truncation can shift it by one.
         check abs(res.get() - netSize) <= 2
@@ -57,7 +57,7 @@ suite "KadDHT - Network Size Estimator":
       rtable = RoutingTable.new(randomPeerId().toKey())
       peers = PeerId.random(4, rng()).get()
 
-    check est.track(rtable, target, peers).isOk()
+    check est.track(rtable, target, peers)
 
     for i, p in peers:
       check:
