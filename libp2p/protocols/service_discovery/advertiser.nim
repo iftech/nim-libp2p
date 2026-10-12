@@ -15,6 +15,17 @@ import
 logScope:
   topics = "libp2p service-discovery"
 
+const MinTicketWait* = 1.seconds
+
+func ticketWait*(config: ServiceDiscoveryConfig, tWaitFor: Duration): Duration =
+  # a retry later than the registration window misses the ticket
+  let floor =
+    if config.registrationWindow > ZeroDuration:
+      min(MinTicketWait, config.registrationWindow)
+    else:
+      MinTicketWait
+  max(floor, min(config.advertExpiry, tWaitFor))
+
 type
   RegistrationResponse* = object
     status*: kademlia_protobuf.RegistrationStatus
@@ -348,11 +359,14 @@ proc advertiseToRegistrar*(
 
       currentTicket = Opt.some(newTicket)
 
-      let waitSecs = min(disco.discoConfig.advertExpiry, newTicket.tWaitFor.get())
+      let tWaitFor = newTicket.tWaitFor.valueOr:
+        trace "Ticket without a wait time", serviceId, registrar
+        return
+      let delay = ticketWait(disco.discoConfig, tWaitFor)
 
-      trace "Waiting for registrar", serviceId, registrar, wait = $waitSecs
+      trace "Waiting for registrar", serviceId, registrar, wait = $delay
 
-      await sleepAsync(waitSecs)
+      await sleepAsync(delay)
     of kademlia_protobuf.RegistrationStatus.Rejected:
       trace "Registrar rejection, aborting", serviceId, registrar
       return

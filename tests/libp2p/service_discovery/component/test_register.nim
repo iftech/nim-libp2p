@@ -5,11 +5,66 @@
 from std/times import getTime, toUnix
 import chronos, results
 import
-  ../../../../libp2p/
-    [protocols/service_discovery/advertiser, protocols/service_discovery/types, switch]
+  ../../../../libp2p/[
+    protocols/service_discovery/advertiser,
+    protocols/service_discovery/types,
+    stream/connection,
+    switch,
+  ]
 import ../../../../libp2p/protocols/kademlia/protobuf as kad_protobuf
 import ../../../tools/[lifecycle, unittest]
 import ../utils
+
+type RegisterLog = ref object
+  times: seq[Moment]
+  second: Future[void]
+
+proc answerWait(registrar: ServiceDiscovery, ticket: Ticket): RegisterLog =
+  let log = RegisterLog(second: newFuture[void]("second REGISTER"))
+  registrar.handler = proc(
+      stream: Stream, proto: string
+  ) {.async: (raises: [CancelledError]).} =
+    let reply = kad_protobuf.Message(
+      msgType: Opt.some(kad_protobuf.MessageType.register),
+      register: Opt.some(
+        RegisterMessage(
+          status: Opt.some(kad_protobuf.RegistrationStatus.Wait),
+          ticket: Opt.some(ticket),
+        )
+      ),
+    )
+    try:
+      discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
+      log.times.add(Moment.now())
+      if log.times.len == 2:
+        log.second.complete()
+      await stream.writeLp(reply.encode())
+    except LPStreamError as e:
+      raiseAssert "registrar stream failed: " & e.msg
+    finally:
+      await noCancel stream.close()
+  log
+
+proc retryGap(log: RegisterLog): Future[Duration] {.async.} =
+  await log.second
+  log.times[1] - log.times[0]
+
+proc startAdvertising(
+    advertiser, registrar: ServiceDiscovery
+): Future[void].Raising([CancelledError]) =
+  let serviceName = "wait-ticket-service"
+  let serviceId = serviceName.hashServiceId()
+  doAssert advertiser.rtManager.addService(
+    serviceId, advertiser.rtable, advertiser.config.replication,
+    advertiser.discoConfig.bucketsCount, Provided,
+  )
+
+  let adBytes =
+    makeAdvertisement(serviceName, advertiser.switch.peerInfo.privateKey).encode().get()
+
+  advertiser.advertiseToRegistrar(
+    serviceId, registrar.switch.peerInfo.peerId, Opt.none(Ticket), adBytes
+  )
 
 suite "Service Discovery Component - Register":
   teardown:
@@ -257,5 +312,51 @@ suite "Service Discovery Component - Register":
     #   ~4s: sleep advertExpiry done; re-register with no ticket
     # Task must still be running after the refresh.
     check not (await fut.withTimeout(minTaskTime))
+
+    await fut.cancelAndWait()
+
+  asyncTest "a Wait ticket without tWaitFor ends the task":
+    let registrarNode = setupServiceDiscoveryNode()
+    let advertiserNode = setupServiceDiscoveryNode()
+    let log = registrarNode.answerWait(Ticket(advertisement: Opt.some(@[1'u8])))
+    startAndDeferStop(@[registrarNode, advertiserNode])
+    await connect(registrarNode, advertiserNode)
+
+    await advertiserNode.startAdvertising(registrarNode)
+    check log.times.len == 1
+
+  asyncTest "a zero wait does not re-send REGISTER at once":
+    let registrarNode = setupServiceDiscoveryNode()
+    let advertiserNode = setupServiceDiscoveryNode()
+    let log = registrarNode.answerWait(
+      Ticket(advertisement: Opt.some(@[1'u8]), tWaitFor: Opt.some(ZeroDuration))
+    )
+    startAndDeferStop(@[registrarNode, advertiserNode])
+    await connect(registrarNode, advertiserNode)
+
+    # the registrar always answers Wait, so the task retries until cancelled
+    let fut = advertiserNode.startAdvertising(registrarNode)
+    check (await log.retryGap()) >= ticketWait(advertiserNode.discoConfig, ZeroDuration)
+
+    await fut.cancelAndWait()
+
+  asyncTest "a short registration window lowers the wait floor":
+    let config = ServiceDiscoveryConfig.new(registrationWindow = 200.milliseconds)
+    let floor = ticketWait(config, ZeroDuration)
+    check floor == config.registrationWindow
+
+    let registrarNode = setupServiceDiscoveryNode()
+    let advertiserNode = setupServiceDiscoveryNode(config)
+    let log = registrarNode.answerWait(
+      Ticket(advertisement: Opt.some(@[1'u8]), tWaitFor: Opt.some(ZeroDuration))
+    )
+    startAndDeferStop(@[registrarNode, advertiserNode])
+    await connect(registrarNode, advertiserNode)
+
+    # the registrar always answers Wait, so the task retries until cancelled
+    let fut = advertiserNode.startAdvertising(registrarNode)
+    let gap = await log.retryGap()
+    check gap >= floor
+    check gap < MinTicketWait
 
     await fut.cancelAndWait()
