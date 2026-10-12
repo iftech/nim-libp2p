@@ -91,6 +91,53 @@ nim c -r -d:path=mix tests/test_all.nim
 nim c -r tests/tools/test_multiaddress.nim
 ```
 
+### GossipSub queue pressure
+
+GossipSub limits both message counts and encoded RPC bytes per peer. Configure
+`maxHighPriorityQueueBytes`, `maxMediumPriorityQueueBytes`, and
+`maxLowPriorityQueueBytes` through `GossipSubParams.init`; defaults are 16, 32,
+and 64 MiB, respectively. Each limit must be positive. High-priority overflow
+disconnects the peer; medium/low overflow drops the incoming message and applies
+the existing slow-peer penalty. When all queues are empty, a message of any
+priority is sent immediately using the high-priority limits.
+
+Bytes remain charged while a message waits for a stream or a transport write to
+finish, including a medium/low message already removed from its deque by the
+worker. `peer.queuedBytes(priority)` exposes this accounting. The budget excludes
+transport framing, allocator overhead, and additional transport-owned copies;
+it is not a bound on total process memory.
+
+Run the queue pressure benchmark with:
+
+```sh
+nim c -r -d:release -d:chronicles_log_level=ERROR tests/benchmarks/bench_pubsub_queues.nim
+# Raise the byte budget so the existing 512-message count limit binds instead:
+nim c -r -d:release -d:chronicles_log_level=ERROR -d:queueBenchBytes=2147483647 tests/benchmarks/bench_pubsub_queues.nim
+```
+
+The benchmark measures 100,000 synchronous 256-byte sends and a burst cycling
+through 256-byte, 4-KiB, and 64-KiB messages behind a stalled write. It reports CPU
+time per send, occupied-heap growth after collection, dropped messages, accounted
+bytes, and heap growth after cleanup. The default benchmark byte budget is 1 MiB
+to make the difference from count-only limiting visible. Heap measurements omit
+reserved GC pages and transport buffering; timing is a local microbenchmark,
+not a network throughput measurement.
+
+A sample comparison against `c58f7f997` on Linux x86-64, Intel Core Ultra 7
+155H, Nim 2.2.6/refc (`-d:release`), using medians of nine interleaved runs:
+
+| Version / medium byte budget | Synchronous send (ns) | Stalled burst send (ns) | Retained occupied heap (bytes) |
+| --- | ---: | ---: | ---: |
+| Before byte accounting | 331.5 | 617.0 | 13,322,304 |
+| Byte accounting, count limit binds | 368.9 | 654.3 | 13,322,304 |
+| Byte accounting, 1 MiB budget | 338.3 | 542.6 | 1,174,912 |
+
+The 1 MiB run accounted for exactly 1,048,576 payload bytes and dropped 99,954
+messages, versus 99,488 drops when count-limited. Its occupied heap fell to
+1,568 bytes above the starting measurement after cleanup (the empty peer and
+stream were still alive). CPU timing ranges overlapped; rerun on deployment
+hardware before choosing budgets or drawing throughput conclusions.
+
 ## Formatting code
 
 nim-libp2p uses [nph](https://github.com/arnetheduck/nph) to format code.

@@ -177,6 +177,12 @@ type
 
     # Max number of peers we send an IWANT to for the same message at the same time.
     maxIWantsPerMessage*: int
+    # Per-peer encoded RPC byte budgets, including pending writes. Must be > 0.
+    # High overflow disconnects; medium/low overflow drops the incoming message.
+    # Empty queues promote any priority to high and use the high limits.
+    maxHighPriorityQueueBytes*: int
+    maxMediumPriorityQueueBytes*: int
+    maxLowPriorityQueueBytes*: int
 
     # Broadcast an IDONTWANT message automatically when the message exceeds the IDONTWANT message size threshold
     sendIDontWantOnPublish*: bool
