@@ -675,7 +675,7 @@ proc init*(pubkey: var EcPublicKey, data: openArray[byte]): Result[void, Asn1Err
 
   raw = ?ib.read()
 
-  if raw.kind != Asn1Tag.BitString:
+  if raw.kind != Asn1Tag.BitString or raw.length == 0:
     return err(Asn1Error.Incorrect)
 
   if checkPublic(raw.toOpenArray(), curve) != 0:

@@ -718,6 +718,7 @@ suite "EC NIST-P256/384/521 test suite":
         Asn1Error.Incorrect
       parse(derSequence([algorithm, derBitString(offCurve)])).error ==
         Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString([])])).error == Asn1Error.Incorrect
       EcPublicKey.init(derUint(1)).error == EcKeyIncorrectError
 
   test "Nil and uninitialized keys and signatures":
@@ -786,3 +787,7 @@ suite "EC NIST-P256/384/521 test suite":
       EcSignature.initRaw(newSeq[byte](10)).error == EcSignatureError
       getSecret(p256.pubkey, p384.seckey).len == 0
       getSecret(p256.pubkey, p256.seckey).len == Secret256Length
+
+  test "ECDSA PublicKey with an empty point is rejected":
+    let data = fromHex("0803121A3018301306072A8648CE3D020106082A8648CE3D030107030100")
+    check PublicKey.init(data).isErr()
