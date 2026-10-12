@@ -442,7 +442,7 @@ suite "GossipSub Component - Priority Queues":
     check peer.slowPeerPenalty == 0.0
 
   asyncTest "Configured byte limits preserve overflow behavior on connected peers":
-    for priority in [MessagePriority.High, MessagePriority.Medium, MessagePriority.Low]:
+    proc checkPriority(priority: MessagePriority) {.async.} =
       let nodes = generateNodes(2, gossip = true).toGossipSub()
       startAndDeferStop(nodes)
       await connectStar(nodes)
@@ -483,3 +483,6 @@ suite "GossipSub Component - Priority Queues":
       await peer.stopTasks()
       for p in MessagePriority:
         check peer.queuedBytes(p) == 0
+
+    for priority in [MessagePriority.High, MessagePriority.Medium, MessagePriority.Low]:
+      await checkPriority(priority)
