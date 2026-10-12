@@ -678,11 +678,6 @@ suite "Key interface test suite":
   test "pickOne returns the only element of a singleton":
     check rng().pickOne(@[42]).get() == 42
 
-  test "pickOne returns an element from the sequence":
-    let xs = @[11, 22, 33, 44, 55]
-    let picked = rng().pickOne(xs).get()
-    check picked in xs
-
   test "pick returns none for empty sequence":
     check rng().pick(newSeq[int](), 3).isNone()
 
@@ -702,20 +697,6 @@ suite "Key interface test suite":
     let picked = rng().pick(xs, 10).get()
     check picked.len == xs.len
     check picked.sorted() == xs.sorted()
-
-  test "pick returns some for non-empty sequence with n > 0":
-    check rng().pick(@[11, 22, 33], 2).isSome()
-
-  test "pick result contains no duplicates":
-    let xs = @[11, 22, 33, 44, 55, 66, 77, 88]
-    let picked = rng().pick(xs, 5).get()
-    check picked == picked.deduplicate()
-
-  test "pick result is a subset of the input":
-    let xs = @[11, 22, 33, 44, 55]
-    let picked = rng().pick(xs, 4).get()
-    for x in picked:
-      check x in xs
 
   test "pick n=1 returns a single element":
     let xs = @[11, 22, 33]

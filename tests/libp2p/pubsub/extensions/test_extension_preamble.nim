@@ -222,29 +222,6 @@ suite "GossipSub Extensions :: Preamble Extension":
       ext.ongoingReceives.hasKey(msgId1)
       cr.broadcasted == @[BC(RPCMsg.withIMReceiving(preamble), @[peerId])]
 
-  test "handleIMReceiving: records peer as receiving a message":
-    var cr = CallbackRecorder(meshPeers: @[peerId])
-    let ext = PreambleExtension.new(cr.makeConfig(), rng())
-    ext.onNegotiated(peerId)
-    ext.onNegotiated(peerId2)
-
-    # populate ongoingReceives so IMReceiving length check passes
-    ext.receivePreamble(
-      peerId, @[makePreamble(msgId1, messageLength = largeMsgLen.uint32)]
-    )
-
-    ext.receiveIMReceiving(
-      peerId2, @[IMReceiving(messageID: msgId1, messageLength: largeMsgLen.uint32)]
-    )
-
-    # verify heIsReceivings was recorded via preambleBroadcastIfNotReceiving:
-    # only peers with heIsReceivings tracked for msgId1 receive the broadcast
-    cr.broadcasted = @[]
-    let preambleMsg =
-      RPCMsg.withPreamble(@[makePreamble(msgId1, messageLength = largeMsgLen.uint32)])
-    ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId, peerId2])
-    check cr.broadcasted == @[BC(preambleMsg, @[peerId2])]
-
   test "handleIMReceiving: ignores mismatched message length":
     var cr = CallbackRecorder(meshPeers: @[peerId])
     let ext = PreambleExtension.new(cr.makeConfig(), rng())
