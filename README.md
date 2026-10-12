@@ -6,7 +6,6 @@
 
 <p align="center">
 <a href="https://github.com/vacp2p/nim-libp2p/actions"><img src="https://github.com/vacp2p/nim-libp2p/actions/workflows/test_all.yml/badge.svg" /></a>
-<a href="https://codecov.io/gh/vacp2p/nim-libp2p"><img src="https://codecov.io/gh/vacp2p/nim-libp2p/branch/master/graph/badge.svg?token=UR5JRQ249W"/></a>
 
 </p>
 
