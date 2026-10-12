@@ -81,3 +81,6 @@ jobs:
             --omit-lines '^\s*#' \
             --omit-lines '^\s*(proc|func|method|iterator|template)\b([^=]*|.*=\s*(#.*)?)$' \
             --omit-lines '^\s*[\)\]\}]+\s*$'
+
+      - name: Require at least 90% line coverage
+        run: lcov --summary coverage/coverage.f.info --fail-under-lines 90
