@@ -10,7 +10,7 @@ import ../upgrademngrs/upgrade, ../muxers/muxer
 import ../connmanager
 import ../utils/opt
 
-export Upgrade
+export chronicles, Upgrade
 
 logScope:
   topics = "libp2p connection-upgrade"
