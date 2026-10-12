@@ -185,7 +185,10 @@ func parseMaxMessageSize(size: int): Result[int, string] =
   if size == 0:
     return ok(DefaultPubSubMaxMessageSize)
   if size > MaxGossipsubMessageSize:
-    return err($MaxGossipsubMessageSize, "maxMessageSize exceeds the byte limit")
+    return err(
+      $size,
+      "maxMessageSize exceeds the limit of " & $MaxGossipsubMessageSize & " bytes",
+    )
   ok(size)
 
 func validateLimit(limit: RateLimitConfig): Result[void, string] =
@@ -193,7 +196,9 @@ func validateLimit(limit: RateLimitConfig): Result[void, string] =
   ## the limit itself.
   if limit.intervalMs > MaxOverheadRateLimitIntervalMs:
     return err(
-      $MaxOverheadRateLimitIntervalMs, "overheadRateLimit.intervalMs exceeds the limit"
+      $limit.intervalMs,
+      "overheadRateLimit.intervalMs exceeds the limit of " &
+        $MaxOverheadRateLimitIntervalMs,
     )
   if limit.bytes == 0 and limit.intervalMs != 0:
     return err("overheadRateLimit.intervalMs requires overheadRateLimit.bytes")
