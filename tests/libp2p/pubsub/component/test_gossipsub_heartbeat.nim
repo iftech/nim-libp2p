@@ -8,7 +8,7 @@ import ../../../../libp2p/protocols/pubsub/[gossipsub, mcache, peertable]
 import ../../../tools/[lifecycle, topology, unittest]
 import ../utils
 
-suite "GossipSub Component - Heartbeat":
+suite "GossipSub Component - Heartbeat", timeout = 20.seconds:
   const topic = "foobar"
 
   teardown:
