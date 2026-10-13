@@ -28,7 +28,7 @@ logScope:
 const
   IdentifyCodec* = "/ipfs/id/1.0.0"
   IdentifyPushCodec* = "/ipfs/id/push/1.0.0"
-  ProtoVersion* = "ipfs/0.1.0"
+  ProtoVersion* = ""
   AgentVersion* = "nim-libp2p"
   identifyAddrsLogMax = 5
   maxMsgSize = 64 * 1024
@@ -99,7 +99,7 @@ proc makeIdentifyMsg(
     listenAddrs: pi.addrs,
     protocols: pi.protocols,
     observedAddr: observedAddr,
-    protoVersion: Opt.some(if pi.protoVersion == "": ProtoVersion else: pi.protoVersion),
+    protoVersion: Opt.some(pi.protoVersion),
     agentVersion: Opt.some(if pi.agentVersion == "": AgentVersion else: pi.agentVersion),
     signedPeerRecord: spr,
   )
