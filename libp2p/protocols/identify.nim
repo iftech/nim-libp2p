@@ -99,7 +99,7 @@ proc makeIdentifyMsg(
     listenAddrs: pi.addrs,
     protocols: pi.protocols,
     observedAddr: observedAddr,
-    protoVersion: Opt.some(ProtoVersion),
+    protoVersion: Opt.some(if pi.protoVersion == "": ProtoVersion else: pi.protoVersion),
     agentVersion: Opt.some(if pi.agentVersion == "": AgentVersion else: pi.agentVersion),
     signedPeerRecord: spr,
   )

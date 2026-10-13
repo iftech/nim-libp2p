@@ -95,9 +95,11 @@ suite "Identify":
       check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
       check id.signedPeerRecord.isNone()
 
-    asyncTest "custom agent version":
+    asyncTest "custom agent and proto version":
       const customAgentVersion = "MY CUSTOM AGENT STRING"
+      const customProtoVersion = "my-proto/1.0.0"
       remotePeerInfo.agentVersion = customAgentVersion
+      remotePeerInfo.protoVersion = customProtoVersion
       msListen.addHandler(identifyProto1)
 
       proc acceptHandler(): Future[void] {.async.} =
@@ -112,7 +114,7 @@ suite "Identify":
 
       check id.pubkey.get() == remoteSecKey.getPublicKey().get()
       check id.addrs == maddr
-      check id.protoVersion.get() == ProtoVersion
+      check id.protoVersion.get() == customProtoVersion
       check id.agentVersion.get() == customAgentVersion
       check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
       check id.signedPeerRecord.isNone()
