@@ -54,8 +54,9 @@ proc bench(stalled: bool) {.async.} =
     maxMessageSize = 65536,
     handler = handler,
   )
-  when declared(DefaultMaxMediumPriorityQueueBytes):
-    peer.maxMediumPriorityQueueBytes = queueBenchBytes
+  when declared(DefaultMaxOutboundQueueBytes):
+    peer.maxOutboundQueueBytes = queueBenchBytes
+    peer.highPriorityQueueReservedBytes = 0
   let stream =
     BenchStream(dir: Direction.Out, timeout: 0.milliseconds, stalled: stalled)
   stream.initStream()

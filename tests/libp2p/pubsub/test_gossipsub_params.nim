@@ -424,29 +424,31 @@ suite "GossipSubParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-  test "maxHighPriorityQueueBytes requires a positive budget":
+  test "maxOutboundQueueBytes requires a positive budget":
     var params = newDefaultValidParams()
-    check params.maxHighPriorityQueueBytes == DefaultMaxHighPriorityQueueBytes
+    check params.maxOutboundQueueBytes == DefaultMaxOutboundQueueBytes
     for invalid in [0, -1]:
-      params.maxHighPriorityQueueBytes = invalid
+      params.maxOutboundQueueBytes = invalid
       let res = params.validateParameters()
       check:
         res.isErr()
-        res.error == "gossipsub: maxHighPriorityQueueBytes parameter error, Must be > 0"
-    params.maxHighPriorityQueueBytes = 1
+        res.error == "gossipsub: maxOutboundQueueBytes parameter error, Must be > 0"
+    params.maxOutboundQueueBytes = 2
+    params.highPriorityQueueReservedBytes = 1
     check params.validateParameters().isOk()
 
-  test "maxMediumPriorityQueueBytes requires a positive budget":
+  test "highPriorityQueueReservedBytes must fit inside the peer budget":
     var params = newDefaultValidParams()
-    check params.maxMediumPriorityQueueBytes == DefaultMaxMediumPriorityQueueBytes
-    for invalid in [0, -1]:
-      params.maxMediumPriorityQueueBytes = invalid
+    check:
+      params.highPriorityQueueReservedBytes == DefaultHighPriorityQueueReservedBytes
+    for invalid in [-1, params.maxOutboundQueueBytes]:
+      params.highPriorityQueueReservedBytes = invalid
       let res = params.validateParameters()
       check:
         res.isErr()
         res.error ==
-          "gossipsub: maxMediumPriorityQueueBytes parameter error, Must be > 0"
-    params.maxMediumPriorityQueueBytes = 1
+          "gossipsub: highPriorityQueueReservedBytes parameter error, Must be >= 0 and < maxOutboundQueueBytes"
+    params.highPriorityQueueReservedBytes = 0
     check params.validateParameters().isOk()
 
   test "maxLowPriorityQueueBytes requires a positive budget":
@@ -460,6 +462,25 @@ suite "GossipSubParams validation":
         res.error == "gossipsub: maxLowPriorityQueueBytes parameter error, Must be > 0"
     params.maxLowPriorityQueueBytes = 1
     check params.validateParameters().isOk()
+
+  test "maxNonHighPriorityQueueAge requires a positive duration":
+    var params = newDefaultValidParams()
+    check params.maxNonHighPriorityQueueAge == DefaultMaxNonHighPriorityQueueAge
+    params.maxNonHighPriorityQueueAge = ZeroDuration
+    let res = params.validateParameters()
+    check:
+      res.isErr()
+      res.error == "gossipsub: maxNonHighPriorityQueueAge parameter error, Must be > 0"
+
+  test "node-wide budget must cover one peer budget":
+    var params = newDefaultValidParams()
+    check params.maxTotalOutboundQueueBytes == DefaultMaxTotalOutboundQueueBytes
+    params.maxTotalOutboundQueueBytes = params.maxOutboundQueueBytes - 1
+    let res = params.validateParameters()
+    check:
+      res.isErr()
+      res.error ==
+        "gossipsub: maxTotalOutboundQueueBytes parameter error, Must be >= maxOutboundQueueBytes"
 
   test "overheadRateLimit.bytes fails when zero":
     const errorMessage =

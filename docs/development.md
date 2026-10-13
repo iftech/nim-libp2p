@@ -93,19 +93,38 @@ nim c -r tests/tools/test_multiaddress.nim
 
 ### GossipSub queue pressure
 
-GossipSub limits both message counts and encoded RPC bytes per peer. Configure
-`maxHighPriorityQueueBytes`, `maxMediumPriorityQueueBytes`, and
-`maxLowPriorityQueueBytes` through `GossipSubParams.init`; defaults are 16, 32,
-and 64 MiB, respectively. Each limit must be positive. High-priority overflow
-disconnects the peer; medium/low overflow drops the incoming message and applies
-the existing slow-peer penalty. When all queues are empty, a message of any
-priority is sent immediately using the high-priority limits.
+GossipSub limits both message counts and encoded RPC bytes. The default
+`maxOutboundQueueBytes` is a shared 16 MiB per-peer budget across all
+priorities, including pending writes. `highPriorityQueueReservedBytes` keeps
+the final 1 MiB unavailable to medium/low traffic, while
+`maxLowPriorityQueueBytes` limits low-priority backlog to 4 MiB.
+
+High-priority admission evicts queued low and then medium traffic from the same
+peer before disconnecting it. Medium admission may evict queued low traffic;
+low admission never evicts higher-priority traffic. A single protocol-valid
+frame may exceed its normal backlog limit when the queue is otherwise empty.
+The effective per-peer bound is therefore
+`max(maxOutboundQueueBytes, maxMessageSize)`.
+
+Medium and low messages expire after `maxNonHighPriorityQueueAge`, which
+defaults to five seconds. Expiration is lazy: queue operations and the worker
+remove stale entries without creating per-message timers.
+
+`maxTotalOutboundQueueBytes` applies a 512 MiB logical-byte cap across all
+peers. When it is reached, high admission evicts low and then medium traffic
+from peers with the largest evictable backlogs; medium admission evicts low
+traffic. This scan only runs on node-wide pressure, not on normal admission.
 
 Bytes remain charged while a message waits for a stream or a transport write to
 finish, including a medium/low message already removed from its deque by the
 worker. `peer.queuedBytes(priority)` exposes this accounting. The budget excludes
 transport framing, allocator overhead, and additional transport-owned copies;
-it is not a bound on total process memory.
+shared encoded buffers are charged once per destination peer, so it is not a
+bound on physical process memory.
+
+Queue-byte gauges and drop metrics are available with
+`-d:libp2p_expensive_metrics`; they are omitted from normal builds to keep the
+send path lean. Existing message-count limits remain active in every build.
 
 Run the queue pressure benchmark with:
 
@@ -122,21 +141,6 @@ bytes, and heap growth after cleanup. The default benchmark byte budget is 1 MiB
 to make the difference from count-only limiting visible. Heap measurements omit
 reserved GC pages and transport buffering; timing is a local microbenchmark,
 not a network throughput measurement.
-
-A sample comparison against `c58f7f997` on Linux x86-64, Intel Core Ultra 7
-155H, Nim 2.2.6/refc (`-d:release`), using medians of nine interleaved runs:
-
-| Version / medium byte budget | Synchronous send (ns) | Stalled burst send (ns) | Retained occupied heap (bytes) |
-| --- | ---: | ---: | ---: |
-| Before byte accounting | 331.5 | 617.0 | 13,322,304 |
-| Byte accounting, count limit binds | 368.9 | 654.3 | 13,322,304 |
-| Byte accounting, 1 MiB budget | 338.3 | 542.6 | 1,174,912 |
-
-The 1 MiB run accounted for exactly 1,048,576 payload bytes and dropped 99,954
-messages, versus 99,488 drops when count-limited. Its occupied heap fell to
-1,568 bytes above the starting measurement after cleanup (the empty peer and
-stream were still alive). CPU timing ranges overlapped; rerun on deployment
-hardware before choosing budgets or drawing throughput conclusions.
 
 ## Formatting code
 

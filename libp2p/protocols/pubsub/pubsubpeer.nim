@@ -37,6 +37,20 @@ when defined(libp2p_expensive_metrics):
     "number of sent skipped messages",
     labels = ["id"],
   )
+  declareGauge(
+    libp2p_pubsub_outbound_queue_bytes,
+    "logical encoded bytes retained by outbound pubsub queues",
+  )
+  declareCounter(
+    libp2p_pubsub_outbound_queue_dropped_messages,
+    "outbound pubsub messages dropped from queues",
+    labels = ["priority", "reason"],
+  )
+  declareCounter(
+    libp2p_pubsub_outbound_queue_dropped_bytes,
+    "encoded outbound pubsub bytes dropped from queues",
+    labels = ["priority", "reason"],
+  )
 
 declareCounter(
   libp2p_pubsub_send_stream_opens,
@@ -82,9 +96,11 @@ const
   DefaultSendStreamRetryBaseDelay* = 1.seconds
   DefaultSendStreamRetryMaxDelay* = 16.seconds
   SendStreamRetryJitter = 0.2
-  DefaultMaxHighPriorityQueueBytes* = 16 * 1024 * 1024
-  DefaultMaxMediumPriorityQueueBytes* = 32 * 1024 * 1024
-  DefaultMaxLowPriorityQueueBytes* = 64 * 1024 * 1024
+  DefaultMaxOutboundQueueBytes* = 16 * 1024 * 1024
+  DefaultHighPriorityQueueReservedBytes* = 1 * 1024 * 1024
+  DefaultMaxLowPriorityQueueBytes* = 4 * 1024 * 1024
+  DefaultMaxTotalOutboundQueueBytes* = 512 * 1024 * 1024
+  DefaultMaxNonHighPriorityQueueAge* = 5.seconds
 
 type
   PeerRateLimitError* = object of CatchableError
@@ -137,12 +153,19 @@ type
     useCustomStream: bool
     relayedSaltedId: Opt[SaltedId]
       ## Id of the one relayed message this RPC carries, when it was not split.
+    expiresAt: Moment
+
+  OutboundQueueBudget* = ref object
+    bytes*: int
+    maxBytes*: int
 
   RpcMessageQueue* = ref object
     # Tracks async tasks for sending high-priority peer-published messages.
     sendPriorityQueue: Deque[Future[void]]
     # Encoded RPC bytes, including messages held by pending sends.
     bytes: array[MessagePriority, int]
+    # Bytes still in the medium/low deques and therefore evictable.
+    evictableBytes: array[MessagePriority, int]
     # Queue for local published messages
     mediumPriorityQueue: Deque[QueuedMessage]
     # Queue for lower-priority messages, like "IWANT" replies and relay messages.
@@ -211,9 +234,14 @@ type
     sendStreamWarnings: LogRateLimit
     rng: Rng
     validationSlots*: AsyncSemaphore
-    maxHighPriorityQueueBytes*: int
-    maxMediumPriorityQueueBytes*: int
+    maxOutboundQueueBytes*: int
+    highPriorityQueueReservedBytes*: int
     maxLowPriorityQueueBytes*: int
+    maxNonHighPriorityQueueAge*: Duration
+    outboundQueueBudget*: OutboundQueueBudget
+    evictGlobal*: proc(
+      requester: PubSubPeer, priority: MessagePriority, bytesNeeded: int
+    ) {.gcsafe, raises: [].}
     stopped: bool
     customStreamCallbacks*: Opt[CustomStreamCallbacks]
     connectFut: Future[void]
@@ -293,40 +321,53 @@ func outbound*(p: PubSubPeer): bool =
   else:
     false
 
+func fitsWithin(currentBytes, messageBytes, maxBytes: int): bool =
+  currentBytes <= maxBytes and messageBytes <= maxBytes - currentBytes
+
 func determineQueueAction*(
     priority: MessagePriority,
     sendPriorityQueueLen, mediumPriorityQueueLen, lowPriorityQueueLen: int,
     maxHighPriorityQueueLen, maxMediumPriorityQueueLen, maxLowPriorityQueueLen: int,
     messageBytes: int = 0,
     highPriorityQueueBytes, mediumPriorityQueueBytes, lowPriorityQueueBytes: int = 0,
-    maxHighPriorityQueueBytes: int = DefaultMaxHighPriorityQueueBytes,
-    maxMediumPriorityQueueBytes: int = DefaultMaxMediumPriorityQueueBytes,
+    maxOutboundQueueBytes: int = DefaultMaxOutboundQueueBytes,
+    highPriorityQueueReservedBytes: int = DefaultHighPriorityQueueReservedBytes,
     maxLowPriorityQueueBytes: int = DefaultMaxLowPriorityQueueBytes,
 ): QueueAction =
+  let
+    totalBytes =
+      highPriorityQueueBytes + mediumPriorityQueueBytes + lowPriorityQueueBytes
+    nonHighBytes = mediumPriorityQueueBytes + lowPriorityQueueBytes
+    maxNonHighBytes = maxOutboundQueueBytes - highPriorityQueueReservedBytes
   let emptyQueues =
     sendPriorityQueueLen == 0 and mediumPriorityQueueLen == 0 and
-    lowPriorityQueueLen == 0 and mediumPriorityQueueBytes == 0 and
-    lowPriorityQueueBytes == 0
+    lowPriorityQueueLen == 0 and totalBytes == 0
 
   var send = true
   var slowPeerPenaltyDelta = 0.0
   var priority = priority
 
   if priority == MessagePriority.High or emptyQueues:
-    # Empty queues promote medium/low sends into the high-priority budget.
+    # A lone protocol-valid frame may exceed the normal backlog budget.
     priority = MessagePriority.High
 
-    if sendPriorityQueueLen >= maxHighPriorityQueueLen or
-        messageBytes > maxHighPriorityQueueBytes - highPriorityQueueBytes:
+    if sendPriorityQueueLen >= maxHighPriorityQueueLen or (
+      not emptyQueues and not fitsWithin(
+        totalBytes, messageBytes, maxOutboundQueueBytes
+      )
+    ):
       send = false
   elif priority == MessagePriority.Medium:
     if mediumPriorityQueueLen >= maxMediumPriorityQueueLen or
-        messageBytes > maxMediumPriorityQueueBytes - mediumPriorityQueueBytes:
+        not fitsWithin(totalBytes, messageBytes, maxOutboundQueueBytes) or
+        not fitsWithin(nonHighBytes, messageBytes, maxNonHighBytes):
       send = false
       slowPeerPenaltyDelta = 1.0
   else:
     if lowPriorityQueueLen >= maxLowPriorityQueueLen or
-        messageBytes > maxLowPriorityQueueBytes - lowPriorityQueueBytes:
+        not fitsWithin(lowPriorityQueueBytes, messageBytes, maxLowPriorityQueueBytes) or
+        not fitsWithin(totalBytes, messageBytes, maxOutboundQueueBytes) or
+        not fitsWithin(nonHighBytes, messageBytes, maxNonHighBytes):
       slowPeerPenaltyDelta = 1.0
       send = false
 
@@ -339,8 +380,8 @@ func determineQueueAction*(
     rpcmessagequeue: RpcMessageQueue,
     maxHighPriorityQueueLen, maxMediumPriorityQueueLen, maxLowPriorityQueueLen: int,
     messageBytes: int = 0,
-    maxHighPriorityQueueBytes: int = DefaultMaxHighPriorityQueueBytes,
-    maxMediumPriorityQueueBytes: int = DefaultMaxMediumPriorityQueueBytes,
+    maxOutboundQueueBytes: int = DefaultMaxOutboundQueueBytes,
+    highPriorityQueueReservedBytes: int = DefaultHighPriorityQueueReservedBytes,
     maxLowPriorityQueueBytes: int = DefaultMaxLowPriorityQueueBytes,
 ): QueueAction =
   determineQueueAction(
@@ -355,15 +396,25 @@ func determineQueueAction*(
     rpcmessagequeue.bytes[High],
     rpcmessagequeue.bytes[Medium],
     rpcmessagequeue.bytes[Low],
-    maxHighPriorityQueueBytes,
-    maxMediumPriorityQueueBytes,
+    maxOutboundQueueBytes,
+    highPriorityQueueReservedBytes,
     maxLowPriorityQueueBytes,
   )
+
+proc newOutboundQueueBudget*(maxBytes: int): OutboundQueueBudget =
+  OutboundQueueBudget(maxBytes: maxBytes)
 
 func queuedBytes*(p: PubSubPeer, priority: MessagePriority): int =
   ## Encoded RPC bytes retained by this priority, including pending writes.
   ## Excludes transport framing, allocator overhead, and transport-owned copies.
   p.rpcmessagequeue.bytes[priority]
+
+func queuedBytes*(p: PubSubPeer): int =
+  p.rpcmessagequeue.bytes[High] + p.rpcmessagequeue.bytes[Medium] +
+    p.rpcmessagequeue.bytes[Low]
+
+func evictableQueuedBytes*(p: PubSubPeer, priority: MessagePriority): int =
+  p.rpcmessagequeue.evictableBytes[priority]
 
 proc recvObservers*(p: PubSubPeer, msg: var RPCMsg) =
   # trigger hooks
@@ -590,6 +641,133 @@ proc clearSendPriorityQueue(p: PubSubPeer) =
       value = p.rpcmessagequeue.sendPriorityQueue.len.int64, labelValues = [$p.peerId]
     )
 
+func priorityLabel(priority: MessagePriority): string =
+  case priority
+  of High: "high"
+  of Medium: "medium"
+  of Low: "low"
+
+func bytesNeeded(currentBytes, messageBytes, maxBytes: int): int =
+  if fitsWithin(currentBytes, messageBytes, maxBytes):
+    0
+  elif currentBytes >= maxBytes:
+    messageBytes
+  else:
+    messageBytes - (maxBytes - currentBytes)
+
+proc chargeBytes(p: PubSubPeer, priority: MessagePriority, amount: int) =
+  p.rpcmessagequeue.bytes[priority] += amount
+  if not p.outboundQueueBudget.isNil:
+    p.outboundQueueBudget.bytes += amount
+    when defined(libp2p_expensive_metrics):
+      libp2p_pubsub_outbound_queue_bytes.set(p.outboundQueueBudget.bytes.int64)
+
+proc releaseBytes(p: PubSubPeer, priority: MessagePriority, amount: int) =
+  doAssert p.rpcmessagequeue.bytes[priority] >= amount
+  p.rpcmessagequeue.bytes[priority] -= amount
+  if not p.outboundQueueBudget.isNil:
+    doAssert p.outboundQueueBudget.bytes >= amount
+    p.outboundQueueBudget.bytes -= amount
+    when defined(libp2p_expensive_metrics):
+      libp2p_pubsub_outbound_queue_bytes.set(p.outboundQueueBudget.bytes.int64)
+
+proc recordQueueDrop(
+    p: PubSubPeer,
+    priority: MessagePriority,
+    messageBytes: int,
+    reason: string,
+    penaltyDelta = 1.0,
+) =
+  p.slowPeerPenalty += penaltyDelta
+  when defined(libp2p_expensive_metrics):
+    let label = priorityLabel(priority)
+    libp2p_pubsub_outbound_queue_dropped_messages.inc(labelValues = [label, reason])
+    libp2p_pubsub_outbound_queue_dropped_bytes.inc(
+      messageBytes.int64, labelValues = [label, reason]
+    )
+
+proc evictQueuedBytes*(
+    p: PubSubPeer, priority: MessagePriority, bytesToFree: int, reason = "node_limit"
+): int {.gcsafe.} =
+  if priority == High:
+    return 0
+
+  template evictFrom(queue: untyped) =
+    while result < bytesToFree and queue.len > 0:
+      let msg = queue.popFirst()
+      let messageBytes = msg.data.len
+      p.rpcmessagequeue.evictableBytes[priority] -= messageBytes
+      p.releaseBytes(priority, messageBytes)
+      p.recordQueueDrop(priority, messageBytes, reason)
+      result += messageBytes
+      when defined(pubsubpeer_queue_metrics):
+        if priority == Medium:
+          libp2p_gossipsub_medium_priority_queue_size.dec(labelValues = [$p.peerId])
+        else:
+          libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
+
+  case priority
+  of Medium:
+    evictFrom(p.rpcmessagequeue.mediumPriorityQueue)
+  of Low:
+    evictFrom(p.rpcmessagequeue.lowPriorityQueue)
+  of High:
+    discard
+
+proc expireQueuedMessages(p: PubSubPeer, now: Moment) =
+  if p.maxNonHighPriorityQueueAge <= ZeroDuration:
+    return
+  while p.rpcmessagequeue.mediumPriorityQueue.len > 0 and
+      p.rpcmessagequeue.mediumPriorityQueue[0].expiresAt <= now:
+    discard p.evictQueuedBytes(Medium, 1, "expired")
+  while p.rpcmessagequeue.lowPriorityQueue.len > 0 and
+      p.rpcmessagequeue.lowPriorityQueue[0].expiresAt <= now:
+    discard p.evictQueuedBytes(Low, 1, "expired")
+
+proc makePeerRoom(p: PubSubPeer, priority: MessagePriority, messageBytes: int) =
+  case priority
+  of High:
+    let removableBytes = p.evictableQueuedBytes(Low) + p.evictableQueuedBytes(Medium)
+    if not fitsWithin(
+      p.queuedBytes() - removableBytes, messageBytes, p.maxOutboundQueueBytes
+    ):
+      return
+    var needed = bytesNeeded(p.queuedBytes(), messageBytes, p.maxOutboundQueueBytes)
+    if needed > 0:
+      discard p.evictQueuedBytes(Low, needed, "peer_limit")
+      needed = bytesNeeded(p.queuedBytes(), messageBytes, p.maxOutboundQueueBytes)
+    if needed > 0:
+      discard p.evictQueuedBytes(Medium, needed, "peer_limit")
+  of Medium:
+    let
+      nonHighBytes = p.queuedBytes(Medium) + p.queuedBytes(Low)
+      maxNonHighBytes = p.maxOutboundQueueBytes - p.highPriorityQueueReservedBytes
+      removableBytes = p.evictableQueuedBytes(Low)
+      needed = max(
+        bytesNeeded(p.queuedBytes(), messageBytes, p.maxOutboundQueueBytes),
+        bytesNeeded(nonHighBytes, messageBytes, maxNonHighBytes),
+      )
+    if not fitsWithin(
+      p.queuedBytes() - removableBytes, messageBytes, p.maxOutboundQueueBytes
+    ) or not fitsWithin(nonHighBytes - removableBytes, messageBytes, maxNonHighBytes):
+      return
+    if needed > 0:
+      discard p.evictQueuedBytes(Low, needed, "peer_limit")
+  of Low:
+    discard
+
+proc ensureGlobalRoom(
+    p: PubSubPeer, priority: MessagePriority, messageBytes: int
+): bool =
+  let budget = p.outboundQueueBudget
+  if budget.isNil or fitsWithin(budget.bytes, messageBytes, budget.maxBytes) or
+      budget.bytes == 0:
+    return true
+
+  if not p.evictGlobal.isNil:
+    p.evictGlobal(p, priority, bytesNeeded(budget.bytes, messageBytes, budget.maxBytes))
+  fitsWithin(budget.bytes, messageBytes, budget.maxBytes) or budget.bytes == 0
+
 proc sendMsgContinue(
     stream: Stream, msgFut: Future[void].Raising([CancelledError, LPStreamError])
 ) {.async: (raises: [CancelledError]).} =
@@ -633,10 +811,10 @@ proc sendMsg(
   ## queue accounting. Do not await this from receive-handler paths.
   let messageBytes = msg.len
   if trackHighPriority:
-    p.rpcmessagequeue.bytes[High] += messageBytes
+    p.chargeBytes(High, messageBytes)
   defer:
     if trackHighPriority:
-      p.rpcmessagequeue.bytes[High] -= messageBytes
+      p.releaseBytes(High, messageBytes)
   type StreamType = enum
     ctCustom
     ctSend
@@ -690,10 +868,13 @@ proc enqueueNonHighPriorityMessage(
     useCustomStream: bool,
     priority: MessagePriority,
     relayedSaltedId: Opt[SaltedId],
+    expiresAt: Moment,
 ): Future[void] =
-  p.rpcmessagequeue.bytes[priority] += msg.len
+  let messageBytes = msg.len
+  p.chargeBytes(priority, messageBytes)
+  p.rpcmessagequeue.evictableBytes[priority] += messageBytes
   let queuedMsg = QueuedMessage(
-    data: move(msg), useCustomStream: useCustomStream, relayedSaltedId: relayedSaltedId
+    data: move(msg), useCustomStream: useCustomStream, expiresAt: expiresAt, relayedSaltedId: relayedSaltedId
   )
   case priority
   of MessagePriority.Medium:
@@ -711,9 +892,13 @@ proc enqueueNonHighPriorityMessage(
   return newFutureCompleted[void]()
 
 proc dropNonHighPriorityMessage(
-    p: PubSubPeer, slowPeerPenaltyDelta: float64, priority: MessagePriority
+    p: PubSubPeer,
+    slowPeerPenaltyDelta: float64,
+    priority: MessagePriority,
+    messageBytes: int,
+    reason = "limit",
 ): Future[void] =
-  p.slowPeerPenalty += slowPeerPenaltyDelta
+  p.recordQueueDrop(priority, messageBytes, reason, slowPeerPenaltyDelta)
   case priority
   of MessagePriority.Medium:
     when defined(pubsubpeer_queue_metrics):
@@ -765,8 +950,8 @@ proc sendEncoded*(
 ): Future[void] =
   ## Sends high-priority messages immediately; overflow disconnects the peer.
   ## Medium/low overflow drops the incoming message and penalizes the peer.
-  ## Both count and encoded-byte limits apply. Empty queues promote any priority
-  ## to high, using its limits. Pending writes remain charged until completion.
+  ## Count and shared encoded-byte limits apply. Empty queues promote one
+  ## protocol-valid frame to high priority. Pending writes remain charged.
   ## `relayedSaltedId` lets `cancelQueuedRelays` drop a queued relay.
   doAssert(not isNil(p), "pubsubpeer nil!")
 
@@ -783,12 +968,30 @@ proc sendEncoded*(
       maxSize = p.maxMessageSize, msgSize = msg.len
     newFutureCompleted[void]()
   else:
+    var expiresAt: Moment
+    if priority != High:
+      let now = Moment.now()
+      p.expireQueuedMessages(now)
+      expiresAt = now + p.maxNonHighPriorityQueueAge
+      if priority != Medium or
+          p.rpcmessagequeue.mediumPriorityQueue.len < p.maxMediumPriorityQueueLen:
+        p.makePeerRoom(priority, msg.len)
+    elif not fitsWithin(p.queuedBytes(), msg.len, p.maxOutboundQueueBytes):
+      if p.rpcmessagequeue.sendPriorityQueue.len < p.maxHighPriorityQueueLen:
+        p.expireQueuedMessages(Moment.now())
+        p.makePeerRoom(priority, msg.len)
+
     let action = determineQueueAction(
       priority, p.rpcmessagequeue, p.maxHighPriorityQueueLen,
       p.maxMediumPriorityQueueLen, p.maxLowPriorityQueueLen, msg.len,
-      p.maxHighPriorityQueueBytes, p.maxMediumPriorityQueueBytes,
+      p.maxOutboundQueueBytes, p.highPriorityQueueReservedBytes,
       p.maxLowPriorityQueueBytes,
     )
+
+    if action.send and not p.ensureGlobalRoom(priority, msg.len):
+      if priority == High:
+        return p.disconnectPeer()
+      return p.dropNonHighPriorityMessage(1.0, priority, msg.len, reason = "node_limit")
 
     case action.priority
     of High:
@@ -799,10 +1002,12 @@ proc sendEncoded*(
     of Medium, Low:
       if action.send:
         p.enqueueNonHighPriorityMessage(
-          move(msg), useCustomStream, action.priority, relayedSaltedId
+          move(msg), useCustomStream, action.priority, relayedSaltedId, expiresAt
         )
       else:
-        p.dropNonHighPriorityMessage(action.slowPeerPenaltyDelta, action.priority)
+        p.dropNonHighPriorityMessage(
+          action.slowPeerPenaltyDelta, action.priority, msg.len
+        )
 
 proc sendTopicRPC*(p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority) =
   if p.stopped:
@@ -987,6 +1192,7 @@ proc sendNonHighPriorityTask(p: PubSubPeer) {.async: (raises: [CancelledError]).
 
     # Pop after the wait above, so a message that waits stays cancellable.
     var priority = MessagePriority.Low
+    p.expireQueuedMessages(Moment.now())
     var msg =
       if p.rpcmessagequeue.mediumPriorityQueue.len != 0:
         priority = MessagePriority.Medium
@@ -997,19 +1203,23 @@ proc sendNonHighPriorityTask(p: PubSubPeer) {.async: (raises: [CancelledError]).
         continue
 
     let messageBytes = msg.data.len
-    try:
-      when defined(pubsubpeer_queue_metrics):
-        if priority == MessagePriority.Medium:
-          libp2p_gossipsub_medium_priority_queue_size.dec(labelValues = [$p.peerId])
-        else:
-          libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
+    p.rpcmessagequeue.evictableBytes[priority] -= messageBytes
+    when defined(pubsubpeer_queue_metrics):
+      if priority == MessagePriority.Medium:
+        libp2p_gossipsub_medium_priority_queue_size.dec(labelValues = [$p.peerId])
+      else:
+        libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
 
-      let useCustomStream = msg.useCustomStream
-      await p.sendMsg(move(msg.data), useCustomStream)
+    try:
+      if p.maxNonHighPriorityQueueAge > ZeroDuration and msg.expiresAt <= Moment.now():
+        p.recordQueueDrop(priority, messageBytes, "expired")
+      else:
+        let useCustomStream = msg.useCustomStream
+        await p.sendMsg(move(msg.data), useCustomStream)
     except CancelledError as exc:
-      p.rpcmessagequeue.bytes[priority] -= messageBytes
+      p.releaseBytes(priority, messageBytes)
       raise exc
-    p.rpcmessagequeue.bytes[priority] -= messageBytes
+    p.releaseBytes(priority, messageBytes)
 
 proc startSendNonHighPriorityTask(p: PubSubPeer) =
   trace "starting sendNonHighPriorityTask", peer = p
@@ -1043,7 +1253,10 @@ proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
   p.rpcmessagequeue.sendPriorityQueue.clear()
   p.rpcmessagequeue.mediumPriorityQueue.clear()
   p.rpcmessagequeue.lowPriorityQueue.clear()
-  p.rpcmessagequeue.bytes = default(array[MessagePriority, int])
+  for priority in MessagePriority:
+    if p.rpcmessagequeue.bytes[priority] > 0:
+      p.releaseBytes(priority, p.rpcmessagequeue.bytes[priority])
+  p.rpcmessagequeue.evictableBytes = default(array[MessagePriority, int])
 
   when defined(pubsubpeer_queue_metrics):
     libp2p_gossipsub_high_priority_queue_size.set(labelValues = [$p.peerId], value = 0)
@@ -1076,9 +1289,14 @@ proc new*(
     sendStreamRetryBaseDelay: Duration = DefaultSendStreamRetryBaseDelay,
     sendStreamRetryMaxDelay: Duration = DefaultSendStreamRetryMaxDelay,
     rng: Rng = newRng(),
-    maxHighPriorityQueueBytes: int = int.high,
-    maxMediumPriorityQueueBytes: int = int.high,
+    maxOutboundQueueBytes: int = int.high,
+    highPriorityQueueReservedBytes: int = 0,
     maxLowPriorityQueueBytes: int = int.high,
+    maxNonHighPriorityQueueAge: Duration = ZeroDuration,
+    outboundQueueBudget: OutboundQueueBudget = nil,
+    evictGlobal: proc(
+      requester: PubSubPeer, priority: MessagePriority, bytesNeeded: int
+    ) {.gcsafe, raises: [].} = nil,
 ): T =
   # GossipSub supplies finite byte budgets; FloodSub retains count-only limits.
   doAssert not handler.isNil, "RPC handler must be set"
@@ -1086,8 +1304,9 @@ proc new*(
     "send stream retry base delay must be positive"
   doAssert sendStreamRetryMaxDelay >= sendStreamRetryBaseDelay,
     "send stream retry max delay must not be below the base delay"
-  doAssert maxHighPriorityQueueBytes > 0
-  doAssert maxMediumPriorityQueueBytes > 0
+  doAssert maxOutboundQueueBytes > 0
+  doAssert highPriorityQueueReservedBytes >= 0
+  doAssert highPriorityQueueReservedBytes < maxOutboundQueueBytes
   doAssert maxLowPriorityQueueBytes > 0
   let response = T(
     getStream: getStream,
@@ -1103,9 +1322,12 @@ proc new*(
     maxHighPriorityQueueLen: maxHighPriorityQueueLen,
     maxMediumPriorityQueueLen: maxMediumPriorityQueueLen,
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
-    maxHighPriorityQueueBytes: maxHighPriorityQueueBytes,
-    maxMediumPriorityQueueBytes: maxMediumPriorityQueueBytes,
+    maxOutboundQueueBytes: maxOutboundQueueBytes,
+    highPriorityQueueReservedBytes: highPriorityQueueReservedBytes,
     maxLowPriorityQueueBytes: maxLowPriorityQueueBytes,
+    maxNonHighPriorityQueueAge: maxNonHighPriorityQueueAge,
+    outboundQueueBudget: outboundQueueBudget,
+    evictGlobal: evictGlobal,
     customStreamCallbacks: customStreamCallbacks,
     sendStreamRetryBaseDelay: sendStreamRetryBaseDelay,
     sendStreamRetryMaxDelay: sendStreamRetryMaxDelay,
