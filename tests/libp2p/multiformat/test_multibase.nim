@@ -278,9 +278,9 @@ suite "MultiBase test suite":
     var ebuffer = newString(10)
     var outlen = 0
     check:
-      MultiBase.decode("zI0").error() == "multibase: Decoding error [Incorrect]"
+      MultiBase.decode("zI0").error() == "multibase: Decoding error (Incorrect)"
       MultiBase.decode("zI0", dbuffer, outlen) == MultiBaseStatus.Incorrect
-      MultiBase.decode("m!!!").error() == "multibase: Decoding error [Incorrect]"
+      MultiBase.decode("m!!!").error() == "multibase: Decoding error (Incorrect)"
       MultiBase.decode("m!!!", dbuffer, outlen) == MultiBaseStatus.Incorrect
       MultiBase.decode("").error() == "multibase: Could not decode zero-length string"
       MultiBase.decode("", dbuffer, outlen) == MultiBaseStatus.Incorrect

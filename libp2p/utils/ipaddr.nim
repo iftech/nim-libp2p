@@ -26,7 +26,7 @@ proc primaryIPAddrTo(probe: IpAddress): Result[IpAddress, string] {.raises: [].}
   try:
     ok(getPrimaryIPAddr(probe))
   except CatchableError as e:
-    err(e.msg)
+    err(e)
   except Defect as e:
     raise e
   except Exception as e: # on windows getPrimaryIPAddr has untracked effects
@@ -58,8 +58,8 @@ proc getPublicIPAddress*(): Result[IpAddress, string] {.raises: [].} =
 
   let globalIp = address.valueOr:
     if candidates.len == 0:
-      return err("could not determine a source IP address: " & failures.join("; "))
-    return err("no globally routable source IP address found: " & failures.join("; "))
+      return err(failures.join("; "), "could not determine a source IP address")
+    return err(failures.join("; "), "no globally routable source IP address found")
   ok(globalIp)
 
 func ipAddrMatches*(lookup: MultiAddress, addrs: openArray[MultiAddress]): bool =

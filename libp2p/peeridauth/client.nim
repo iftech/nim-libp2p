@@ -83,7 +83,7 @@ func genDataToSign(
   var buf: seq[byte] = prefix.toBytes()
   for p in parts:
     let varintLen = PB.encodeVarint(hint(p.k.len + p.v.len + 1)).valueOr:
-      return err("could not encode fields length to varint")
+      return err(error, "could not encode fields length to varint")
     buf.add varintLen
     buf.add (p.k & "=").toBytes()
     buf.add p.v
@@ -198,9 +198,9 @@ proc tryGet(
   try:
     ok(await self.get(uri))
   except HttpError as e:
-    err(e.msg)
+    err(e)
   except PeerIDAuthError as e:
-    err(e.msg)
+    err(e)
 
 proc tryPost(
     self: PeerIDAuthClient, uri: Uri, payload: string, authHeader: string
@@ -208,7 +208,7 @@ proc tryPost(
   try:
     ok(await self.post(uri, payload, authHeader))
   except HttpError as e:
-    err(e.msg)
+    err(e)
 
 proc tryRequestAuthentication*(
     self: PeerIDAuthClient, uri: Uri
@@ -226,7 +226,7 @@ proc tryRequestAuthentication*(
   let pubkeyBytes = encodedPubkey.tryDecode().valueOr:
     return err(error, "Failed to decode server public-key")
   let serverPubkey = PublicKey.init(pubkeyBytes).valueOr:
-    return err("Failed to initialize server public-key")
+    return err(error, "Failed to initialize server public-key")
 
   ok(
     PeerIDAuthAuthenticationResponse(

@@ -30,7 +30,7 @@ proc encodePeerId*(peerId: PeerId): Result[string, LPResultError] =
     return err("Failed to decode PeerId: invalid multihash format")
 
   let cid = Cid.init(CIDv1, multiCodec("libp2p-key"), mh).valueOr:
-    return err("Failed to initialize CID from multihash")
+    return err(error, "Failed to initialize CID from multihash")
 
   ok(Base36.encode(cid.data.buffer))
 

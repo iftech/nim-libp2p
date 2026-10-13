@@ -104,7 +104,8 @@ suite "KadDHT Get":
 
     let record = await kads[0].getValue(key)
     check record.isErr()
-    check record.error() == "Not enough valid records to achieve quorum, needed 5 got 1"
+    check record.error() ==
+      "Not enough valid records to achieve quorum (needed 5, got 1)"
 
   asyncTest "Update peers with empty values":
     let kads = setupKadSwitches(5, DefaultEntryValidator(), DefaultEntrySelector())

@@ -470,7 +470,7 @@ proc setupAutonatV2(
       AutonatV2Service.new(self.rng, client = autonatV2Client, config = serviceConfig)
   autonatV2Client.setup(switch)
   switch.tryMount(autonatV2Client).isOkOr:
-    return err("NATService failed to mount AutonatV2Client: " & error)
+    return err(error, "NATService failed to mount AutonatV2Client")
   autonatV2Service.reachabilityObservers = self.observers
   self.reachability = autonatV2Service
   ok()

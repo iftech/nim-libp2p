@@ -210,7 +210,7 @@ proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
 ): Result[AutotlsCert, LPResultError] =
   let derPrivKey = certKeyPair.getBytes().valueOr:
-    return err("Unable to get TLS private key")
+    return err(error, "Unable to get TLS private key")
 
   try:
     ok(
@@ -369,7 +369,7 @@ proc issueCertificate(
           err = ipLookupError,
           hint =
             "Set AutotlsConfig.ipAddress or ensure the node is reachable from the public internet"
-      return err("Unable to determine public IP address: " & ipLookupError)
+      return err(ipLookupError, "Unable to determine public IP address")
     self.config.ipAddress = Opt.some(ip)
 
   let addrs = await self.brokerAddrs(switch)
@@ -381,7 +381,7 @@ proc issueCertificate(
   let baseDomain = api.Domain(peerLabel & "." & self.config.domainSuffix)
 
   let certKeyPair = RsaPrivateKey.random(self.rng).valueOr:
-    return err("Unable to generate certificate key pair")
+    return err(error, "Unable to generate certificate key pair")
 
   let certificate = ?(await self.requestCertificate(baseDomain, certKeyPair, addrs))
 

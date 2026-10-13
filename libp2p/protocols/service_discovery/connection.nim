@@ -38,7 +38,7 @@ proc send*(
 ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   let addrs = disco.switch.peerStore[AddressBook][peerId]
   if addrs.len == 0:
-    return err("no address found for peer: " & $peerId)
+    return err($peerId, "no address found for peer")
 
   if disco.dialBackedOff(peerId, addrs):
     return err(makeDialBackoffError(peerId))
@@ -49,7 +49,7 @@ proc send*(
     except DialFailedError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
-      return err("dialing peer failed: " & e.msg)
+      return err(e, "dialing peer failed")
 
   var replyRead = false
   defer:
@@ -73,13 +73,13 @@ proc send*(
     except LPStreamError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
-      return err("connection writing failed: " & e.msg)
+      return err(e, "connection writing failed")
     try:
       replyBuf = await stream.readLp(ServiceDiscoveryMaxMsgSize)
     except LPStreamError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
-      return err("connection reading failed: " & e.msg)
+      return err(e, "connection reading failed")
   replyRead = true
 
   cd_messages_received.inc(labelValues = [$msg.msgType])

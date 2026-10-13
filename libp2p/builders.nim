@@ -482,7 +482,7 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
 
   let seckey = b.privKey.valueOr:
     PrivateKey.random(b.rng).valueOr:
-      return err("Could not create new private key, reason: " & $error)
+      return err(error, "Could not create new private key")
 
   if b.secureManagers.len == 0:
     debug "No secure managers configured; using Noise by default"

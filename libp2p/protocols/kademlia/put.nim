@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[sequtils, tables]
+import std/[sequtils, strformat, tables]
 import chronos, chronicles, results
 import ../../[peerid, switch, multihash]
 import ../../utils/[heartbeat, future]
@@ -78,8 +78,7 @@ proc putValue*(
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   if value.len > kad.config.limits.maxValueSize:
     return err(
-      "value exceeds maxValueSize (" & $value.len & " > " &
-        $kad.config.limits.maxValueSize & ")"
+      fmt"{value.len} > {kad.config.limits.maxValueSize}", "value exceeds maxValueSize"
     )
 
   let record = EntryRecord(value: value, time: Timestamp.now())

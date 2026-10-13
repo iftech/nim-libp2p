@@ -6,7 +6,7 @@
 {.push raises: [].}
 
 import ../logging
-import std/[sequtils, oserrors]
+import std/[sequtils, strformat]
 import chronos, chronicles
 import ../results
 import
@@ -40,10 +40,6 @@ type
     closeFuts: seq[Future[void]]
 
   TcpTransportError* = object of transport.TransportError
-
-  ConnAddrs = object
-    observed: MultiAddress
-    local: MultiAddress
 
 proc connHandler*(
     self: TcpTransport,
@@ -121,7 +117,7 @@ proc listen(
       try:
         createStreamServer(ta, flags = self.flags)
       except common.TransportError as e:
-        return err("TcpTransport.start failed to listen on " & $ta & ". " & e.msg)
+        return err(e, fmt"TcpTransport.start failed to listen on {ta}")
     self.servers &= server
 
     let localAddr = MultiAddress.init(server.sock.getLocalAddress()).valueOr:
@@ -130,14 +126,6 @@ proc listen(
     supported.add(localAddr)
 
   ok(supported)
-
-proc connAddrs(transp: StreamTransport): LPResult[ConnAddrs] =
-  let remote = transp.remoteAddress2().valueOr:
-    return err("cannot read remote address. " & osErrorMsg(error))
-  let local = transp.localAddress2().valueOr:
-    return err("cannot read local address. " & osErrorMsg(error))
-
-  ok ConnAddrs(observed: ?MultiAddress.init(remote), local: ?MultiAddress.init(local))
 
 method start*(
     self: TcpTransport, addrs: seq[MultiAddress]

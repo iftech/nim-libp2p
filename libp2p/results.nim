@@ -68,7 +68,7 @@ template err*(detail: string, cause: string): auto =
   when typeof(result.error) is LPResultError:
     typeof(result).err(LPResultError.init(cause, detail))
   else:
-    typeof(result).err(cause & " (" & detail & ")")
+    typeof(result).err($LPResultError.init(cause, detail))
 
 template err*[E: not Result](inner: E, outer: string): auto =
   when typeof(result.error) is LPResultError:

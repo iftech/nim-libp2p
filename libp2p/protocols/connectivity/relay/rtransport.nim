@@ -3,7 +3,7 @@
 
 {.push raises: [].}
 
-import std/sequtils, chronos, chronicles
+import std/[sequtils, strformat], chronos, chronicles
 
 import
   ./client,
@@ -93,7 +93,7 @@ proc tryDial*(
         address.relayPeerId, @[address.relay], @[RelayV2HopCodec, RelayV1Codec]
       )
     except DialFailedError as e:
-      return err("dial relay peer failed: " & e.msg)
+      return err(e, "dial relay peer failed")
   conn.dir = Direction.Out
 
   var dialedConn: Stream = conn
@@ -114,7 +114,7 @@ proc tryDial*(
 
   if dialed.isErr():
     safeClose(dialedConn)
-    return err(dialed.error, "dial relay " & conn.protocol & " failed")
+    return err(dialed.error, fmt"dial relay {conn.protocol} failed")
 
   dialed
 

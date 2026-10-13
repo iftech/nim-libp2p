@@ -1,7 +1,6 @@
 name: Coverage
 
 on:
-  # On push to common branches, this computes the coverage that PRs will use for diff
   push:
     branches:
       - master
@@ -17,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  codecov:
-    name: Run coverage and upload to codecov
+  coverage:
+    name: Run coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     env:
@@ -83,9 +82,5 @@ jobs:
             --omit-lines '^\s*(proc|func|method|iterator|template)\b([^=]*|.*=\s*(#.*)?)$' \
             --omit-lines '^\s*[\)\]\}]+\s*$'
 
-      - name: Upload coverage to codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage/coverage.f.info
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Require at least 90% line coverage
+        run: lcov --summary coverage/coverage.f.info --fail-under-lines 90

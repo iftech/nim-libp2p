@@ -126,7 +126,7 @@ func checkReplyHeader(header: array[4, byte]): LPResult[void] =
 
   var socks5ReplyType: Socks5ReplyType
   if socks5ReplyType.checkedEnumAssign(header[1]):
-    err("Server reply error: " & $socks5ReplyType)
+    err($socks5ReplyType, "Server reply error")
   else:
     err("Unexpected server reply")
 
@@ -258,13 +258,13 @@ func splitListenAddrs(addrs: openArray[MultiAddress]): LPResult[TorListenAddrs] 
   var listenAddrs: TorListenAddrs
   for ma in addrs:
     if not handlesStart(ma):
-      return err("TorTransport.start called with unsupported address: " & $ma)
+      return err($ma, "TorTransport.start called with unsupported address")
 
     let
       tcp = ma[0 .. 1].valueOr:
-        return err("TorTransport.start called with invalid tor address: " & $ma)
+        return err($ma, "TorTransport.start called with invalid tor address")
       onion3 = ma[multiCodec("onion3")].valueOr:
-        return err("TorTransport.start called with invalid tor address: " & $ma)
+        return err($ma, "TorTransport.start called with invalid tor address")
     listenAddrs.tcp.add(tcp)
     listenAddrs.onion3.add(onion3)
 

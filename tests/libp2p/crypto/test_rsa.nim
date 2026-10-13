@@ -352,123 +352,31 @@ type
   RsaPublicKey = rsa.RsaPublicKey
 
 suite "RSA 2048/3072/4096 test suite":
-  test "[rsa2048] Private key serialize/deserialize test":
-    var rkey1, rkey2: RsaPrivateKey
-    var skey2 = newSeq[byte](4096)
-    var key = RsaPrivateKey.random(rng(), 2048).expect("random failed")
-    var skey1 = key.getBytes().expect("bytes")
-    check key.toBytes(skey2).expect("bytes") > 0
-    check:
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPrivateKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPrivateKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == key
-      rkey2 == key
-      rkey3 == key
-      rkey4 == key
-
-  test "[rsa3072] Private key serialize/deserialize test":
-    var rkey1, rkey2: RsaPrivateKey
-    var skey2 = newSeq[byte](4096)
-    var key = RsaPrivateKey.random(rng(), 3072).expect("random failed")
-    var skey1 = key.getBytes().expect("bytes")
-    check key.toBytes(skey2).expect("bytes") > 0
-    check:
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPrivateKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPrivateKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == key
-      rkey2 == key
-      rkey3 == key
-      rkey4 == key
-
-  test "[rsa4096] Private key serialize/deserialize test":
-    # This test is too slow to run in debug mode.
-    when defined(release):
-      var rkey1, rkey2: RsaPrivateKey
-      var skey2 = newSeq[byte](4096)
-      var key = RsaPrivateKey.random(rng(), 4096).expect("random failed")
-      var skey1 = key.getBytes().expect("bytes")
-      check key.toBytes(skey2).expect("bytes") > 0
+  template checkKeyRoundtrip(key: typed) =
+    block:
+      var restored, restoredFromBuffer: typeof(key)
+      var buffer = newSeq[byte](4096)
+      let encoded = key.getBytes().expect("bytes")
+      check key.toBytes(buffer).expect("bytes") > 0
       check:
-        rkey1.init(skey1).isOk()
-        rkey2.init(skey2).isOk()
-      var rkey3 = RsaPrivateKey.init(skey1).expect("key initialization")
-      var rkey4 = RsaPrivateKey.init(skey2).expect("key initialization")
+        restored.init(encoded).isOk()
+        restoredFromBuffer.init(buffer).isOk()
+      let decoded = typeof(key).init(encoded).expect("key initialization")
+      let decodedFromBuffer = typeof(key).init(buffer).expect("key initialization")
       check:
-        rkey1 == key
-        rkey2 == key
-        rkey3 == key
-        rkey4 == key
-    else:
-      skip()
-
-  test "[rsa2048] Public key serialize/deserialize test":
-    var rkey1, rkey2: RsaPublicKey
-    var skey2 = newSeq[byte](4096)
-    var pair = RsaKeyPair.random(rng(), 2048).expect("random failed")
-    var skey1 = pair.pubkey.getBytes().expect("bytes")
-    check:
-      pair.pubkey.toBytes(skey2).expect("bytes") > 0
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPublicKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPublicKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == pair.pubkey
-      rkey2 == pair.pubkey
-      rkey3 == pair.pubkey
-      rkey4 == pair.pubkey
-
-  test "[rsa3072] Public key serialize/deserialize test":
-    var rkey1, rkey2: RsaPublicKey
-    var skey2 = newSeq[byte](4096)
-    var pair = RsaKeyPair.random(rng(), 3072).expect("random failed")
-    var skey1 = pair.pubkey.getBytes().expect("bytes")
-    check:
-      pair.pubkey.toBytes(skey2).expect("bytes") > 0
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPublicKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPublicKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == pair.pubkey
-      rkey2 == pair.pubkey
-      rkey3 == pair.pubkey
-      rkey4 == pair.pubkey
-
-  test "[rsa4096] Public key serialize/deserialize test":
-    when defined(release):
-      var rkey1, rkey2: RsaPublicKey
-      var skey2 = newSeq[byte](4096)
-      var pair = RsaKeyPair.random(rng(), 4096).expect("random failed")
-      var skey1 = pair.pubkey.getBytes().expect("bytes")
-      check:
-        pair.pubkey.toBytes(skey2).expect("bytes") > 0
-        rkey1.init(skey1).isOk()
-        rkey2.init(skey2).isOk()
-      var rkey3 = RsaPublicKey.init(skey1).expect("key initialization")
-      var rkey4 = RsaPublicKey.init(skey2).expect("key initialization")
-      check:
-        rkey1 == pair.pubkey
-        rkey2 == pair.pubkey
-        rkey3 == pair.pubkey
-        rkey4 == pair.pubkey
-    else:
-      skip()
+        restored == key
+        restoredFromBuffer == key
+        decoded == key
+        decodedFromBuffer == key
 
   test "[rsa2048] Generate/Sign/Serialize/Deserialize/Verify test":
     var message = "message to sign"
     var kp = RsaKeyPair.random(rng(), 2048).expect("RsaPrivateKey.random failed")
+    checkKeyRoundtrip(kp.seckey)
+    checkKeyRoundtrip(kp.pubkey)
     var sig = kp.seckey.sign(message).expect("signature")
-    var sersk = kp.seckey.getBytes().expect("bytes")
     var serpk = kp.pubkey.getBytes().expect("bytes")
     var sersig = sig.getBytes().expect("bytes")
-    discard RsaPrivateKey.init(sersk).expect("key initialization")
     var pubkey = RsaPublicKey.init(serpk).expect("key initialization")
     var csig = RsaSignature.init(sersig).expect("key initialization")
     check csig.verify(message, pubkey) == true
@@ -479,11 +387,11 @@ suite "RSA 2048/3072/4096 test suite":
   test "[rsa3072] Generate/Sign/Serialize/Deserialize/Verify test":
     var message = "message to sign"
     var kp = RsaKeyPair.random(rng(), 3072).expect("RsaPrivateKey.random failed")
+    checkKeyRoundtrip(kp.seckey)
+    checkKeyRoundtrip(kp.pubkey)
     var sig = kp.seckey.sign(message).expect("signature")
-    var sersk = kp.seckey.getBytes().expect("bytes")
     var serpk = kp.pubkey.getBytes().expect("bytes")
     var sersig = sig.getBytes().expect("bytes")
-    discard RsaPrivateKey.init(sersk).expect("key initialization")
     var pubkey = RsaPublicKey.init(serpk).expect("key initialization")
     var csig = RsaSignature.init(sersig).expect("key initialization")
     check csig.verify(message, pubkey) == true
@@ -495,11 +403,11 @@ suite "RSA 2048/3072/4096 test suite":
     when defined(release):
       var message = "message to sign"
       var kp = RsaKeyPair.random(rng(), 4096).expect("RsaPrivateKey.random failed")
+      checkKeyRoundtrip(kp.seckey)
+      checkKeyRoundtrip(kp.pubkey)
       var sig = kp.seckey.sign(message).expect("signature")
-      var sersk = kp.seckey.getBytes().expect("bytes")
       var serpk = kp.pubkey.getBytes().expect("bytes")
       var sersig = sig.getBytes().expect("bytes")
-      discard RsaPrivateKey.init(sersk).expect("key initialization")
       var pubkey = RsaPublicKey.init(serpk).expect("key initialization")
       var csig = RsaSignature.init(sersig).expect("key initialization")
       check csig.verify(message, pubkey) == true

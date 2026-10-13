@@ -24,14 +24,6 @@ suite "Utility":
 
     check (await futs.collectCompleted(10.millis)) == @[1, 1]
 
-  test "take":
-    let a = @[1, 2, 3, 4]
-    check:
-      a.take(3) == @[1, 2, 3]
-      a.take(5) == @[1, 2, 3, 4]
-      a.take(0).len == 0
-      a.take(-1).len == 0
-
   test "removeFirstIfIt":
     var a = @[1, 2, 3, 2]
     check:

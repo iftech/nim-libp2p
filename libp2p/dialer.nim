@@ -201,9 +201,9 @@ proc expandDnsAddr(
       trace "DNSADDR resolution timed out", address = toResolve
       return ok(newSeq[(MultiAddress, Opt[PeerId])]())
     except MaError as e:
-      return err(e.msg)
+      return err(e)
     except TransportAddressError as e:
-      return err(e.msg)
+      return err(e)
 
   trace "Address resolution completed",
     originalAddresses = toResolve, resolvedAddresses = resolved
@@ -437,7 +437,7 @@ proc tryDialAndUpgrade(
     return ok(mux)
 
   outcome = if deadline.timeLeft().isZero(): "timedOut" else: "exhausted"
-  err("peer dial " & outcome)
+  err(outcome, "peer dial failed")
 
 proc dialAndUpgrade*(
     self: Dialer,
@@ -498,7 +498,7 @@ proc finishUpgrade(
       await muxed.close()
 
   (await self.connManager.storeMuxer(muxed)).isOkOr:
-    return err("failed storeMuxer in finishUpgrade: " & error)
+    return err(error, "failed storeMuxer in finishUpgrade")
 
   try:
     # Its own budget, not the dial's leftovers: the connection stands at this
@@ -507,7 +507,7 @@ proc finishUpgrade(
     await self.peerStore.identify(muxed, dir).wait(self.dialTimeout)
   except AsyncTimeoutError, IdentityNoMatchError, IdentityInvalidMsgError,
       MultiStreamError, LPStreamError, MuxerError:
-    return err("failed identify in finishUpgrade: " & getCurrentExceptionMsg())
+    return err(getCurrentExceptionMsg(), "failed identify in finishUpgrade")
   await self.connManager.triggerPeerEvents(
     muxed.connection.peerId, PeerEvent(kind: PeerEventKind.Identified, initiator: true)
   )
@@ -536,7 +536,7 @@ proc establishConnection(
       return err("peer on dial backoff in establishConnection")
 
   let slot = self.connManager.getOutgoingSlot(forceDial).valueOr:
-    return err("failed getOutgoingSlot in establishConnection: " & error)
+    return err(error, "failed getOutgoingSlot in establishConnection")
 
   let
     dialAddrs = normalizedDialAddrs(peerId, addrs)

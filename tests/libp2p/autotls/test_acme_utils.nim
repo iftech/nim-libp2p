@@ -70,8 +70,8 @@ suite "ACME utils":
     let node = %*{"status": "valid", "n": 1}
     check:
       node.tryGetStr("status").get() == "valid"
-      node.tryGetStr("n").error == "missing string field: n"
-      node.tryGetStr("absent").error == "missing string field: absent"
+      node.tryGetStr("n").error == "missing string field (n)"
+      node.tryGetStr("absent").error == "missing string field (absent)"
 
   test "tryTo decodes the object or returns an error":
     check:
@@ -84,4 +84,4 @@ suite "ACME utils":
     check:
       tryParseEnum[ACMEChallengeStatus]("valid").get() == ACMEChallengeStatus.VALID
       tryParseEnum[ACMEChallengeStatus]("bogus").error ==
-        "invalid ACMEChallengeStatus: bogus"
+        "invalid ACMEChallengeStatus (bogus)"

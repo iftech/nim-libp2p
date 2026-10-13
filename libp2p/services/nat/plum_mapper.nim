@@ -10,7 +10,7 @@
 
 {.push raises: [].}
 
-import std/[net, tables]
+import std/[net, strformat, tables]
 import chronos, chronicles
 import libplum/plum
 import ./portmapper, ../../results
@@ -145,9 +145,7 @@ method map*(
       parseIpAddress(res.mapping.externalHost)
     except ValueError as e:
       destroyMapping(res.id)
-      return err(
-        "plum: cannot parse external host '" & res.mapping.externalHost & "': " & e.msg
-      )
+      return err(e, fmt"plum: cannot parse external host '{res.mapping.externalHost}'")
 
   let mapped =
     MappedPort(externalIp: externalIp, externalPort: Port(res.mapping.externalPort))
@@ -175,7 +173,7 @@ method unmap*(
       self.mappings.del(key)
       return ok()
 
-  err("plum unmap: no known mapping for external port " & $externalPort.uint16)
+  err($externalPort.uint16, "plum unmap: no known mapping for external port")
 
 method close*(self: PlumMapper) {.async: (raises: []), gcsafe.} =
   if self.closed:
