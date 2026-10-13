@@ -509,7 +509,7 @@ nimble genbindings_cddl # Generate the CDDL schema
 | `daily_nimbus.yml` | Nimbus-specific test matrix |
 | `daily_runnable_examples.yml` | Daily runnable examples checks |
 | `cbindings.yml` | FFI library build + C/CDDL binding generation |
-| `coverage.yml` | Code coverage (uploads to codecov) |
+| `coverage.yml` | Code coverage |
 | `linters.yml` | nph (Nim) + clang-format (cbind C/H) formatting checks |
 | `pr_lint.yml` | PR title/description linting |
 | `auto_assign_pr.yml` | Automatically assigns reviewers to PRs |
