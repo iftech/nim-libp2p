@@ -152,8 +152,8 @@
 
   lsquic = pkgs.fetchgit {
     url = "https://github.com/vacp2p/nim-lsquic";
-    rev = "f156ed72554d16e925ed654833e7f37e8c8e7f8f";
-    sha256 = "0x5laxi1sd5z3ribzp6s8kip1hbr5c0jb2lj8vg3qgk0kjr9g7da";
+    rev = "e57027b73cbd6d9a805b93297dd7e24638db2d99";
+    sha256 = "0zpqdcilmfg7ggc55zgsv3f08kqkfwc3qk9ipaahx5l7bpd46sg6";
     fetchSubmodules = true;
   };
 
