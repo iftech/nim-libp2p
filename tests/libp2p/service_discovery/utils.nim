@@ -4,6 +4,7 @@
 
 import std/net
 import chronos, results, sequtils, tables
+import protobuf_serialization
 import
   ../../../libp2p/[
     builders,
@@ -105,17 +106,13 @@ proc makeOversizedAdvertisement*(
   )
   SignedExtendedPeerRecord.init(privateKey, extRecord).get()
 
-const UnknownEnvelopeField = 15 ## no `Envelope` field carries this number
+type EnvelopePadding {.proto3.} = object
+  padding {.fieldNumber: 15.}: string
 
 proc padAdvertisement*(advert: seq[byte], paddingBytes: int): seq[byte] =
   ## Grows the encoded record with a field the decoder skips, so only its
   ## incoming length reveals the padding.
-  
-  ## TODO
-  var pb = initVBuffer()
-  pb.write(UnknownEnvelopeField, newSeq[byte](paddingBytes))
-  pb.finish()
-  advert & pb.buffer
+  advert & Protobuf.encode(EnvelopePadding(padding: newString(paddingBytes)))
 
 proc createSwitch*(
     privateKey: Opt[PrivateKey] = Opt.none(PrivateKey),
