@@ -265,6 +265,10 @@ func match*(pid: PeerId, seckey: PrivateKey): bool =
   ## Returns ``true`` if ``pid`` matches private key ``seckey``.
   PeerId.init(seckey) == Result[PeerId, cstring].ok(pid)
 
+func write*(vb: var VBuffer, pid: PeerId) =
+  ## Write PeerId value ``peerid`` to buffer ``vb``.
+  vb.writeSeq(pid.data)
+
 ## protobuf_serialization extension
 
 Protobuf.extensionDefaults(PeerId, pbytes, defaultSeq = true)
