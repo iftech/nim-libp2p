@@ -32,6 +32,7 @@ type
 
 {.push raises: [].}
 
+# TODO
 proc encode(m: Metric): ProtoBuffer =
   var pb = initProtoBuffer()
   pb.write(1, m.name)
