@@ -22,22 +22,29 @@ import libp2p
 import libp2p/protocols/pubsub/rpc/messages
 
 type
-  Metric {.proto3.} = object
-    name {.fieldNumber: 1.}: string
-    value {.fieldNumber: 2.}: float
+  Metric {.proto2.} = object
+    name {.fieldNumber: 1.}: Opt[string]
+    value {.fieldNumber: 2.}: Opt[float]
 
-  MetricList {.proto3.} = object
+  MetricList {.proto2.} = object
     metrics {.fieldNumber: 1.}: seq[Metric]
-    hostname {.fieldNumber: 2.}: string
+    hostname {.fieldNumber: 2.}: Opt[string]
 
 {.push raises: [].}
 
 proc encode(m: MetricList): seq[byte] =
   Protobuf.encode(m)
 
+func validate(m: MetricList): Result[void, string] =
+  if m.hostname.isNone:
+    return err("invalid MetricList: hostname must be set")
+  ok()
+
 proc decode(_: type MetricList, buf: seq[byte]): Result[MetricList, string] =
   try:
-    ok(Protobuf.decode(buf, MetricList))
+    let metricList = Protobuf.decode(buf, MetricList)
+    ?metricList.validate()
+    ok(metricList)
   except SerializationError as exc:
     err("failed to decode MetricList from protobuf bytes: " & exc.msg)
 
@@ -80,11 +87,14 @@ proc oneNode(node: Node, rng: Rng) {.async.} =
   # Create random metrics 10 times and broadcast them
   for _ in 0 ..< 10:
     await sleepAsync(500.milliseconds)
-    var metricList = MetricList(hostname: node.hostname)
+    var metricList = MetricList(hostname: Opt.some(node.hostname))
     let metricCount = rng.generate(uint32) mod 4
     for i in 0 ..< metricCount + 1:
       metricList.metrics.add(
-        Metric(name: "metric_" & $i, value: float(rng.generate(uint16)) / 1000.0)
+        Metric(
+          name: Opt.some("metric_" & $i),
+          value: Opt.some(float(rng.generate(uint16)) / 1000.0),
+        )
       )
 
     discard await node.gossip.publish("metrics", encode(metricList))
