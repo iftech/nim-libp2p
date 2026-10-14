@@ -12,7 +12,6 @@ import
     multiaddress,
     peerid,
     peerinfo,
-    protobuf/minprotobuf,
     protocols/kademlia,
     protocols/kademlia/protobuf,
     protocols/service_discovery,
@@ -111,7 +110,9 @@ const UnknownEnvelopeField = 15 ## no `Envelope` field carries this number
 proc padAdvertisement*(advert: seq[byte], paddingBytes: int): seq[byte] =
   ## Grows the encoded record with a field the decoder skips, so only its
   ## incoming length reveals the padding.
-  var pb = initProtoBuffer()
+  
+  ## TODO
+  var pb = initVBuffer()
   pb.write(UnknownEnvelopeField, newSeq[byte](paddingBytes))
   pb.finish()
   advert & pb.buffer
