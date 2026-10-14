@@ -15,57 +15,31 @@
 ##
 ## We'll start by creating our metric structure like previously
 
-import chronos
-import results
+import chronos, results
+import protobuf_serialization, protobuf_serialization/pkg/results
 
 import libp2p
 import libp2p/protocols/pubsub/rpc/messages
 
 type
-  Metric = object
-    name: string
-    value: float
+  Metric {.proto3.} = object
+    name {.fieldNumber: 1.}: string
+    value {.fieldNumber: 2.}: float
 
-  MetricList = object
-    hostname: string
-    metrics: seq[Metric]
+  MetricList {.proto3.} = object
+    metrics {.fieldNumber: 1.}: seq[Metric]
+    hostname {.fieldNumber: 2.}: string
 
 {.push raises: [].}
 
-# TODO
-proc encode(m: Metric): ProtoBuffer =
-  var pb = initProtoBuffer()
-  pb.write(1, m.name)
-  pb.write(2, m.value)
-  pb.finish()
-  pb
+proc encode(m: MetricList): seq[byte] =
+  Protobuf.encode(m)
 
-proc decode(_: type Metric, buf: seq[byte]): Result[Metric, ProtoError] =
-  var res: Metric
-  let pb = initProtoBuffer(buf)
-  discard ?pb.getField(1, res.name)
-  discard ?pb.getField(2, res.value)
-  ok(res)
-
-proc encode(m: MetricList): ProtoBuffer =
-  var pb = initProtoBuffer()
-  for metric in m.metrics:
-    pb.write(1, metric.encode())
-  pb.write(2, m.hostname)
-  pb.finish()
-  pb
-
-proc decode(_: type MetricList, buf: seq[byte]): Result[MetricList, ProtoError] =
-  var
-    res: MetricList
-    metrics: seq[seq[byte]]
-  let pb = initProtoBuffer(buf)
-  discard ?pb.getRepeatedField(1, metrics)
-
-  for metric in metrics:
-    res.metrics &= ?Metric.decode(metric)
-  ?pb.getRequiredField(2, res.hostname)
-  ok(res)
+proc decode(_: type MetricList, buf: seq[byte]): Result[MetricList, string] =
+  try:
+    ok(Protobuf.decode(buf, MetricList))
+  except SerializationError as exc:
+    err("failed to decode MetricList from protobuf bytes: " & exc.msg)
 
 ## This is exactly like the previous structure, except that we added
 ## a `hostname` to distinguish where the metric is coming from.
@@ -113,7 +87,7 @@ proc oneNode(node: Node, rng: Rng) {.async.} =
         Metric(name: "metric_" & $i, value: float(rng.generate(uint16)) / 1000.0)
       )
 
-    discard await node.gossip.publish("metrics", encode(metricList).buffer)
+    discard await node.gossip.publish("metrics", encode(metricList))
   await node.switch.stop()
 
 proc createSwitch(rng: Rng): Switch {.raises: [LPError].} =
