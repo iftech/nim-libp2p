@@ -49,6 +49,6 @@ else:
     ]
 
   export
-    switch, peerid, peerinfo, connection, multiaddress, crypto, lpstream,
-    bufferstream, muxer, mplex, transport, tcptransport, noise, errors, cid, multihash,
-    multicodec, logging, builders, pubsub, quictransport
+    switch, peerid, peerinfo, connection, multiaddress, crypto, lpstream, bufferstream,
+    muxer, mplex, transport, tcptransport, noise, errors, cid, multihash, multicodec,
+    logging, builders, pubsub, quictransport
