@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[sequtils, net], stew/byteutils, chronos
+import std/net, stew/byteutils, chronos
 import protobuf_serialization, protobuf_serialization/pkg/results
 import ../../../libp2p/[multicodec, multiaddress, peerid]
 import ../../tools/[unittest, multiaddress]
