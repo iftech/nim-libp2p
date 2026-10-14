@@ -112,7 +112,11 @@ type EnvelopePadding {.proto3.} = object
 proc padAdvertisement*(advert: seq[byte], paddingBytes: int): seq[byte] =
   ## Grows the encoded record with a field the decoder skips, so only its
   ## incoming length reveals the padding.
-  advert & Protobuf.encode(EnvelopePadding(padding: newString(paddingBytes)))
+  let padding = Protobuf.encode(EnvelopePadding(padding: newString(paddingBytes)))
+  let res = newSeqOfCap[byte](advert.len + padding.len)
+  res.add(advert)
+  res.add(padding)
+  return res
 
 proc createSwitch*(
     privateKey: Opt[PrivateKey] = Opt.none(PrivateKey),
