@@ -962,7 +962,8 @@ method publish*(
   # (unlike hasSeen) is atomic with the check and expires stale entries, so a
   # concurrent or later duplicate cannot reach the handlers again.
   if msgIdRes.isOk and g.addSeen(g.salt(msgIdRes.get())):
-    trace "Dropping already-seen message"
+    trace "Dropping already-seen message before self-delivery",
+      msgId = shortLog(msgIdRes.get())
     return 0
 
   g.handleSelfPublishing(topic, data)
