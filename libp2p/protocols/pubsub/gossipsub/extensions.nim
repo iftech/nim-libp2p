@@ -113,6 +113,10 @@ proc onHandleRPC(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
   for _, e in state.extensions:
     e.onHandleRPC(peerId, rpc)
 
+proc handleTopicRPC*(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
+  # Topic streams may arrive before the control stream's extension advertisement.
+  state.onHandleRPC(peerId, rpc)
+
 proc onNegotiated(state: ExtensionsState, peerId: PeerId) =
   # extension event called when both sides have negotiated (exchanged) extensions.
   # it will be called only once per connection session as soon as extensions are exchanged.
