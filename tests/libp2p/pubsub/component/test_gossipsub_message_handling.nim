@@ -73,6 +73,9 @@ proc createMessages(
 
   return (iwantMessageIds, sentMessages)
 
+func dataMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
+  ok(m.data)
+
 suite "GossipSub Component - Message Handling":
   const topic = "foobar"
 
@@ -625,6 +628,32 @@ suite "GossipSub Component - Message Handling":
     check delivered == 1
 
     check (await nodes[0].publish(topic, data)) == 0
+    check delivered == 1
+
+  asyncTest "Concurrent publish of same message reaches local handlers once":
+    let nodes = generateNodes(
+        2, gossip = true, triggerSelf = true, msgIdProvider = dataMsgIdProvider
+      )
+      .toGossipSub()
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    var delivered = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      delivered.inc()
+      await sleepAsync(100.milliseconds) # suspend while the id is in flight
+
+    nodes[0].subscribe(topic, handler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    await waitSubGraph(nodes, topic)
+
+    let
+      data = toBytes("concurrent")
+      first = nodes[0].publish(topic, data)
+      second = nodes[0].publish(topic, data)
+    discard await allFinished(first, second)
+
     check delivered == 1
 
   asyncTest "GossipSub with multiple peers":
