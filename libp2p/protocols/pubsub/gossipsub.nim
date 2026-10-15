@@ -964,11 +964,7 @@ method publish*(
     libp2p_gossipsub_failed_publish.inc()
     return 0
 
-  if g.addSeen(g.salt(msgId)):
-    # If the message was received or published recently, don't re-publish it -
-    # this might happen when not using sequence id:s and / or with a custom
-    # message id provider
-    trace "Dropping already-seen message", msgId = shortLog(msgId)
+  if g.isDuplicatePublish(msgId):
     return 0
 
   g.handleSelfPublishing(topic, data)

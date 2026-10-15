@@ -51,6 +51,15 @@ proc addSeen*(f: FloodSub, saltedId: SaltedId): bool =
   # Return true if the message has already been seen
   f.seen.put(saltedId)
 
+proc isDuplicatePublish*(f: FloodSub, msgId: MessageId): bool =
+  ## Marks the published message as seen; true if it already was (custom
+  ## msgIdProvider / no sequence id), in which case it must not be re-published
+  ## nor delivered locally again.
+  if f.addSeen(f.salt(msgId)):
+    trace "Dropping already-seen message", msgId
+    return true
+  return false
+
 proc firstSeen*(f: FloodSub, saltedId: SaltedId): Moment =
   f.seen.addedAt(saltedId)
 
@@ -236,9 +245,7 @@ method publish*(
     f.handleSelfPublishing(topic, data)
     return 0
 
-  if f.addSeen(f.salt(msgId)):
-    # custom msgid providers might cause this
-    trace "Dropping already-seen message", msgId, topic
+  if f.isDuplicatePublish(msgId):
     return 0
 
   f.handleSelfPublishing(topic, data)
