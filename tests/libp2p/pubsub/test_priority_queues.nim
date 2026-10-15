@@ -537,9 +537,7 @@ suite "Priority queue byte budgets":
   asyncTest "High byte limit accepts the boundary and disconnects on overflow":
     let disconnected = new bool
     let peer = createTestPeer(
-      maxHigh = 10,
-      maxOutboundBytes = 5,
-      onEvent = newDisconnectRecorder(disconnected),
+      maxHigh = 10, maxOutboundBytes = 5, onEvent = newDisconnectRecorder(disconnected)
     )
     let conn = createPendingConnection()
     peer.sendStream = conn
@@ -564,8 +562,7 @@ suite "Priority queue byte budgets":
     for priority in [High, Medium, Low]:
       let disconnected = new bool
       let peer = createTestPeer(
-        maxOutboundBytes = 2,
-        onEvent = newDisconnectRecorder(disconnected),
+        maxOutboundBytes = 2, onEvent = newDisconnectRecorder(disconnected)
       )
       let conn = createPendingConnection()
       peer.sendStream = conn
@@ -598,12 +595,8 @@ suite "Priority queue byte budgets":
       conn.pendingWrites.len == 2
 
   asyncTest "High evicts queued low then medium traffic":
-    let peer = createTestPeer(
-      maxHigh = 10,
-      maxMedium = 10,
-      maxLow = 10,
-      maxOutboundBytes = 10,
-    )
+    let peer =
+      createTestPeer(maxHigh = 10, maxMedium = 10, maxLow = 10, maxOutboundBytes = 10)
     let conn = createPendingConnection()
     peer.sendStream = conn
     defer:
