@@ -224,6 +224,61 @@ suite "GossipSub Component - Message Handling":
 
     check (await validatorFut) and (await handlerFut)
 
+  asyncTest "validation waits for a free slot of the sender and delivers every message":
+    const cap = 2
+    let gate = newFuture[void]()
+    let deliveredWhileGated = newFuture[string]()
+    let deliveredAfterGate = newWaitGroup(cap + 1)
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      if gate.finished:
+        deliveredAfterGate.done()
+      else:
+        deliveredWhileGated.completeOnceRaising(string.fromBytes(data))
+
+    let nodes =
+      generateNodes(3, gossip = true, maxConcurrentValidations = cap).toGossipSub()
+    let (flooder, receiver, other) = (nodes[0], nodes[1], nodes[2])
+
+    startAndDeferStop(nodes)
+    await connectHub(receiver, @[flooder, other])
+
+    receiver.subscribe(topic, handler)
+    flooder.subscribe(topic, voidTopicHandler)
+    other.subscribe(topic, voidTopicHandler)
+    waitSubscribeHub(receiver, @[flooder, other], topic)
+
+    let started = newWaitGroup(cap)
+    var running, maxRunning = 0
+    proc validator(
+        topic: string, message: Message
+    ): Future[ValidationResult] {.async.} =
+      if message.fromPeer != flooder.peerInfo.peerId:
+        return ValidationResult.Accept
+      started.done()
+      running.inc()
+      maxRunning = max(maxRunning, running)
+      await gate
+      running.dec()
+      ValidationResult.Accept
+
+    receiver.addValidator(topic, validator)
+    for i in 0 .. cap:
+      tryPublish(await flooder.publish(topic, ("msg" & $i).toBytes()), 1)
+
+    await started.wait()
+    tryPublish(await other.publish(topic, "other".toBytes()), 1)
+
+    let flooderSlots = receiver.peers[flooder.peerInfo.peerId].validationSlots
+    check:
+      (await deliveredWhileGated) == "other"
+      flooderSlots.availableSlots == 0
+
+    gate.complete()
+    await deliveredAfterGate.wait()
+    check:
+      maxRunning == cap
+      flooderSlots.availableSlots == cap
+
   asyncTest "GossipSub validation should fail (reject)":
     proc handler(topic: string, data: seq[byte]) {.async.} =
       raiseAssert "Handler should not be called when validation rejects message"

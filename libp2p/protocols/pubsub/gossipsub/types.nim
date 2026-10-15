@@ -31,6 +31,7 @@ const
   GossipSubHistoryLength* = 5
   GossipSubHistoryGossip* = 3
   GossipSubSeenMaxSize* = 4_000_000
+  GossipSubMaxConcurrentValidations* = 64
 
   # heartbeat interval
   GossipSubHeartbeatInterval* = 1.seconds
@@ -168,6 +169,9 @@ type
 
     # Broadcast an IDONTWANT message automatically when the message exceeds the IDONTWANT message size threshold
     sendIDontWantOnPublish*: bool
+
+    # Max number of messages from one peer in validation at once. The read loop of that peer waits for a free slot.
+    maxConcurrentValidations*: int
 
     # Extensions configuration
     testExtensionConfig*: Opt[TestExtensionConfig]

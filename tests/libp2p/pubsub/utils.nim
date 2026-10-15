@@ -210,6 +210,7 @@ proc generateNodes*(
     publishThreshold = -1000.0,
     graylistThreshold = -10000.0,
     disconnectBadPeers: bool = false,
+    maxConcurrentValidations = GossipSubMaxConcurrentValidations,
     testExtensionConfig: Opt[TestExtensionConfig] = Opt.none(TestExtensionConfig),
     partialMessageExtensionConfig: Opt[PartialMessageExtensionConfig] =
       Opt.none(PartialMessageExtensionConfig),
@@ -252,6 +253,7 @@ proc generateNodes*(
             p.publishThreshold = publishThreshold
             p.graylistThreshold = graylistThreshold
             p.disconnectBadPeers = disconnectBadPeers
+            p.maxConcurrentValidations = maxConcurrentValidations
             p.testExtensionConfig = testExtensionConfig
             p.partialMessageExtensionConfig = partialMessageExtensionConfig
             p.pingpongExtensionConfig = pingpongExtensionConfig

@@ -130,6 +130,12 @@ template completeOnce*(fut: auto, val: auto) =
   if not fut.finished:
     fut.complete(val)
 
+template completeOnceRaising*(fut: auto, val: auto) =
+  ## Complete a future, or raise a defect when it is already finished.
+  if fut.finished:
+    raiseAssert "future completed more than once"
+  fut.complete(val)
+
 proc collectCompleted*[T, E](
     futs: seq[InternalRaisesFuture[T, E]], timeout = InfiniteDuration
 ): Future[seq[T]] {.async: (raises: [CancelledError]).} =
