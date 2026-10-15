@@ -318,15 +318,15 @@ proc broadcast*(
     # Encode each wire format at most once, only if a recipient needs it.
     var encoded: seq[byte]
     var legacyPrepared = false
-    var topicRPC: PreparedTopicRPC
+    var preparedRPC: PreparedTopicRPC
     var prepared = false
     for peer in sendPeers:
       if peer.usesTopicStreams() and
           (msg.messages.len > 0 or msg.partialMessageExtension.isSome):
         if not prepared:
-          topicRPC = prepareTopicRPC(msg, p.anonymize)
+          preparedRPC = prepareTopicRPC(msg, p.anonymize)
           prepared = true
-        peer.sendTopicRPC(topicRPC, priority)
+        peer.sendTopicRPC(preparedRPC, priority)
       else:
         if not legacyPrepared:
           encoded = msg.encode(p.anonymize)

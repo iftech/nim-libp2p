@@ -620,7 +620,7 @@ proc dropFanoutPeers*(g: GossipSub) =
   var drops: seq[string]
   for topic, val in g.lastFanoutPubSub:
     if now > val:
-      if g.parameters.topicStreamsConfig.isSome:
+      if g.parameters.topicStreamsConfig.isSome and topic notin g.topics:
         for peer in g.peers.values:
           g.pendingTasks.trackFut(peer.topicStreams.closeTopic(topic))
       g.fanout.del(topic)

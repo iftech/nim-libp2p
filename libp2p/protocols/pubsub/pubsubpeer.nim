@@ -668,6 +668,8 @@ proc prepareTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
   for m in msg.messages:
     if m.data.len > 0:
       result.payloads.add((m.topic, m.topicRPC(anonymize).encode()))
+    else:
+      trace "empty application message cannot use topic stream", topic = m.topic
   msg.partialMessageExtension.ifValue(partial):
     if partial.topicID.isSome:
       result.payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
