@@ -600,6 +600,33 @@ suite "GossipSub Component - Message Handling":
     check (await nodes[0].publish(topic, newSeq[byte](2_500_000))) == nodes.len - 1
     check (await nodes[0].publish(topic, newSeq[byte](500_001))) == nodes.len - 1
 
+  asyncTest "Republished message is not delivered to local handlers again":
+    let
+      dataMsgIdProvider = proc(m: Message): Result[seq[byte], ValidationResult] =
+        ok(m.data)
+      nodes = generateNodes(
+          2, gossip = true, triggerSelf = true, msgIdProvider = dataMsgIdProvider
+        )
+        .toGossipSub()
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    var delivered = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      delivered.inc()
+
+    nodes[0].subscribe(topic, handler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    await waitSubGraph(nodes, topic)
+
+    let data = toBytes("duplicate")
+    tryPublish(await nodes[0].publish(topic, data), 1)
+    check delivered == 1
+
+    check (await nodes[0].publish(topic, data)) == 0
+    check delivered == 1
+
   asyncTest "GossipSub with multiple peers":
     const numberOfNodes = 10
 

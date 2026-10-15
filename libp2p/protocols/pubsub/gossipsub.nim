@@ -956,6 +956,14 @@ method publish*(
       messageSize, maxMessageSize = g.maxMessageSize
     return 0
 
+  let msgIdRes = g.msgIdProvider(msg)
+
+  # A duplicate must not reach the local handlers again - check before
+  # self-delivery, as addSeen below only runs after it.
+  if msgIdRes.isOk and g.hasSeen(g.salt(msgIdRes.get())):
+    trace "Dropping already-seen message"
+    return 0
+
   g.handleSelfPublishing(topic, data)
 
   trace "Publishing message", messageSize = data.len
@@ -983,7 +991,7 @@ method publish*(
     libp2p_gossipsub_failed_publish.inc()
     return 0
 
-  let msgId = g.msgIdProvider(msg).valueOr:
+  let msgId = msgIdRes.valueOr:
     trace "Publish skipped after message ID generation failed", err = error
     libp2p_gossipsub_failed_publish.inc()
     return 0
