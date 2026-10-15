@@ -4,10 +4,10 @@
 {.used.}
 
 import chronos, results
-import ../../../libp2p/protocols/pubsub/topicstreams
-import ../../../libp2p/protocols/pubsub/rpc/messages
-import ../../../libp2p/stream/bridgestream
-import ../../tools/unittest
+import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
+import ../../../../libp2p/protocols/pubsub/rpc/messages
+import ../../../../libp2p/stream/bridgestream
+import ../../../tools/unittest
 
 suite "GossipSub topic stream wire format":
   test "full message reconstructs canonical signature input":
@@ -18,11 +18,11 @@ suite "GossipSub topic stream wire format":
       signature: @[4.byte],
       key: @[5.byte],
     )
-    let encoded = message.topicRPC(false).encode()
+    let encoded = message.topicRPC().encode()
     let decoded = TopicRPC.decode(encoded).get()
     check decoded.publish.get().topic.isNone
     check decoded.toRPC("topic").get().messages[0] == message
-    let anonymous = message.topicRPC(true).toRPC("topic").get().messages[0]
+    let anonymous = message.anonymize(true).topicRPC().toRPC("topic").get().messages[0]
     check anonymous.signature.len == 0
     check anonymous.seqno.len == 0
 
@@ -80,14 +80,23 @@ suite "GossipSub topic stream lifecycle":
       inc penalties
 
     let state = TopicStreams.new(
-      TopicStreamsConfig(maxQueuedBytes: 128), 1024, dial, receive, violation, penalize
+      TopicStreamsConfig(maxStreams: 3, maxQueuedBytes: 128),
+      1024,
+      dial,
+      receive,
+      violation,
+      penalize,
     )
-    state.active = true
+    check state.negotiate(
+      RPCMsg.withControl(
+        ControlMessage.withExtensions(ControlExtensions(topicStreams: Opt.some(true)))
+      )
+    )
     defer:
       await state.stop()
       for remote in remotes:
         await remote.close()
-    let payload = Message(data: @[1.byte], topic: "a").topicRPC(false).encode()
+    let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
     state.sendTopic("a", payload, true)
     state.sendTopic("b", payload, true)
     check remotes.len == 2
@@ -96,12 +105,24 @@ suite "GossipSub topic stream lifecycle":
     let payloadB = await remotes[1].readLp(1024)
     check TopicRPCHeader.decode(headerB).get().topic.get() == "b"
     check TopicRPC.decode(payloadB).isOk
+    state.sendTopic("c", payload, true)
+    check remotes.len == 3
+    let (incoming, incomingStream) = bridgedConnections()
+    defer:
+      await incoming.close()
+    await state.readTopic(incomingStream)
     state.sendTopic("a", newSeq[byte](129), true)
-    check penalties == 1
+    check penalties == 0
     await state.closeTopic("a")
     state.sendTopic("a", payload, true)
-    check remotes.len == 3
-    let headerA = await remotes[2].readLp(1024)
-    let payloadA = await remotes[2].readLp(1024)
+    check remotes.len == 4
+    let headerA = await remotes[3].readLp(1024)
+    let payloadA = await remotes[3].readLp(1024)
     check TopicRPCHeader.decode(headerA).get().topic.get() == "a"
     check TopicRPC.decode(payloadA).isOk
+    check not state.negotiate(
+      RPCMsg.withControl(ControlMessage.withExtensions(ControlExtensions()))
+    )
+    check not state.isActive()
+    var data: byte
+    check (await remotes[3].readOnce(addr data, 1).wait(1.seconds)) == 0
