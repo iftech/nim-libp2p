@@ -3,8 +3,9 @@
 
 {.used.}
 
-import chronos
-import ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, peertable]
+import chronos, std/[sequtils, strutils], stew/byteutils
+import
+  ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, peertable, rpc/messages]
 import ../../../tools/[lifecycle, topology, unittest]
 import ../utils
 
@@ -55,6 +56,10 @@ proc stallSendStream*(
 
 proc message(n: byte): seq[byte] =
   @[n, n, n]
+
+func carries(writes: seq[seq[byte]], data: seq[byte]): bool =
+  let needle = string.fromBytes(data)
+  writes.anyIt(string.fromBytes(it).contains(needle))
 
 suite "GossipSub Component - Priority Queues":
   const topic = "foobar"
@@ -225,6 +230,57 @@ suite "GossipSub Component - Priority Queues":
 
     checkUntilTimeout:
       mock.writes == highMsgs & mediumMsgs & lowMsgs
+
+  asyncTest "A copy from the peer cancels the relay still queued for it":
+    # Anonymous, so the cancel cannot lean on the `fromPeer` exclusion.
+    let nodes = generateNodes(
+        3, gossip = true, sign = false, verifySignature = false, anonymize = true
+      )
+      .toGossipSub()
+    nodes[0].parameters.maxLowPriorityQueueLen = 4
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+    subscribeAllNodes(nodes, topic, voidTopicHandler)
+    waitSubscribeStar(nodes, topic)
+
+    let peerId = nodes[2].peerInfo.peerId
+    checkUntilTimeout:
+      nodes[0].mesh.hasPeerId(topic, peerId)
+      nodes[2].mesh.hasPeerId(topic, nodes[0].peerInfo.peerId)
+
+    let mock = stallSendStream(nodes[0], topic, peerId, stallCount = 1)
+    defer:
+      await mock.close()
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+
+    # A pending high message keeps the queue non-empty, so the relay is queued.
+    check peer.sendEncoded(message(9), MessagePriority.High).finished
+
+    let msgData = "relay me once".toBytes()
+    var copiesAtNode0 = 0
+    nodes[0].addOnRecvObserver(
+      proc(p: PubSubPeer, msgs: var RPCMsg) {.gcsafe, raises: [].} =
+        for m in msgs.messages:
+          if m.data == msgData:
+            copiesAtNode0.inc()
+    )
+
+    tryPublish await nodes[1].publish(topic, msgData), 2
+
+    # Node 1 publishes to both peers, so node 2 sends its copy on to node 0.
+    checkUntilTimeout:
+      copiesAtNode0 == 2
+
+    # Queued behind the relay, so its write proves the queue drained past it.
+    let sentinel = message(7)
+    check peer.sendEncoded(sentinel, MessagePriority.Low).finished
+
+    mock.releasePendingWrites()
+
+    checkUntilTimeout:
+      sentinel in mock.writes
+    check not mock.writes.carries(msgData)
 
   asyncTest "Persistently slow peer is penalized and pruned":
     let nodes =

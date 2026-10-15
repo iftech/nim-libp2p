@@ -427,6 +427,62 @@ suite "GossipSub":
 
     check gossipSub.mcache.msgs.len == 0
 
+  asyncTest "rpcHandler - an outstanding IWANT is forgotten when the message arrives":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(2, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    gossipSub.verifySignature = false
+
+    let
+      sender = peers[0]
+      announcer = peers[1]
+      msg = Message.init(conns[0].peerId, "bar".toBytes(), topic, Opt.some(1'u64))
+      msgId = gossipSub.msgIdProvider(msg).get()
+      ihave = ControlIHave(topicID: topic, messageIDs: @[msgId])
+
+    # Given the announcer was asked for the message
+    check:
+      gossipSub.handleIHave(announcer, @[ihave]).messageIDs == @[msgId]
+      gossipSub.requestedIWants[gossipSub.salt(msgId)].len == 1
+
+    # When the message arrives from another peer
+    await gossipSub.rpcHandler(sender, RPCMsg.withMessages(msg).encode(false))
+
+    # Then the request is forgotten and the seen message is not requested again
+    check:
+      gossipSub.salt(msgId) notin gossipSub.requestedIWants
+      gossipSub.handleIHave(announcer, @[ihave]).messageIDs.len == 0
+
+  asyncTest "rpcHandler - an outstanding IWANT is forgotten when the message is invalid":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(3, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    let
+      sender = peers[0]
+      announcer = peers[1]
+      otherAnnouncer = peers[2]
+      msg = Message.init(conns[0].peerId, "bar".toBytes(), topic, Opt.some(1'u64))
+      msgId = gossipSub.msgIdProvider(msg).get()
+      ihave = ControlIHave(topicID: topic, messageIDs: @[msgId])
+
+    # Given the announcer was asked for the message
+    check:
+      gossipSub.handleIHave(announcer, @[ihave]).messageIDs == @[msgId]
+
+    # When an unsigned copy arrives and fails verification
+    await gossipSub.rpcHandler(sender, RPCMsg.withMessages(msg).encode(false))
+
+    # Then the message is not seen, yet the request is released
+    check:
+      not gossipSub.hasSeen(gossipSub.salt(msgId))
+      gossipSub.salt(msgId) notin gossipSub.requestedIWants
+
+    # And another peer can still be asked for it
+    check:
+      gossipSub.handleIHave(otherAnnouncer, @[ihave]).messageIDs == @[msgId]
+
   test "seen cache uses configured maximum size":
     let
       params = GossipSubParams.init(seenMaxSize = 3)
@@ -939,3 +995,37 @@ suite "GossipSub":
     # Then the topic should be removed from mesh
     check:
       topic notin gossipSub.mesh
+
+  asyncTest "publish - already-seen message is not delivered to local handlers again":
+    # Given a GossipSub instance delivering to itself, with a peer to publish to
+    let (gossipSub, conns, _) =
+      setupGossipSubWithPeers(1, topic, populateMesh = true, populateGossipsub = true)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    gossipSub.triggerSelf = true
+
+    # And a msgIdProvider that maps messages to an id derived from the first byte
+    func firstByteMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
+      ok(MessageId(@[m.data[0]]))
+    gossipSub.msgIdProvider = firstByteMsgIdProvider
+
+    # And a local handler counting deliveries
+    var delivered = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      inc delivered
+
+    gossipSub.subscribe(topic, handler)
+
+    # When two messages with the same id are published, then one with a new id
+    discard await gossipSub.publish(topic, @[1'u8, 1])
+    discard await gossipSub.publish(topic, @[1'u8, 2])
+
+    # Then the duplicate is dropped before reaching the local handler
+    check:
+      delivered == 1
+
+    discard await gossipSub.publish(topic, @[2'u8])
+
+    # And a message with a different id is still delivered
+    check:
+      delivered == 2

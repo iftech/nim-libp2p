@@ -133,6 +133,7 @@ proc init*(
     maxHighPriorityQueueLen = DefaultMaxHighPriorityQueueLen,
     maxMediumPriorityQueueLen = DefaultMaxMediumPriorityQueueLen,
     maxLowPriorityQueueLen = DefaultMaxLowPriorityQueueLen,
+    maxIWantsPerMessage = DefaultMaxIWantsPerMessage,
     sendIDontWantOnPublish = false,
     testExtensionConfig = Opt.none(TestExtensionConfig),
     partialMessageExtensionConfig = Opt.none(PartialMessageExtensionConfig),
@@ -180,6 +181,7 @@ proc init*(
     maxHighPriorityQueueLen: maxHighPriorityQueueLen,
     maxMediumPriorityQueueLen: maxMediumPriorityQueueLen,
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
+    maxIWantsPerMessage: maxIWantsPerMessage,
     sendIDontWantOnPublish: sendIDontWantOnPublish,
     testExtensionConfig: testExtensionConfig,
     partialMessageExtensionConfig: partialMessageExtensionConfig,
@@ -248,6 +250,8 @@ proc validateParameters*(parameters: GossipSubParams): Result[void, cstring] =
     err("gossipsub: maxMediumPriorityQueueLen parameter error, Must be > 0")
   elif parameters.maxLowPriorityQueueLen <= 0:
     err("gossipsub: maxLowPriorityQueueLen parameter error, Must be > 0")
+  elif parameters.maxIWantsPerMessage <= 0:
+    err("gossipsub: maxIWantsPerMessage parameter error, Must be > 0")
   else:
     validateOverheadRateLimit(parameters)
 
@@ -396,6 +400,8 @@ method unsubscribePeer*(g: GossipSub, peer: PeerId) =
   g.peerStats.withValue(peer, stats):
     for topic, info in stats[].topicInfos.mpairs:
       info.firstMessageDeliveries = 0
+
+  g.releasePeerIWantRequests(peer)
 
   g.extensionsState.removePeer(peer)
 
@@ -600,14 +606,12 @@ proc validateAndRelay(
       toSendPeers.excl(sourcePeer[])
 
     proc isMsgInIdontWant(it: PubSubPeer): bool =
-      for iDontWant in it.iDontWants:
-        if saltedId in iDontWant:
-          libp2p_gossipsub_idontwant_saved_messages.inc
-          libp2p_gossipsub_saved_bytes.inc(
-            msg.data.len.int64, labelValues = ["idontwant"]
-          )
-          return true
-      return false
+      if not it.holdsIDontWant(saltedId):
+        return false
+
+      libp2p_gossipsub_idontwant_saved_messages.inc()
+      libp2p_gossipsub_saved_bytes.inc(msg.data.len.int64, labelValues = ["idontwant"])
+      true
 
     toSendPeers.exclIfIt(isMsgInIdontWant(it))
 
@@ -617,7 +621,12 @@ proc validateAndRelay(
 
     # In theory, if topics are the same in all messages, we could batch - we'd
     # also have to be careful to only include validated messages
-    g.broadcastResponse(toSendPeers, RPCMsg.withMessages(msg), MessagePriority.Low)
+    g.broadcastResponse(
+      toSendPeers,
+      RPCMsg.withMessages(msg),
+      MessagePriority.Low,
+      relayedSaltedId = Opt.some(saltedId),
+    )
     trace "forwarded message to peers", peers = toSendPeers.len, msgId, peer
 
     libp2p_pubsub_messages_rebroadcasted.inc(
@@ -744,6 +753,9 @@ method rpcHandler*(
       peer, size = rpcMsg.subscriptions.len, limit = g.topicsHigh
     peer.behaviourPenalty += SubscriptionFloodPenalty
 
+  # Gathered from the whole RPC, so that the queue is scanned at most once.
+  var duplicates: HashSet[SaltedId]
+
   for i in 0 ..< rpcMsg.messages.len(): # for every message
     template msg(): untyped =
       rpcMsg.messages[i]
@@ -768,6 +780,9 @@ method rpcHandler*(
         msgId = shortLog(msgId), peer
       continue
 
+    # release before validation, so a bad copy cannot block the retry
+    g.requestedIWants.del(msgIdSalted)
+
     if (msg.signature.len > 0 or g.verifySignature) and not msg.verify():
       trace "Message dropped",
         peerId = peer.peerId, reason = "signatureVerificationFailed"
@@ -786,6 +801,9 @@ method rpcHandler*(
 
     if g.addSeen(msgIdSalted):
       trace "Dropping already-seen message", msgId = shortLog(msgId), peer
+
+      # The peer holds the message, so a relay of it still in our queue is waste.
+      duplicates.incl(msgIdSalted)
 
       var alreadyReceived = false
       g.validationSeen.withValue(msgIdSalted, seen):
@@ -813,8 +831,17 @@ method rpcHandler*(
 
     g.pendingTasks.trackFut(g.validateAndRelay(msg, msgId, msgIdSalted, peer))
 
+  let sawIDontWant =
+    rpcMsg.control.isSome() and rpcMsg.control.unsafeGet().idontwant.len > 0
+
   if rpcMsg.control.isSome():
     g.handleControl(peer, rpcMsg.control.unsafeGet())
+
+  # Runs after handleControl, so the scan sees the IDONTWANTs of this RPC.
+  if duplicates.len > 0 or sawIDontWant:
+    libp2p_gossipsub_saved_bytes.inc(
+      peer.cancelQueuedRelays(duplicates).int64, labelValues = ["cancelled_relay"]
+    )
 
   # Now, check subscription to update the meshes if required
   for i in 0 ..< min(g.topicsHigh, rpcMsg.subscriptions.len):
@@ -956,14 +983,17 @@ method publish*(
       messageSize, maxMessageSize = g.maxMessageSize
     return 0
 
-  let msgIdRes = g.msgIdProvider(msg)
+  let msgId = g.msgIdProvider(msg).valueOr:
+    trace "Publish skipped after message ID generation failed", err = error
+    g.handleSelfPublishing(topic, data)
+    libp2p_gossipsub_failed_publish.inc()
+    return 0
 
   # Claim the id before self-delivery: local handlers may suspend, and addSeen
   # (unlike hasSeen) is atomic with the check and expires stale entries, so a
   # concurrent or later duplicate cannot reach the handlers again.
-  if msgIdRes.isOk and g.addSeen(g.salt(msgIdRes.get())):
-    trace "Dropping already-seen message before self-delivery",
-      msgId = msgIdRes.get()
+  if g.addSeen(g.salt(msgId)):
+    trace "Dropping already-seen message before self-delivery", msgId
     return 0
 
   g.handleSelfPublishing(topic, data)
@@ -991,13 +1021,7 @@ method publish*(
       connectedPeers = topicPeers.filterIt(it.connected).len,
       topic
     # Release the claim so the message can be published once peers are available
-    if msgIdRes.isOk:
-      discard g.seen.del(g.salt(msgIdRes.get()))
-    libp2p_gossipsub_failed_publish.inc()
-    return 0
-
-  let msgId = msgIdRes.valueOr:
-    trace "Publish skipped after message ID generation failed", err = error
+    discard g.seen.del(g.salt(msgId))
     libp2p_gossipsub_failed_publish.inc()
     return 0
 

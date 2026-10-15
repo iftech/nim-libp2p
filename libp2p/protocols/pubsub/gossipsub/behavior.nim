@@ -65,6 +65,11 @@ declareCounter(
   "number of iwant requests avoided by preamble",
   labels = ["topic"],
 )
+declareCounter(
+  libp2p_gossipsub_inflight_saved_iwants,
+  "number of iwant requests avoided because one is in flight",
+  labels = ["topic"],
+)
 
 proc grafted*(g: GossipSub, p: PubSubPeer, topic: string) =
   g.withPeerStats(p.peerId) do(stats: var PeerStats):
@@ -255,6 +260,37 @@ proc getPeers(prune: ControlPrune, peer: PubSubPeer): seq[(PeerId, Opt[PeerRecor
 
   routingRecords
 
+const
+  MaxPruneBackoff = 1.days.seconds.uint64
+  GraftResponseTimeout = 1.minutes
+
+proc recordPruneBackoff(
+    g: GossipSub, topic: string, peer: PubSubPeer, backoffSeconds: uint64
+) =
+  let
+    requested =
+      if backoffSeconds == 0:
+        g.parameters.pruneBackoff.seconds.uint64
+      else:
+        backoffSeconds
+    clamped = min(requested, MaxPruneBackoff) + BackoffSlackTime
+    backoff = Moment.fromNow(clamped.int64.seconds)
+    current = g.backingOff.getOrDefault(topic).getOrDefault(peer.peerId)
+  if backoff > current:
+    g.backingOff.mgetOrPut(topic)[peer.peerId] = backoff
+
+proc setLastGraftSent(g: GossipSub, peerId: PeerId, topic: string, moment: Moment) =
+  g.withPeerStats(peerId) do(stats: var PeerStats):
+    stats.topicInfos.mgetOrPut(topic).lastGraftSent = moment
+
+proc hasRecentGraftSent(g: GossipSub, peerId: PeerId, topic: string): bool =
+  g.peerStats.withValue(peerId, stats):
+    stats.topicInfos.withValue(topic, info):
+      return
+        info.lastGraftSent != Moment() and
+        Moment.now() - info.lastGraftSent < GraftResponseTimeout
+  false
+
 proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) =
   for prune in prunes:
     let topic = prune.topicID
@@ -265,21 +301,17 @@ proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) =
       trace "ignoring prune for unsubscribed topic", peer, topic
       continue
 
-    if not g.mesh.hasPeer(topic, peer):
-      trace "ignoring prune for peer outside mesh", peer, topic
+    let inMesh = g.mesh.hasPeer(topic, peer)
+    if not inMesh and not g.hasRecentGraftSent(peer.peerId, topic):
+      trace "ignoring unsolicited prune from peer outside mesh", peer, topic
       continue
 
-    # add peer backoff
-    if prune.backoff > 0:
-      let
-        # avoid overflows and clamp to reasonable value
-        backoffSeconds =
-          clamp(prune.backoff + BackoffSlackTime, 0'u64, 1.days.seconds.uint64)
-        backoff = Moment.fromNow(backoffSeconds.int64.seconds)
-        current = g.backingOff.getOrDefault(topic).getOrDefault(peer.peerId)
-      if backoff > current:
-        g.backingOff.mgetOrPut(topic, initTable[PeerId, Moment]())[peer.peerId] =
-          backoff
+    g.recordPruneBackoff(topic, peer, prune.backoff)
+    g.setLastGraftSent(peer.peerId, topic, Moment())
+
+    if not inMesh:
+      trace "ignoring prune for peer outside mesh", peer, topic
+      continue
 
     trace "pruning rpc received peer", peer, score = peer.score
     g.pruned(peer, topic, setBackoff = false)
@@ -291,6 +323,35 @@ proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) =
 
       for handler in g.routingRecordsHandler:
         handler(peer.peerId, topic, routingRecords)
+
+proc recordIWantRequest(g: GossipSub, peer: PubSubPeer, saltedId: SaltedId) =
+  g.requestedIWants.mgetOrPut(saltedId, @[]).add(
+    IWantRequest(peerId: peer.peerId, heartbeat: g.heartbeatCount)
+  )
+
+proc isIWantInFlight(g: GossipSub, peer: PubSubPeer, saltedId: SaltedId): bool =
+  g.requestedIWants.withValue(saltedId, requests):
+    return
+      requests[].len >= g.parameters.maxIWantsPerMessage or
+      requests[].anyIt(it.peerId == peer.peerId)
+
+  false
+
+template keepIWantRequestsIf(g: GossipSub, pred: untyped) =
+  var emptied: seq[SaltedId]
+  for saltedId, requests in g.requestedIWants.mpairs:
+    requests.keepItIf(pred)
+    if requests.len == 0:
+      emptied.add(saltedId)
+
+  for saltedId in emptied:
+    g.requestedIWants.del(saltedId)
+
+proc releasePeerIWantRequests*(g: GossipSub, peerId: PeerId) =
+  g.keepIWantRequestsIf(it.peerId != peerId)
+
+proc expireIWantRequests(g: GossipSub) =
+  g.keepIWantRequestsIf(g.heartbeatCount - it.heartbeat < IWantHistoryLen)
 
 proc handleIHave*(
     g: GossipSub, peer: PubSubPeer, ihaves: seq[ControlIHave]
@@ -307,18 +368,28 @@ proc handleIHave*(
         trace "topic not set: ihave", peer
         continue
       trace "peer sent ihave", peer, topic, messageCount = ihave.messageIDs.len
-      if topic in g.topics:
-        for msgId in ihave.messageIDs:
-          if not g.hasSeen(g.salt(msgId)):
-            if peer.iHaveBudget <= 0:
-              break
-            elif msgId notin res.messageIDs:
-              if g.extensionsState.preambleHandleIHave(peer.peerId, msgId):
-                libp2p_gossipsub_preamble_saved_iwants.inc(labelValues = [topic])
-                continue
-              res.messageIDs.add(msgId)
-              dec peer.iHaveBudget
-              trace "requested message via ihave", peer, messageID = msgId
+      if topic notin g.topics:
+        continue
+
+      for msgId in ihave.messageIDs:
+        let saltedId = g.salt(msgId)
+        if g.hasSeen(saltedId):
+          continue
+        if peer.iHaveBudget <= 0:
+          break
+        if msgId in res.messageIDs:
+          continue
+        if g.extensionsState.preambleHandleIHave(peer.peerId, msgId):
+          libp2p_gossipsub_preamble_saved_iwants.inc(labelValues = [topic])
+          continue
+        if g.isIWantInFlight(peer, saltedId):
+          libp2p_gossipsub_inflight_saved_iwants.inc(labelValues = [topic])
+          continue
+
+        res.messageIDs.add(msgId)
+        g.recordIWantRequest(peer, saltedId)
+        dec peer.iHaveBudget
+        trace "requested message via ihave", peer, messageID = msgId
     # shuffling res.messageIDs before sending it out to increase the likelihood
     # of getting an answer if the peer truncates the list due to internal size restrictions.
     g.rng.shuffle(res.messageIDs)
@@ -602,6 +673,9 @@ proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil)
 
   # Send changes to peers after table updates to avoid stale state
   if grafts.len > 0:
+    let now = Moment.now()
+    for peer in grafts:
+      g.setLastGraftSent(peer.peerId, topic, now)
     let graft = RPCMsg.withControl(ControlMessage.withGraft(topic))
     g.broadcastResponse(grafts, graft, MessagePriority.High)
   if prunes.len > 0:
@@ -707,6 +781,9 @@ proc makeGossipControlMessages*(g: GossipSub): Table[PubSubPeer, ControlMessage]
 
 proc onHeartbeat(g: GossipSub) =
   libp2p_gossipsub_seen_cache_size.set(g.seen.len.int64)
+
+  g.heartbeatCount.inc()
+  g.expireIWantRequests()
 
   # reset IWANT budget
   # reset IHAVE cap

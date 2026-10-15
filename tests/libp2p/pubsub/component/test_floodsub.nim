@@ -45,6 +45,41 @@ suite "FloodSub Component", timeout = 120.seconds:
   teardown:
     checkTrackers()
 
+  asyncTest "FloodSub publish - already-seen message is not delivered locally again":
+    # Given a node delivering to itself, with a peer subscribed to the topic
+    func firstByteMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
+      ok(MessageId(@[m.data[0]]))
+
+    let nodes = generateNodes(
+        2, triggerSelf = true, msgIdProvider = firstByteMsgIdProvider
+      )
+      .toFloodSub()
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    var delivered = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      inc delivered
+
+    nodes[0].subscribe(topic, handler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    # When two messages with the same id are published, then one with a new id
+    discard await nodes[0].publish(topic, @[1'u8, 1])
+    discard await nodes[0].publish(topic, @[1'u8, 2])
+
+    # Then the duplicate is dropped before reaching the local handler
+    check:
+      delivered == 1
+
+    discard await nodes[0].publish(topic, @[2'u8])
+
+    # And a message with a different id is still delivered
+    check:
+      delivered == 2
+
   asyncTest "FloodSub basic publish/subscribe A -> B":
     let (handlerFut, handler) = createCompleteHandler()
 
