@@ -541,7 +541,7 @@ suite "Service Discovery Registrar - request handlers":
       tWaitFor: advertExpiry,
       signature: Opt.none(seq[byte]),
     )
-    check retryTicket.sign(disco.switch.peerInfo.privateKey).isOk()
+    check retryTicket.sign(disco.switch.peerInfo.privateKey)
 
     let inMsg = kadprotobuf.Message(
       msgType: kadprotobuf.MessageType.register,
@@ -586,7 +586,7 @@ suite "Service Discovery Registrar - request handlers":
       tWaitFor: 0.secs,
       signature: Opt.none(seq[byte]),
     )
-    check ticket.sign(disco.switch.peerInfo.privateKey).isOk()
+    check ticket.sign(disco.switch.peerInfo.privateKey)
 
     let regMsg = kadprotobuf.RegisterMessage(
       advertisement: adBuf,
@@ -614,7 +614,7 @@ suite "Service Discovery Registrar - request handlers":
       tWaitFor: 0.secs,
       signature: Opt.none(seq[byte]),
     )
-    check ticket.sign(disco.switch.peerInfo.privateKey).isOk()
+    check ticket.sign(disco.switch.peerInfo.privateKey)
 
     let inMsg = kadprotobuf.Message(
       msgType: kadprotobuf.MessageType.register,
@@ -647,7 +647,7 @@ suite "Service Discovery Registrar - request handlers":
       tWaitFor: 0.secs,
       signature: Opt.none(seq[byte]),
     )
-    check ticket.sign(otherDisco.switch.peerInfo.privateKey).isOk()
+    check ticket.sign(otherDisco.switch.peerInfo.privateKey)
 
     let inMsg = kadprotobuf.Message(
       msgType: kadprotobuf.MessageType.register,
@@ -841,7 +841,7 @@ suite "Service Discovery Registrar - request handlers":
       tWaitFor: 1.secs,
       signature: Opt.none(seq[byte]),
     )
-    check ticket.sign(disco.switch.peerInfo.privateKey).isOk()
+    check ticket.sign(disco.switch.peerInfo.privateKey)
 
     let inMsg = kadprotobuf.Message(
       msgType: kadprotobuf.MessageType.register,
@@ -1497,7 +1497,7 @@ suite "Service Discovery Registrar - Register Message Validation":
 
     let decoded = isValidAdvertisement(regMsg, serviceId)
 
-    check decoded.isOk()
+    check decoded
     check decoded.get().data.peerId == ad.data.peerId
     check decoded.get().data.seqNo == ad.data.seqNo
 

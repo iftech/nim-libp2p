@@ -417,7 +417,7 @@ suite "Variable integer test suite":
       var ovalue: vtype
       var buffer = newSeq[byte](10)
       var length = 0
-      check ttype.putVarint(buffer, length, value).isOk()
+      check ttype.putVarint(buffer, length, value)
       buffer.setLen(length)
       check:
         toHex(buffer) == expect

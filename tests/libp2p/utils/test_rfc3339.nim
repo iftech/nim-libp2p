@@ -48,7 +48,7 @@ suite "RFC 3339 date-time parser":
   test "accepts valid calendar boundaries":
     let testCase = ["2024-02-29T00:00:00Z", "2026-12-31T23:59:59-00:00"]
     for value in testCase:
-      check parseRfc3339DateTime(value).isOk()
+      check parseRfc3339DateTime(value)
 
   test "rejects missing or malformed date-time fields":
     let testCase = [

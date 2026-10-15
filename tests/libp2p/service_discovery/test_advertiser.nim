@@ -101,7 +101,7 @@ suite "Advertiser - addProvidedService":
     let serviceId = service.id.hashServiceId()
 
     disco.populateRoutingTable(1)
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     check disco.rtManager.hasService(serviceId)
 
@@ -111,7 +111,7 @@ suite "Advertiser - addProvidedService":
     let serviceId = service.id.hashServiceId()
 
     disco.populateRoutingTable(1)
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     let cached = disco.advertiser.providedAdverts[serviceId].bytes
     let ad = Advertisement.decode(cached).get()
@@ -128,7 +128,7 @@ suite "Advertiser - addProvidedService":
     let service = makeServiceInfo()
     let serviceId = service.id.hashServiceId()
 
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     let moved = makeMultiAddress("10.0.0.2")
     disco.switch.peerInfo.addrs = @[moved]
@@ -146,7 +146,7 @@ suite "Advertiser - addProvidedService":
     let serviceId = service.id.hashServiceId()
     let advert = makeAdvertisement(service.id).encode()
 
-    check disco.addProvidedService(service, Opt.some(advert)).isOk()
+    check disco.addProvidedService(service, Opt.some(advert))
 
     disco.switch.peerInfo.addrs = @[makeMultiAddress("10.0.0.2")]
     await disco.republishProvidedAdverts()
@@ -158,7 +158,7 @@ suite "Advertiser - addProvidedService":
     let service = makeServiceInfo()
     let serviceId = service.id.hashServiceId()
 
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     check disco.rtManager.hasService(serviceId)
     check disco.advertiser.running.len() == 0
@@ -169,7 +169,7 @@ suite "Advertiser - addProvidedService":
     let serviceId = service.id.hashServiceId()
 
     disco.populateAdvertisementTable(serviceId)
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     check disco.advertiser.running.len() == disco.discoConfig.kRegister
 
@@ -196,7 +196,7 @@ suite "Advertiser - addProvidedService":
         overpopulatedBuckets.inc
     check overpopulatedBuckets > 0
 
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     check disco.advertiser.running.len() == overpopulatedBuckets * kRegister
 
@@ -206,10 +206,10 @@ suite "Advertiser - addProvidedService":
     let serviceId = service.id.hashServiceId()
 
     disco.populateAdvertisementTable(serviceId)
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
     let firstTasks = toSeq(disco.advertiser.running)
 
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     check:
       disco.rtManager.hasService(serviceId)
@@ -232,7 +232,7 @@ suite "Advertiser - addProvidedService":
     check not disco.rtManager.hasService(serviceId)
 
     disco.switch.peerInfo.addrs = @[makeMultiAddress("10.0.0.1")]
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
   test "multiple distinct services each get their own routing table":
     let disco = setupServiceDiscoveryNode()
@@ -241,9 +241,9 @@ suite "Advertiser - addProvidedService":
     let s3 = makeServiceInfo("svc-3")
 
     disco.populateRoutingTable(1)
-    check disco.addProvidedService(s1).isOk()
-    check disco.addProvidedService(s2).isOk()
-    check disco.addProvidedService(s3).isOk()
+    check disco.addProvidedService(s1)
+    check disco.addProvidedService(s2)
+    check disco.addProvidedService(s3)
 
     check disco.rtManager.hasService(s1.id.hashServiceId())
     check disco.rtManager.hasService(s2.id.hashServiceId())
@@ -261,7 +261,7 @@ suite "Advertiser - caller-supplied advertisement":
 
     disco.populateRoutingTable(1)
 
-    check disco.addProvidedService(service, Opt.some(advert)).isOk()
+    check disco.addProvidedService(service, Opt.some(advert))
     check disco.advertiser.providedAdverts[service.id.hashServiceId()].bytes == advert
 
   test "rejects an advertisement that does not decode":
@@ -294,7 +294,7 @@ suite "Advertiser - caller-supplied advertisement":
 
     # the decoder skips the padding, so only the incoming length rejects this
     check advert.len > MaxXPRSize
-    check Advertisement.decode(advert).isOk()
+    check Advertisement.decode(advert)
 
     check disco.addProvidedService(service, Opt.some(advert)).isErr()
     check not disco.rtManager.hasService(service.id.hashServiceId())
@@ -309,8 +309,8 @@ suite "Advertiser - caller-supplied advertisement":
 
     disco.populateRoutingTable(1)
 
-    check disco.startAdvertising(service, Opt.some(first)).isOk()
-    check disco.startAdvertising(service, Opt.some(second)).isOk()
+    check disco.startAdvertising(service, Opt.some(first))
+    check disco.startAdvertising(service, Opt.some(second))
     check disco.advertiser.providedAdverts[serviceId].bytes == second
 
   test "a rejected replacement keeps the current advertisement":
@@ -319,7 +319,7 @@ suite "Advertiser - caller-supplied advertisement":
     let serviceId = service.id.hashServiceId()
     let advert = makeAdvertisement(service.id).encode()
 
-    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.startAdvertising(service, Opt.some(advert))
     let other = makeAdvertisement("other-service").encode()
     check disco.startAdvertising(service, Opt.some(other)).isErr()
     check disco.advertiser.providedAdverts[serviceId].bytes == advert
@@ -329,7 +329,7 @@ suite "Advertiser - caller-supplied advertisement":
     let service = makeServiceInfo()
     let advert = makeAdvertisement(service.id).encode()
 
-    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.startAdvertising(service, Opt.some(advert))
 
     check:
       disco.services.len == 0
@@ -340,10 +340,10 @@ suite "Advertiser - caller-supplied advertisement":
     let service = makeServiceInfo()
     let advert = makeAdvertisement(service.id).encode()
 
-    check disco.startAdvertising(service).isOk()
+    check disco.startAdvertising(service)
     check disco.services.len == 1
 
-    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.startAdvertising(service, Opt.some(advert))
     check disco.services.len == 0
 
   asyncTest "registrations run for a caller-supplied advertisement":
@@ -353,7 +353,7 @@ suite "Advertiser - caller-supplied advertisement":
     let advert = makeAdvertisement(service.id).encode()
 
     disco.populateAdvertisementTable(serviceId)
-    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.startAdvertising(service, Opt.some(advert))
 
     await disco.stopRegistrations()
     await disco.maintainRegistrations()
@@ -367,7 +367,7 @@ suite "Advertiser - caller-supplied advertisement":
     let disco = setupServiceDiscoveryNode(services = @[service])
     let advert = makeAdvertisement(service.id).encode()
 
-    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.startAdvertising(service, Opt.some(advert))
     check disco.services.len == 0
 
     startAndDeferStop(@[disco])
@@ -380,7 +380,7 @@ suite "Advertiser - caller-supplied advertisement":
     let advert = makeAdvertisement(service.id, key).encode()
 
     check disco.xprsToPublish().len == 1
-    check disco.startAdvertising(service, Opt.some(advert)).isOk()
+    check disco.startAdvertising(service, Opt.some(advert))
     check disco.xprsToPublish().mapIt(it.bytes) == @[advert]
 
   asyncTest "an advert change restarts XPR publishing after the old loop stops":
@@ -388,7 +388,7 @@ suite "Advertiser - caller-supplied advertisement":
     startAndDeferStop(@[disco])
     let before = disco.xprPublishLoop
 
-    check disco.startAdvertising(makeServiceInfo()).isOk()
+    check disco.startAdvertising(makeServiceInfo())
     check disco.xprPublishLoop != before
 
     discard await before.join().withTimeout(1.seconds)
@@ -405,7 +405,7 @@ suite "Advertiser - maintainRegistrations":
     let service = makeServiceInfo()
 
     disco.populateAdvertisementTable(service.id.hashServiceId())
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     await disco.stopRegistrations()
     check await disco.changeMode(isServer = false)
@@ -424,7 +424,7 @@ suite "Advertiser - maintainRegistrations":
 
   asyncTest "a republish in client mode leaves the local registration stopped":
     let disco = setupServiceDiscoveryNode()
-    check disco.addProvidedService(makeServiceInfo()).isOk()
+    check disco.addProvidedService(makeServiceInfo())
     check await disco.changeMode(isServer = false)
 
     await disco.republishProvidedAdverts()
@@ -440,7 +440,7 @@ suite "Advertiser - maintainRegistrations":
     raw[^1] = 1
     check disco.rtable.insert(Key.init(raw))
 
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
 
     check:
       disco.rtManager.getTable(service.id.hashServiceId()).get().allKeys().len == 1
@@ -493,8 +493,8 @@ suite "Advertiser - removeProvidedService":
     let sid2 = s2.id.hashServiceId()
 
     disco.populateRoutingTable(1)
-    check disco.addProvidedService(s1).isOk()
-    check disco.addProvidedService(s2).isOk()
+    check disco.addProvidedService(s1)
+    check disco.addProvidedService(s2)
 
     await disco.removeProvidedService(s1.id)
     disco.dropCachedAds() # the local registrar holds the self-ad
@@ -510,7 +510,7 @@ suite "Advertiser - removeProvidedService":
     let sid = service.id.hashServiceId()
 
     disco.populateRoutingTable(1)
-    check disco.addProvidedService(service).isOk()
+    check disco.addProvidedService(service)
     discard disco.registerInterest(service.id)
     check disco.rtManager.serviceStatus[sid] == {Interest, Provided, Registered}
 
@@ -543,8 +543,8 @@ suite "Advertiser - removeProvidedService":
     let s2 = makeServiceInfo("svc-2")
 
     disco.populateRoutingTable(1)
-    check disco.addProvidedService(s1).isOk()
-    check disco.addProvidedService(s2).isOk()
+    check disco.addProvidedService(s1)
+    check disco.addProvidedService(s2)
 
     await disco.removeProvidedService(s1.id)
     disco.dropCachedAds() # the local registrar holds the self-ad
@@ -562,7 +562,7 @@ suite "Advertiser - record creation":
       services = @[ServiceInfo(id: "service", data: validData)]
     )
     let recordValid = discoValid.record()
-    check recordValid.isOk()
+    check recordValid
     let svc = recordValid.get().data.services[0]
     check:
       svc.isValid()
@@ -579,7 +579,7 @@ suite "Advertiser - record creation":
   test "record creation rejects encoded XPR larger than MaxXPRSize":
     let discoSmall = setupServiceDiscoveryNode(services = @[makeServiceInfo("service")])
     let recordSmall = discoSmall.record()
-    check recordSmall.isOk()
+    check recordSmall
     let smallXpr = recordSmall.get()
     check:
       smallXpr.isValid()
@@ -620,7 +620,7 @@ suite "Advertiser - record creation":
     disco.switch.peerInfo.addrs = mixed
 
     let rec = disco.record()
-    check rec.isOk()
+    check rec
     let xprAddrs = rec.get().data.addresses
     check:
       xprAddrs.len == 1
@@ -630,7 +630,7 @@ suite "Advertiser - record creation":
     let discoDef = setupServiceDiscoveryNode(services = @[makeServiceInfo("service")])
     discoDef.switch.peerInfo.addrs = mixed
     let recDef = discoDef.record()
-    check recDef.isOk()
+    check recDef
     check recDef.get().data.addresses.len == 2
 
   test "record creation drops an undialable address by default":
@@ -640,7 +640,7 @@ suite "Advertiser - record creation":
       @[ma("/ip4/0.0.0.0/tcp/60000"), ma("/ip4/127.0.0.1/tcp/0"), routable]
 
     let rec = disco.record()
-    check rec.isOk()
+    check rec
     let xprAddrs = rec.get().data.addresses
     check:
       xprAddrs.len == 1
@@ -663,7 +663,7 @@ suite "Advertiser - record creation":
     disco.switch.peerInfo.addrs = @[wildcard]
 
     let rec = disco.record()
-    check rec.isOk()
+    check rec
     let xprAddrs = rec.get().data.addresses
     check:
       xprAddrs.len == 1

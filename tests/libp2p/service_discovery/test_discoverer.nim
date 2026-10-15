@@ -24,9 +24,7 @@ suite "Discoverer - lookup":
 
     check not disco.rtManager.hasService(serviceId)
 
-    let res = await disco.lookup(serviceId)
-
-    check res.isOk()
+    check await disco.lookup(serviceId)
     check disco.rtManager.hasService(serviceId)
 
   asyncTest "empty routing table returns ok with empty peers":
@@ -35,7 +33,7 @@ suite "Discoverer - lookup":
 
     let res = await disco.lookup(serviceId)
 
-    check res.isOk()
+    check res
     check res.get().len == 0
 
   asyncTest "empty routing table still returns cached advertisements":
@@ -47,18 +45,15 @@ suite "Discoverer - lookup":
 
     let res = await disco.lookup(serviceId)
 
-    check res.isOk()
+    check res
     check res.get() == @[ad]
 
   asyncTest "calling lookup twice for same service is idempotent":
     let disco = setupServiceDiscoveryNode()
     let serviceId = makeServiceId()
 
-    let res1 = await disco.lookup(serviceId)
-    let res2 = await disco.lookup(serviceId)
-
-    check res1.isOk()
-    check res2.isOk()
+    check await disco.lookup(serviceId)
+    check await disco.lookup(serviceId)
     check disco.rtManager.hasService(serviceId)
 
   asyncTest "distinct service IDs get independent routing tables":
@@ -78,9 +73,7 @@ suite "Discoverer - lookup":
     let service = makeServiceInfo("my-service")
     let serviceId = service.id.hashServiceId()
 
-    let res = await disco.lookup(service)
-
-    check res.isOk()
+    check await disco.lookup(service)
     check disco.rtManager.hasService(serviceId)
 
   asyncTest "drops cached advertisements that fail validation":

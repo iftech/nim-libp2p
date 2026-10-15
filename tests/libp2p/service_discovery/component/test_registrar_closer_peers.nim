@@ -68,7 +68,7 @@ suite "Service Discovery Component - Registrar Closer Peers":
       registrarNode.switch.peerInfo.peerId, serviceId, adBytes
     )
 
-    check response.isOk()
+    check response
     let closerPeerIds = response.get().closerPeers.mapIt(it.peerId)
 
     check:
@@ -119,8 +119,7 @@ suite "Service Discovery Component - Registrar Closer Peers":
     check:
       not discovererNode.rtable.hasPeer(serviceOnlyKey)
 
-    let found = await discovererNode.lookup(serviceId)
-    check found.isOk()
+    check await discovererNode.lookup(serviceId)
     checkUntilTimeout:
       discovererNode.rtable.hasPeer(serviceOnlyKey)
 
@@ -398,7 +397,7 @@ suite "Service Discovery Component - Registrar Closer Peers":
     let response = await advertiserNode.sendRegister(
       registrarNode.switch.peerInfo.peerId, serviceId, adBytes
     )
-    check response.isOk()
+    check response
     check response.get().status == kad_protobuf.RegistrationStatus.Confirmed
 
     await connect(registrarNode, discovererNode)
@@ -410,7 +409,7 @@ suite "Service Discovery Component - Registrar Closer Peers":
       not tableBefore.get().hasPeer(discovererKey)
 
     let found = await discovererNode.lookup(serviceId)
-    check found.isOk()
+    check found
     check found.get().len == 1
 
     let tableAfter = registrarNode.rtManager.getTable(serviceId)

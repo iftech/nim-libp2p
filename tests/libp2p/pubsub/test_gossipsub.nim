@@ -49,7 +49,7 @@ suite "GossipSub":
     gossipSub.peerStats[peer.peerId] = peerStats
 
     # And the peer is connected
-    check (await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0]))).isOk()
+    check (await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0])))
     check:
       gossipSub.switch.isConnected(peer.peerId)
 
@@ -106,7 +106,7 @@ suite "GossipSub":
       await teardownGossipSub(gossipSub, conns)
 
     # And the peer is connected
-    check (await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0]))).isOk()
+    check (await gossipSub.switch.connManager.storeMuxer(Muxer(connection: conns[0])))
     check:
       gossipSub.switch.isConnected(peer.peerId)
       gossipSub.mesh.hasPeerId(topic, peer.peerId)
@@ -157,7 +157,7 @@ suite "GossipSub":
       peerId notin gossipSub.peers
 
     unblockConnected.fire()
-    check (await storeFut).isOk()
+    check (await storeFut)
 
     check:
       peerId notin connMngr
