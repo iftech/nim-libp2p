@@ -229,6 +229,18 @@ method publish*(
       messageSize, maxMessageSize = f.maxMessageSize
     return 0
 
+  # Check seen-cache before delivering locally: otherwise re-publishing an
+  # already-seen message (custom msgIdProvider) would re-run local handlers.
+  let msgId = f.msgIdProvider(msg).valueOr:
+    trace "Publish skipped after message ID generation failed", err = error
+    f.handleSelfPublishing(topic, data)
+    return 0
+
+  if f.addSeen(f.salt(msgId)):
+    # custom msgid providers might cause this
+    trace "Dropping already-seen message", msgId, topic
+    return 0
+
   f.handleSelfPublishing(topic, data)
 
   let peers = f.floodsub.getOrDefault(topic)
@@ -237,21 +249,12 @@ method publish*(
     debug "No peers for topic, skipping publish", topic
     return 0
 
-  let msgId = f.msgIdProvider(msg).valueOr:
-    trace "Publish skipped after message ID generation failed", err = error
-    return 0
-
   trace "Message created",
     messageType = "publish",
     messageSize = messageSize,
     peerCount = peers.len,
     topic,
     msgId
-
-  if f.addSeen(f.salt(msgId)):
-    # custom msgid providers might cause this
-    trace "Dropping already-seen message", msgId, topic
-    return 0
 
   # Try to send to all peers that are known to be interested
   f.broadcast(peers, RPCMsg.withMessages(msg), MessagePriority.Medium)
