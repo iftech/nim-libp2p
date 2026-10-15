@@ -5,12 +5,15 @@
 
 import std/[tables, deques, sequtils]
 import chronos, results
-import ../../stream/connection
-import ./rpc/[messages, topicrpc]
+import ../../../stream/connection
+import ../rpc/[messages, topicrpc]
 
 export topicrpc
 
-const TopicStreamsCodec* = "/gsts/v0beta"
+const
+  TopicStreamsCodec* = "/gsts/v0beta"
+  TopicStreamDialTimeout = 5.seconds
+  TopicStreamHeaderTimeout = 1.seconds
 
 type
   TopicStreamsConfig* = object
@@ -43,7 +46,7 @@ type
 
   TopicStreams* = ref object
     config: TopicStreamsConfig
-    active*: bool
+    active: bool
     receivedControl: bool
     stopped: bool
     maxMessageSize: int
@@ -72,9 +75,15 @@ proc new*(
     penalize: penalize,
   )
 
+func isActive*(s: TopicStreams): bool =
+  not s.isNil and not s.stopped and s.active
+
 proc fail(s: TopicStreams) =
   if not s.stopped:
     s.stopped = true
+    for w in s.writers.values:
+      w.closing = true
+      w.wake.fire()
     s.violation()
 
 proc negotiate*(s: TopicStreams, rpc: RPCMsg): bool =
@@ -120,25 +129,29 @@ proc monitorWriter(s: TopicStreams, w: TopicWriter) {.async: (raises: []).} =
   w.wake.fire()
   await w.stream.close()
 
+proc popNext(
+    s: TopicStreams, w: TopicWriter
+): Future[Opt[seq[byte]]] {.async: (raises: [CancelledError]).} =
+  while not s.stopped and not w.closing and w.medium.len == 0 and w.low.len == 0:
+    await w.wake.wait()
+    w.wake.clear()
+  if s.stopped or w.closing:
+    return Opt.none(seq[byte])
+  if w.medium.len > 0:
+    return Opt.some(w.medium.popFirst())
+  return Opt.some(w.low.popFirst())
+
 proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises: []).} =
   try:
-    w.stream = await s.dial().wait(5.seconds)
+    w.stream = await s.dial().wait(TopicStreamDialTimeout)
     if s.stopped or w.closing:
       return
     w.monitor = s.monitorWriter(w)
     await w.stream.writeLp(w.header)
     w.header = @[]
     while not s.stopped and not w.closing:
-      while not w.closing and w.medium.len == 0 and w.low.len == 0:
-        await w.wake.wait()
-        w.wake.clear()
-      if w.closing:
+      var data = (await s.popNext(w)).valueOr:
         return
-      var data =
-        if w.medium.len > 0:
-          w.medium.popFirst()
-        else:
-          w.low.popFirst()
       let size = data.len
       try:
         await w.stream.writeLp(data)
@@ -166,17 +179,14 @@ proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bo
     return
   if data.len > s.config.maxQueuedBytes - s.queuedBytes or
       s.queuedMessages >= s.config.maxQueuedMessages:
-    s.penalize()
     return
   var w = s.writers.getOrDefault(topic)
   if w == nil:
     if s.writers.len + s.readers.len >= s.config.maxStreams:
-      s.penalize()
       return
     let header = TopicRPCHeader(topic: Opt.some(topic)).encode()
     if header.len > s.maxMessageSize or
         header.len > s.config.maxQueuedBytes - s.queuedBytes - data.len:
-      s.penalize()
       return
     w = TopicWriter(wake: newAsyncEvent(), header: header, headerBytes: header.len)
     s.queuedBytes += header.len
@@ -225,8 +235,13 @@ proc readHeader(
   return data
 
 proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledError]).} =
-  if s.stopped or s.writers.len + s.readers.len >= s.config.maxStreams:
-    s.penalize()
+  if s.stopped:
+    await stream.reset()
+    return
+  if s.writers.len + s.readers.len >= s.config.maxStreams:
+    # Only blame the peer when its incoming streams alone exhausted the limit.
+    if s.readers.len >= s.config.maxStreams:
+      s.penalize()
     await stream.reset()
     return
   if s.receivedControl and not s.active:
@@ -237,7 +252,7 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
   let reader = TopicReader(stream: stream)
   s.readers.add(reader)
   try:
-    var headerBytes = await s.readHeader(reader).wait(1.seconds)
+    var headerBytes = await s.readHeader(reader).wait(TopicStreamHeaderTimeout)
     let header = TopicRPCHeader.decode(move(headerBytes)).valueOr:
       s.fail()
       return
@@ -294,5 +309,4 @@ proc stop*(s: TopicStreams) {.async: (raises: []).} =
     tasks.add(w.task)
   await noCancel allFutures(tasks.mapIt(it.cancelAndWait()))
   let readers = s.readers
-  for r in readers:
-    await r.stream.close()
+  await noCancel allFutures(readers.mapIt(it.stream.close()))
