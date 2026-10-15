@@ -52,10 +52,10 @@ proc addSeen*(f: FloodSub, saltedId: SaltedId): bool =
   f.seen.put(saltedId)
 
 proc isDuplicatePublish*(f: FloodSub, msgId: MessageId): bool =
-  ## Marks the published message as seen; true if it already was (custom
-  ## msgIdProvider / no sequence id), in which case it must not be re-published
-  ## nor delivered locally again.
-  if f.addSeen(f.salt(msgId)):
+  ## True if the message was already seen (custom msgIdProvider / no sequence
+  ## id), in which case it must not be delivered locally nor re-published.
+  ## Non-mutating: the id is only recorded once the message is broadcast.
+  if f.hasSeen(f.salt(msgId)):
     trace "Dropping already-seen message", msgId
     return true
   return false
@@ -262,6 +262,9 @@ method publish*(
     peerCount = peers.len,
     topic,
     msgId
+
+  if f.addSeen(f.salt(msgId)):
+    return 0
 
   # Try to send to all peers that are known to be interested
   f.broadcast(peers, RPCMsg.withMessages(msg), MessagePriority.Medium)

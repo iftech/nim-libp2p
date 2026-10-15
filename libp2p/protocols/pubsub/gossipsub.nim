@@ -1000,6 +1000,9 @@ method publish*(
   trace "Message created",
     messageType = "publish", messageSize = messageSize, peerCount = peers.len
 
+  if g.addSeen(g.salt(msgId)):
+    return 0
+
   if not pubParams.skipMCache:
     g.mcache.put(msgId, msg)
 
