@@ -58,13 +58,13 @@ proc broadcastResponse*(
   else:
     # Lazily encode each wire format and reuse it across recipients.
     var encoded: seq[byte]
-    var topicRPC: PreparedTopicRPC
+    var preparedRPC: PreparedTopicRPC
     for peer in sendPeers:
       if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
-        if topicRPC.isZero():
-          topicRPC = makePreparedTopicRPC(msg, p.anonymize)
-        peer.sendTopicRPC(topicRPC, priority)
+        if preparedRPC.isZero():
+          preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
+        peer.sendTopicRPC(preparedRPC, priority)
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)
