@@ -27,16 +27,15 @@ type
 
 Protobuf.serializerFor([TopicRPCHeader, TopicRPC])
 
-proc topicRPC*(msg: Message, anonymize: bool): TopicRPC =
-  let m = msg.anonymize(anonymize)
+proc topicRPC*(msg: Message): TopicRPC =
   TopicRPC(
     publish: Opt.some(
       TopicScopedMessage(
-        fromPeer: m.fromPeer,
-        data: m.data,
-        seqno: m.seqno,
-        signature: m.signature,
-        key: m.key,
+        fromPeer: msg.fromPeer,
+        data: msg.data,
+        seqno: msg.seqno,
+        signature: msg.signature,
+        key: msg.key,
       )
     )
   )
