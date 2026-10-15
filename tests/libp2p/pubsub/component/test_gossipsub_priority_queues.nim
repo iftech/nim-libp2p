@@ -410,8 +410,6 @@ suite "GossipSub Component - Priority Queues":
     let nodes = generateNodes(2, gossip = true).toGossipSub()
     for node in nodes:
       node.parameters.maxOutboundQueueBytes = 128 * 1024
-      node.parameters.highPriorityQueueReservedBytes = 16 * 1024
-      node.parameters.maxLowPriorityQueueBytes = 128 * 1024
     startAndDeferStop(nodes)
     await connectStar(nodes)
 
@@ -455,15 +453,9 @@ suite "GossipSub Component - Priority Queues":
       # Apply tiny budgets after subscription/control traffic has settled.
       nodes[0].parameters.maxOutboundQueueBytes =
         if priority == MessagePriority.High: 6 else: 9
-      nodes[0].parameters.highPriorityQueueReservedBytes =
-        if priority == MessagePriority.High: 0 else: 3
-      nodes[0].parameters.maxLowPriorityQueueBytes = 6
       let peer = nodes[0].getOrCreatePeer(peerId, @[GossipSubCodec_12])
-      check:
-        peer.maxOutboundQueueBytes == (if priority == MessagePriority.High: 6 else: 9)
-        peer.highPriorityQueueReservedBytes ==
-          (if priority == MessagePriority.High: 0 else: 3)
-        peer.maxLowPriorityQueueBytes == 6
+      check peer.maxOutboundQueueBytes ==
+        (if priority == MessagePriority.High: 6 else: 9)
       let mock = stallSendStream(nodes[0], topic, peerId)
       defer:
         await mock.close()
@@ -489,42 +481,3 @@ suite "GossipSub Component - Priority Queues":
 
     for priority in [MessagePriority.High, MessagePriority.Medium, MessagePriority.Low]:
       await checkPriority(priority)
-
-  asyncTest "Node-wide pressure evicts low traffic from the largest backlog":
-    let nodes = generateNodes(3, gossip = true).toGossipSub()
-    nodes[0].parameters.maxOutboundQueueBytes = 10
-    nodes[0].parameters.highPriorityQueueReservedBytes = 0
-    nodes[0].parameters.maxLowPriorityQueueBytes = 8
-    nodes[0].parameters.maxTotalOutboundQueueBytes = 12
-    startAndDeferStop(nodes)
-    await connectStar(nodes)
-    subscribeAllNodes(nodes, topic, voidTopicHandler)
-    waitSubscribeStar(nodes, topic)
-
-    let
-      firstId = nodes[1].peerInfo.peerId
-      secondId = nodes[2].peerInfo.peerId
-      first = nodes[0].getPeerByPeerId(topic, firstId)
-      second = nodes[0].getPeerByPeerId(topic, secondId)
-      firstStream = stallSendStream(nodes[0], topic, firstId)
-      secondStream = stallSendStream(nodes[0], topic, secondId)
-      penaltyBefore = first.slowPeerPenalty
-    defer:
-      await firstStream.close()
-      await secondStream.close()
-
-    checkUntilTimeout:
-      nodes[0].outboundQueueBudget.bytes == 0
-    await first.sendEncoded(@[9'u8], MessagePriority.High)
-    await first.sendEncoded(newSeq[byte](4), MessagePriority.Low)
-    await sleepAsync(1.milliseconds)
-    await first.sendEncoded(newSeq[byte](4), MessagePriority.Low)
-    await second.sendEncoded(@[8'u8], MessagePriority.High)
-    check nodes[0].outboundQueueBudget.bytes == 10
-
-    await second.sendEncoded(newSeq[byte](5), MessagePriority.High)
-    check:
-      first.queuedBytes(MessagePriority.Low) == 4
-      second.queuedBytes(MessagePriority.High) == 6
-      nodes[0].outboundQueueBudget.bytes == 11
-      first.slowPeerPenalty == penaltyBefore + 1.0

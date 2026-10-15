@@ -95,9 +95,8 @@ nim c -r tests/tools/test_multiaddress.nim
 
 GossipSub limits both message counts and encoded RPC bytes. The default
 `maxOutboundQueueBytes` is a shared 16 MiB per-peer budget across all
-priorities, including pending writes. `highPriorityQueueReservedBytes` keeps
-the final 1 MiB unavailable to medium/low traffic, while
-`maxLowPriorityQueueBytes` limits low-priority backlog to 4 MiB.
+priorities, including pending writes. One sixteenth of the configured budget is
+reserved for high-priority traffic.
 
 High-priority admission evicts queued low and then medium traffic from the same
 peer before disconnecting it. Medium admission may evict queued low traffic;
@@ -106,15 +105,6 @@ frame may exceed its normal backlog limit when the queue is otherwise empty.
 The effective per-peer bound is therefore
 `max(maxOutboundQueueBytes, maxMessageSize)`.
 
-Medium and low messages expire after `maxNonHighPriorityQueueAge`, which
-defaults to five seconds. Expiration is lazy: queue operations and the worker
-remove stale entries without creating per-message timers.
-
-`maxTotalOutboundQueueBytes` applies a 512 MiB logical-byte cap across all
-peers. When it is reached, high admission evicts low and then medium traffic
-from peers with the largest evictable backlogs; medium admission evicts low
-traffic. This scan only runs on node-wide pressure, not on normal admission.
-
 Bytes remain charged while a message waits for a stream or a transport write to
 finish, including a medium/low message already removed from its deque by the
 worker. `peer.queuedBytes(priority)` exposes this accounting. The budget excludes
@@ -122,25 +112,26 @@ transport framing, allocator overhead, and additional transport-owned copies;
 shared encoded buffers are charged once per destination peer, so it is not a
 bound on physical process memory.
 
-Queue-byte gauges and drop metrics are available with
+Queue-drop metrics are available with
 `-d:libp2p_expensive_metrics`; they are omitted from normal builds to keep the
 send path lean. Existing message-count limits remain active in every build.
 
 Run the queue pressure benchmark with:
 
 ```sh
-nim c -r -d:release -d:chronicles_log_level=ERROR tests/benchmarks/bench_pubsub_queues.nim
-# Raise the byte budget so the existing 512-message count limit binds instead:
-nim c -r -d:release -d:chronicles_log_level=ERROR -d:queueBenchBytes=2147483647 tests/benchmarks/bench_pubsub_queues.nim
+make bench_pubsub_queues BENCH_LOG_LEVEL=ERROR
+make bench_pubsub_queues BENCH_LOG_LEVEL=ERROR QUEUE_BENCH_BYTES=2147483647
 ```
 
 The benchmark measures 100,000 synchronous 256-byte sends and a burst cycling
 through 256-byte, 4-KiB, and 64-KiB messages behind a stalled write. It reports CPU
 time per send, occupied-heap growth after collection, dropped messages, accounted
 bytes, and heap growth after cleanup. The default benchmark byte budget is 1 MiB
-to make the difference from count-only limiting visible. Heap measurements omit
-reserved GC pages and transport buffering; timing is a local microbenchmark,
-not a network throughput measurement.
+to make the difference from count-only limiting visible in the mixed-size
+burst; the 512-message count limit binds first in the 256-byte run. Override
+`QUEUE_BENCH_MESSAGES` to change the default 100,000 sends. Heap measurements
+omit reserved GC pages and transport buffering; timing is a local
+microbenchmark, not a network throughput measurement.
 
 ## Formatting code
 

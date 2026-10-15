@@ -197,7 +197,6 @@ type
 
     knownTopics*: HashSet[string]
     customStreamCallbacks*: Opt[CustomStreamCallbacks]
-    outboundQueueBudget*: OutboundQueueBudget
 
 proc topicLabel*(p: PubSub, topic: string | Opt[string]): string =
   ## returns value to be used for `topic` labels.
@@ -408,46 +407,6 @@ method onPubSubPeerEvent*(
   of PubSubPeerEventKind.DisconnectionRequested:
     discard
 
-proc evictLargestBacklogs(
-    p: PubSub, priority: MessagePriority, bytesNeeded: var int
-) {.gcsafe.} =
-  while bytesNeeded > 0:
-    var
-      victim: PubSubPeer
-      largestBacklog = 0
-    for peer in p.peers.values:
-      let backlog = peer.evictableQueuedBytes(priority)
-      if backlog > largestBacklog:
-        victim = peer
-        largestBacklog = backlog
-    if victim.isNil:
-      break
-    let freed = victim.evictQueuedBytes(priority, bytesNeeded)
-    if freed == 0:
-      break
-    bytesNeeded = max(bytesNeeded - freed, 0)
-
-proc evictForGlobalBudget(
-    p: PubSub, requester: PubSubPeer, priority: MessagePriority, bytesNeeded: int
-) {.gcsafe.} =
-  discard requester
-  var available = 0
-  for peer in p.peers.values:
-    if priority != MessagePriority.Low:
-      available += peer.evictableQueuedBytes(MessagePriority.Low)
-    if priority == MessagePriority.High:
-      available += peer.evictableQueuedBytes(MessagePriority.Medium)
-    if available >= bytesNeeded:
-      break
-  if available < bytesNeeded:
-    return
-
-  var remaining = bytesNeeded
-  if priority != MessagePriority.Low:
-    p.evictLargestBacklogs(MessagePriority.Low, remaining)
-  if priority == MessagePriority.High and remaining > 0:
-    p.evictLargestBacklogs(MessagePriority.Medium, remaining)
-
 method getOrCreatePeer*(
     p: PubSub, peerId: PeerId, protosToDial: seq[string], protoNegotiated: string = ""
 ): PubSubPeer {.base, gcsafe.} =
@@ -475,11 +434,6 @@ method getOrCreatePeer*(
   proc onEvent(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe.} =
     p.onPubSubPeerEvent(peer, event)
 
-  proc evictGlobal(
-      requester: PubSubPeer, priority: MessagePriority, bytesNeeded: int
-  ) {.gcsafe, raises: [].} =
-    p.evictForGlobalBudget(requester, priority, bytesNeeded)
-
   proc peerHandler(
       peer: PubSubPeer, data: sink seq[byte]
   ): Future[void] {.async: (raises: [CancelledError, PeerRateLimitError]).} =
@@ -497,8 +451,6 @@ method getOrCreatePeer*(
     protoNegotiated,
     p.maxMessageSize,
     customStreamCallbacks = p.customStreamCallbacks,
-    outboundQueueBudget = p.outboundQueueBudget,
-    evictGlobal = evictGlobal,
     handler = peerHandler,
     rng = p.rng,
   )
@@ -908,8 +860,6 @@ proc init*[PubParams: object | bool](
   switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Left)
 
   pubsub.knownTopics = KnownLibP2PTopicsSeq.toHashSet()
-  pubsub.outboundQueueBudget = newOutboundQueueBudget(int.high)
-
   pubsub.initPubSub()
 
   return pubsub
