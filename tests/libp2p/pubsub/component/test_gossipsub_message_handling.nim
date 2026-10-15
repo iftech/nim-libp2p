@@ -642,9 +642,10 @@ suite "GossipSub Component - Message Handling":
     await connectStar(nodes)
 
     var delivered = 0
+    let handlerGate = newFuture[void]()
     proc handler(topic: string, data: seq[byte]) {.async.} =
       delivered.inc()
-      await sleepAsync(100.milliseconds) # suspend while the id is in flight
+      await handlerGate # stay suspended while the id is in flight
 
     nodes[0].subscribe(topic, handler)
     nodes[1].subscribe(topic, voidTopicHandler)
@@ -654,8 +655,13 @@ suite "GossipSub Component - Message Handling":
       data = toBytes("concurrent")
       first = nodes[0].publish(topic, data)
       second = nodes[0].publish(topic, data)
-    discard await allFinished(first, second)
 
+    # the duplicate is dropped while the first publish is blocked in its handler
+    check (await second) == 0
+    check delivered == 1
+
+    handlerGate.complete()
+    check (await first) == 1
     check delivered == 1
 
   asyncTest "GossipSub with multiple peers":
