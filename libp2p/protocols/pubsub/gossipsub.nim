@@ -137,6 +137,7 @@ proc init*(
     testExtensionConfig = Opt.none(TestExtensionConfig),
     partialMessageExtensionConfig = Opt.none(PartialMessageExtensionConfig),
     pingpongExtensionConfig = Opt.none(PingPongExtensionConfig),
+    maxOutboundQueueBytes = DefaultMaxOutboundQueueBytes,
 ): GossipSubParams =
   GossipSubParams(
     explicit: true,
@@ -180,6 +181,7 @@ proc init*(
     maxHighPriorityQueueLen: maxHighPriorityQueueLen,
     maxMediumPriorityQueueLen: maxMediumPriorityQueueLen,
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
+    maxOutboundQueueBytes: maxOutboundQueueBytes,
     sendIDontWantOnPublish: sendIDontWantOnPublish,
     testExtensionConfig: testExtensionConfig,
     partialMessageExtensionConfig: partialMessageExtensionConfig,
@@ -248,6 +250,8 @@ proc validateParameters*(parameters: GossipSubParams): Result[void, cstring] =
     err("gossipsub: maxMediumPriorityQueueLen parameter error, Must be > 0")
   elif parameters.maxLowPriorityQueueLen <= 0:
     err("gossipsub: maxLowPriorityQueueLen parameter error, Must be > 0")
+  elif parameters.maxOutboundQueueBytes <= 0:
+    err("gossipsub: maxOutboundQueueBytes parameter error, Must be > 0")
   else:
     validateOverheadRateLimit(parameters)
 
@@ -1236,5 +1240,6 @@ method getOrCreatePeer*(
   peer.maxHighPriorityQueueLen = g.parameters.maxHighPriorityQueueLen
   peer.maxMediumPriorityQueueLen = g.parameters.maxMediumPriorityQueueLen
   peer.maxLowPriorityQueueLen = g.parameters.maxLowPriorityQueueLen
+  peer.maxOutboundQueueBytes = g.parameters.maxOutboundQueueBytes
 
   return peer

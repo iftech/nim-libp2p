@@ -121,6 +121,7 @@ proc createTestPeer(
     maxLow: int = 2,
     onEvent: OnEvent = nil,
     maxMessageSize: int = 100,
+    maxOutboundBytes: int = DefaultMaxOutboundQueueBytes,
 ): PubSubPeer =
   PubSubPeer.new(
     PeerId.random(rng()).expect("random peer id"),
@@ -132,6 +133,7 @@ proc createTestPeer(
     maxHighPriorityQueueLen = maxHigh,
     maxMediumPriorityQueueLen = maxMedium,
     maxLowPriorityQueueLen = maxLow,
+    maxOutboundQueueBytes = maxOutboundBytes,
   )
 
 suite "Priority queue behavior":
@@ -445,6 +447,190 @@ suite "Priority queue behavior":
       lowBlockedByMedium.priority == MessagePriority.Low
       lowBlockedByMedium.send == true
       lowBlockedByMedium.slowPeerPenaltyDelta == 0.0
+
+suite "Priority queue byte budgets":
+  teardown:
+    checkTrackers()
+
+  asyncTest "High byte limit accepts the boundary and disconnects on overflow":
+    let disconnected = new bool
+    let peer = createTestPeer(
+      maxHigh = 10, maxOutboundBytes = 5, onEvent = newDisconnectRecorder(disconnected)
+    )
+    let conn = createPendingConnection()
+    peer.sendStream = conn
+    defer:
+      await peer.stopTasks()
+
+    await peer.sendEncoded(@[1'u8, 2], High)
+    await peer.sendEncoded(@[3'u8, 4, 5], High)
+    check:
+      peer.queuedBytes(High) == 5
+      conn.pendingWrites.len == 2
+      not disconnected[]
+    await peer.sendEncoded(@[6'u8], High)
+    check:
+      disconnected[]
+      conn.pendingWrites.len == 2
+      peer.slowPeerPenalty == 0.0
+    await peer.stopTasks()
+    check peer.queuedBytes(High) == 0
+
+  asyncTest "One oversized valid frame is allowed when the queue is empty":
+    for priority in [High, Medium, Low]:
+      let disconnected = new bool
+      let peer = createTestPeer(
+        maxOutboundBytes = 2, onEvent = newDisconnectRecorder(disconnected)
+      )
+      let conn = createPendingConnection()
+      peer.sendStream = conn
+      await peer.sendEncoded(@[1'u8, 2, 3], priority)
+      check:
+        not disconnected[]
+        conn.pendingWrites.len == 1
+        peer.queuedBytes(High) == 3
+      await peer.stopTasks()
+
+  asyncTest "High-priority reservation limits non-high backlog":
+    let peer = createTestPeer(maxHigh = 10, maxMedium = 10, maxOutboundBytes = 32)
+    let conn = createPendingConnection()
+    peer.sendStream = conn
+    defer:
+      await peer.stopTasks()
+
+    await peer.sendEncoded(@[9'u8], High)
+    await peer.sendEncoded(newSeq[byte](30), Medium)
+    await sleepAsync(1.milliseconds)
+    await peer.sendEncoded(@[1'u8], Medium)
+    check:
+      peer.queuedBytes(High) == 1
+      peer.queuedBytes(Medium) == 30
+      peer.slowPeerPenalty == 1.0
+
+    await peer.sendEncoded(@[2'u8], High)
+    check:
+      peer.queuedBytes() == 32
+      conn.pendingWrites.len == 2
+
+  asyncTest "High evicts queued low then medium traffic":
+    let peer =
+      createTestPeer(maxHigh = 10, maxMedium = 10, maxLow = 10, maxOutboundBytes = 10)
+    let conn = createPendingConnection()
+    peer.sendStream = conn
+    defer:
+      await peer.stopTasks()
+
+    await peer.sendEncoded(@[9'u8], High)
+    await peer.sendEncoded(newSeq[byte](4), Low)
+    await sleepAsync(1.milliseconds)
+    await peer.sendEncoded(newSeq[byte](4), Low)
+    await peer.sendEncoded(@[8'u8], Medium)
+    await peer.sendEncoded(newSeq[byte](5), High)
+    check:
+      peer.queuedBytes(High) == 6
+      peer.queuedBytes(Medium) == 0
+      peer.queuedBytes(Low) == 4
+      peer.slowPeerPenalty == 0.0
+      conn.pendingWrites.len == 2
+
+  asyncTest "Worker-held messages stay charged while waiting and writing":
+    for priority in [Medium, Low]:
+      let peer = createTestPeer(maxOutboundBytes = 16)
+      let conn = createPendingConnection()
+      peer.sendStream = conn
+      await peer.sendEncoded(@[9'u8], High)
+      await peer.sendEncoded(newSeq[byte](15), priority)
+      await sleepAsync(1.milliseconds)
+      check peer.queuedBytes(priority) == 15
+      await peer.sendEncoded(@[4'u8], priority)
+      check peer.slowPeerPenalty == 1.0
+
+      conn.pendingWrites[0].complete()
+      checkUntilTimeout:
+        conn.pendingWrites.len == 2
+      check:
+        peer.queuedBytes(High) == 0
+        peer.queuedBytes(priority) == 15
+      await peer.sendEncoded(@[5'u8], priority)
+      check:
+        peer.slowPeerPenalty == 2.0
+        conn.pendingWrites.len == 2
+        peer.queuedBytes(priority) == 15
+
+      conn.pendingWrites[1].complete()
+      checkUntilTimeout:
+        peer.queuedBytes(priority) == 0
+      await peer.sendEncoded(@[6'u8], High)
+      await peer.sendEncoded(newSeq[byte](15), priority)
+      check peer.queuedBytes(priority) == 15
+      await peer.stopTasks()
+      for p in MessagePriority:
+        check peer.queuedBytes(p) == 0
+      await peer.stopTasks()
+      await peer.sendEncoded(@[10'u8], priority)
+      check peer.queuedBytes(priority) == 0
+
+  asyncTest "Completed middle high sends release bytes before deque cleanup":
+    let peer = createTestPeer(maxHigh = 10, maxOutboundBytes = 9)
+    let conn = createPendingConnection()
+    peer.sendStream = conn
+    defer:
+      await peer.stopTasks()
+    for i in 0 ..< 3:
+      await peer.sendEncoded(newSeq[byte](3), High)
+    check peer.queuedBytes(High) == 9
+    conn.pendingWrites[1].complete()
+    checkUntilTimeout:
+      peer.queuedBytes(High) == 6
+    await peer.sendEncoded(newSeq[byte](3), High)
+    check:
+      conn.pendingWrites.len == 4
+      peer.queuedBytes(High) == 9
+      peer.hasSendStream()
+
+  asyncTest "Failed writes and cancellation release all accounted bytes":
+    let peer = createTestPeer()
+    let conn = createPendingConnection()
+    peer.sendStream = conn
+    await peer.sendEncoded(@[1'u8, 2], High)
+    await peer.sendEncoded(@[3'u8, 4, 5], Medium)
+    await peer.sendEncoded(@[6'u8, 7, 8, 9], Low)
+    await sleepAsync(1.milliseconds)
+    await conn.close()
+    checkUntilTimeout:
+      peer.queuedBytes(High) == 0
+    await peer.stopTasks()
+    for priority in MessagePriority:
+      check peer.queuedBytes(priority) == 0
+
+  asyncTest "Messages waiting for stream setup are charged and released on stop":
+    let peer = createTestPeer(maxOutboundBytes = 7)
+    await peer.sendEncoded(@[1'u8, 2, 3], High)
+    await peer.sendEncoded(@[4'u8, 5, 6, 7], Medium)
+    await sleepAsync(1.milliseconds)
+    check:
+      peer.queuedBytes(High) == 3
+      peer.queuedBytes(Medium) == 4
+    await peer.sendEncoded(@[8'u8], Medium)
+    check peer.slowPeerPenalty == 1.0
+    await peer.stopTasks()
+    for priority in MessagePriority:
+      check peer.queuedBytes(priority) == 0
+
+  test "Byte admission avoids addition overflow":
+    let action = determineQueueAction(
+      High,
+      1,
+      0,
+      0,
+      10,
+      10,
+      10,
+      messageBytes = int.high,
+      highPriorityQueueBytes = 1,
+      maxOutboundQueueBytes = int.high,
+    )
+    check not action.send
 
 suite "PubSubPeer sendResponse":
   teardown:

@@ -349,3 +349,79 @@ suite "GossipSub Component - Priority Queues":
       peer.slowPeerPenalty > nodes[0].parameters.slowPeerPenaltyThreshold
       nodes[0].getPeerScore(peerId) >= 0.0
       nodes[0].mesh.hasPeerId(topic, peerId)
+
+  asyncTest "Mixed-size messages cross real streams with finite byte budgets":
+    let nodes = generateNodes(2, gossip = true).toGossipSub()
+    for node in nodes:
+      node.parameters.maxOutboundQueueBytes = 128 * 1024
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    var received: seq[seq[byte]]
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      received.add(data)
+
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[1].subscribe(topic, handler)
+    waitSubscribeStar(nodes, topic)
+    let peerId = nodes[1].peerInfo.peerId
+    checkUntilTimeout:
+      nodes[0].mesh.hasPeerId(topic, peerId)
+
+    var messages: seq[seq[byte]]
+    for size in [1, 1024, 65536, 17, 8192]:
+      var data = newSeq[byte](size)
+      data[0] = byte(messages.len)
+      messages.add(data)
+      check (await nodes[0].publish(topic, data)) == 1
+    checkUntilTimeout:
+      received == messages
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    checkUntilTimeout:
+      peer.queuedBytes(MessagePriority.High) == 0
+      peer.queuedBytes(MessagePriority.Medium) == 0
+      peer.queuedBytes(MessagePriority.Low) == 0
+    check peer.slowPeerPenalty == 0.0
+
+  asyncTest "Configured byte limits preserve overflow behavior on connected peers":
+    proc checkPriority(priority: MessagePriority) {.async.} =
+      let nodes = generateNodes(2, gossip = true).toGossipSub()
+      startAndDeferStop(nodes)
+      await connectStar(nodes)
+      subscribeAllNodes(nodes, topic, voidTopicHandler)
+      waitSubscribeStar(nodes, topic)
+      let peerId = nodes[1].peerInfo.peerId
+      checkUntilTimeout:
+        nodes[0].mesh.hasPeerId(topic, peerId)
+
+      # Apply tiny budgets after subscription/control traffic has settled.
+      nodes[0].parameters.maxOutboundQueueBytes =
+        if priority == MessagePriority.High: 6 else: 9
+      let peer = nodes[0].getOrCreatePeer(peerId, @[GossipSubCodec_12])
+      check peer.maxOutboundQueueBytes ==
+        (if priority == MessagePriority.High: 6 else: 9)
+      let mock = stallSendStream(nodes[0], topic, peerId)
+      defer:
+        await mock.close()
+      if priority != MessagePriority.High:
+        await peer.sendEncoded(message(9), MessagePriority.High)
+      await peer.sendEncoded(message(1), priority)
+      await peer.sendEncoded(message(2), priority)
+      check peer.queuedBytes(priority) == 6
+      await peer.sendEncoded(message(3), priority)
+      if priority == MessagePriority.High:
+        checkUntilTimeout:
+          not nodes[0].switch.isConnected(peerId)
+        check peer.slowPeerPenalty == 0.0
+      else:
+        check:
+          peer.slowPeerPenalty == 1.0
+          peer.queuedBytes(priority) == 6
+          nodes[0].switch.isConnected(peerId)
+          mock.writes.len == 1
+      await peer.stopTasks()
+      for p in MessagePriority:
+        check peer.queuedBytes(p) == 0
+
+    for priority in [MessagePriority.High, MessagePriority.Medium, MessagePriority.Low]:
+      await checkPriority(priority)

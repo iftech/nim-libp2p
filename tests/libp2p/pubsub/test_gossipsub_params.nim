@@ -393,6 +393,18 @@ suite "GossipSubParams validation":
     params.maxLowPriorityQueueLen = 1
     check params.validateParameters().isOk()
 
+  test "maxOutboundQueueBytes requires a positive budget":
+    var params = newDefaultValidParams()
+    check params.maxOutboundQueueBytes == DefaultMaxOutboundQueueBytes
+    for invalid in [0, -1]:
+      params.maxOutboundQueueBytes = invalid
+      let res = params.validateParameters()
+      check:
+        res.isErr()
+        res.error == "gossipsub: maxOutboundQueueBytes parameter error, Must be > 0"
+    params.maxOutboundQueueBytes = 1
+    check params.validateParameters().isOk()
+
   test "overheadRateLimit.bytes fails when zero":
     const errorMessage =
       "gossipsub: overheadRateLimit.bytes parameter error, Must be > 0"

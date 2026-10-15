@@ -166,6 +166,9 @@ type
     # Max number of enqueued low-priority messages. Excess messages are dropped.
     maxLowPriorityQueueLen*: int
 
+    # Encoded RPC byte limits include queued messages and pending writes.
+    maxOutboundQueueBytes*: int
+
     # Broadcast an IDONTWANT message automatically when the message exceeds the IDONTWANT message size threshold
     sendIDontWantOnPublish*: bool
 

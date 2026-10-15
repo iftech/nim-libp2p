@@ -848,7 +848,6 @@ proc init*[PubParams: object | bool](
   switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Left)
 
   pubsub.knownTopics = KnownLibP2PTopicsSeq.toHashSet()
-
   pubsub.initPubSub()
 
   return pubsub
