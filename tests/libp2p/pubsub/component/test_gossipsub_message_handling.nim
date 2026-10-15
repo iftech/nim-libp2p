@@ -604,13 +604,10 @@ suite "GossipSub Component - Message Handling":
     check (await nodes[0].publish(topic, newSeq[byte](500_001))) == nodes.len - 1
 
   asyncTest "Republished message is not delivered to local handlers again":
-    let
-      dataMsgIdProvider = proc(m: Message): Result[seq[byte], ValidationResult] =
-        ok(m.data)
-      nodes = generateNodes(
-          2, gossip = true, triggerSelf = true, msgIdProvider = dataMsgIdProvider
-        )
-        .toGossipSub()
+    let nodes = generateNodes(
+        2, gossip = true, triggerSelf = true, msgIdProvider = dataMsgIdProvider
+      )
+      .toGossipSub()
 
     startAndDeferStop(nodes)
     await connectStar(nodes)
