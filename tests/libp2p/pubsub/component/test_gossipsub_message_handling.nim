@@ -627,6 +627,11 @@ suite "GossipSub Component - Message Handling":
     check (await nodes[0].publish(topic, data)) == 0
     check delivered == 1
 
+    # control: a different message still goes out, so the 0 above came from
+    # duplicate suppression and not from a lost mesh
+    check (await nodes[0].publish(topic, toBytes("other"))) == 1
+    check delivered == 2
+
   asyncTest "Concurrent publish of same message reaches local handlers once":
     let nodes = generateNodes(
         2, gossip = true, triggerSelf = true, msgIdProvider = dataMsgIdProvider
