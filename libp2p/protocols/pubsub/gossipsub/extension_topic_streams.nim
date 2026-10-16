@@ -150,14 +150,12 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
     await w.stream.writeLp(w.header)
     w.header = @[]
     while not s.stopped and not w.closing:
-      var data = (await s.popNext(w)).valueOr:
+      let data = (await s.popNext(w)).valueOr:
         return
-      let size = data.len
       try:
         await w.stream.writeLp(data)
       finally:
-        data = @[]
-        s.queuedBytes -= size
+        s.queuedBytes -= data.len
         dec s.queuedMessages
   except CancelledError, LPStreamError, AsyncTimeoutError:
     discard
@@ -204,6 +202,10 @@ proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bo
   else:
     w.wake.fire()
 
+proc close(w: TopicWriter): Future[void] {.async: (raises: [], raw: true).} =
+  w.closing = true
+  w.task.cancelAndWait()
+
 proc closeTopic*(
     s: TopicStreams, topic: string, incoming = false
 ) {.async: (raises: []).} =
@@ -211,8 +213,7 @@ proc closeTopic*(
     return
   let w = s.writers.getOrDefault(topic)
   if w != nil:
-    w.closing = true
-    await w.task.cancelAndWait()
+    await w.close()
   if incoming:
     let readers = s.readers
     for r in readers:
@@ -251,62 +252,65 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
   s.active = true
   let reader = TopicReader(stream: stream)
   s.readers.add(reader)
-  try:
-    var headerBytes = await s.readHeader(reader).wait(TopicStreamHeaderTimeout)
-    let header = TopicRPCHeader.decode(move(headerBytes)).valueOr:
-      s.fail()
-      return
-    if header.topic.isNone or header.topic.get().len == 0:
-      s.fail()
-      return
-    reader.topic = header.topic.get()
-    var count = 0
-    for r in s.readers:
-      if r.topic == reader.topic:
-        inc count
-    if count > 3:
-      s.penalize()
-      return
-    while not s.stopped:
-      let length = await stream.readVarint()
-      if length == 0:
-        s.fail()
-        return
-      if length > uint64(s.maxMessageSize) or
-          length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
-        s.penalize()
-        return
-      let size = int(length)
-      s.incomingBytes += size
-      try:
-        var data = newSeqUninit[byte](size)
-        await stream.readExactly(addr data[0], size)
-        var decoded = TopicRPC.decode(move(data)).valueOr:
-          s.fail()
-          return
-        var rpc = move(decoded).toRPC(reader.topic).valueOr:
-            s.fail()
-            return
-        await s.receive(move(rpc), size)
-      finally:
-        s.incomingBytes -= size
-  except MaxSizeError:
-    s.penalize()
-  except LPStreamError, AsyncTimeoutError:
-    discard
-  finally:
+  defer:
     await stream.reset()
     s.incomingBytes -= reader.headerBytes
     s.readers.keepItIf(it != reader)
+
+  var headerBytes: seq[byte]
+  try:
+    headerBytes = await s.readHeader(reader).wait(TopicStreamHeaderTimeout)
+  except MaxSizeError:
+    s.penalize()
+    return
+  except LPStreamError, AsyncTimeoutError:
+    return
+  let header = TopicRPCHeader.decode(move(headerBytes)).valueOr:
+    s.fail()
+    return
+  if header.topic.isNone or header.topic.get().len == 0:
+    s.fail()
+    return
+  reader.topic = header.topic.get()
+  if s.readers.countIt(it.topic == reader.topic) > 3:
+    s.penalize()
+    return
+  while not s.stopped:
+    let length =
+      try:
+        await stream.readVarint()
+      except LPStreamError:
+        return
+    if length == 0:
+      s.fail()
+      return
+    if length > uint64(s.maxMessageSize) or
+        length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
+      s.penalize()
+      return
+    let size = int(length)
+    s.incomingBytes += size
+    try:
+      var data = newSeqUninit[byte](size)
+      try:
+        await stream.readExactly(addr data[0], size)
+      except LPStreamError:
+        return
+      var decoded = TopicRPC.decode(move(data)).valueOr:
+        s.fail()
+        return
+      var rpc = move(decoded).toRPC(reader.topic).valueOr:
+          s.fail()
+          return
+      await s.receive(move(rpc), size)
+    finally:
+      s.incomingBytes -= size
 
 proc stop*(s: TopicStreams) {.async: (raises: []).} =
   if s == nil:
     return
   s.stopped = true
-  var tasks: seq[Future[void]]
-  for w in s.writers.values:
-    w.closing = true
-    tasks.add(w.task)
-  await noCancel allFutures(tasks.mapIt(it.cancelAndWait()))
-  let readers = s.readers
+  let writers = toSeq(s.writers.values)
+  await noCancel allFutures(writers.mapIt(it.close()))
+  let readers = move s.readers
   await noCancel allFutures(readers.mapIt(it.stream.close()))

@@ -46,12 +46,16 @@ proc topicRPC*(msg: PartialMessageExtensionRPC): TopicRPC =
   TopicRPC(partial: Opt.some(partial))
 
 proc toRPC*(msg: sink TopicRPC, topic: string): Result[RPCMsg, string] =
-  if msg.publish.isSome == msg.partial.isSome:
+  if msg.publish.isSome and msg.partial.isSome:
+    return err("TopicRPC must contain exactly one payload")
+  if msg.publish.isNone and msg.partial.isNone:
     return err("TopicRPC must contain exactly one payload")
   if msg.publish.isSome:
     var m = msg.publish.get()
-    if m.topic.isSome or m.data.len == 0:
-      return err("invalid topic-scoped publish")
+    if m.topic.isSome:
+      return err("topic must be omitted from publish payload")
+    if m.data.len == 0:
+      return err("empty publish application payload")
     return ok(
       RPCMsg.withMessages(
         Message(
