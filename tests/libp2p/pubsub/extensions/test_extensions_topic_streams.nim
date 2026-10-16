@@ -35,9 +35,9 @@ suite "GossipSub Extensions :: Topic streams":
     check not disabled.peerHasTopicStreams(peer)
     check not enabled.peerHasTopicStreams(peer)
 
-  asyncTest "state routes payloads and closes topic writers across peers":
+  asyncTest "extension routes payloads and closes topic writers across peers":
     let state =
-      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+      TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
     let peers = [PeerId.random(rng()).get(), PeerId.random(rng()).get()]
     var remotes: seq[Stream]
     proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
@@ -90,7 +90,7 @@ suite "GossipSub Extensions :: Topic streams":
 
   asyncTest "stopping a peer does not remove a replacement transport":
     let state =
-      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+      TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
     let peer = PeerId.random(rng()).get()
     let pending = newAsyncEvent()
     var cancelled = 0
