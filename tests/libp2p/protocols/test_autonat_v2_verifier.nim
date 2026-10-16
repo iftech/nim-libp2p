@@ -39,7 +39,9 @@ proc makePair(
     )
   VerifierPair(
     switch: switch,
-    peer: makeStandardSwitch(ma("/memorytransport/*")),
+    peer: makeStandardSwitchBuilder(ma("/memorytransport/*"))
+      .withAutonatV2Server()
+      .build(),
     client: client,
     verifier: AutonatV2Verifier.new(switch, client, rng()),
   )
@@ -103,6 +105,20 @@ suite "AutonatV2 verifier":
     defer:
       await pair.stop()
     await pair.peer.connect(pair.switch)
+
+    check:
+      (await pair.verifier.verify(ma("/ip4/1.2.3.4/tcp/1"))).isNone()
+      pair.client.dials == 0
+
+  asyncTest "a peer without the AutoNAT server is not asked":
+    let
+      pair = makePair(Reachable)
+      peerWithoutServer = makeStandardSwitch(ma("/memorytransport/*"))
+
+    await allFutures(pair.start(), peerWithoutServer.start())
+    defer:
+      await allFutures(pair.stop(), peerWithoutServer.stop())
+    await pair.switch.connect(peerWithoutServer)
 
     check:
       (await pair.verifier.verify(ma("/ip4/1.2.3.4/tcp/1"))).isNone()
