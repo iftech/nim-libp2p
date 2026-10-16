@@ -39,9 +39,8 @@ proc makePair(
     )
   VerifierPair(
     switch: switch,
-    peer: makeStandardSwitchBuilder(ma("/memorytransport/*"))
-      .withAutonatV2Server()
-      .build(),
+    peer:
+      makeStandardSwitchBuilder(ma("/memorytransport/*")).withAutonatV2Server().build(),
     client: client,
     verifier: AutonatV2Verifier.new(switch, client, rng()),
   )
