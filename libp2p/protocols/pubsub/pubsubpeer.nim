@@ -74,6 +74,7 @@ when defined(pubsubpeer_queue_metrics):
   )
 
 const
+  MaxInboundStreamsPerPeer* = 4
   DefaultMaxHighPriorityQueueLen* = 256
   DefaultMaxMediumPriorityQueueLen* = 512
   DefaultMaxLowPriorityQueueLen* = 1024
@@ -168,6 +169,8 @@ type
     getStream*: GetStream # callback to establish a new send stream
     onEvent*: OnEvent # Connectivity updates for peer
     codec*: string # the protocol that this peer joined from
+    recvStreams:
+      seq[tuple[stream: Stream, loop: Future[void].Raising([CancelledError])]]
     sendStream*: Stream # cached send stream
     connectedFut: Future[void]
     address*: Opt[MultiAddress]
@@ -377,6 +380,27 @@ proc runHandleLoop*(
       trace "peer rate limit exceeded in peerHandler", err = e.msg, stream, peer = p
       await stream.closeWithEOF()
       return
+
+proc handleRecvStream*(
+    p: PubSubPeer, stream: Stream
+) {.async: (raises: [CancelledError]).} =
+  # Release the old reader before admitting another; recheck after each await.
+  while not p.stopped and p.recvStreams.len >= MaxInboundStreamsPerPeer:
+    let oldest = p.recvStreams[0]
+    await oldest.stream.reset()
+    await oldest.loop.cancelAndWait()
+    p.recvStreams.keepItIf(it.stream != oldest.stream)
+
+  if p.stopped:
+    await stream.reset()
+    return
+
+  let loop = p.runHandleLoop(stream)
+  p.recvStreams.add((stream, loop))
+  try:
+    await loop
+  finally:
+    p.recvStreams.keepItIf(it.stream != stream)
 
 proc closeSendStream(
     p: PubSubPeer, event: PubSubPeerEventKind
@@ -906,6 +930,10 @@ proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
   ## Prevents further work, cancels peer tasks, and waits for cleanup to finish.
   p.stopped = true
   var pending = p.sendFuts
+  let receiving = p.recvStreams
+  for recv in receiving:
+    pending.add(recv.loop)
+    await recv.stream.reset()
   if not p.connectFut.isNil:
     pending.add(p.connectFut)
   if not p.rpcmessagequeue.sendNonHighPriorityTask.isNil:

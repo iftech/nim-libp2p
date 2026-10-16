@@ -573,7 +573,7 @@ method handleConn*(
   peer.connect()
 
   try:
-    await peer.runHandleLoop(stream)
+    await peer.handleRecvStream(stream)
   except CancelledError as exc:
     raise exc
   finally:
