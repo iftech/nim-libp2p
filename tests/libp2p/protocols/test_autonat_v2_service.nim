@@ -21,7 +21,6 @@ const VerifyInterval = 50.milliseconds
 proc createSwitch(
     service: AutonatV2Service = nil, minCount = DefaultObservedAddrMinCount
 ): Switch =
-  # every switch runs the server, because a verifier asks only peers which run it
   let switch = SwitchBuilder
     .new()
     .withRng(rng())
