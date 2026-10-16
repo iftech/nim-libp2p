@@ -6,7 +6,7 @@
 import std/[tables, deques, sequtils]
 import chronos, results
 import ../../../stream/connection
-import ../rpc/[messages, topicrpc]
+import ../rpc/[messages, message, protobuf, topicrpc]
 
 export topicrpc
 
@@ -314,3 +314,24 @@ proc stop*(s: TopicStreams) {.async: (raises: []).} =
   await noCancel allFutures(writers.mapIt(it.close()))
   let readers = move s.readers
   await noCancel allFutures(readers.mapIt(it.stream.close()))
+
+type PreparedTopicRPC* = object
+  control: seq[byte]
+  payloads: seq[tuple[topic: string, data: seq[byte]]]
+
+proc prepareTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
+  for m in msg.messages:
+    if m.data.len > 0:
+      result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
+  msg.partialMessageExtension.ifValue(partial):
+    if partial.topicID.isSome:
+      result.payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
+  var control = msg
+  control.messages = @[]
+  control.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
+  result.control = control.encode(anonymize)
+
+proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): seq[byte] =
+  for payload in msg.payloads:
+    s.sendTopic(payload.topic, payload.data, medium)
+  msg.control

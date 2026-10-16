@@ -321,7 +321,7 @@ proc broadcast*(
     var topicRPC: PreparedTopicRPC
     var prepared = false
     for peer in sendPeers:
-      if peer.usesTopicStreams() and
+      if peer.extensionsState.peerHasTopicStreams(peer.peerId) and
           (msg.messages.len > 0 or msg.partialMessageExtension.isSome):
         if not prepared:
           topicRPC = prepareTopicRPC(msg, p.anonymize)
