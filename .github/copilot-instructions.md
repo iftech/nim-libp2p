@@ -62,7 +62,7 @@ nim-libp2p/
 
 ### Setup
 ```sh
-git clone https://github.com/vacp2p/nim-libp2p
+git clone https://github.com/iftech/nim-libp2p
 cd nim-libp2p
 make                 # Set up lowest supported dependency set
 # Or: nix develop     # Nix-based dev environment
@@ -544,7 +544,7 @@ Uses `lsquic` (`>= 0.4.1`). May require extra system dependencies for building.
 
 ## Documentation
 
-- **API docs**: https://vacp2p.github.io/nim-libp2p/docs/
+- **API docs**: https://iftech.github.io/nim-libp2p/docs/
 - **libp2p spec**: https://github.com/libp2p/specs
 - **Chronos async**: https://github.com/status-im/nim-chronos
 - **Chronicles logging**: https://github.com/status-im/nim-chronicles

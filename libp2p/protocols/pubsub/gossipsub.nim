@@ -983,15 +983,17 @@ method publish*(
       messageSize, maxMessageSize = g.maxMessageSize
     return 0
 
-  # Check seen-cache before delivering locally: otherwise re-publishing an
-  # already-seen message (custom msgIdProvider) would re-run local handlers.
   let msgId = g.msgIdProvider(msg).valueOr:
     trace "Publish skipped after message ID generation failed", err = error
     g.handleSelfPublishing(topic, data)
     libp2p_gossipsub_failed_publish.inc()
     return 0
 
-  if g.isDuplicatePublish(msgId):
+  # Claim the id before self-delivery: local handlers may suspend, and addSeen
+  # (unlike hasSeen) is atomic with the check and expires stale entries, so a
+  # concurrent or later duplicate cannot reach the handlers again.
+  if g.addSeen(g.salt(msgId)):
+    trace "Dropping already-seen message before self-delivery", msgId
     return 0
 
   g.handleSelfPublishing(topic, data)
@@ -1018,6 +1020,8 @@ method publish*(
       peersOnTopic = topicPeers.len,
       connectedPeers = topicPeers.filterIt(it.connected).len,
       topic
+    # Release the claim so the message can be published once peers are available
+    discard g.seen.del(g.salt(msgId))
     libp2p_gossipsub_failed_publish.inc()
     return 0
 
@@ -1026,9 +1030,6 @@ method publish*(
 
   trace "Message created",
     messageType = "publish", messageSize = messageSize, peerCount = peers.len
-
-  if g.addSeen(g.salt(msgId)):
-    return 0
 
   if not pubParams.skipMCache:
     g.mcache.put(msgId, msg)

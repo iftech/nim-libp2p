@@ -3,7 +3,7 @@
 Clone the repository and set up local dependencies:
 
 ```sh
-git clone --recurse-submodules https://github.com/vacp2p/nim-libp2p
+git clone --recurse-submodules https://github.com/iftech/nim-libp2p
 cd nim-libp2p
 make
 ```

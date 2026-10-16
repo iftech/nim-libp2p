@@ -4,7 +4,7 @@
 when defined(nimdoc):
   ## Welcome to the nim-libp2p reference!
   ##
-  ## If you're new to nim-libp2p, you can find a tutorial `here<https://vacp2p.github.io/nim-libp2p/tutorial_1_connect/>`_
+  ## If you're new to nim-libp2p, you can find a tutorial `here<https://iftech.github.io/nim-libp2p/tutorial_1_connect/>`_
   ## that can help you get started.
 
   # Import stuff for doc

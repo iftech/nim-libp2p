@@ -54,7 +54,8 @@ jobs:
           cd nbc
           if [ "${{ matrix.target.nimble }}" = "true" ]; then
             # Update waku.nimble: replace ref after 'nim-libp2p.git#' with selected ref
-            perl -0pi -e 's|(https://github[.]com/vacp2p/nim-libp2p[.]git#)[^"[:space:]]+|$1$ENV{LIBP2P_REF}|' waku.nimble
+            perl -0pi -e 's|(https://github[.]com/[^/"[:space:]]+/nim-libp2p[.]git#)[^"[:space:]]+|$1$ENV{LIBP2P_REF}|' waku.nimble
+            grep -q "nim-libp2p[.]git#$LIBP2P_REF" waku.nimble || { echo "::error::failed to pin nim-libp2p ref in waku.nimble"; exit 1; }
 
             # Clean previous state
             rm -rf nimble.lock nimbledeps nimble.paths
@@ -69,7 +70,7 @@ jobs:
 
             git submodule update --init vendor/nim-libp2p
             cd vendor/nim-libp2p
-            git fetch https://github.com/vacp2p/nim-libp2p.git "$LIBP2P_REF"
+            git fetch "${{ github.server_url }}/${{ github.repository }}.git" "$LIBP2P_REF"
             git checkout FETCH_HEAD
 
           fi

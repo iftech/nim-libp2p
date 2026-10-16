@@ -1,8 +1,8 @@
 site_name: nim-libp2p
 
-repo_url: https://github.com/vacp2p/nim-libp2p
-repo_name: vacp2p/nim-libp2p
-site_url: https://vacp2p.github.io/nim-libp2p/
+repo_url: https://github.com/iftech/nim-libp2p
+repo_name: iftech/nim-libp2p
+site_url: https://iftech.github.io/nim-libp2p/
 # Can't find a way to point the edit to the .nim instead
 # of the .md
 edit_uri: ''

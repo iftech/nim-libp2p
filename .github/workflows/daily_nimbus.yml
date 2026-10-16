@@ -28,7 +28,7 @@ jobs:
           cd nimbus-eth2
           git submodule update --init --recursive
           cd vendor/nim-libp2p
-          git fetch https://github.com/vacp2p/nim-libp2p.git "$GITHUB_SHA"
+          git fetch "${{ github.server_url }}/${{ github.repository }}.git" "$GITHUB_SHA"
           git checkout FETCH_HEAD
           cd ../..
 

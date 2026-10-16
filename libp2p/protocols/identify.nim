@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-## `Identify <https://docs.libp2p.io/concepts/protocols/#identify>`_ and
-## `Push Identify <https://docs.libp2p.io/concepts/protocols/#identify-push>`_ implementation
+## `Identify <https://libp2p.io/docs/protocols/#identify>`_ and
+## `Push Identify <https://libp2p.io/docs/protocols/#identify-push>`_ implementation
 
 {.push raises: [].}
 

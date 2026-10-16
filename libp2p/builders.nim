@@ -194,7 +194,7 @@ proc withMplex*(
     maxChannCount = 200,
     maxBufferedBytes = MaxBufferedBytes,
 ): SwitchBuilder =
-  ## Uses `Mplex <https://docs.libp2p.io/concepts/stream-multiplexing/#mplex>`_ as a multiplexer
+  ## Uses `Mplex` as a multiplexer
   ## `Timeout` is the duration after which a inactive connection will be closed
   proc newMuxer(conn: RawConn): Muxer =
     Mplex.new(conn, inTimeout, outTimeout, maxChannCount, maxBufferedBytes)

@@ -73,6 +73,9 @@ proc createMessages(
 
   return (iwantMessageIds, sentMessages)
 
+func dataMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
+  ok(m.data)
+
 suite "GossipSub Component - Message Handling":
   const topic = "foobar"
 
@@ -599,6 +602,67 @@ suite "GossipSub Component - Message Handling":
     # should publish to all nodes with bandwidthEstimatebps disabled
     check (await nodes[0].publish(topic, newSeq[byte](2_500_000))) == nodes.len - 1
     check (await nodes[0].publish(topic, newSeq[byte](500_001))) == nodes.len - 1
+
+  asyncTest "Republished message is not delivered to local handlers again":
+    let nodes = generateNodes(
+        2, gossip = true, triggerSelf = true, msgIdProvider = dataMsgIdProvider
+      )
+      .toGossipSub()
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    var delivered = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      delivered.inc()
+
+    nodes[0].subscribe(topic, handler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    await waitSubGraph(nodes, topic)
+
+    let data = toBytes("duplicate")
+    tryPublish(await nodes[0].publish(topic, data), 1)
+    check delivered == 1
+
+    check (await nodes[0].publish(topic, data)) == 0
+    check delivered == 1
+
+    # control: a different message still goes out, so the 0 above came from
+    # duplicate suppression and not from a lost mesh
+    check (await nodes[0].publish(topic, toBytes("other"))) == 1
+    check delivered == 2
+
+  asyncTest "Concurrent publish of same message reaches local handlers once":
+    let nodes = generateNodes(
+        2, gossip = true, triggerSelf = true, msgIdProvider = dataMsgIdProvider
+      )
+      .toGossipSub()
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    var delivered = 0
+    let handlerGate = newFuture[void]()
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      delivered.inc()
+      await handlerGate # stay suspended while the id is in flight
+
+    nodes[0].subscribe(topic, handler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    await waitSubGraph(nodes, topic)
+
+    let
+      data = toBytes("concurrent")
+      first = nodes[0].publish(topic, data)
+      second = nodes[0].publish(topic, data)
+
+    # the duplicate is dropped while the first publish is blocked in its handler
+    check (await second) == 0
+    check delivered == 1
+
+    handlerGate.complete()
+    check (await first) == 1
+    check delivered == 1
 
   asyncTest "GossipSub with multiple peers":
     const numberOfNodes = 10

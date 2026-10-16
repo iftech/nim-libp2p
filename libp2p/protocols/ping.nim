@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-## `Ping <https://docs.libp2p.io/concepts/protocols/#ping>`_ protocol implementation
+## `Ping <https://libp2p.io/docs/protocols/#ping>`_ protocol implementation
 
 {.push raises: [].}
 
