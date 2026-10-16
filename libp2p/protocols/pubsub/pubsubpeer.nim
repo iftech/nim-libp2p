@@ -67,6 +67,7 @@ when defined(pubsubpeer_queue_metrics):
   )
 
 const
+  MaxInboundStreamsPerPeer* = 4
   DefaultMaxHighPriorityQueueLen* = 256
   DefaultMaxMediumPriorityQueueLen* = 512
   DefaultMaxLowPriorityQueueLen* = 1024
@@ -148,10 +149,15 @@ type
     customStreamCreationCB*: CustomStreamCreationProc
     customPeerSelectionCB*: CustomPeerSelectionProc
 
+  RecvStream = object
+    stream: Stream
+    loop: Future[void].Raising([CancelledError])
+
   PubSubPeer* = ref object of RootObj
     getStream*: GetStream # callback to establish a new send stream
     onEvent*: OnEvent # Connectivity updates for peer
     codec*: string # the protocol that this peer joined from
+    recvStreams: seq[RecvStream]
     sendStream*: Stream # cached send stream
     connectedFut: Future[void]
     address*: Opt[MultiAddress]
@@ -339,6 +345,30 @@ proc runHandleLoop*(
         description = e.msg, stream, peer = p
       await stream.closeWithEOF()
       return
+
+proc stop(recv: RecvStream) {.async: (raises: []).} =
+  await recv.stream.reset()
+  await recv.loop.cancelAndWait()
+
+proc handleRecvStream*(
+    p: PubSubPeer, stream: Stream
+) {.async: (raises: [CancelledError]).} =
+  # Release the old reader before admitting another; recheck after each await.
+  while not p.stopped and p.recvStreams.len >= MaxInboundStreamsPerPeer:
+    let oldest = p.recvStreams[0]
+    await oldest.stop()
+    p.recvStreams.keepItIf(it.stream != oldest.stream)
+
+  if p.stopped:
+    await stream.reset()
+    return
+
+  let loop = p.runHandleLoop(stream)
+  p.recvStreams.add(RecvStream(stream: stream, loop: loop))
+  try:
+    await loop
+  finally:
+    p.recvStreams.keepItIf(it.stream != stream)
 
 proc closeSendStream(
     p: PubSubPeer, event: PubSubPeerEventKind
@@ -757,6 +787,10 @@ proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
   ## Prevents further work, cancels peer tasks, and waits for cleanup to finish.
   p.stopped = true
   var pending = p.sendFuts
+  let receiving = p.recvStreams
+  var stopping: seq[Future[void]]
+  for recv in receiving:
+    stopping.add(recv.stop())
   if not p.connectFut.isNil:
     pending.add(p.connectFut)
   if not p.rpcmessagequeue.sendNonHighPriorityTask.isNil:
@@ -766,7 +800,8 @@ proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
     pending.add(fut)
 
   # Retain task handles until cancellation finishes, including for repeated stops.
-  await noCancel chronos.cancelAndWait(pending)
+  stopping.add(chronos.cancelAndWait(pending))
+  await noCancel allFutures(stopping)
   p.connectFut = nil
   p.sendFuts = @[]
   p.rpcmessagequeue.sendNonHighPriorityTask = nil
