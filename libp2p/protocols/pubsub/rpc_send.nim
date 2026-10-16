@@ -55,10 +55,25 @@ proc broadcastResponse*(
     for peer in sendPeers:
       p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
   else:
-    # Fast path that only encodes message once
-    let encoded = msg.encode(p.anonymize)
+    # Encode each wire format at most once, only if a recipient needs it.
+    var encoded: seq[byte]
+    var legacyPrepared = false
+    var topicRPC: PreparedTopicRPC
+    var prepared = false
     for peer in sendPeers:
-      var peerEncoded = encoded
-      peer.trackSend(
-        peer.sendEncoded(move(peerEncoded), priority, useCustomStream, relayedSaltedId)
-      )
+      if peer.extensionsState.peerHasTopicStreams(peer.peerId) and
+          (msg.messages.len > 0 or msg.partialMessageExtension.isSome):
+        if not prepared:
+          topicRPC = prepareTopicRPC(msg, p.anonymize)
+          prepared = true
+        peer.sendTopicRPC(topicRPC, priority)
+      else:
+        if not legacyPrepared:
+          encoded = msg.encode(p.anonymize)
+          legacyPrepared = true
+        var peerEncoded = encoded
+        peer.trackSend(
+          peer.sendEncoded(
+            move(peerEncoded), priority, useCustomStream, relayedSaltedId
+          )
+        )

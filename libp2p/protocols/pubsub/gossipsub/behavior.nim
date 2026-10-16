@@ -17,6 +17,7 @@ import
     routing_record,
     signed_envelope,
     utils/heartbeat,
+    utils/future,
   ]
 
 logScope:
@@ -693,6 +694,8 @@ proc dropFanoutPeers*(g: GossipSub) =
   var drops: seq[string]
   for topic, val in g.lastFanoutPubSub:
     if now > val:
+      for fut in g.extensionsState.closeTopicStreams(topic):
+        g.pendingTasks.trackFut(fut)
       g.fanout.del(topic)
       drops.add topic
       trace "dropping fanout topic", topic
