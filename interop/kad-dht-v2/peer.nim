@@ -138,11 +138,8 @@ proc runQuerier(
   # Find the provider record.
   let pkey = provideKey(testKey)
   var providerCount = 0
-  for attempt in 0 ..< LookupAttempts:
-    try:
-      providerCount = (await kad.getProviders(pkey)).len
-    except LPStreamError as e:
-      debug "getProviders attempt failed", attempt = attempt, err = e.msg
+  for _ in 0 ..< LookupAttempts:
+    providerCount = (await kad.getProviders(pkey)).len
     if providerCount > 0:
       break
     await sleepAsync(LookupDelay)
