@@ -19,8 +19,7 @@ import
   ./multicodec,
   ./multibase,
   ./multihash,
-  ./vbuffer,
-  ./protobuf/minprotobuf
+  ./vbuffer
 import ./cid
 
 export results, opt, shortlog, collections
@@ -266,29 +265,9 @@ func match*(pid: PeerId, seckey: PrivateKey): bool =
   ## Returns ``true`` if ``pid`` matches private key ``seckey``.
   PeerId.init(seckey) == Result[PeerId, cstring].ok(pid)
 
-## Serialization/Deserialization helpers
-
 func write*(vb: var VBuffer, pid: PeerId) =
   ## Write PeerId value ``peerid`` to buffer ``vb``.
   vb.writeSeq(pid.data)
-
-func write*(pb: var ProtoBuffer, field: int, pid: PeerId) =
-  ## Write PeerId value ``peerid`` to object ``pb`` using ProtoBuf's encoding.
-  write(pb, field, pid.data)
-
-func getField*(pb: ProtoBuffer, field: int, pid: var PeerId): ProtoResult[bool] =
-  ## Read ``PeerId`` from ProtoBuf's message and validate it
-  var buffer: seq[byte]
-  let res = ?pb.getField(field, buffer)
-  if not (res):
-    ok(false)
-  else:
-    var peerId: PeerId
-    if peerId.init(buffer):
-      pid = peerId
-      ok(true)
-    else:
-      err(ProtoError.IncorrectBlob)
 
 ## protobuf_serialization extension
 

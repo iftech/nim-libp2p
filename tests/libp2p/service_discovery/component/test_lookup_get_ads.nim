@@ -14,7 +14,7 @@ import
     switch,
   ]
 import ../../../../libp2p/protocols/kademlia/protobuf as kad_protobuf
-import ../../../tools/[lifecycle, unittest]
+import ../../../tools/[fault_stream, lifecycle, unittest]
 import ../utils
 
 suite "Service Discovery Component - Lookup Get Ads":
@@ -292,3 +292,45 @@ suite "Service Discovery Component - Lookup Get Ads":
     checkUntilTimeout:
       sharedBucketKeys.countIt(serviceTable.hasPeer(it)) == 1
       sharedBucketKeys.countIt(discovererNode.rtable.hasPeer(it)) == 1
+
+  asyncTest "lookup skips advertisement bytes that do not decode":
+    let registrarNode = setupServiceDiscoveryNode()
+    let discovererNode = setupServiceDiscoveryNode()
+    let serviceName = "junk-service"
+    let adBytes = makeAdvertisement(
+        serviceName, discovererNode.switch.peerInfo.privateKey
+      )
+      .encode()
+      .get()
+    let reply = kad_protobuf.Message(
+      msgType: kad_protobuf.MessageType.getAds,
+      getAds: Opt.some(
+        kad_protobuf.GetAdsMessage(
+          advertisements: @[@[], @[1'u8, 2, 3], newSeq[byte](MaxXPRSize + 1), adBytes]
+        )
+      ),
+    )
+    registrarNode.handler = readThenReplyTillEof(reply.encode())
+    startAndDeferStop(@[registrarNode, discovererNode])
+    await connect(registrarNode, discovererNode)
+
+    let found = await discovererNode.lookup(serviceName.hashServiceId())
+    require found.isOk()
+    check found.get().len == 1
+
+  asyncTest "lookup gives up on a registrar that never replies":
+    let kadConfig = KadDHTConfig.new(timeout = 200.millis, disableBootstrapping = true)
+    let registrarNode =
+      setupServiceDiscoveryNode(xprPublishing = false, kadConfig = kadConfig)
+    let discovererNode =
+      setupServiceDiscoveryNode(xprPublishing = false, kadConfig = kadConfig)
+    registrarNode.handler = readTillEof()
+    startAndDeferStop(@[registrarNode, discovererNode])
+    await connect(registrarNode, discovererNode)
+
+    let started = Moment.now()
+    let found = await discovererNode.lookup("silent-service".hashServiceId())
+    require found.isOk()
+    check:
+      found.get().len == 0
+      Moment.now() - started < 5.seconds

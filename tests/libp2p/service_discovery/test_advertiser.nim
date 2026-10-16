@@ -9,11 +9,13 @@ import
     extended_peer_record,
     peeraddrpolicy,
     peerinfo,
+    peerstore,
     protocols/kademlia,
     protocols/service_discovery,
     protocols/service_discovery/advertiser,
+    stream/connection,
   ]
-import ../../tools/[unittest, multiaddress, lifecycle]
+import ../../tools/[fault_stream, lifecycle, multiaddress, unittest]
 import ./utils
 
 proc holdUntil(gate: AsyncEvent) {.async: (raises: [CancelledError]).} =
@@ -445,6 +447,39 @@ suite "Advertiser - maintainRegistrations":
       disco.advertiser.running.len() == 0
 
     await disco.localRegistrationLoop.cancelAndWait()
+
+  asyncTest "a registrar that left its bucket loses its stalled task":
+    let disco = setupServiceDiscoveryNode()
+    let stream = FaultStream.new(onWrite = Fault.Hang)
+    disco.switch = FaultSwitch.new(disco.switch, stream)
+    defer:
+      await disco.stopRegistrations()
+      await stream.close()
+
+    let service = makeServiceInfo()
+    let serviceId = service.id.hashServiceId()
+    disco.populateAdvertisementTable(serviceId)
+    for key in disco.rtable.allKeys():
+      disco.switch.peerStore[AddressBook][key.toPeerId().get()] =
+        @[makeMultiAddress("127.0.0.1")]
+    check disco.addProvidedService(service).isOk()
+    await stream.hung.wait()
+
+    let stalled = toSeq(disco.advertiser.running)[0]
+    let replacement = randomPeerId()
+    disco.switch.peerStore[AddressBook][replacement] = @[makeMultiAddress("127.0.0.1")]
+    let table = disco.rtManager.getTable(serviceId).get()
+    let pos = table.buckets[stalled.bucketIdx].peers.find(stalled.registrar.toKey())
+    require pos >= 0
+    table.buckets[stalled.bucketIdx].peers[pos] = replacement.toKey()
+
+    await disco.maintainRegistrations()
+
+    await stalled.fut.join()
+    check:
+      stalled notin disco.advertiser.running
+      toSeq(disco.advertiser.running).anyIt(it.registrar == replacement)
+      stalled.fut.cancelled()
 
 suite "Advertiser - removeProvidedService":
   teardown:

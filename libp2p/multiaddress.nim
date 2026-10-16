@@ -15,7 +15,6 @@ import
   transcoder,
   vbuffer,
   peerid,
-  protobuf/minprotobuf,
   errors,
   utils/[opt, shortlog, conversion, collections]
 import stew/[base32, endians2]
@@ -1202,48 +1201,6 @@ proc `$`*(pat: MaPattern): string =
 
 proc bytes*(value: MultiAddress): seq[byte] =
   value.data.buffer
-
-proc write*(pb: var ProtoBuffer, field: int, value: MultiAddress) =
-  write(pb, field, value.data.buffer)
-
-proc getField*(
-    pb: ProtoBuffer, field: int, value: var MultiAddress
-): ProtoResult[bool] =
-  var buffer: seq[byte]
-  let res = ?pb.getField(field, buffer)
-  if not (res):
-    ok(false)
-  else:
-    value = MultiAddress.init(buffer).valueOr:
-      return err(ProtoError.IncorrectBlob)
-    ok(true)
-
-proc getRepeatedField*(
-    pb: ProtoBuffer, field: int, value: var seq[MultiAddress]
-): ProtoResult[bool] =
-  ## Read repeated field from protobuf message. ``field`` is field number.
-  ## If the message is malformed, an error is returned. If field is not present
-  ## in message, then ``ok(false)`` is returned and value is empty. If field is
-  ## present, but no items could be parsed, then
-  ## ``err(ProtoError.IncorrectBlob)`` is returned and value is empty.
-  ## If field is present and some item could be parsed, then ``true`` is
-  ## returned and value contains the parsed values.
-  var items: seq[seq[byte]]
-  value.setLen(0)
-  let res = ?pb.getRepeatedField(field, items)
-  if not (res):
-    ok(false)
-  else:
-    for item in items:
-      let ma = MultiAddress.init(item).valueOr:
-        debug "Unsupported MultiAddress in blob", address = item
-        continue
-
-      value.add(ma)
-    if value.len == 0:
-      err(ProtoError.IncorrectBlob)
-    else:
-      ok(true)
 
 proc areAddrsConsistent*(a, b: MultiAddress): bool =
   ## Checks if two multiaddresses have the same protocol stack.

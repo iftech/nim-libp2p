@@ -206,11 +206,14 @@ suite "KadDHT Bootstrap":
     checkUntilTimeout:
       kad.findNodeCancels > afterBootstrap
 
+const discoveryTimeout = when defined(libp2p_testing_slow): 30.seconds else: 15.seconds
+
 suite "KadDHT Bootstrap Component":
   teardown:
     checkTrackers()
 
-  asyncTest "bootstrap discovers new peers through network", timeout = 30.seconds:
+  asyncTest "bootstrap discovers new peers through network",
+    timeout = discoveryTimeout + 15.seconds:
     # 1 hub + 9 nodes bootstrapping from hub
     let hubKad = setupKad()
     startAndDeferStop(@[hubKad])
@@ -235,7 +238,7 @@ suite "KadDHT Bootstrap Component":
             return false
       true
 
-    checkUntilTimeoutCustom(15.seconds, 500.milliseconds):
+    checkUntilTimeoutCustom(discoveryTimeout, 500.milliseconds):
       allPeersKnowEachOther()
 
   asyncTest "bootstrap with unreachable peer completes gracefully", timeout = 30.seconds:

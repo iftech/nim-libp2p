@@ -15,56 +15,38 @@
 ##
 ## We'll start by creating our metric structure like previously
 
-import chronos
-import results
+import chronos, results
+import protobuf_serialization, protobuf_serialization/pkg/results
 
 import libp2p
 import libp2p/protocols/pubsub/rpc/messages
 
 type
-  Metric = object
-    name: string
-    value: float
+  Metric {.proto2.} = object
+    name {.fieldNumber: 1.}: Opt[string]
+    value {.fieldNumber: 2.}: Opt[float]
 
-  MetricList = object
-    hostname: string
-    metrics: seq[Metric]
+  MetricList {.proto2.} = object
+    metrics {.fieldNumber: 1.}: seq[Metric]
+    hostname {.fieldNumber: 2.}: Opt[string]
 
 {.push raises: [].}
 
-proc encode(m: Metric): ProtoBuffer =
-  var pb = initProtoBuffer()
-  pb.write(1, m.name)
-  pb.write(2, m.value)
-  pb.finish()
-  pb
+proc encode(m: MetricList): seq[byte] =
+  Protobuf.encode(m)
 
-proc decode(_: type Metric, buf: seq[byte]): Result[Metric, ProtoError] =
-  var res: Metric
-  let pb = initProtoBuffer(buf)
-  discard ?pb.getField(1, res.name)
-  discard ?pb.getField(2, res.value)
-  ok(res)
+func validate(m: MetricList): Result[void, string] =
+  if m.hostname.isNone:
+    return err("invalid MetricList: hostname must be set")
+  ok()
 
-proc encode(m: MetricList): ProtoBuffer =
-  var pb = initProtoBuffer()
-  for metric in m.metrics:
-    pb.write(1, metric.encode())
-  pb.write(2, m.hostname)
-  pb.finish()
-  pb
-
-proc decode(_: type MetricList, buf: seq[byte]): Result[MetricList, ProtoError] =
-  var
-    res: MetricList
-    metrics: seq[seq[byte]]
-  let pb = initProtoBuffer(buf)
-  discard ?pb.getRepeatedField(1, metrics)
-
-  for metric in metrics:
-    res.metrics &= ?Metric.decode(metric)
-  ?pb.getRequiredField(2, res.hostname)
-  ok(res)
+proc decode(_: type MetricList, buf: seq[byte]): Result[MetricList, string] =
+  try:
+    let metricList = Protobuf.decode(buf, MetricList)
+    ?metricList.validate()
+    ok(metricList)
+  except SerializationError as exc:
+    err("failed to decode MetricList from protobuf bytes: " & exc.msg)
 
 ## This is exactly like the previous structure, except that we added
 ## a `hostname` to distinguish where the metric is coming from.
@@ -105,14 +87,17 @@ proc oneNode(node: Node, rng: Rng) {.async.} =
   # Create random metrics 10 times and broadcast them
   for _ in 0 ..< 10:
     await sleepAsync(500.milliseconds)
-    var metricList = MetricList(hostname: node.hostname)
+    var metricList = MetricList(hostname: Opt.some(node.hostname))
     let metricCount = rng.generate(uint32) mod 4
     for i in 0 ..< metricCount + 1:
       metricList.metrics.add(
-        Metric(name: "metric_" & $i, value: float(rng.generate(uint16)) / 1000.0)
+        Metric(
+          name: Opt.some("metric_" & $i),
+          value: Opt.some(float(rng.generate(uint16)) / 1000.0),
+        )
       )
 
-    discard await node.gossip.publish("metrics", encode(metricList).buffer)
+    discard await node.gossip.publish("metrics", encode(metricList))
   await node.switch.stop()
 
 proc createSwitch(rng: Rng): Switch {.raises: [LPError].} =

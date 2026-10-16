@@ -451,6 +451,7 @@ method getOrCreatePeer*(
     p.maxMessageSize,
     customStreamCallbacks = p.customStreamCallbacks,
     handler = peerHandler,
+    rng = p.rng,
   )
   trace "created new pubsub peer", peerId
 
@@ -577,6 +578,7 @@ method handleConn*(
     return
 
   let peer = p.getOrCreatePeer(stream.peerId, @[], proto)
+  peer.connect()
 
   try:
     await peer.runHandleLoop(stream)

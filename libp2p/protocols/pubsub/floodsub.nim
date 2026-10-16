@@ -12,7 +12,7 @@ import
   ./timedcache,
   ./peertable,
   ./rpc/[message, messages, protobuf],
-  nimcrypto/[hash, sha2],
+  nimcrypto/sha2,
   ../../crypto/crypto,
   ../../stream/connection,
   ../../peerid,
@@ -50,6 +50,15 @@ proc hasSeen*(f: FloodSub, saltedId: SaltedId): bool =
 proc addSeen*(f: FloodSub, saltedId: SaltedId): bool =
   # Return true if the message has already been seen
   f.seen.put(saltedId)
+
+proc isDuplicatePublish*(f: FloodSub, msgId: MessageId): bool =
+  ## True if the message was already seen (custom msgIdProvider / no sequence
+  ## id), in which case it must not be delivered locally nor re-published.
+  ## Non-mutating: the id is only recorded once the message is broadcast.
+  if f.hasSeen(f.salt(msgId)):
+    trace "Dropping already-seen message", msgId
+    return true
+  return false
 
 proc firstSeen*(f: FloodSub, saltedId: SaltedId): Moment =
   f.seen.addedAt(saltedId)
@@ -229,16 +238,22 @@ method publish*(
       messageSize, maxMessageSize = f.maxMessageSize
     return 0
 
+  # Check seen-cache before delivering locally: otherwise re-publishing an
+  # already-seen message (custom msgIdProvider) would re-run local handlers.
+  let msgId = f.msgIdProvider(msg).valueOr:
+    trace "Publish skipped after message ID generation failed", err = error
+    f.handleSelfPublishing(topic, data)
+    return 0
+
+  if f.isDuplicatePublish(msgId):
+    return 0
+
   f.handleSelfPublishing(topic, data)
 
   let peers = f.floodsub.getOrDefault(topic)
 
   if peers.len == 0:
     debug "No peers for topic, skipping publish", topic
-    return 0
-
-  let msgId = f.msgIdProvider(msg).valueOr:
-    trace "Publish skipped after message ID generation failed", err = error
     return 0
 
   trace "Message created",
@@ -249,8 +264,6 @@ method publish*(
     msgId
 
   if f.addSeen(f.salt(msgId)):
-    # custom msgid providers might cause this
-    trace "Dropping already-seen message", msgId, topic
     return 0
 
   # Try to send to all peers that are known to be interested

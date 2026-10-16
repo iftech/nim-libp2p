@@ -133,6 +133,7 @@ proc init*(
     maxHighPriorityQueueLen = DefaultMaxHighPriorityQueueLen,
     maxMediumPriorityQueueLen = DefaultMaxMediumPriorityQueueLen,
     maxLowPriorityQueueLen = DefaultMaxLowPriorityQueueLen,
+    maxIWantsPerMessage = DefaultMaxIWantsPerMessage,
     sendIDontWantOnPublish = false,
     topicStreamsConfig = Opt.none(TopicStreamsConfig),
     testExtensionConfig = Opt.none(TestExtensionConfig),
@@ -181,6 +182,7 @@ proc init*(
     maxHighPriorityQueueLen: maxHighPriorityQueueLen,
     maxMediumPriorityQueueLen: maxMediumPriorityQueueLen,
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
+    maxIWantsPerMessage: maxIWantsPerMessage,
     sendIDontWantOnPublish: sendIDontWantOnPublish,
     topicStreamsConfig: topicStreamsConfig,
     testExtensionConfig: testExtensionConfig,
@@ -255,6 +257,8 @@ proc validateParameters*(parameters: GossipSubParams): Result[void, cstring] =
     err("gossipsub: maxMediumPriorityQueueLen parameter error, Must be > 0")
   elif parameters.maxLowPriorityQueueLen <= 0:
     err("gossipsub: maxLowPriorityQueueLen parameter error, Must be > 0")
+  elif parameters.maxIWantsPerMessage <= 0:
+    err("gossipsub: maxIWantsPerMessage parameter error, Must be > 0")
   else:
     validateOverheadRateLimit(parameters)
 
@@ -429,6 +433,8 @@ method unsubscribePeer*(g: GossipSub, peer: PeerId) =
   g.peerStats.withValue(peer, stats):
     for topic, info in stats[].topicInfos.mpairs:
       info.firstMessageDeliveries = 0
+
+  g.releasePeerIWantRequests(peer)
 
   g.extensionsState.removePeer(peer)
 
@@ -635,14 +641,12 @@ proc validateAndRelay(
       toSendPeers.excl(sourcePeer[])
 
     proc isMsgInIdontWant(it: PubSubPeer): bool =
-      for iDontWant in it.iDontWants:
-        if saltedId in iDontWant:
-          libp2p_gossipsub_idontwant_saved_messages.inc
-          libp2p_gossipsub_saved_bytes.inc(
-            msg.data.len.int64, labelValues = ["idontwant"]
-          )
-          return true
-      return false
+      if not it.holdsIDontWant(saltedId):
+        return false
+
+      libp2p_gossipsub_idontwant_saved_messages.inc()
+      libp2p_gossipsub_saved_bytes.inc(msg.data.len.int64, labelValues = ["idontwant"])
+      true
 
     toSendPeers.exclIfIt(isMsgInIdontWant(it))
 
@@ -652,7 +656,12 @@ proc validateAndRelay(
 
     # In theory, if topics are the same in all messages, we could batch - we'd
     # also have to be careful to only include validated messages
-    g.broadcastResponse(toSendPeers, RPCMsg.withMessages(msg), MessagePriority.Low)
+    g.broadcastResponse(
+      toSendPeers,
+      RPCMsg.withMessages(msg),
+      MessagePriority.Low,
+      relayedSaltedId = Opt.some(saltedId),
+    )
     trace "forwarded message to peers", peers = toSendPeers.len, msgId, peer
 
     libp2p_pubsub_messages_rebroadcasted.inc(
@@ -772,6 +781,9 @@ template processRPC(
       peer, size = rpcMsg.subscriptions.len, limit = g.topicsHigh
     peer.behaviourPenalty += SubscriptionFloodPenalty
 
+  # Gathered from the whole RPC, so that the queue is scanned at most once.
+  var duplicates: HashSet[SaltedId]
+
   for i in 0 ..< rpcMsg.messages.len(): # for every message
     template msg(): untyped =
       rpcMsg.messages[i]
@@ -796,6 +808,9 @@ template processRPC(
         msgId = shortLog(msgId), peer
       continue
 
+    # release before validation, so a bad copy cannot block the retry
+    g.requestedIWants.del(msgIdSalted)
+
     if (msg.signature.len > 0 or g.verifySignature) and not msg.verify():
       trace "Message dropped",
         peerId = peer.peerId, reason = "signatureVerificationFailed"
@@ -814,6 +829,9 @@ template processRPC(
 
     if g.addSeen(msgIdSalted):
       trace "Dropping already-seen message", msgId = shortLog(msgId), peer
+
+      # The peer holds the message, so a relay of it still in our queue is waste.
+      duplicates.incl(msgIdSalted)
 
       var alreadyReceived = false
       g.validationSeen.withValue(msgIdSalted, seen):
@@ -841,8 +859,17 @@ template processRPC(
 
     g.pendingTasks.trackFut(g.validateAndRelay(msg, msgId, msgIdSalted, peer))
 
+  let sawIDontWant =
+    rpcMsg.control.isSome() and rpcMsg.control.unsafeGet().idontwant.len > 0
+
   if rpcMsg.control.isSome():
     g.handleControl(peer, rpcMsg.control.unsafeGet())
+
+  # Runs after handleControl, so the scan sees the IDONTWANTs of this RPC.
+  if duplicates.len > 0 or sawIDontWant:
+    libp2p_gossipsub_saved_bytes.inc(
+      peer.cancelQueuedRelays(duplicates).int64, labelValues = ["cancelled_relay"]
+    )
 
   # Now, check subscription to update the meshes if required
   for i in 0 ..< min(g.topicsHigh, rpcMsg.subscriptions.len):
@@ -1031,6 +1058,17 @@ method publish*(
       messageSize, maxMessageSize = g.maxMessageSize
     return 0
 
+  # Check seen-cache before delivering locally: otherwise re-publishing an
+  # already-seen message (custom msgIdProvider) would re-run local handlers.
+  let msgId = g.msgIdProvider(msg).valueOr:
+    trace "Publish skipped after message ID generation failed", err = error
+    g.handleSelfPublishing(topic, data)
+    libp2p_gossipsub_failed_publish.inc()
+    return 0
+
+  if g.isDuplicatePublish(msgId):
+    return 0
+
   g.handleSelfPublishing(topic, data)
 
   trace "Publishing message", messageSize = data.len
@@ -1058,11 +1096,6 @@ method publish*(
     libp2p_gossipsub_failed_publish.inc()
     return 0
 
-  let msgId = g.msgIdProvider(msg).valueOr:
-    trace "Publish skipped after message ID generation failed", err = error
-    libp2p_gossipsub_failed_publish.inc()
-    return 0
-
   logScope:
     msgId = shortLog(msgId)
 
@@ -1070,10 +1103,6 @@ method publish*(
     messageType = "publish", messageSize = messageSize, peerCount = peers.len
 
   if g.addSeen(g.salt(msgId)):
-    # If the message was received or published recently, don't re-publish it -
-    # this might happen when not using sequence id:s and / or with a custom
-    # message id provider
-    trace "Dropping already-seen message"
     return 0
 
   if not pubParams.skipMCache:

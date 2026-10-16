@@ -10,7 +10,6 @@ when defined(nimdoc):
   # Import stuff for doc
   import
     libp2p/[
-      protobuf/minprotobuf,
       switch,
       stream/lpstream,
       builders,
@@ -26,7 +25,6 @@ when defined(nimdoc):
 else:
   import
     libp2p/[
-      protobuf/minprotobuf,
       muxers/muxer,
       muxers/mplex/mplex,
       stream/lpstream,
@@ -51,6 +49,6 @@ else:
     ]
 
   export
-    minprotobuf, switch, peerid, peerinfo, connection, multiaddress, crypto, lpstream,
-    bufferstream, muxer, mplex, transport, tcptransport, noise, errors, cid, multihash,
-    multicodec, logging, builders, pubsub, quictransport
+    switch, peerid, peerinfo, connection, multiaddress, crypto, lpstream, bufferstream,
+    muxer, mplex, transport, tcptransport, noise, errors, cid, multihash, multicodec,
+    logging, builders, pubsub, quictransport

@@ -3,9 +3,9 @@
 
 {.used.}
 
-import std/[sequtils, net], stew/byteutils, chronos
+import std/net, stew/byteutils, chronos
 import protobuf_serialization, protobuf_serialization/pkg/results
-import ../../../libp2p/[multicodec, multiaddress, peerid, protobuf/minprotobuf]
+import ../../../libp2p/[multicodec, multiaddress, peerid]
 import ../../tools/[unittest, multiaddress]
 
 {.push raises: [].}
@@ -476,83 +476,6 @@ suite "MultiAddress test suite":
 
     check not tcp.matchPartial(ma)
     check IP4.matchPartial(ma)
-
-  test "getField returns ok(true) for valid multiaddress":
-    var pb = initProtoBuffer()
-    let ma = MultiAddress.init("/ip4/1.2.3.4/tcp/80").get()
-    pb.write(1, ma)
-    pb.finish()
-
-    var decoded: MultiAddress
-    check:
-      pb.getField(1, decoded).get() == true
-      decoded == ma
-
-  test "getField returns ok(false) for missing field":
-    var pb = initProtoBuffer()
-    pb.write(2, "placeholder")
-    pb.finish()
-
-    var decoded: MultiAddress
-    check:
-      pb.getField(1, decoded).get() == false
-      decoded == MultiAddress()
-
-  test "getField returns err for empty multiaddress":
-    var pb = initProtoBuffer()
-    pb.write(1, newSeq[byte]())
-    pb.finish()
-
-    var decoded: MultiAddress
-    let error = pb.getField(1, decoded).error()
-    check:
-      error == ProtoError.IncorrectBlob
-      decoded == MultiAddress()
-
-  test "getField returns err for invalid multiaddress":
-    var pb = initProtoBuffer()
-    pb.write(1, "invalid")
-    pb.finish()
-
-    var decoded: MultiAddress
-    let error = pb.getField(1, decoded).error()
-    check:
-      error == ProtoError.IncorrectBlob
-      decoded == MultiAddress()
-
-  test "getRepeatedField does not fail when all addresses are valid":
-    var pb = initProtoBuffer()
-    let mas = SuccessVectors.mapIt(MultiAddress.init(it).get())
-    for ma in mas:
-      pb.write(1, ma)
-    pb.finish()
-
-    var decoded = newSeq[MultiAddress]()
-    check pb.getRepeatedField(1, decoded).isOk()
-    check decoded == mas
-
-  test "getRepeatedField does not fail when some addresses are invalid":
-    var pb = initProtoBuffer()
-    var mas = @[MultiAddress.init("/ip4/1.2.3.4").get(), MultiAddress()]
-    for ma in mas:
-      pb.write(1, ma)
-    pb.finish()
-
-    var decoded = newSeq[MultiAddress]()
-    check pb.getRepeatedField(1, decoded).isOk()
-    check decoded == @[MultiAddress.init("/ip4/1.2.3.4").get()]
-
-  test "getRepeatedField fails when all addresses are invalid":
-    var pb = initProtoBuffer()
-    var mas = @[MultiAddress(), MultiAddress()]
-    for ma in mas:
-      pb.write(1, ma)
-    pb.finish()
-
-    var decoded = newSeq[MultiAddress]()
-    let error = pb.getRepeatedField(1, decoded).error()
-    check error == ProtoError.IncorrectBlob
-    check decoded.len == 0
 
   test "MultiAddress with empty path test":
     for item in ZeroPathFailureVectors:
