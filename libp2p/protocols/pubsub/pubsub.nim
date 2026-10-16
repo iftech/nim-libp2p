@@ -547,7 +547,7 @@ method handleConn*(
   let peer = p.getOrCreatePeer(stream.peerId, @[], proto)
 
   try:
-    await peer.runHandleLoop(stream)
+    await peer.handleRecvStream(stream)
   except CancelledError as exc:
     raise exc
   finally:

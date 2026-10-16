@@ -357,6 +357,28 @@ suite "GossipSub":
       # peers created by other means are untouched
       peers[0].peerId in gossipSub.peers
 
+  asyncTest "handleConn caps each peer independently and preserves send streams":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(2, "topic")
+    var readers: seq[Future[void]]
+    var streams: seq[TestBufferStream]
+    for peer in peers:
+      for i in 0 ..< MaxInboundStreamsPerPeer + 1:
+        let stream = TestBufferStream.new(noop)
+        stream.peerId = peer.peerId
+        streams.add(stream)
+        readers.add(gossipSub.handleConn(stream, GossipSubCodec_12))
+        await stream.pushData(@[byte 0x80, 0x08, 0x01])
+
+    for peer in peers:
+      check streams.countIt(it.peerId == peer.peerId and not it.closed) ==
+        MaxInboundStreamsPerPeer
+      check not peer.sendStream.closed
+      await peer.stopTasks()
+    await allFutures(readers)
+    for stream in streams:
+      check stream.closed
+    await teardownGossipSub(gossipSub, conns)
+
   test "PubSubPeer requires a non-nil handler":
     expect AssertionDefect:
       discard
