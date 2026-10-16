@@ -100,7 +100,7 @@ suite "GossipSub Extensions :: Topic streams":
       except CancelledError as exc:
         inc cancelled
         raise exc
-      return nil
+      raiseAssert "dial must be cancelled before it completes"
 
     defer:
       await state.stopTopicStreams(peer)

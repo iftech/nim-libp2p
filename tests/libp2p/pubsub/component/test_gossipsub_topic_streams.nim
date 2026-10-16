@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos, tables, stew/byteutils
-import ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, rpc/message]
+import ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer]
 import ../../../tools/[lifecycle, unittest]
 import ../utils
 
