@@ -6,6 +6,8 @@
 import std/[tables, deques, sequtils]
 import chronos, results
 import ../../../stream/connection
+import ../../../peerid
+import ./extensions_types
 import ../rpc/[messages, message, protobuf, topicrpc]
 
 export topicrpc
@@ -57,6 +59,11 @@ type
     receive: TopicStreamReceive
     violation: proc() {.gcsafe, raises: [].}
     penalize: proc() {.gcsafe, raises: [].}
+
+  TopicStreamsExtension* = ref object
+    config: Opt[TopicStreamsConfig]
+    peers: Table[PeerId, TopicStreams]
+    updatePeerBehaviorPenalty: UpdatePeerBehaviorPenaltyProc
 
 proc new*(
     T: type TopicStreams,
@@ -335,3 +342,70 @@ proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): seq[by
   for payload in msg.payloads:
     s.sendTopic(payload.topic, payload.data, medium)
   msg.control
+
+proc new*(
+    T: type TopicStreamsExtension,
+    config: Opt[TopicStreamsConfig],
+    updatePeerBehaviorPenalty: UpdatePeerBehaviorPenaltyProc,
+): T =
+  T(config: config, updatePeerBehaviorPenalty: updatePeerBehaviorPenalty)
+
+proc initTopicStreams*(
+    ext: TopicStreamsExtension,
+    peerId: PeerId,
+    maxMessageSize: int,
+    dial: TopicStreamDial,
+    receive: TopicStreamReceive,
+    violation: proc() {.gcsafe, raises: [].},
+) =
+  const TopicStreamBehaviorPenalty = 0.1
+  ext.config.ifValue(config):
+    proc penalize() {.gcsafe, raises: [].} =
+      ext.updatePeerBehaviorPenalty(peerId, TopicStreamBehaviorPenalty)
+
+    ext.peers[peerId] =
+      TopicStreams.new(config, maxMessageSize, dial, receive, violation, penalize)
+
+proc peerHasTopicStreams*(ext: TopicStreamsExtension, peerId: PeerId): bool =
+  ext.peers.getOrDefault(peerId).isActive()
+
+proc negotiateTopicStreams*(
+    ext: TopicStreamsExtension, peerId: PeerId, rpc: RPCMsg
+): bool =
+  ext.peers.withValue(peerId, streams):
+    return streams[].negotiate(rpc)
+  true
+
+proc readTopicStream*(
+    ext: TopicStreamsExtension, peerId: PeerId, stream: Stream
+) {.async: (raises: [CancelledError]).} =
+  let streams = ext.peers.getOrDefault(peerId)
+  if streams.isNil:
+    await stream.reset()
+    return
+  await streams.readTopic(stream)
+
+proc sendTopicRPC*(
+    ext: TopicStreamsExtension, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
+): seq[byte] =
+  ext.peers.withValue(peerId, streams):
+    return streams[].sendTopicRPC(msg, medium)
+
+proc closeTopicStreams*(
+    ext: TopicStreamsExtension, topic: string, incoming = false
+): seq[Future[void]] =
+  for streams in ext.peers.values:
+    result.add(streams.closeTopic(topic, incoming))
+
+proc closeTopicStreams*(
+    ext: TopicStreamsExtension, peerId: PeerId, topic: string
+): Future[void] {.async: (raises: []).} =
+  await ext.peers.getOrDefault(peerId).closeTopic(topic)
+
+proc stopTopicStreams*(
+    ext: TopicStreamsExtension, peerId: PeerId
+) {.async: (raises: []).} =
+  let streams = ext.peers.getOrDefault(peerId)
+  # Remove before awaiting so a reconnect cannot inherit this peer's transport.
+  ext.peers.del(peerId)
+  await streams.stop()
