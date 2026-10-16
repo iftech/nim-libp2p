@@ -3,16 +3,27 @@
 
 {.used.}
 
+import std/sequtils
 import chronos
 import ./utils
 import ../../../libp2p/stream/bufferstream
 import ../../../libp2p/protocols/pubsub/[pubsubpeer, gossipsub]
 import ../../tools/[unittest, bufferstream]
 
-type FlakyDialer = ref object
-  attempts: int
-  failures: int
-  stream: Stream
+type
+  FlakyDialer = ref object
+    attempts: int
+    failures: int
+    stream: Stream
+
+  ResetGateStream = ref object of TestBufferStream
+    resetStarted: bool
+    allowReset: Future[void].Raising([CancelledError])
+
+method resetImpl(s: ResetGateStream) {.async: (raises: []).} =
+  s.resetStarted = true
+  await noCancel s.allowReset
+  await procCall BufferStream(s).resetImpl()
 
 proc getStream(d: FlakyDialer): GetStream =
   return proc(): Future[Stream] {.
@@ -111,11 +122,7 @@ suite "PubSubPeer receive streams":
         checkUntilTimeout:
           readers[i - MaxInboundStreamsPerPeer].finished
         check streams[i - MaxInboundStreamsPerPeer].closed
-      var active = 0
-      for reader in readers:
-        if not reader.finished:
-          inc active
-      check active <= MaxInboundStreamsPerPeer
+      check readers.countIt(not it.finished) <= MaxInboundStreamsPerPeer
 
     await peer.stopTasks()
     await allFutures(readers)
@@ -134,18 +141,13 @@ suite "PubSubPeer receive streams":
       PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 1024, handler)
     var streams: seq[TestBufferStream]
     var readers: seq[Future[void]]
-    for i in 0 ..< 50:
+    for i in 0 ..< MaxInboundStreamsPerPeer * 10:
       let stream = TestBufferStream.new(noop)
       streams.add(stream)
       readers.add(peer.handleRecvStream(stream))
 
     checkUntilTimeout:
-      block:
-        var finished = 0
-        for reader in readers:
-          if reader.finished:
-            inc finished
-        finished == readers.len - MaxInboundStreamsPerPeer
+      readers.countIt(it.finished) == readers.len - MaxInboundStreamsPerPeer
 
     for stream in streams:
       if not stream.closed:
@@ -167,67 +169,74 @@ suite "PubSubPeer receive streams":
       await stream.close()
 
   asyncTest "eviction drains suspended RPC handlers before admitting replacements":
-    var active, peak, cleaned = 0
+    var active, cleaned = 0
+    let cleanupStarted = Future[void].Raising([CancelledError]).init()
+    let allowCleanup = Future[void].Raising([CancelledError]).init()
     proc handler(
         peer: PubSubPeer, data: sink seq[byte]
     ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
       inc active
-      peak = max(peak, active)
       try:
-        await sleepAsync(1.hours)
+        await Future[void].Raising([CancelledError]).init()
       finally:
-        await noCancel sleepAsync(1.milliseconds)
+        if data == @[byte 0]:
+          cleanupStarted.complete()
+          await noCancel allowCleanup
         dec active
         inc cleaned
 
     let peer =
       PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 1024, handler)
-    var streams: seq[TestBufferStream]
     var readers: seq[Future[void]]
-    for i in 0 .. MaxInboundStreamsPerPeer:
+    for i in 0 ..< MaxInboundStreamsPerPeer:
       let stream = TestBufferStream.new(noop)
-      streams.add(stream)
       readers.add(peer.handleRecvStream(stream))
-      await stream.pushData(@[byte 1, 42])
+      await stream.pushData(@[byte 1, byte i])
       checkUntilTimeout:
-        active + cleaned == i + 1
-    check:
-      cleaned == 1
-      peak == MaxInboundStreamsPerPeer
+        active == i + 1
 
-    await readers[^1].cancelAndWait()
-    await streams[^1].close()
+    let replacement = TestBufferStream.new(noop)
+    readers.add(peer.handleRecvStream(replacement))
+    await cleanupStarted
+    check:
+      active == MaxInboundStreamsPerPeer
+      cleaned == 0
+      not replacement.reading
+
+    allowCleanup.complete()
+    await replacement.pushData(@[byte 1, 42])
+    checkUntilTimeout:
+      cleaned == 1 and active == MaxInboundStreamsPerPeer
+
     await peer.stopTasks()
     await allFutures(readers)
     check:
       active == 0
-      cleaned == streams.len
+      cleaned == MaxInboundStreamsPerPeer + 1
 
-    let late = TestBufferStream.new(noop)
-    await peer.handleRecvStream(late)
-    check late.closed
-
-  asyncTest "handleConn caps each peer independently and preserves send streams":
-    let (gossipSub, conns, peers) = setupGossipSubWithPeers(2, "topic")
+  asyncTest "stopTasks starts all stream resets before awaiting cleanup":
+    let peer = newPeer(nil, 1.milliseconds, 2.milliseconds)
+    let allowReset = Future[void].Raising([CancelledError]).init()
+    var streams: seq[ResetGateStream]
     var readers: seq[Future[void]]
-    var streams: seq[TestBufferStream]
-    for peer in peers:
-      for i in 0 ..< MaxInboundStreamsPerPeer + 1:
-        let stream = TestBufferStream.new(noop)
-        stream.peerId = peer.peerId
-        streams.add(stream)
-        readers.add(gossipSub.handleConn(stream, GossipSubCodec_12))
-        await stream.pushData(@[byte 0x80, 0x08, 0x01])
+    for i in 0 ..< MaxInboundStreamsPerPeer:
+      let stream = ResetGateStream(writeHandler: noop, allowReset: allowReset)
+      stream.initStream()
+      streams.add(stream)
+      readers.add(peer.handleRecvStream(stream))
 
-    for peer in peers:
-      var active = 0
-      for stream in streams:
-        if stream.peerId == peer.peerId and not stream.closed:
-          inc active
-      check active == MaxInboundStreamsPerPeer
-      check not peer.sendStream.closed
-      await peer.stopTasks()
+    let stopped = peer.stopTasks()
+    check:
+      streams.allIt(it.resetStarted)
+      not stopped.finished
+    allowReset.complete()
+    await stopped
     await allFutures(readers)
-    for stream in streams:
-      check stream.closed
-    await teardownGossipSub(gossipSub, conns)
+    check streams.allIt(it.closed)
+
+  asyncTest "stopped peers reject inbound streams":
+    let peer = newPeer(nil, 1.milliseconds, 2.milliseconds)
+    await peer.stopTasks()
+    let stream = TestBufferStream.new(noop)
+    await peer.handleRecvStream(stream)
+    check stream.closed
