@@ -4,9 +4,7 @@
 {.used.}
 
 import chronos, tables, stew/byteutils
-import
-  ../../../../libp2p/protocols/pubsub/
-    [gossipsub, pubsubpeer, rpc/message]
+import ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, rpc/message]
 import ../../../tools/[lifecycle, unittest]
 import ../utils
 
@@ -45,8 +43,8 @@ suite "GossipSub Component - Topic streams":
     await connect(nodes[0], nodes[1])
     waitSubscribeStar(nodes, "topic")
     checkUntilTimeout:
-      nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId).usesTopicStreams() and
-        nodes[1].peers.getOrDefault(nodes[0].peerInfo.peerId).usesTopicStreams()
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
+        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
     discard await nodes[0].publish("topic", "first".toBytes)
     discard await nodes[1].publish("topic", "second".toBytes)
     checkUntilTimeout:
