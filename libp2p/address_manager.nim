@@ -50,6 +50,11 @@ type
     address*: MultiAddress
     sources*: set[AddrSource]
     state*: AddrState
+    negativePeers: seq[PeerId]
+
+  VerificationResult* = object
+    state*: AddrState
+    peerId*: PeerId
 
   Verifier* = ref object of RootObj
     ## Tells the manager whether a remote peer reaches one candidate.
@@ -100,12 +105,13 @@ type
     minCount: int
     started: bool
     lifecycleId: uint64
+    verifierId: uint64
 
 method verify*(
-    self: Verifier, address: MultiAddress
-): Future[Opt[AddrState]] {.base, async: (raises: [CancelledError]).} =
+    self: Verifier, address: MultiAddress, exclude: seq[PeerId]
+): Future[Opt[VerificationResult]] {.base, async: (raises: [CancelledError]).} =
   ## The state a remote peer proves; `none` keeps the current one and concludes nothing.
-  Opt.none(AddrState)
+  Opt.none(VerificationResult)
 
 func isStarted*(self: AddressManager): bool =
   self.started
@@ -241,6 +247,19 @@ proc remove*(self: AddressManager, address: MultiAddress): bool {.discardable.} 
   self.candidates.del(address)
   true
 
+proc removeSource(
+    self: AddressManager, address: MultiAddress, source: AddrSource
+): bool =
+  if address notin self.candidates:
+    return false
+  var candidate = self.candidates.getOrDefault(address)
+  candidate.sources.excl(source)
+  if candidate.sources == {}:
+    self.candidates.del(address)
+  else:
+    self.candidates[address] = candidate
+  true
+
 func candidates*(self: AddressManager): seq[AddrCandidate] =
   toSeq(self.candidates.values)
 
@@ -250,25 +269,26 @@ func confirmedAddrs*(self: AddressManager): seq[MultiAddress] =
     it.address
   )
 
-func refutedReachability(self: AddressManager): NetworkReachability =
-  ## A refuted guess is no candidate any more, and it still proves a failed dial-back.
-  if self.refutedGuesses.len > 0:
+func reachability*(self: AddressManager): NetworkReachability =
+  ## A node is unreachable only when every relevant public candidate was refuted.
+  var hasRelevant, hasUnverified = false
+  for candidate in self.candidates.values:
+    if candidate.state == AddrState.Confirmed:
+      return NetworkReachability.Reachable
+    if candidate.address.isRelayed() or not candidate.address.isPublicMA():
+      continue
+    hasRelevant = true
+    case candidate.state
+    of AddrState.Confirmed:
+      discard
+    of AddrState.Unverified:
+      hasUnverified = true
+    of AddrState.Unreachable:
+      discard
+  if hasRelevant and not hasUnverified:
     NetworkReachability.NotReachable
   else:
     NetworkReachability.Unknown
-
-func reachability*(self: AddressManager): NetworkReachability =
-  ## Read-only summary of the per-address states: any Confirmed wins, else any Unreachable.
-  var summary = self.refutedReachability()
-  for candidate in self.candidates.values:
-    case candidate.state
-    of AddrState.Confirmed:
-      return NetworkReachability.Reachable
-    of AddrState.Unreachable:
-      summary = NetworkReachability.NotReachable
-    of AddrState.Unverified:
-      discard
-  summary
 
 proc `onReachabilityChange=`*(
     self: AddressManager, handler: ReachabilityChangeHandler
@@ -278,6 +298,13 @@ proc `onReachabilityChange=`*(
 
 proc `deriveIdentifyCandidates=`*(self: AddressManager, enabled: bool) =
   ## Each verification run then turns the identify observations into `Identify` candidates.
+  if self.deriveIdentify and not enabled:
+    var derived: seq[MultiAddress]
+    for address, candidate in self.candidates:
+      if AddrSource.Identify in candidate.sources:
+        derived.add(address)
+    for address in derived:
+      discard self.removeSource(address, AddrSource.Identify)
   self.deriveIdentify = enabled
 
 func isChainProduced(self: AddressManager, address: MultiAddress): bool =
@@ -564,11 +591,23 @@ func identifyGuesses(self: AddressManager): seq[MultiAddress] =
 func isRefuted(self: AddressManager, address: MultiAddress): bool =
   self.refutedGuesses.anyIt(it.address == address)
 
-proc addIdentifyCandidates(self: AddressManager) =
-  if not self.deriveIdentify or self.peerInfo.isNil():
-    return
-  for guess in self.identifyGuesses().filterIt(not self.isRefuted(it)):
+proc reconcileIdentifyCandidates(self: AddressManager): bool =
+  let guesses =
+    if self.deriveIdentify and not self.peerInfo.isNil():
+      self.identifyGuesses().filterIt(not self.isRefuted(it))
+    else:
+      @[]
+
+  var stale: seq[MultiAddress]
+  for address, candidate in self.candidates:
+    if AddrSource.Identify in candidate.sources and address notin guesses:
+      stale.add(address)
+  for address in stale:
+    discard self.removeSource(address, AddrSource.Identify)
+
+  for guess in guesses:
     self.add(guess, AddrSource.Identify)
+  stale.len > 0
 
 proc rememberRefuted(self: AddressManager, address: MultiAddress) =
   ## A wrongly refuted guess returns through expiry, ring eviction or a restart.
@@ -581,21 +620,50 @@ proc expireRefuted(self: AddressManager) =
     guess.runsLeft.dec()
   self.refutedGuesses.keepItIf(it.runsLeft > 0)
 
-proc applyVerdict(self: AddressManager, address: MultiAddress, state: AddrState): bool =
-  ## True when the state changed. One random peer decides a verdict; later runs heal it.
+func isRemoteOnly(candidate: AddrCandidate): bool =
+  candidate.sources <= {AddrSource.Autonat, AddrSource.Identify}
+
+func needsNegativeCorroboration(candidate: AddrCandidate): bool =
+  candidate.address.isPublicMA() and
+    (candidate.state == AddrState.Confirmed or not candidate.isRemoteOnly())
+
+proc applyVerdict(
+    self: AddressManager, address: MultiAddress, verdict: VerificationResult
+): bool =
+  ## True when the verdict changes the candidate or its announcement.
   if address notin self.candidates:
     return false
 
-  let candidate = self.candidates.getOrDefault(address)
+  var candidate = self.candidates.getOrDefault(address)
+  if verdict.state == AddrState.Confirmed:
+    candidate.negativePeers.setLen(0)
+    if candidate.state == verdict.state:
+      self.candidates[address] = candidate
+      return false
+    candidate.state = verdict.state
+    self.candidates[address] = candidate
+    return true
+
+  if verdict.state == AddrState.Unreachable and candidate.needsNegativeCorroboration():
+    if verdict.peerId in candidate.negativePeers:
+      return false
+    candidate.negativePeers.add(verdict.peerId)
+    self.candidates[address] = candidate
+    if candidate.negativePeers.len < 2:
+      return false
+    candidate.negativePeers.setLen(0)
+    self.candidates[address] = candidate
+
   # a refuted guess is dropped, or an attacker could grow the table without cap
-  if state == AddrState.Unreachable and candidate.sources == {AddrSource.Identify}:
+  if verdict.state == AddrState.Unreachable and candidate.isRemoteOnly():
     self.remove(address)
     self.rememberRefuted(address)
     return true
 
-  if candidate.state == state:
+  if candidate.state == verdict.state:
     return false
-  self.update(address, state)
+  candidate.state = verdict.state
+  self.candidates[address] = candidate
   true
 
 proc allowedByPolicy(self: AddressManager, address: MultiAddress): bool =
@@ -603,7 +671,10 @@ proc allowedByPolicy(self: AddressManager, address: MultiAddress): bool =
   self.peerInfo.isNil() or self.peerInfo.addressPolicy.accepts(address)
 
 proc verifyEach(
-    self: AddressManager, addresses: seq[MultiAddress]
+    self: AddressManager,
+    verifier: Verifier,
+    verifierId: uint64,
+    addresses: seq[MultiAddress],
 ): Future[bool] {.async: (raises: [CancelledError]).} =
   ## One address at a time until the run runs out of time; true when a state changed.
   var changed = false
@@ -629,20 +700,25 @@ proc verifyEach(
       break
 
     attempted.inc()
-    let state =
+    let verification =
       try:
-        await self.verifier.verify(address).wait(left)
+        let excluded = self.candidates.getOrDefault(address).negativePeers
+        await verifier.verify(address, excluded).wait(left)
       except AsyncTimeoutError:
         trace "Address verification timed out", address, timeout = self.verifyTimeout
         break
 
+    if verifierId != self.verifierId:
+      outcome = "superseded"
+      return false
+
     verified.inc()
-    state.ifValue(verdict):
+    verification.ifValue(verdict):
       if self.applyVerdict(address, verdict):
         changed = true
-      if verdict == AddrState.Confirmed:
+      if verdict.state == AddrState.Confirmed:
         reachable.inc()
-      elif verdict == AddrState.Unreachable:
+      elif verdict.state == AddrState.Unreachable:
         unreachable.inc()
   outcome = if verified == addresses.len: "completed" else: "timedOut"
   changed
@@ -650,19 +726,19 @@ proc verifyEach(
 proc runVerifier(self: AddressManager) {.async: (raises: [CancelledError]).} =
   if self.verifier.isNil():
     return
+  let
+    verifier = self.verifier
+    verifierId = self.verifierId
   self.expireRefuted()
-  self.addIdentifyCandidates()
+  var changed = self.reconcileIdentifyCandidates()
 
   # a relayed candidate stays unverified: no AutoNAT peer dials a circuit address back
   let addresses = toSeq(self.candidates.keys).filterIt(
       not it.isRelayed() and self.allowedByPolicy(it)
     )
-  if addresses.len == 0:
-    return
-
-  if not await self.verifyEach(addresses):
-    return
-  if not self.peerInfo.isNil():
+  if addresses.len > 0 and await self.verifyEach(verifier, verifierId, addresses):
+    changed = true
+  if changed and not self.peerInfo.isNil():
     await self.peerInfo.update()
 
 proc verifyCandidates(self: AddressManager) {.async: (raises: [CancelledError]).} =
@@ -693,6 +769,12 @@ proc triggerVerification*(self: AddressManager) =
 
 proc `verifier=`*(self: AddressManager, verifier: Verifier) =
   ## The verifier is optional. Without one, every candidate stays `Unverified`.
+  inc self.verifierId
+  if verifier.isNil():
+    for candidate in self.candidates.mvalues:
+      candidate.state = AddrState.Unverified
+      candidate.negativePeers.setLen(0)
+    self.refutedGuesses.setLen(0)
   self.verifier = verifier
   self.restartHeartbeat()
 
