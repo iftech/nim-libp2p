@@ -127,6 +127,4 @@ suite "Service Discovery Component - Find Random":
     let discos = setupServiceDiscoveryNodes(2)
     startAndDeferStop(discos)
 
-    check await discos[0].ping(
-      discos[1].switch.peerInfo.peerId, discos[1].switch.peerInfo.addrs
-    )
+    check (await discos[0].ping(discos[1].switch.peerInfo)).isOk()
