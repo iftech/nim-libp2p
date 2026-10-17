@@ -7,11 +7,13 @@ import sequtils
 import chronos, chronicles, net, uri
 import chronos/apps/http/httpclient
 import chronos/streams/tlsstream
-from times import DateTime, now, toTime, toUnix
+from times import DateTime, now, toTime, toUnix, utc
+import stew/byteutils
 
 import
   ./acme/client,
   ./broker,
+  ./storage,
   ./utils,
   ../crypto/rsa,
   ../crypto/rng,
@@ -22,6 +24,7 @@ import
   ../peerinfo,
   ../transports/transport,
   ../transports/tcptransport,
+  ../transports/tls/certificate,
   ../utils/heartbeat,
   ../utils/ipaddr,
   ../utils/tlsredact,
@@ -33,7 +36,7 @@ logScope:
 
 export
   LetsEncryptDirectoryURL, AutoTLSError, DefaultDnsServers, DefaultRegistrationURL,
-  AutotlsBroker, tlsredact
+  AutotlsBroker, storage, tlsredact
 
 const
   DefaultRenewCheckTime* = 1.hours
@@ -72,6 +75,7 @@ type AutotlsConfig* = object
   acmeRetryTime*: Duration
   finalizeRetries*: int
   finalizeRetryTime*: Duration
+  storage*: Opt[AutotlsStorage]
 
 type AutotlsService* = ref object of Service
   acmeClient*: ACMEClient
@@ -86,6 +90,7 @@ type AutotlsService* = ref object of Service
   peerInfo: PeerInfo
   rng*: Rng
   publicIpWarnings: LogRateLimit
+  storageKey: Opt[AutotlsStorageKey]
 
 proc new*(
     T: typedesc[AutotlsCert],
@@ -163,6 +168,7 @@ proc new*(
     acmeRetryTime: Duration = 1.seconds,
     finalizeRetries: int = 10,
     finalizeRetryTime: Duration = 1.seconds,
+    storage: Opt[AutotlsStorage] = Opt.none(AutotlsStorage),
 ): T =
   T(
     nameResolver: DnsResolver.new(nameServers),
@@ -182,15 +188,14 @@ proc new*(
     acmeRetryTime: acmeRetryTime,
     finalizeRetries: finalizeRetries,
     finalizeRetryTime: finalizeRetryTime,
+    storage: storage,
   )
 
 proc new*(
     T: typedesc[AutotlsService], rng: Rng, config: AutotlsConfig = AutotlsConfig.new()
 ): T =
   T(
-    acmeClient: ACMEClient.new(
-      api = ACMEApi.new(config.acmeDirectoryURL, config.acmeHttpFlags), rng = rng
-    ),
+    acmeClient: nil,
     broker: AutotlsBroker.new(rng, config.registrationURL),
     cert: Opt.none(AutotlsCert),
     certFailure: Opt.none(string),
@@ -201,10 +206,92 @@ proc new*(
     managerFut: nil,
     peerInfo: nil,
     rng: rng,
+    storageKey: Opt.none(AutotlsStorageKey),
   )
 
 proc isRunning*(self: AutotlsService): bool =
   self.running.isSet()
+
+proc newStorageKey(self: AutotlsService): LPResult[AutotlsStorageKey] =
+  ok(
+    AutotlsStorageKey(
+      peerLabel: ?encodePeerId(self.peerInfo.peerId),
+      acmeDirectoryURL: self.config.acmeDirectoryURL,
+      domainSuffix: self.config.domainSuffix,
+    )
+  )
+
+proc restoreState(self: AutotlsService): Future[LPResult[void]] {.
+    async: (raises: [CancelledError])
+.} =
+  ## Restore state before creating the ACME client so its account identity is
+  ## retained across process restarts.
+  self.storageKey = Opt.some(?self.newStorageKey())
+
+  var accountKey = Opt.none(RsaPrivateKey)
+  var accountKid = Kid("")
+  self.config.storage.ifValue(storage):
+    let state = ?(await storage.load(self.storageKey.get()))
+    state.ifValue(state):
+      if state.accountKey.len == 0 and state.accountKid.len > 0:
+        return err("AutoTLS storage has an account URL without an account key")
+      if state.accountKey.len > 0:
+        let key = RsaPrivateKey.init(state.accountKey).valueOr:
+          return err("AutoTLS storage contains an invalid account key")
+        accountKey = Opt.some(key)
+        accountKid = state.accountKid
+
+      let hasCertificate = state.certificatePem.len > 0
+      let hasCertificateKey = state.certificateKeyPem.len > 0
+      if hasCertificate xor hasCertificateKey:
+        return err("AutoTLS storage contains an incomplete certificate")
+      if hasCertificate:
+        let expiry = validTo(state.certificatePem.toBytes, PEM).valueOr:
+          return err("AutoTLS storage contains a certificate with an invalid expiry")
+        if expiry.toUnix > now().toTime.toUnix:
+          try:
+            let certificate = TLSCertificate.init(state.certificatePem)
+            let privateKey = TLSPrivateKey.init(state.certificateKeyPem)
+            self.installCertificate(AutotlsCert.new(certificate, privateKey, expiry.utc))
+            info "Restored AutoTLS certificate from storage"
+          except TLSStreamProtocolError:
+            return err("AutoTLS storage contains an invalid certificate or private key")
+        else:
+          info "Stored AutoTLS certificate is expired; a replacement will be requested"
+
+  # Keeping this conditional makes tests and advanced callers that inject a
+  # custom ACME API continue to work, while normal construction happens only
+  # after persistence has been read.
+  if self.acmeClient.isNil:
+    self.acmeClient = ACMEClient.new(
+      api = ACMEApi.new(self.config.acmeDirectoryURL, self.config.acmeHttpFlags),
+      rng = self.rng,
+      key = accountKey,
+      kid = accountKid,
+    )
+  ok()
+
+proc saveState(
+    self: AutotlsService, certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
+  ## Save state only after ACME completed issuance. A save failure does not
+  ## invalidate the usable in-memory certificate, but is reported to callers.
+  if self.config.storage.isNone():
+    return ok()
+  if self.storageKey.isNone():
+    return err("AutoTLS storage key was not initialized")
+
+  let accountKey = self.acmeClient.key.getBytes().valueOr:
+    return err("Unable to serialize AutoTLS account key")
+  let certificateKey = certKeyPair.getBytes().valueOr:
+    return err("Unable to serialize AutoTLS certificate key")
+  let state = AutotlsStoredState(
+    accountKey: accountKey,
+    accountKid: self.acmeClient.kid,
+    certificatePem: certificate.rawCertificate,
+    certificateKeyPem: certificateKey.pemEncode("PRIVATE KEY"),
+  )
+  await self.config.storage.get().save(self.storageKey.get(), state)
 
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
@@ -387,6 +474,11 @@ proc issueCertificate(
 
   trace "Installing certificate"
   self.installCertificate(?newAutotlsCert(certificate, certKeyPair))
+  let saved = await self.saveState(certificate, certKeyPair)
+  if saved.isErr:
+    # The certificate remains valid in this process. Returning success avoids
+    # immediately ordering another one solely because persistence failed.
+    error "Issued AutoTLS certificate could not be persisted", err = saved.error
   info "AutoTLS successfully renewed certificate"
   ok()
 
@@ -441,6 +533,14 @@ method start*(
 ) {.async: (raises: [CancelledError, LPError]).} =
   self.running.fire()
   self.peerInfo = switch.peerInfo
+
+  let restored = await self.restoreState()
+  if restored.isErr:
+    let failure = "Could not restore AutoTLS state: " & $restored.error
+    error "Could not restore AutoTLS state", err = restored.error
+    self.certFailure = Opt.some(failure)
+    self.certReady.fire()
+    raise newException(LPError, failure)
 
   # The switch starts services concurrently with transports. Requiring the TCP
   # transport to be running here could fail when the service starts first, so
