@@ -6,7 +6,7 @@
 ##
 ## That may happen because of NAT, Firewalls, or incompatible transports.
 ##
-## More informations [here](https://docs.libp2p.io/concepts/circuit-relay/).
+## More informations [here](https://libp2p.io/docs/circuit-relay/).
 import chronos, stew/byteutils
 import libp2p, libp2p/protocols/connectivity/relay/[relay, client]
 

@@ -8,7 +8,7 @@
       
       
       
-        <link rel="canonical" href="https://vacp2p.github.io/nim-libp2p/tutorial_1_connect/">
+        <link rel="canonical" href="https://iftech.github.io/nim-libp2p/tutorial_1_connect/">
       
       
         <link rel="prev" href="..">
@@ -191,13 +191,13 @@
     
     
       <div class="md-header__source">
-        <a href="https://github.com/vacp2p/nim-libp2p" title="Go to repository" class="md-source" data-md-component="source">
+        <a href="https://github.com/iftech/nim-libp2p" title="Go to repository" class="md-source" data-md-component="source">
   <div class="md-source__icon md-icon">
     
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
   </div>
   <div class="md-source__repository">
-    vacp2p/nim-libp2p
+    iftech/nim-libp2p
   </div>
 </a>
       </div>
@@ -236,13 +236,13 @@
   </label>
   
     <div class="md-nav__source">
-      <a href="https://github.com/vacp2p/nim-libp2p" title="Go to repository" class="md-source" data-md-component="source">
+      <a href="https://github.com/iftech/nim-libp2p" title="Go to repository" class="md-source" data-md-component="source">
   <div class="md-source__icon md-icon">
     
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
   </div>
   <div class="md-source__repository">
-    vacp2p/nim-libp2p
+    iftech/nim-libp2p
   </div>
 </a>
     </div>
@@ -707,7 +707,7 @@ Check Nim's installation via <code>nim --version</code> and its package manager 
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>nimble<span class="w"> </span>install<span class="w"> </span>libp2p@#master
 </code></pre></div></p>
 <h2 id="a-simple-ping-application">A simple ping application</h2>
-<p>We'll start by creating a simple application, which is starting two libp2p <a href="https://docs.libp2p.io/concepts/stream-multiplexing/#switch-swarm">switch</a>, and pinging each other using the <a href="https://docs.libp2p.io/concepts/protocols/#ping">Ping</a> protocol.</p>
+<p>We'll start by creating a simple application, which is starting two libp2p <a href="https://libp2p.io/docs/switch/">switch</a>, and pinging each other using the <a href="https://libp2p.io/docs/protocols/#ping">Ping</a> protocol.</p>
 <div class="admonition tips">
 <p>You can find the source of this tutorial (and other tutorials) in the <a href="https://github.com/status-im/nim-libp2p/tree/master/examples">libp2p/examples</a> folder!</p>
 </div>
@@ -736,7 +736,7 @@ Check Nim's installation via <code>nim --version</code> and its package manager 
 <a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>
 <a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="n">switch</span>
 </code></pre></div>
-This will create a switch using <a href="https://docs.libp2p.io/concepts/stream-multiplexing/">Mplex</a> as a multiplexer, Noise to secure the communication, and TCP as an underlying transport.</p>
+This will create a switch using <a href="https://libp2p.io/docs/multiplexing-overview/">Mplex</a> as a multiplexer, Noise to secure the communication, and TCP as an underlying transport.</p>
 <p>You can of course tweak this, to use a different or multiple transport, or tweak the configuration of Mplex and Noise, but this is some sane defaults that we'll use going forward.</p>
 <p>Let's now start to create our main procedure:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">proc</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="sx">{.async.}</span><span class="w"> </span><span class="o">=</span>

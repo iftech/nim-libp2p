@@ -17,7 +17,7 @@ const TestCodec = "/test/proto/1.0.0"
 
 type TestProto = ref object of LPProtocol
 
-## We've set a [protocol ID](https://docs.libp2p.io/concepts/protocols/#protocol-ids), and created a custom `LPProtocol`. In a more complex protocol, we could use this structure to store interesting variables.
+## We've set a [protocol ID](https://libp2p.io/docs/protocols/#protocol-ids), and created a custom `LPProtocol`. In a more complex protocol, we could use this structure to store interesting variables.
 ##
 ## A protocol generally has two parts: a handling/server part, and a dialing/client part.
 ## These two parts can be identical, but in our trivial protocol, the server will wait for a message from the client, and the client will send a message, so we have to handle the two cases separately.
