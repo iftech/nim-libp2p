@@ -85,6 +85,8 @@ const
     ## upper bound on peers of one bucket sharing one IP subnet
 
   MaxProviderKeyLen* = 80 ## Upper bound (bytes) on an ADD_PROVIDER key
+  MaxProviderAddrs* = 16 ## Addresses kept per ADD_PROVIDER provider
+  MaxProviderAddrLen* = 1024 ## Longer provider addresses are dropped
 
 proc toCid*(k: Key): Cid =
   let cidRes = Cid.init(k.toBytes())
