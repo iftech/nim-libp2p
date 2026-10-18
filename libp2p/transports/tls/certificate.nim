@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import strutils
-import results
+import ../../results
 import times
 import stew/byteutils
 import chronicles
@@ -20,7 +20,6 @@ type
   KeyGenerationError* = object of TLSCertificateError
   CertificateCreationError* = object of TLSCertificateError
   CertificatePubKeySerializationError* = object of TLSCertificateError
-  CertificateParsingError* = object of TLSCertificateError
   IdentityPubKeySerializationError* = object of TLSCertificateError
   IdentitySigningError* = object of TLSCertificateError
 
@@ -173,9 +172,9 @@ proc generateX509*(
 
   return CertificateX509(certificate: certificate, privateKey: privKDer)
 
-proc parseCertTime(certTime: string): Time {.raises: [TimeParseError].} =
+proc parseCertTime(certTime: string): LPResult[DateTime] =
   if certTime.len <= 4 or not certTime.endsWith(" GMT"):
-    raise newException(TimeParseError, "invalid certificate time")
+    return err(certTime, "invalid certificate time")
 
   var timeNoZone = certTime[0 ..^ 5] # removes GMT part
   # days with 1 digit have additional space -> strip it
@@ -183,7 +182,10 @@ proc parseCertTime(certTime: string): Time {.raises: [TimeParseError].} =
 
   const certTimeFormat = "MMM d HH:mm:ss yyyy"
   const f = initTimeFormat(certTimeFormat)
-  return parse(timeNoZone, f, utc()).toTime()
+  try:
+    return ok(parse(timeNoZone, f, utc()))
+  except TimeParseError as e:
+    return err(certTime & ": " & e.msg, "invalid certificate time")
 
 proc validTo*(cert: openArray[byte], format: EncodingFormat): Result[Time, CertError] =
   ## Returns a certificate's notAfter value.
@@ -192,43 +194,32 @@ proc validTo*(cert: openArray[byte], format: EncodingFormat): Result[Time, CertE
   ## extension, such as certificates issued by external CAs.
   let certTime = cert_valid_to(@cert, format.cert_format_t()).valueOr:
     return err(error)
-  try:
-    ok(parseCertTime(string(certTime)))
-  except TimeParseError:
-    err(CERT_ERROR_VALIDITY_PERIOD)
+  let time = parseCertTime(string(certTime)).valueOr:
+    return err(CERT_ERROR_VALIDITY_PERIOD)
+  ok(time.toTime())
 
-proc parse*(
-    certificateDer: seq[byte]
-): P2pCertificate {.raises: [CertificateParsingError].} =
+func `$`*(cert: P2pCertificate): string {.raises: [].} =
+  # `$Time` reads the local timezone, so the generic object `$` has side effects
+  "P2pCertificate(validFrom: " & $cert.validFrom.toUnix() & ", validTo: " &
+    $cert.validTo.toUnix() & ")"
+
+proc parse*(certificateDer: seq[byte]): LPResult[P2pCertificate] {.raises: [].} =
   ## Parses a DER-encoded certificate and extracts the P2pCertificate.
-  ##
-  ## Parameters:
-  ## - `certificateDer`: The DER-encoded certificate bytes.
-  ##
-  ## Returns:
-  ## A `P2pCertificate` object containing the certificate and its libp2p extension.
-  ##
-  ## Raises:
-  ## - `CertificateParsingError` if certificate parsing fails.
-
   let certParsed = cert_parse(certificateDer, DER.cert_format_t()).valueOr:
-    raise error.toException(CertificateParsingError, "Failed to parse certificate")
+    return err(error, "failed to parse certificate")
+  let validFrom = parseCertTime($certParsed.validFrom).valueOr:
+    return err(error, "failed to parse certificate validFrom")
+  let validTo = parseCertTime($certParsed.validTo).valueOr:
+    return err(error, "failed to parse certificate validTo")
 
-  var validFrom, validTo: Time
-  try:
-    validFrom = parseCertTime($certParsed.validFrom)
-    validTo = parseCertTime($certParsed.validTo)
-  except TimeParseError as e:
-    raise newException(
-      CertificateParsingError, "Failed to parse certificate validity time: " & $e.msg, e
+  ok(
+    P2pCertificate(
+      extension:
+        P2pExtension(signature: certParsed.signature, publicKey: certParsed.identPubk),
+      pubKeyDer: certParsed.certPubk,
+      validFrom: validFrom.toTime(),
+      validTo: validTo.toTime(),
     )
-
-  P2pCertificate(
-    extension:
-      P2pExtension(signature: certParsed.signature, publicKey: certParsed.identPubk),
-    pubKeyDer: certParsed.certPubk,
-    validFrom: validFrom,
-    validTo: validTo,
   )
 
 proc verifiedIdentityKey*(self: P2pCertificate): Opt[PublicKey] =
