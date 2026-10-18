@@ -4,6 +4,7 @@
 {.used.}
 
 import std/[tables, sequtils]
+from std/times import nil
 import chronos
 import
   ../../libp2p/[
@@ -16,6 +17,10 @@ import
     utils/opt,
   ]
 import ../tools/[unittest, crypto, multiaddress]
+
+type
+  GenericBook[T] = ref object of PeerBook[T]
+  IntBook = GenericBook[int]
 
 suite "PeerStore":
   # Testvars
@@ -71,6 +76,26 @@ suite "PeerStore":
     check peerId1 notin peerStore[AddressBook]
     # Now try and del it again
     peerStore.del(peerId1)
+
+  test "PeerStore API (generics)":
+    let peerStore = PeerStore.new(nil)
+
+    peerStore[GenericBook[int]][peerId1] = 1
+    peerStore[GenericBook[string]][peerId1] = "a"
+    peerStore[GenericBook[Duration]][peerId1] = 2.seconds
+    peerStore[GenericBook[times.Duration]][peerId1] = times.initDuration(seconds = 3)
+    check:
+      peerStore[IntBook][peerId1] == 1
+      peerStore[GenericBook[string]][peerId1] == "a"
+      peerStore[GenericBook[Duration]][peerId1] == 2.seconds
+      peerStore[GenericBook[times.Duration]][peerId1] == times.initDuration(seconds = 3)
+
+    peerStore.del(peerId1)
+    check:
+      peerId1 notin peerStore[GenericBook[int]]
+      peerId1 notin peerStore[GenericBook[string]]
+      peerId1 notin peerStore[GenericBook[Duration]]
+      peerId1 notin peerStore[GenericBook[times.Duration]]
 
   test "updatePeerInfo stores and updates only fresh signed peer records":
     let
