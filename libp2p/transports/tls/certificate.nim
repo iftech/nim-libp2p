@@ -172,9 +172,13 @@ proc generateX509*(
 
   return CertificateX509(certificate: certificate, privateKey: privKDer)
 
+const
+  InvalidCertTimeCause* = "invalid certificate time"
+  CertParseCause* = "failed to parse certificate"
+
 proc parseCertTime(certTime: string): LPResult[DateTime] =
   if certTime.len <= 4 or not certTime.endsWith(" GMT"):
-    return err(certTime, "invalid certificate time")
+    return err(certTime, InvalidCertTimeCause)
 
   var timeNoZone = certTime[0 ..^ 5] # removes GMT part
   # days with 1 digit have additional space -> strip it
@@ -185,7 +189,7 @@ proc parseCertTime(certTime: string): LPResult[DateTime] =
   try:
     return ok(parse(timeNoZone, f, utc()))
   except TimeParseError as e:
-    return err(certTime & ": " & e.msg, "invalid certificate time")
+    return err(certTime & ": " & e.msg, InvalidCertTimeCause)
 
 proc validTo*(cert: openArray[byte], format: EncodingFormat): Result[Time, CertError] =
   ## Returns a certificate's notAfter value.
@@ -206,7 +210,7 @@ func `$`*(cert: P2pCertificate): string {.raises: [].} =
 proc parse*(certificateDer: seq[byte]): LPResult[P2pCertificate] {.raises: [].} =
   ## Parses a DER-encoded certificate and extracts the P2pCertificate.
   let certParsed = cert_parse(certificateDer, DER.cert_format_t()).valueOr:
-    return err(error, "failed to parse certificate")
+    return err(error, CertParseCause)
   let validFrom = parseCertTime($certParsed.validFrom).valueOr:
     return err(error, "failed to parse certificate validFrom")
   let validTo = parseCertTime($certParsed.validTo).valueOr:

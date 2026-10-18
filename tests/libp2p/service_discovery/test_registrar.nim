@@ -1554,7 +1554,9 @@ suite "Service Discovery Registrar - Register Message Validation":
       ticket: Opt.none(Ticket),
     )
 
-    check isValidAdvertisement(regMsg, makeServiceId()).error == "oversized"
+    check isValidAdvertisement(regMsg, makeServiceId()).isOfError(
+      OversizedAdvertisementCause
+    )
 
 suite "Service Discovery Registrar - acceptAdvertisement":
   teardown:

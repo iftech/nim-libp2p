@@ -136,13 +136,13 @@ suite "utilities test":
       1742385271 == parseCertTime("Mar 19 11:54:31 2025 GMT").get().toTime().toUnix()
       157766400 == parseCertTime("Jan  1 00:00:00 1975 GMT").get().toTime().toUnix()
       1735736706 == parseCertTime("Jan  1 13:05:06 2025 GMT").get().toTime().toUnix()
-      parseCertTime("").error().cause == "invalid certificate time"
+      parseCertTime("").isOfError(InvalidCertTimeCause)
 
     const badTime = "Foo 99 00:00:00 2025 GMT"
-    let e = parseCertTime(badTime).error()
+    let res = parseCertTime(badTime)
     check:
-      e.cause == "invalid certificate time"
-      e.detail.startsWith(badTime & ": ")
+      res.isOfError(InvalidCertTimeCause)
+      res.error().detail.startsWith(badTime & ": ")
 
   test "validTo":
     let keypair = KeyPair.random(Ed25519, rng()).tryGet()
@@ -232,22 +232,19 @@ suite "utilities test":
 
       let res = parse(der)
       check:
-        res.isErr()
-        res.error().cause == "failed to parse certificate"
+        res.isOfError(CertParseCause)
 
   test "parse returns error on empty certificate":
     let res = parse(newSeq[byte]())
 
     check:
-      res.isErr()
-      res.error().cause == "failed to parse certificate"
+      res.isOfError(CertParseCause)
 
   test "parse returns error on undecodable bytes":
     let res = parse(@[byte(0xFF), 0x00, 0x01])
 
     check:
-      res.isErr()
-      res.error().cause == "failed to parse certificate"
+      res.isOfError(CertParseCause)
 
   test "P2pCertificate $ prints validity period as unix seconds":
     const

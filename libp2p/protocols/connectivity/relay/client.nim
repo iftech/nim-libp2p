@@ -90,11 +90,13 @@ proc handleRelayedConnect(
     await cl.onNewConnection(stream, limitDuration, limitData)
   ok()
 
+const ReservationFailedCause* = "Reservation failed"
+
 proc toRsvp(msg: HopMessage, relayPeerId: PeerId): LPResult[Rsvp] =
   if msg.msgType != Opt.some(HopMessageType.Status):
     return err("Unexpected relay response type")
   if msg.status.get(UnexpectedMessage) != Ok:
-    return err("Reservation failed")
+    return err(ReservationFailedCause)
 
   let reservation = msg.reservation.valueOr:
     return err("Missing reservation information")

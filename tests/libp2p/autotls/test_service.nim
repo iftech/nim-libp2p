@@ -295,8 +295,7 @@ suite "AutoTLS certificate issuance and renewal":
     check:
       acmeApi.requestedUris.len == 0
       service.running.isSet
-      certResult.isErr()
-      certResult.error == "Could not find a TcpTransport in switch"
+      certResult.isOfError(MissingTcpTransportCause)
 
   asyncTest "issuance aborts when no public IP address can be determined":
     acmeApi.scriptChallenge(ChallengeToken)
@@ -406,7 +405,7 @@ suite "AutoTLS on a switch":
     defer:
       await switch.stop()
 
-    expectMsgContains LPError, "Could not find a TcpTransport in switch":
+    expectMsgContains LPError, MissingTcpTransportCause:
       await switch.start()
 
   asyncTest "a switch listening only on ws starts without an autotls certificate":

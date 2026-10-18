@@ -1147,15 +1147,14 @@ suite "Switch":
 
     let noHandler = new TestProto
     noHandler.codec = TestCodec
-    check switch.tryMount(noHandler).error ==
-      "Protocol has to define a handle method or proc"
+    check switch.tryMount(noHandler).isOfError(MissingHandlerCause)
 
     let noCodec = LPProtocol.new(
       @[""],
       proc(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
         discard,
     )
-    check switch.tryMount(noCodec).error == "Protocol has to define a codec string"
+    check switch.tryMount(noCodec).isOfError(MissingCodecCause)
     check TestCodec notin switch.peerInfo.protocols
 
   asyncTest "switch failing to start stops properly":

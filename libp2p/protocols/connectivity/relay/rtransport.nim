@@ -61,15 +61,20 @@ proc peerIdOf(part: MultiAddress): LPResult[PeerId] =
     return err(error)
   ok(peerId)
 
+const
+  MissingCircuitCause* = "missing p2p-circuit"
+  NoRelayCause* = "Relay doesn't exist"
+  InvalidDialAddressCause* = "dial address not valid"
+
 proc parseRelayAddr(ma: MultiAddress): LPResult[RelayAddr] =
   let parts = ?ma.len()
   if parts < 4:
     return err($ma, "too few parts")
   if not CircuitRelay.match(?ma[parts - 2]):
-    return err($ma, "missing p2p-circuit")
+    return err($ma, MissingCircuitCause)
 
   let relayPeerId = peerIdOf(?ma[parts - 3]).valueOr:
-    return err(error, "Relay doesn't exist")
+    return err(error, NoRelayCause)
   let dstPeerId = peerIdOf(?ma[parts - 1]).valueOr:
     return err(error, "Destination doesn't exist")
 
@@ -83,7 +88,7 @@ proc tryDial*(
     self: RelayTransport, ma: MultiAddress
 ): Future[LPResult[RawConn]] {.async: (raises: [CancelledError]).} =
   let address = parseRelayAddr(ma).valueOr:
-    return err(error, "dial address not valid")
+    return err(error, InvalidDialAddressCause)
 
   trace "Dial", relayPeerId = address.relayPeerId, dstPeerId = address.dstPeerId
 

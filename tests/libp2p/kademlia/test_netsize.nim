@@ -77,4 +77,4 @@ suite "KadDHT - Network Size Estimator":
           NetSizeMeasurement(distance: 0.0, weight: 1.0, timestamp: now)
         )
 
-    check est.networkSize().error() == "degenerate regression"
+    check est.networkSize().isOfError(DegenerateRegressionCause)
