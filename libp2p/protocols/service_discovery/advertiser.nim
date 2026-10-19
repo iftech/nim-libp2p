@@ -61,7 +61,7 @@ proc cleanupFinishedTasks(a: Advertiser) =
 
 proc getAdvertBytes(disco: ServiceDiscovery, explicit: Opt[seq[byte]]): Opt[seq[byte]] =
   if explicit.isSome():
-    return Opt.some(explicit.get())
+    return explicit
 
   let extRecord = disco.record().valueOr:
     trace "Failed to create extended peer record", error

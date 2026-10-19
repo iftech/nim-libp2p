@@ -67,7 +67,7 @@ suite "Key conversion":
     let expectedMultihash = MultiHash.init(peerId.data).get()
     check:
       key == Key.fromBytes(expectedMultihash.data.buffer)
-      key.toPeerId().get() == peerId
+      key.toPeerId().containsValue(peerId)
 
   test "CID to DHT Key extracts multihash bytes":
     let text = "content"
@@ -88,4 +88,4 @@ suite "Key conversion":
 
     check:
       key == Key.fromBytes(multihash.data.buffer)
-      MultiHash.init(key.toBytes()).get() == multihash
+      MultiHash.init(key.toBytes()).containsValue(multihash)

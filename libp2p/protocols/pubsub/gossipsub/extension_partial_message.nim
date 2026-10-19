@@ -222,7 +222,7 @@ template hasPublished(gs: GroupState): bool =
   gs.lastPublishedMetadata.len > 0
 
 template createdBy(gs: GroupState, peerId: PeerId): bool =
-  gs.creator == Opt.some(peerId)
+  gs.creator.contains(peerId)
 
 template isReclaimable(gs: GroupState): bool =
   gs.peerState.len == 0 and not gs.hasPublished()
@@ -237,7 +237,7 @@ proc unionWithSentPartsMetadata(
   if peerState.sentPartsMetadata.isNone:
     hasChanged = true
     peerState.sentPartsMetadata = Opt.some(newMetadata)
-  elif peerState.sentPartsMetadata.get() != newMetadata:
+  elif not peerState.sentPartsMetadata.contains(newMetadata):
     let unionRes =
       ext.config.unionPartsMetadata(peerState.sentPartsMetadata.get(), newMetadata)
     if unionRes.isErr():
@@ -245,7 +245,7 @@ proc unionWithSentPartsMetadata(
       warn "Parts metadata union failed", reason = unionRes.error
       hasChanged = true
       peerState.sentPartsMetadata = Opt.some(newMetadata)
-    elif unionRes.get() != peerState.sentPartsMetadata.get():
+    elif not unionRes.containsValue(peerState.sentPartsMetadata.get()):
       # union has produced different metadata then what has been sent
       hasChanged = true
       peerState.sentPartsMetadata = Opt.some(unionRes.get())

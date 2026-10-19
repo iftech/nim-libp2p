@@ -134,12 +134,11 @@ proc drainCompletedPeers(
     pending: seq[Future[LPResult[GetAdsResult]]],
 ) =
   for fut in pending.filterIt(it.completed()):
-    let res = fut.value()
-    if res.isOk():
+    fut.value().ifValue(reply):
       disco.admitCloserPeers(
-        serviceId, disco.atMostOnePerBucket(searchTable, res.value().closerPeers)
+        serviceId, disco.atMostOnePerBucket(searchTable, reply.closerPeers)
       )
-      disco.tracker.recordProviders(serviceId, res.value().ads, FromLookup)
+      disco.tracker.recordProviders(serviceId, reply.ads, FromLookup)
 
 proc collectBucketAds(
     disco: ServiceDiscovery,

@@ -1062,4 +1062,4 @@ suite "MuxedUpgrade":
     discard await remote.readLp(1024)
     await remote.writeLp("bad handshake\n")
     let res = await upgrading
-    check res.error == $MultiStreamFailure.HandshakeFailed
+    check res.containsError($MultiStreamFailure.HandshakeFailed)

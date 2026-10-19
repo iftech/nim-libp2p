@@ -79,13 +79,17 @@ suite "Content identifier CID test suite":
   test "decode rejects malformed input":
     let digest = MultiHash.digest("sha2-256", [byte 1, 2, 3]).get()
     check:
-      Cid.init(newSeq[byte]()).error() == CidError.Incorrect
-      Cid.init([byte 0x80]).error() == CidError.Incorrect
-      Cid.init(@[byte 0x02, 0x55] & digest.data.buffer).error() == CidError.Incorrect
-      Cid.init(@[byte 0x01, 0x12] & digest.data.buffer).error() == CidError.Incorrect
-      Cid.init([byte 0x01, 0x55, 0x12, 0x01]).error() == CidError.Incorrect
-      Cid.init("").error() == CidError.Incorrect
-      Cid.init("!abc").error() == CidError.Incorrect
+      Cid.init(newSeq[byte]()).containsError(CidError.Incorrect)
+      Cid.init([byte 0x80]).containsError(CidError.Incorrect)
+      Cid.init(@[byte 0x02, 0x55] & digest.data.buffer).containsError(
+        CidError.Incorrect
+      )
+      Cid.init(@[byte 0x01, 0x12] & digest.data.buffer).containsError(
+        CidError.Incorrect
+      )
+      Cid.init([byte 0x01, 0x55, 0x12, 0x01]).containsError(CidError.Incorrect)
+      Cid.init("").containsError(CidError.Incorrect)
+      Cid.init("!abc").containsError(CidError.Incorrect)
 
   test "decode rejects multibase text that decodes to zero bytes":
     for text in ["M=", "U=", "c========", "t========", "C========"]:
@@ -96,14 +100,16 @@ suite "Content identifier CID test suite":
     let sha = MultiHash.digest("sha2-256", data).get()
     let keccak = MultiHash.digest("keccak-256", data).get()
     check:
-      Cid.init(CIDv0, multiCodec("raw"), sha).error() == CidError.Unsupported
-      Cid.init(CIDv0, multiCodec("dag-pb"), keccak).error() == CidError.Unsupported
-      Cid.init(CIDv1, multiCodec("sha2-256"), sha).error() == CidError.Incorrect
-      Cid.init(CIDvReserved, multiCodec("dag-pb"), sha).error() == CidError.Unsupported
+      Cid.init(CIDv0, multiCodec("raw"), sha).containsError(CidError.Unsupported)
+      Cid.init(CIDv0, multiCodec("dag-pb"), keccak).containsError(CidError.Unsupported)
+      Cid.init(CIDv1, multiCodec("sha2-256"), sha).containsError(CidError.Incorrect)
+      Cid.init(CIDvReserved, multiCodec("dag-pb"), sha).containsError(
+        CidError.Unsupported
+      )
 
   test "empty Cid":
     let empty = Cid()
     check:
-      empty.mhash().error() == CidError.Incorrect
-      empty.contentType().error() == CidError.Incorrect
+      empty.mhash().containsError(CidError.Incorrect)
+      empty.contentType().containsError(CidError.Incorrect)
       $empty == ""

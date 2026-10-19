@@ -24,8 +24,7 @@ suite "Service Discovery types":
     check encoded.len == 1
     let decoded = SignedExtendedPeerRecord.decode(encoded[0])
     check:
-      decoded.isOk()
-      decoded.get() == ad
+      decoded.containsValue(ad)
 
   test "encode: all advertisements encoded when count is within fReturn":
     let ads = @[makeAdvertisement("a"), makeAdvertisement("b"), makeAdvertisement("c")]
@@ -48,8 +47,7 @@ suite "Service Discovery types":
     for i, bytes in encoded:
       let decoded = SignedExtendedPeerRecord.decode(bytes)
       check:
-        decoded.isOk()
-        decoded.get() == origAds[i]
+        decoded.containsValue(origAds[i])
 
   test "ExtEntryValidator accepts a record signed by the peer its key names":
     let ad = makeAdvertisement()
@@ -90,7 +88,7 @@ suite "Service Discovery types":
         time: Timestamp.now(),
       ),
     ]
-    check ExtEntrySelector().select(key, records).get() == 2
+    check ExtEntrySelector().select(key, records).containsValue(2)
 
   test "toPeerInfos drops peers without an id or with an undecodable id":
     let peerId = PeerId.random()

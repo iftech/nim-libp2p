@@ -147,7 +147,7 @@ proc handlePutValue*(
       reason = "invalidKeyLength", messageType = "putValue", stream, err = error
     return
 
-  if record.key.isNone or record.key.get() != msgKey:
+  if not record.key.contains(msgKey):
     trace "Put-value request rejected",
       reason = "keyMismatch", messageType = "putValue", stream
     return

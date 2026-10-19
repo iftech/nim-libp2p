@@ -143,12 +143,15 @@ suite "PeerID Auth Client":
 
   asyncTest "bearer expiry accepts whole seconds and timezone offsets":
     let expected = dateTime(2026, mAug, 21, 12, zone = utc())
-    check (await requestWithExpires("2026-08-21T12:00:00Z")).bearer.expires.get() ==
+    check (await requestWithExpires("2026-08-21T12:00:00Z")).bearer.expires.contains(
       expected
-    check (await requestWithExpires("2026-08-21T14:00:00+02:00")).bearer.expires.get() ==
+    )
+    check (await requestWithExpires("2026-08-21T14:00:00+02:00")).bearer.expires.contains(
       expected
-    check (await requestWithExpires("2016-12-31T23:59:60Z")).bearer.expires.get() ==
+    )
+    check (await requestWithExpires("2016-12-31T23:59:60Z")).bearer.expires.contains(
       dateTime(2017, mJan, 1, zone = utc())
+    )
 
   asyncTest "malformed bearer expiry is dropped":
     for expires in [

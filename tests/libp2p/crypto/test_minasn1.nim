@@ -89,8 +89,7 @@ suite "Minimal ASN.1 encode/decode suite":
     let res = ab.read()
 
     check:
-      res.isErr()
-      res.error == Asn1Error.Incomplete
+      res.containsError(Asn1Error.Incomplete)
 
   test "ASN.1 DER huge long form length does not overflow bounds check":
     when sizeof(int) == 8:
@@ -144,10 +143,10 @@ suite "Minimal ASN.1 encode/decode suite":
 
   test "ASN.1 DER INTEGER incorrect values decoding test":
     check:
-      decodeHex("0200").error == Asn1Error.Incorrect
-      decodeHex("0201").error == Asn1Error.Incomplete
-      decodeHex("02020000").error == Asn1Error.Incorrect
-      decodeHex("0203000001").error == Asn1Error.Incorrect
+      decodeHex("0200").containsError(Asn1Error.Incorrect)
+      decodeHex("0201").containsError(Asn1Error.Incomplete)
+      decodeHex("02020000").containsError(Asn1Error.Incorrect)
+      decodeHex("0203000001").containsError(Asn1Error.Incorrect)
 
   test "ASN.1 DER BITSTRING encoding/decoding with unused bits test":
     proc encodeBits(value: string, bitsUsed: int): seq[byte] =
@@ -209,36 +208,36 @@ suite "Minimal ASN.1 encode/decode suite":
 
   test "ASN.1 DER BITSTRING incorrect values decoding test":
     check:
-      decodeHex("0300").error == Asn1Error.Incorrect
-      decodeHex("030180").error == Asn1Error.Incorrect
-      decodeHex("030107").error == Asn1Error.Incorrect
-      decodeHex("0301").error == Asn1Error.Incomplete
-      decodeHex("030200").error == Asn1Error.Incomplete
-      decodeHex("030208FF").error == Asn1Error.Incorrect
+      decodeHex("0300").containsError(Asn1Error.Incorrect)
+      decodeHex("030180").containsError(Asn1Error.Incorrect)
+      decodeHex("030107").containsError(Asn1Error.Incorrect)
+      decodeHex("0301").containsError(Asn1Error.Incomplete)
+      decodeHex("030200").containsError(Asn1Error.Incomplete)
+      decodeHex("030208FF").containsError(Asn1Error.Incorrect)
 
   test "ASN.1 DER BOOLEAN decoding test":
     check:
       decodeHex("0101FF").get().vbool == true
       decodeHex("010100").get().vbool == false
-      decodeHex("010101").error == Asn1Error.Incorrect
-      decodeHex("01020000").error == Asn1Error.Incorrect
-      decodeHex("0101").error == Asn1Error.Incomplete
+      decodeHex("010101").containsError(Asn1Error.Incorrect)
+      decodeHex("01020000").containsError(Asn1Error.Incorrect)
+      decodeHex("0101").containsError(Asn1Error.Incomplete)
 
   test "ASN.1 DER malformed TLV decoding test":
     check:
-      decodeHex("").error == Asn1Error.Incomplete
-      decodeHex("02").error == Asn1Error.Incomplete
-      decodeHex("0280").error == Asn1Error.Indefinite
-      decodeHex("02FF").error == Asn1Error.Incorrect
-      decodeHex("0289").error == Asn1Error.Overflow
-      decodeHex("0288FFFFFFFFFFFFFFFF").error == Asn1Error.Overflow
-      decodeHex("0402AA").error == Asn1Error.Incomplete
-      decodeHex("050100").error == Asn1Error.Incorrect
-      decodeHex("030201FF").error == Asn1Error.Incorrect
-      decodeHex("0C00").error == Asn1Error.NoSupport
-      decodeHex("4100").error == Asn1Error.NoSupport
-      decodeHex("A005A003020101").error == Asn1Error.Incorrect
-      decodeHex("A00302030101").error == Asn1Error.Incorrect
+      decodeHex("").containsError(Asn1Error.Incomplete)
+      decodeHex("02").containsError(Asn1Error.Incomplete)
+      decodeHex("0280").containsError(Asn1Error.Indefinite)
+      decodeHex("02FF").containsError(Asn1Error.Incorrect)
+      decodeHex("0289").containsError(Asn1Error.Overflow)
+      decodeHex("0288FFFFFFFFFFFFFFFF").containsError(Asn1Error.Overflow)
+      decodeHex("0402AA").containsError(Asn1Error.Incomplete)
+      decodeHex("050100").containsError(Asn1Error.Incorrect)
+      decodeHex("030201FF").containsError(Asn1Error.Incorrect)
+      decodeHex("0C00").containsError(Asn1Error.NoSupport)
+      decodeHex("4100").containsError(Asn1Error.NoSupport)
+      decodeHex("A005A003020101").containsError(Asn1Error.Incorrect)
+      decodeHex("A00302030101").containsError(Asn1Error.Incorrect)
       decodeHex("030100").get().length == 0
       decodeHex("0201FF").get().vint == 0xFFFF_FFFF_FFFF_FFFF'u64
 

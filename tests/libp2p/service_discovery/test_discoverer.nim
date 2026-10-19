@@ -47,8 +47,7 @@ suite "Discoverer - lookup":
 
     let res = await disco.lookup(serviceId)
 
-    check res.isOk()
-    check res.get() == @[ad]
+    check res.containsValue(@[ad])
 
   asyncTest "calling lookup twice for same service is idempotent":
     let disco = setupServiceDiscoveryNode()

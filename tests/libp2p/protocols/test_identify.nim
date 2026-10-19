@@ -88,10 +88,10 @@ suite "Identify":
       discard await msDial.select(conn, IdentifyCodec)
       let id = await identifyProto2.identify(conn, remotePeerInfo.peerId)
 
-      check id.pubkey.get() == remoteSecKey.getPublicKey().get()
+      check id.pubkey.contains(remoteSecKey.getPublicKey().get())
       check id.addrs == maddr
-      check id.protoVersion.get() == ProtoVersion
-      check id.agentVersion.get() == AgentVersion
+      check id.protoVersion.contains(ProtoVersion)
+      check id.agentVersion.contains(AgentVersion)
       check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
       check id.signedPeerRecord.isNone()
 
@@ -112,10 +112,10 @@ suite "Identify":
       discard await msDial.select(conn, IdentifyCodec)
       let id = await identifyProto2.identify(conn, remotePeerInfo.peerId)
 
-      check id.pubkey.get() == remoteSecKey.getPublicKey().get()
+      check id.pubkey.contains(remoteSecKey.getPublicKey().get())
       check id.addrs == maddr
-      check id.protoVersion.get() == customProtoVersion
-      check id.agentVersion.get() == customAgentVersion
+      check id.protoVersion.contains(customProtoVersion)
+      check id.agentVersion.contains(customAgentVersion)
       check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
       check id.signedPeerRecord.isNone()
 
@@ -209,12 +209,12 @@ suite "Identify":
       discard await msDial.select(conn, IdentifyCodec)
       let id = await identifyProto2.identify(conn, remotePeerInfo.peerId)
 
-      check id.pubkey.get() == remoteSecKey.getPublicKey().get()
+      check id.pubkey.contains(remoteSecKey.getPublicKey().get())
       check id.addrs == maddr
-      check id.protoVersion.get() == ProtoVersion
-      check id.agentVersion.get() == AgentVersion
+      check id.protoVersion.contains(ProtoVersion)
+      check id.agentVersion.contains(AgentVersion)
       check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
-      check id.signedPeerRecord.get() == remotePeerInfo.signedPeerRecord.envelope
+      check id.signedPeerRecord.contains(remotePeerInfo.signedPeerRecord.envelope)
 
   suite "handle push identify message":
     var

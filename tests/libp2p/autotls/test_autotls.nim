@@ -126,7 +126,7 @@ suite "AutoTLS ACME API":
     )
 
     check:
-      finalized.get() == true
+      finalized.containsValue(true)
       api.requestedUris == @[parseUri(FinalizeURL), parseUri(OrderURL)]
 
   asyncTest "finalize certificate processing then valid":
@@ -139,7 +139,7 @@ suite "AutoTLS ACME API":
     )
 
     check:
-      finalized.get() == true
+      finalized.containsValue(true)
       api.requestedUris ==
         @[parseUri(FinalizeURL), parseUri(OrderURL), parseUri(OrderURL)]
 
@@ -160,7 +160,7 @@ suite "AutoTLS ACME API":
     )
 
     check:
-      finalized.get() == false
+      finalized.containsValue(false)
       api.requestedUris ==
         @[parseUri(FinalizeURL), parseUri(OrderURL), parseUri(OrderURL)]
 
@@ -261,7 +261,7 @@ suite "AutoTLS ACME API":
       HTTPResponse(body: %*{}, headers: HttpTable.init(@[("Replay-Nonce", nonce)]))
     )
 
-    check (await procCall requestNonce(ACMEApi(api))).get() == nonce
+    check (await procCall requestNonce(ACMEApi(api))).containsValue(nonce)
 
   asyncTest "the register request is signed with a jwk":
     api.queueRegister()
@@ -532,8 +532,8 @@ suite "AutoTLS ACME Client":
     acme = ACMEClient.new(rng = rng(), api = ACMEApi(acmeApi), key = Opt.some(key))
 
     check:
-      (await acme.getOrInitKid()).get() == AccountURL
-      (await acme.getOrInitKid()).get() == AccountURL
+      (await acme.getOrInitKid()).containsValue(AccountURL)
+      (await acme.getOrInitKid()).containsValue(AccountURL)
       acmeApi.requestedUris == @[parseUri(StubDirectory.newAccount)]
 
   asyncTest "getCertificate fails before finalization when the challenge never validates":

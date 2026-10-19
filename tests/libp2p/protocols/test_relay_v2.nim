@@ -75,9 +75,9 @@ suite "Circuit Relay V2":
 
       check:
         SignedVoucher.decode(valid).isOk
-        SignedVoucher.decode(missingRelay).error == EnvelopeFieldMissing
-        SignedVoucher.decode(missingPeer).error == EnvelopeFieldMissing
-        SignedVoucher.decode(missingExpiration).error == EnvelopeFieldMissing
+        SignedVoucher.decode(missingRelay).containsError(EnvelopeFieldMissing)
+        SignedVoucher.decode(missingPeer).containsError(EnvelopeFieldMissing)
+        SignedVoucher.decode(missingExpiration).containsError(EnvelopeFieldMissing)
 
   suite "Reservation":
     asyncTeardown:
@@ -130,8 +130,8 @@ suite "Circuit Relay V2":
       await stream.writeLp(pb)
       let msg = HopMessage.decode(await stream.readLp(RelayMsgSize)).get()
       check:
-        msg.msgType == Opt.some(HopMessageType.Status)
-        msg.status == Opt.some(StatusV2.ReservationRefused)
+        msg.msgType.contains(HopMessageType.Status)
+        msg.status.contains(StatusV2.ReservationRefused)
 
     asyncTest "tryReserve returns a refused reservation as an error":
       let res = await cl2.tryReserve(rel.peerInfo.peerId, rel.peerInfo.addrs)

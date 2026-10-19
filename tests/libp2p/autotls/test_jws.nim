@@ -61,7 +61,9 @@ suite "ACME JWS":
     check rsa.verify(sig, signingInput, key.getPublicKey())
 
   test "rejects an unsupported algorithm":
-    check toFlattenedJws(%*{"alg": "ES256"}, %*{"a": 1}, key).error ==
+    check toFlattenedJws(%*{"alg": "ES256"}, %*{"a": 1}, key).containsError(
       "Unsupported JWS algorithm (ES256)"
-    check toFlattenedJws(%*{"typ": "JWT"}, %*{"a": 1}, key).error ==
+    )
+    check toFlattenedJws(%*{"typ": "JWT"}, %*{"a": 1}, key).containsError(
       "Unsupported JWS algorithm"
+    )

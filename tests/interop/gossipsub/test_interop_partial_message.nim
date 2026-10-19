@@ -22,13 +22,11 @@ suite "GossipSub Interop - InteropPartialMessage":
 
   test "interopUnionPartsMetadata performs OR":
     let res = interopUnionPartsMetadata(@[0b00001111'u8], @[0b11110000'u8])
-    check res.isOk()
-    check res.get() == @[0b11111111'u8]
+    check res.containsValue(@[0b11111111'u8])
 
   test "interopUnionPartsMetadata treats empty as bitmap 0":
     let res = interopUnionPartsMetadata(@[0b00000101'u8], @[])
-    check res.isOk()
-    check res.get() == @[0b00000101'u8]
+    check res.containsValue(@[0b00000101'u8])
 
   test "interopUnionPartsMetadata rejects wrong length":
     check interopUnionPartsMetadata(@[1'u8, 2'u8], @[3'u8]).isErr()

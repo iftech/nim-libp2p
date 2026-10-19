@@ -57,8 +57,9 @@ suite "KadDHT - Add Provider":
     # kads[0] has kads[1] in its providermanager after adding provider
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.id.get() ==
+      kads[0].providerManager.providerRecords[0].provider.id.contains(
         kads[1].rtable.selfId
+      )
 
   asyncTest "Provider expired":
     let kads = setupKadSwitches(2)
@@ -261,8 +262,9 @@ suite "KadDHT - Add Provider":
 
     checkUntilTimeout:
       receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.providerRecords[0].provider.id.get() ==
+      receiverKad.providerManager.providerRecords[0].provider.id.contains(
         senderKad.switch.peerInfo.peerId.getBytes()
+      )
 
   asyncTest "Add provider accepts a non-multihash key within length bound":
     # Interop parity: go/js/py/dotnet advertise raw, non-multihash provider keys
@@ -364,8 +366,9 @@ suite "KadDHT - Add Provider":
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 1
       kads[0].providerManager.providerRecords[0].key == expectedKey
-      kads[0].providerManager.providerRecords[0].provider.id.get() ==
+      kads[0].providerManager.providerRecords[0].provider.id.contains(
         kads[1].rtable.selfId
+      )
 
     let originalExpiresAt = kads[0].providerManager.providerRecords[0].expiresAt
 
@@ -440,8 +443,9 @@ suite "KadDHT - Add Provider":
     # Provider should be stored even without addresses
     checkUntilTimeout:
       receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.providerRecords[0].provider.id.get() ==
+      receiverKad.providerManager.providerRecords[0].provider.id.contains(
         senderKad.switch.peerInfo.peerId.getBytes()
+      )
       receiverKad.providerManager.providerRecords[0].provider.addrs.len == 0
 
   asyncTest "Add provider keeps at most MaxProviderAddrs short addresses":
@@ -500,7 +504,7 @@ suite "KadDHT - Add Provider":
 
     let storedProvider = kads[0].providerManager.providerRecords[0].provider
     check:
-      storedProvider.id.get() == kads[1].rtable.selfId
+      storedProvider.id.contains(kads[1].rtable.selfId)
       storedProvider.addrs == kads[1].switch.peerInfo.addrs
 
   asyncTest "Add provider completes when some peers fail":
@@ -521,8 +525,9 @@ suite "KadDHT - Add Provider":
     # Verify provider was stored at the successful receiver
     checkUntilTimeout:
       kads[1].providerManager.providerRecords.len == 1
-      kads[1].providerManager.providerRecords[0].provider.id.get() ==
+      kads[1].providerManager.providerRecords[0].provider.id.contains(
         kads[0].rtable.selfId
+      )
 
   template optimisticProvideStores(seedEstimate: bool) =
     ## Without a seeded estimate `addProvider` takes the classic path, with one
@@ -542,8 +547,9 @@ suite "KadDHT - Add Provider":
 
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.id.get() ==
+      kads[0].providerManager.providerRecords[0].provider.id.contains(
         kads[1].rtable.selfId
+      )
 
   asyncTest "Optimistic provider RPCs belong to the DHT before the lookup returns":
     var cfg = testKadConfig(timeout = 3.seconds, providerRejection = true)
@@ -699,8 +705,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     # Receiver already has 1 provider for key (= maxProvidersPerKey) → reject
     let cidKey = key.toCid().toKey()
     let status = await sender2Kad.sendAddProviderAndGetStatus(receiverKad, cidKey)
-    check status.isOk()
-    check status.value() == AddProviderStatus.rejected
+    check status.containsValue(AddProviderStatus.rejected)
 
   asyncTest "Existing provider refresh is allowed even at per-key limit":
     # The same provider re-advertising updates the expiry rather than adding new entries.
@@ -767,8 +772,9 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     checkUntilTimeout:
       farKad.providerManager.providerRecords.len == 1
-      farKad.providerManager.providerRecords[0].provider.id.get() ==
+      farKad.providerManager.providerRecords[0].provider.id.contains(
         senderKad.switch.peerInfo.peerId.getBytes()
+      )
 
   asyncTest "Normal replication still works when all nodes accept":
     # With unlimited capacity both discovered peers get the record via normal replication.
@@ -824,7 +830,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
       await sender2Kad.sendAddProviderAndGetStatus(receiverKad, key.toCid().toKey())
     check status.isOk()
     # No reply sent by receiver → sender treats absence of reply as accepted
-    check status.value() == AddProviderStatus.accepted
+    check status.containsValue(AddProviderStatus.accepted)
     # Limit enforced silently: still only one record at the receiver.
     # sendAddProviderAndGetStatus already waited for the reply timeout, so the
     # receiver has finished processing by the time we reach this check.
@@ -850,8 +856,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     let status =
       await sender2Kad.sendAddProviderAndGetStatus(receiverKad, key.toCid().toKey())
-    check status.isOk()
-    check status.value() == AddProviderStatus.rejected
+    check status.containsValue(AddProviderStatus.rejected)
     # Limit enforced: still only one record
     check receiverKad.providerManager.providerRecords.len == 1
 
@@ -1043,6 +1048,5 @@ suite "KadDHT - ADD_PROVIDER Rejection":
       receiverKad, senderKad.rtable.selfId.toCid().toKey()
     )
     check:
-      status.isOk()
-      status.value() == AddProviderStatus.rejected
+      status.containsValue(AddProviderStatus.rejected)
       receiverKad.providerManager.providerRecords.len == 0

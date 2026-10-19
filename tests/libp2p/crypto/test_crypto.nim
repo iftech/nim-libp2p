@@ -727,7 +727,7 @@ suite "Key interface test suite":
     check rng().pickOne(x).isNone()
 
   test "pickOne returns the only element of a singleton":
-    check rng().pickOne(@[42]).get() == 42
+    check rng().pickOne(@[42]).contains(42)
 
   test "pick returns none for empty sequence":
     check rng().pick(newSeq[int](), 3).isNone()

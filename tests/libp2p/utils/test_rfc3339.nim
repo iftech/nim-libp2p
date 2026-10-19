@@ -16,12 +16,15 @@ suite "RFC 3339 date-time parser":
     check parsed.timezone == utc()
 
   test "normalizes positive and negative offsets to UTC":
-    check parseRfc3339DateTime("2026-08-21T14:30:00+02:30").get() ==
+    check parseRfc3339DateTime("2026-08-21T14:30:00+02:30").containsValue(
       dateTime(2026, mAug, 21, 12, zone = utc())
-    check parseRfc3339DateTime("2026-08-21T07:00:00-05:00").get() ==
+    )
+    check parseRfc3339DateTime("2026-08-21T07:00:00-05:00").containsValue(
       dateTime(2026, mAug, 21, 12, zone = utc())
-    check parseRfc3339DateTime("2026-01-01T00:30:00+01:00").get() ==
+    )
+    check parseRfc3339DateTime("2026-01-01T00:30:00+01:00").containsValue(
       dateTime(2025, mDec, 31, 23, 30, zone = utc())
+    )
 
   test "accepts fractions of arbitrary precision":
     let base = dateTime(2026, mAug, 21, 11, 36, 41, zone = utc())
@@ -34,16 +37,20 @@ suite "RFC 3339 date-time parser":
       initDuration(nanoseconds = 621_940_726)
 
   test "accepts RFC 3339 lowercase separators":
-    check parseRfc3339DateTime("2026-08-21t12:00:00z").get() ==
+    check parseRfc3339DateTime("2026-08-21t12:00:00z").containsValue(
       dateTime(2026, mAug, 21, 12, zone = utc())
+    )
 
   test "accepts leap seconds at the end of a UTC month":
-    check parseRfc3339DateTime("2016-12-31T23:59:60Z").get() ==
+    check parseRfc3339DateTime("2016-12-31T23:59:60Z").containsValue(
       dateTime(2017, mJan, 1, zone = utc())
-    check parseRfc3339DateTime("2016-12-31T18:59:60-05:00").get() ==
+    )
+    check parseRfc3339DateTime("2016-12-31T18:59:60-05:00").containsValue(
       dateTime(2017, mJan, 1, zone = utc())
-    check parseRfc3339DateTime("2017-01-01T01:59:60+02:00").get() ==
+    )
+    check parseRfc3339DateTime("2017-01-01T01:59:60+02:00").containsValue(
       dateTime(2017, mJan, 1, zone = utc())
+    )
 
   test "accepts valid calendar boundaries":
     let testCase = ["2024-02-29T00:00:00Z", "2026-12-31T23:59:59-00:00"]
@@ -98,4 +105,6 @@ suite "RFC 3339 date-time parser":
 
     check:
       parseRfc3339DateTime(value).isOfError(InvalidRfc3339DateTime)
-      parseRfc3339DateTime(value).error == "Invalid RFC 3339 date-time (" & value & ")"
+      parseRfc3339DateTime(value).containsError(
+        "Invalid RFC 3339 date-time (" & value & ")"
+      )

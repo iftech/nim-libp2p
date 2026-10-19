@@ -833,11 +833,10 @@ method rpcHandler*(
 
     g.pendingTasks.trackFut(g.validateAndRelay(msg, msgId, msgIdSalted, peer))
 
-  let sawIDontWant =
-    rpcMsg.control.isSome() and rpcMsg.control.unsafeGet().idontwant.len > 0
-
-  if rpcMsg.control.isSome():
-    g.handleControl(peer, rpcMsg.control.unsafeGet())
+  var sawIDontWant = false
+  rpcMsg.control.ifValue(control):
+    sawIDontWant = control.idontwant.len > 0
+    g.handleControl(peer, control)
 
   # Runs after handleControl, so the scan sees the IDONTWANTs of this RPC.
   if duplicates.len > 0 or sawIDontWant:

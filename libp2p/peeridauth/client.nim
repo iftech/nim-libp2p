@@ -345,8 +345,9 @@ proc sendWithBearer(
 ): Future[LPResult[(BearerToken, PeerIDAuthResponse)]] {.
     async: (raises: [CancelledError])
 .} =
-  if bearer.expires.isSome() and bearer.expires.get() <= now():
-    return err(BearerExpiredCause)
+  bearer.expires.ifValue(expiry):
+    if expiry <= now():
+      return err(BearerExpiredCause)
 
   let authHeader = PeerIDAuthPrefix & " bearer=\"" & bearer.token & "\""
   let response = (await self.tryPost(uri, $payload, authHeader)).valueOr:

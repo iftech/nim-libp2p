@@ -98,11 +98,11 @@ proc new*(
 method getCertWhenReady*(
     self: AutotlsService
 ): Future[LPResult[AutotlsCert]] {.base, async: (raises: [CancelledError]).} =
-  if self.cert.isSome():
-    return ok(self.cert.get())
+  self.cert.ifValue(cert):
+    return ok(cert)
   await self.certReady.wait()
-  if self.cert.isSome():
-    return ok(self.cert.get())
+  self.cert.ifValue(cert):
+    return ok(cert)
   let failure = self.certFailure.valueOr:
     return err("certificate issuance failed without an error")
   err(failure)

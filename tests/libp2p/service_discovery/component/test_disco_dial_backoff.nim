@@ -46,8 +46,7 @@ suite "Service Discovery Component - Dial Backoff":
 
     let backedOff = await disco.send(deadPeerId, msg)
     check:
-      backedOff.isErr()
-      backedOff.error == makeDialBackoffError(deadPeerId)
+      backedOff.containsError(makeDialBackoffError(deadPeerId))
       table.contains(deadPeerId.toKey())
 
     # The gate blocks further dials, so the rest is recorded without a wait.
@@ -60,5 +59,4 @@ suite "Service Discovery Component - Dial Backoff":
     check table.insert(deadPeerId)
     let reAdmitted = await disco.send(deadPeerId, msg)
     check:
-      reAdmitted.isErr()
-      reAdmitted.error == makeDialBackoffError(deadPeerId)
+      reAdmitted.containsError(makeDialBackoffError(deadPeerId))

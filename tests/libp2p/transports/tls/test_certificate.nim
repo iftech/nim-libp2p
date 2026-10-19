@@ -149,7 +149,7 @@ suite "utilities test":
     let expiration = fromUnix(1735736706)
     let cert = generateX509(keypair, validTo = expiration, encodingFormat = PEM)
 
-    check validTo(cert.certificate, PEM).get() == expiration
+    check validTo(cert.certificate, PEM).containsValue(expiration)
 
   test "KeyPair to cert_key_t":
     let key = KeyPair.random(PKScheme.RSA, rng()).get()
@@ -196,26 +196,26 @@ suite "utilities test":
         # 254 characters, too long
         certKey,
       )
-        .error() == CERT_ERROR_CN_TOO_LONG
+        .containsError(CERT_ERROR_CN_TOO_LONG)
 
       cert_signing_req(
         "my.big.domain.string.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           # 64 character label, too long
         certKey,
       )
-        .error() == CERT_ERROR_CN_LABEL_TOO_LONG
+        .containsError(CERT_ERROR_CN_LABEL_TOO_LONG)
 
       cert_signing_req(
         "my..empty.label.domain", # domain with empty label
         certKey,
       )
-        .error() == CERT_ERROR_CN_EMPTY_LABEL # CERT_ERROR_CN_EMPTY_LABEL
+        .containsError(CERT_ERROR_CN_EMPTY_LABEL) # CERT_ERROR_CN_EMPTY_LABEL
 
       cert_signing_req(
         "", # domain with empty cn
         certKey,
       )
-        .error() == CERT_ERROR_CN_EMPTY
+        .containsError(CERT_ERROR_CN_EMPTY)
 
   test "parse rejects a certificate with an invalid validity time":
     let keypair = KeyPair.random(Ed25519, rng()).tryGet()
@@ -272,7 +272,8 @@ suite "utilities test":
         "20250101130506Z".cstring,
         "20250101140506Z".cstring,
         CERT_FORMAT_DER,
-      ).error == CERT_ERROR_EXTENSION_DATA
+      )
+        .containsError(CERT_ERROR_EXTENSION_DATA)
       cert_generate(
         certKey,
         @[byte(1)],
@@ -281,4 +282,5 @@ suite "utilities test":
         "20250101130506Z".cstring,
         "20250101140506Z".cstring,
         CERT_FORMAT_DER,
-      ).error == CERT_ERROR_EXTENSION_DATA
+      )
+        .containsError(CERT_ERROR_EXTENSION_DATA)

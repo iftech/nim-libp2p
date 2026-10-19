@@ -413,11 +413,11 @@ suite "MultiAddress test suite":
       onionPart = onionMa.getPart(multiCodec("onion")).get()
       onionArg = onionPart.protoAddress().get()
     check:
-      MultiAddress.init("/ip4/0.0.0.0").get().protoAddress().get() == address_v4
-      MultiAddress.init("/ip6/::0").get().protoAddress().get() == address_v6
+      MultiAddress.init("/ip4/0.0.0.0").get().protoAddress().containsValue(address_v4)
+      MultiAddress.init("/ip6/::0").get().protoAddress().containsValue(address_v6)
       $onionMa == "/onion/timaq4ygg2iegci7:1234/http"
-      onionMa.protocols().get() == @[multiCodec("onion"), multiCodec("http")]
-      len(onionMa).get() == 2
+      onionMa.protocols().containsValue(@[multiCodec("onion"), multiCodec("http")])
+      len(onionMa).containsValue(2)
       onionArg.len == 12
       onionArg[10] == 0x04'u8
       onionArg[11] == 0xD2'u8
@@ -534,8 +534,9 @@ suite "MultiAddress test suite":
       )
 
   test "MultiAddress init with a value for a marker":
-    check MultiAddress.init(multiCodec("p2p-circuit"), @[1'u8]).error() ==
+    check MultiAddress.init(multiCodec("p2p-circuit"), @[1'u8]).containsError(
       "multiaddress: Value must be empty for markers"
+    )
     check $MultiAddress.init(multiCodec("p2p-circuit")).get() == "/p2p-circuit"
 
   test "MultiAddress init from TransportAddress":
@@ -543,17 +544,19 @@ suite "MultiAddress test suite":
     check:
       $MultiAddress.init(ta).get() == "/ip4/1.2.3.4/tcp/5"
       $MultiAddress.init(ta, Protocol.IPPROTO_UDP).get() == "/ip4/1.2.3.4/udp/5"
-      MultiAddress.init(ta, Protocol.IPPROTO_ICMP).error() ==
+      MultiAddress.init(ta, Protocol.IPPROTO_ICMP).containsError(
         "multiaddress: protocol should be either TCP or UDP"
+      )
       $MultiAddress.init(initTAddress("[::1]:5")).get() == "/ip6/::1/tcp/5"
 
     let unix = MultiAddress.init(initTAddress("/tmp/sock")).get()
     check:
-      unix.protoCode().get() == multiCodec("unix")
-      unix.protoArgument().get() == "/tmp/sock".toBytes()
-      unix == MultiAddress.init("/unix/tmp/sock").get()
-      MultiAddress.init(TransportAddress(family: AddressFamily.Unix)).error() ==
+      unix.protoCode().containsValue(multiCodec("unix"))
+      unix.protoArgument().containsValue("/tmp/sock".toBytes())
+      MultiAddress.init("/unix/tmp/sock").containsValue(unix)
+      MultiAddress.init(TransportAddress(family: AddressFamily.Unix)).containsError(
         "multiaddress: Unix path must not be empty"
+      )
 
 suite "parseIpAddress":
   test "valid IPv4 addresses parse to IPv4 family":
@@ -645,19 +648,30 @@ suite "MultiAddress IP utilities":
       ip4 = parseIpAddress("203.0.113.7")
       ip6 = parseIpAddress("2001:db8::1")
     check:
-      ma("/ip4/1.2.3.4/tcp/1234").replaceIp(ip4).get == ma("/ip4/203.0.113.7/tcp/1234")
-      ma("/ip4/1.2.3.4/tcp/80/ws").replaceIp(ip4).get == ma(
-        "/ip4/203.0.113.7/tcp/80/ws"
+      ma("/ip4/1.2.3.4/tcp/1234").replaceIp(ip4).containsValue(
+        ma("/ip4/203.0.113.7/tcp/1234")
       )
-      ma("/ip4/1.2.3.4/tcp/80/wss").replaceIp(ip4).get ==
+      ma("/ip4/1.2.3.4/tcp/80/ws").replaceIp(ip4).containsValue(
+        ma("/ip4/203.0.113.7/tcp/80/ws")
+      )
+      ma("/ip4/1.2.3.4/tcp/80/wss").replaceIp(ip4).containsValue(
         ma("/ip4/203.0.113.7/tcp/80/wss")
-      ma("/ip4/1.2.3.4/tcp/80/tls/ws").replaceIp(ip4).get ==
+      )
+      ma("/ip4/1.2.3.4/tcp/80/tls/ws").replaceIp(ip4).containsValue(
         ma("/ip4/203.0.113.7/tcp/80/tls/ws")
-      ma("/ip4/1.2.3.4/udp/9000/quic-v1").replaceIp(ip4).get ==
+      )
+      ma("/ip4/1.2.3.4/udp/9000/quic-v1").replaceIp(ip4).containsValue(
         ma("/ip4/203.0.113.7/udp/9000/quic-v1")
-      ma("/ip6/::1/tcp/1234").replaceIp(ip6).get == ma("/ip6/2001:db8::1/tcp/1234")
+      )
+      ma("/ip6/::1/tcp/1234").replaceIp(ip6).containsValue(
+        ma("/ip6/2001:db8::1/tcp/1234")
+      )
       # cross-family swap (IPv6 -> IPv4 and vice versa)
-      ma("/ip6/::/tcp/80/ws").replaceIp(ip4).get == ma("/ip4/203.0.113.7/tcp/80/ws")
-      ma("/ip4/0.0.0.0/tcp/80").replaceIp(ip6).get == ma("/ip6/2001:db8::1/tcp/80")
+      ma("/ip6/::/tcp/80/ws").replaceIp(ip4).containsValue(
+        ma("/ip4/203.0.113.7/tcp/80/ws")
+      )
+      ma("/ip4/0.0.0.0/tcp/80").replaceIp(ip6).containsValue(
+        ma("/ip6/2001:db8::1/tcp/80")
+      )
       # no IP component
       ma("/unix/tmp/sock").replaceIp(ip4).isErr

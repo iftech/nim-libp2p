@@ -127,22 +127,14 @@ suite "Public key infrastructure filtering test suite":
       let sk = PrivateKey.init(fromHex(stripSpaces(RSA_PrivateKey)))
       let pk = PublicKey.init(fromHex(stripSpaces(RSA_PublicKey)))
       check:
-        sk2048.isErr() == true
-        sk3072.isErr() == true
-        sk4096.isErr() == true
-        kp2048.isErr() == true
-        kp3072.isErr() == true
-        kp4096.isErr() == true
-        sk2048.error == CryptoError.SchemeError
-        sk3072.error == CryptoError.SchemeError
-        sk4096.error == CryptoError.SchemeError
-        kp2048.error == CryptoError.SchemeError
-        kp3072.error == CryptoError.SchemeError
-        kp4096.error == CryptoError.SchemeError
-        sk.isErr() == true
-        pk.isErr() == true
-        sk.error == CryptoError.KeyError
-        pk.error == CryptoError.KeyError
+        sk2048.containsError(CryptoError.SchemeError)
+        sk3072.containsError(CryptoError.SchemeError)
+        sk4096.containsError(CryptoError.SchemeError)
+        kp2048.containsError(CryptoError.SchemeError)
+        kp3072.containsError(CryptoError.SchemeError)
+        kp4096.containsError(CryptoError.SchemeError)
+        sk.containsError(CryptoError.KeyError)
+        pk.containsError(CryptoError.KeyError)
     else:
       let sk2048 = PrivateKey.random(PKScheme.RSA, rng(), 2048)
       let kp2048 = KeyPair.random(PKScheme.RSA, rng(), 2048)
@@ -161,14 +153,10 @@ suite "Public key infrastructure filtering test suite":
       let sk = PrivateKey.init(fromHex(stripSpaces(ECDSA_PrivateKey)))
       let pk = PublicKey.init(fromHex(stripSpaces(ECDSA_PublicKey)))
       check:
-        rsk.isErr() == true
-        rkp.isErr() == true
-        rsk.error == CryptoError.SchemeError
-        rkp.error == CryptoError.SchemeError
-        sk.isErr() == true
-        pk.isErr() == true
-        sk.error == CryptoError.KeyError
-        pk.error == CryptoError.KeyError
+        rsk.containsError(CryptoError.SchemeError)
+        rkp.containsError(CryptoError.SchemeError)
+        sk.containsError(CryptoError.KeyError)
+        pk.containsError(CryptoError.KeyError)
     else:
       let rsk = PrivateKey.random(PKScheme.ECDSA, rng())
       let rkp = KeyPair.random(PKScheme.ECDSA, rng())
@@ -187,14 +175,10 @@ suite "Public key infrastructure filtering test suite":
       let sk = PrivateKey.init(fromHex(stripSpaces(ED25519_PrivateKey)))
       let pk = PublicKey.init(fromHex(stripSpaces(ED25519_PublicKey)))
       check:
-        rsk.isErr() == true
-        rkp.isErr() == true
-        rsk.error == CryptoError.SchemeError
-        rkp.error == CryptoError.SchemeError
-        sk.isErr() == true
-        pk.isErr() == true
-        sk.error == CryptoError.KeyError
-        pk.error == CryptoError.KeyError
+        rsk.containsError(CryptoError.SchemeError)
+        rkp.containsError(CryptoError.SchemeError)
+        sk.containsError(CryptoError.KeyError)
+        pk.containsError(CryptoError.KeyError)
     else:
       let rsk = PrivateKey.random(PKScheme.Ed25519, rng())
       let rkp = KeyPair.random(PKScheme.Ed25519, rng())
@@ -213,14 +197,10 @@ suite "Public key infrastructure filtering test suite":
       let sk = PrivateKey.init(fromHex(stripSpaces(SECP256k1_PrivateKey)))
       let pk = PublicKey.init(fromHex(stripSpaces(SECP256k1_PublicKey)))
       check:
-        rsk.isErr() == true
-        rkp.isErr() == true
-        rsk.error == CryptoError.SchemeError
-        rkp.error == CryptoError.SchemeError
-        sk.isErr() == true
-        pk.isErr() == true
-        sk.error == CryptoError.KeyError
-        pk.error == CryptoError.KeyError
+        rsk.containsError(CryptoError.SchemeError)
+        rkp.containsError(CryptoError.SchemeError)
+        sk.containsError(CryptoError.KeyError)
+        pk.containsError(CryptoError.KeyError)
     else:
       let rsk = PrivateKey.random(PKScheme.Secp256k1, rng())
       let rkp = KeyPair.random(PKScheme.Secp256k1, rng())

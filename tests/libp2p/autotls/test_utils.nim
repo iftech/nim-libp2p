@@ -203,7 +203,7 @@ suite "AutoTLS peer ID label":
 
       check:
         cid.version == CIDv1
-        cid.contentType.get == multiCodec("libp2p-key")
+        cid.contentType.containsValue(multiCodec("libp2p-key"))
         cid.mhash.get.data.buffer == peerId.data
 
   test "every key type gives a legal DNS label":

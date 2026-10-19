@@ -376,7 +376,7 @@ type EntryRecord* = object
 proc init*(
     T: typedesc[EntryRecord], value: Value, time: Opt[Timestamp]
 ): EntryRecord {.gcsafe, raises: [].} =
-  EntryRecord(value: value, time: time.get(Timestamp.now()))
+  EntryRecord(value: value, time: time.valueOr(Timestamp.now()))
 
 type
   ReceivedTable* = TableRef[PeerId, Opt[EntryRecord]]

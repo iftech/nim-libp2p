@@ -77,7 +77,7 @@ suite "MultiHash test suite":
 
   test "gets digest size":
     let mcodec = MultiCodec.codec("sha2-256")
-    check mcodec.digestSize.get == sha256.sizeDigest
+    check mcodec.digestSize.containsValue(sha256.sizeDigest)
 
   test "digest round-trips through decode":
     let data = @[byte 1, 2, 3, 4, 5]
@@ -93,17 +93,18 @@ suite "MultiHash test suite":
           digestSize(name).get()
       check:
         mh.size == expectedSize
-        MultiHash.init(mh.data.buffer).get() == mh
+        MultiHash.init(mh.data.buffer).containsValue(mh)
         MultiHash.validate(mh.data.buffer)
 
   test "digest matches the underlying hash":
     let data = @[byte 1, 2, 3, 4, 5]
     check:
       MultiHash.digest("identity", data).get().data.buffer == @[byte 0x00, 0x05] & data
-      MultiHash.digest("dbl-sha2-256", data).get() ==
+      MultiHash.digest("dbl-sha2-256", data).containsValue(
         sha256.digest(sha256.digest(data).data)
-      MultiHash.digest("blake2b-512", data).get() == blake2_512.digest(data)
-      MultiHash.digest("blake2s-256", data).get() == blake2_256.digest(data)
+      )
+      MultiHash.digest("blake2b-512", data).containsValue(blake2_512.digest(data))
+      MultiHash.digest("blake2s-256", data).containsValue(blake2_256.digest(data))
 
   test "digests differing in any single byte compare unequal":
     let data = [byte 1, 2, 3]

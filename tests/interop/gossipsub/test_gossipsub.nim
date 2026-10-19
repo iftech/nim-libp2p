@@ -36,8 +36,7 @@ suite "GossipSub Interop":
     let msg = Message(data: data, topic: "foobar")
     let res = interopMsgIdProvider(msg)
     check:
-      res.isOk
-      res.get() == @[byte 0, 0, 0, 0, 0, 0, 0, 42]
+      res.containsValue(@[byte 0, 0, 0, 0, 0, 0, 0, 42])
 
   test "parse initGossipSub instruction":
     let j = parseJson("""{"type": "initGossipSub", "gossipSubParams": {"D": 6}}""")

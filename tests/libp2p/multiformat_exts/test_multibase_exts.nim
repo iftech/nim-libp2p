@@ -15,7 +15,7 @@ suite "MutliBase extensions":
     var olen: int
 
     check:
-      MultiBase.encode("codec_mb1", msg).get() == "$ext_x"
+      MultiBase.encode("codec_mb1", msg).containsValue("$ext_x")
       MultiBase.encode("codec_mb1", msg, enc, olen) == MultiBaseStatus.Success
       enc == "$ext_x"
       olen == 6
@@ -33,7 +33,7 @@ suite "MutliBase extensions":
 
     check:
       # the default identity encoding would be "\x00"
-      MultiBase.encode("identity", msg).get() == "\x00ext_x"
+      MultiBase.encode("identity", msg).containsValue("\x00ext_x")
       MultiBase.encode("identity", msg, enc, olen) == MultiBaseStatus.Success
       enc == "\x00ext_x"
       olen == 6

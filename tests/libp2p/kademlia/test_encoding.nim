@@ -15,7 +15,7 @@ suite "KadDHT Protobuffers":
     # encode with hideConnectionStatus=false to preserve connection type for round-trip check
     let peer =
       Peer(id: @[1'u8, 2, 3], addrs: maddrs, connection: ConnectionStatus.connected)
-    check peer == Peer.decode(peer.encode(hideConnectionStatus = false)).get()
+    check Peer.decode(peer.encode(hideConnectionStatus = false)).containsValue(peer)
 
     let msg = Message(
       msgType: MessageType.putValue,
@@ -25,7 +25,7 @@ suite "KadDHT Protobuffers":
       closerPeers: @[Peer(id: @[9'u8], addrs: maddrs, connection: canConnect)],
       providerPeers: @[Peer(id: @[9'u8], addrs: maddrs, connection: canConnect)],
     )
-    check msg == Message.decode(msg.encode(hideConnectionStatus = false)).get()
+    check Message.decode(msg.encode(hideConnectionStatus = false)).containsValue(msg)
 
   test "Peer with empty addr list and no connection":
     let peer = Peer(id: @[0x42'u8], addrs: @[], connection: Opt.none(ConnectionStatus))
@@ -98,7 +98,7 @@ suite "KadDHT Protobuffers":
 
     check:
       noKey.key.isNone()
-      noValue.key == Opt.some(Key.fromBytes(@[7'u8]))
+      noValue.key.contains(Key.fromBytes(@[7'u8]))
       noValue.value.isNone()
 
 suite "KadDHT Protobuffers - AddProviderStatus":
@@ -123,6 +123,6 @@ suite "KadDHT Protobuffers - AddProviderStatus":
       raiseAssert("decode of noStatus failed")
 
     check:
-      decodedAccepted.providerStatus == Opt.some(AddProviderStatus.accepted)
-      decodedRejected.providerStatus == Opt.some(AddProviderStatus.rejected)
+      decodedAccepted.providerStatus.contains(AddProviderStatus.accepted)
+      decodedRejected.providerStatus.contains(AddProviderStatus.rejected)
       decodedNoStatus.providerStatus.isNone()
