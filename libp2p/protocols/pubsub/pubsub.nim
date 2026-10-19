@@ -728,8 +728,6 @@ method initPubSub*(p: PubSub) {.base, raises: [InitializationError].} =
   p.observers = new(seq[PubSubObserver])
   if p.msgIdProvider == nil:
     p.msgIdProvider = defaultMsgIdProvider
-  # Start the seqno counter at a random value so that a restarted instance
-  # does not reuse seqnos - and thus message ids - it signed in a previous run.
   p.rng.generate(p.msgSeqno)
 
 {.pop.}
