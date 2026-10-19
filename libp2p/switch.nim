@@ -361,22 +361,22 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
   while transport.running:
     var conn: RawConn
     try:
-      conn =
-        try:
-          await transport.accept()
-        except CancelledError as exc:
-          raise exc
-        except CatchableError as exc:
-          raise
-            newException(CatchableError, "failed to accept connection: " & exc.msg, exc)
-      if isNil(conn):
-        # A nil connection means that we might have hit a
-        # file-handle limit (or another non-fatal error),
-        # we can get one on the next try
-        trace "Transport connection acceptance returned no connection",
-          addresses = transport.addrs
-        await sleepAsync(AcceptRetryDelay)
-        continue
+      let accepted = await transport.accept()
+      if accepted.isErr:
+        let failure = accepted.error
+        case failure.kind
+        of TransportAcceptErrorKind.Retryable:
+          trace "Transport connection acceptance will retry",
+            addresses = transport.addrs, err = failure.message
+          await sleepAsync(AcceptRetryDelay)
+          continue
+        of TransportAcceptErrorKind.Closed:
+          trace "Transport connection acceptance closed", err = failure.message
+          return
+        of TransportAcceptErrorKind.Fatal:
+          error "Accept loop stopped", err = failure.message
+          return
+      conn = accepted.get()
 
       let slot = s.connManager.tryGetIncomingSlot().valueOr:
         debug "Incoming connection limit reached", conn

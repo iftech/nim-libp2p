@@ -562,7 +562,7 @@ suite "Mplex":
 
       let received = newFuture[void]()
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           try:
@@ -601,7 +601,7 @@ suite "Mplex":
 
       let received = newFuture[void]()
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           try:
@@ -647,7 +647,7 @@ suite "Mplex":
 
       proc acceptHandler() {.async.} =
         try:
-          let conn = await transport1.accept()
+          let conn = (await transport1.accept()).get()
           let mplexListen = Mplex.new(conn)
           mplexListen.streamHandler = proc(
               stream: MuxedStream
@@ -694,7 +694,7 @@ suite "Mplex":
       let listenFut = transport1.start(@[TcpWildcardAddress])
 
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           try:
@@ -731,7 +731,7 @@ suite "Mplex":
       let done = newFuture[void]()
       proc acceptHandler() {.async.} =
         var count = 1
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           try:
@@ -777,7 +777,7 @@ suite "Mplex":
       let done = newFuture[void]()
       proc acceptHandler() {.async.} =
         var count = 1
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           try:
@@ -823,7 +823,7 @@ suite "Mplex":
       let transport1 = TcpTransport.new(upgrade = Upgrade())
       var listenStreams: seq[MuxedStream]
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
 
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
@@ -871,7 +871,7 @@ suite "Mplex":
       var done = newFuture[void]()
       var listenStreams: seq[MuxedStream]
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           listenStreams.add(stream)
@@ -923,7 +923,7 @@ suite "Mplex":
       let transport1 = TcpTransport.new(upgrade = Upgrade())
 
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           await stream.reset()
@@ -987,7 +987,7 @@ suite "Mplex":
 
       var listenStreams: seq[MuxedStream]
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           listenStreams.add(stream)
@@ -1025,7 +1025,7 @@ suite "Mplex":
       var mplexListen: Mplex
       var listenStreams: seq[MuxedStream]
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           listenStreams.add(stream)
@@ -1066,7 +1066,7 @@ suite "Mplex":
       var mplexHandle: Future[void]
       var listenStreams: seq[MuxedStream]
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           listenStreams.add(stream)
@@ -1107,7 +1107,7 @@ suite "Mplex":
 
       var listenStreams: seq[MuxedStream]
       proc acceptHandler() {.async.} =
-        let conn = await transport1.accept()
+        let conn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(conn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           listenStreams.add(stream)
@@ -1148,7 +1148,7 @@ suite "Mplex":
       var listenConn: MuxedStream
       var listenStreams: seq[MuxedStream]
       proc acceptHandler() {.async.} =
-        listenConn = await transport1.accept()
+        listenConn = (await transport1.accept()).get()
         let mplexListen = Mplex.new(listenConn)
         mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
           listenStreams.add(stream)
@@ -1191,7 +1191,7 @@ suite "Mplex":
         var complete = newFuture[void]()
         const MsgSize = 1024
         proc acceptHandler() {.async.} =
-          let conn = await transport1.accept()
+          let conn = (await transport1.accept()).get()
           let mplexListen = Mplex.new(conn)
           mplexListen.streamHandler = proc(
               stream: MuxedStream
@@ -1262,7 +1262,7 @@ suite "Mplex":
         var complete = newFuture[void]()
         const MsgSize = 512
         proc acceptHandler() {.async.} =
-          let conn = await transport1.accept()
+          let conn = (await transport1.accept()).get()
           let mplexListen = Mplex.new(conn)
           mplexListen.streamHandler = proc(
               stream: MuxedStream

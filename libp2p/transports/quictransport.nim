@@ -37,7 +37,6 @@ type
   LsquicStream = lsquic.Stream
   QuicTransportError* = object of transport.TransportError
   QuicTransportDialError* = object of transport.TransportDialError
-  QuicTransportAcceptStopped* = object of QuicTransportError
 
   QuicStream* = ref object of P2PConnection
     session: QuicSession
@@ -564,10 +563,13 @@ proc wrapConnection(
 
 method accept*(
     self: QuicTransport
-): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
+): Future[TransportAcceptResult] {.async: (raises: [CancelledError]).} =
   if not self.running:
-    # stop accept only when transport is stopped (not when error occurs)
-    raise newException(QuicTransportAcceptStopped, "Quic transport stopped")
+    return err(
+      TransportAcceptError(
+        kind: TransportAcceptErrorKind.Closed, message: "QUIC transport stopped"
+      )
+    )
 
   doAssert self.listeners.len > 0, "call start() before calling accept()"
 
@@ -586,7 +588,11 @@ method accept*(
       raise exc
 
   if not self.running or self.listeners.len == 0: # Stopped while waiting
-    raise newTransportClosedError()
+    return err(
+      TransportAcceptError(
+        kind: TransportAcceptErrorKind.Closed, message: "QUIC transport closed"
+      )
+    )
 
   # Replace the completed accept before awaiting its result so that every
   # listener remains ready for future connections.
@@ -598,11 +604,21 @@ method accept*(
       await finished
     except common.TransportError as exc:
       debug "QUIC transport stopped during acceptance", err = exc.msg
-      raise newTransportClosedError(exc)
+      return err(
+        TransportAcceptError(
+          kind: TransportAcceptErrorKind.Closed, message: $exc.name & ": " & exc.msg
+        )
+      )
 
-  self.wrapConnection(conn, Direction.In).valueOr:
+  let wrapped = self.wrapConnection(conn, Direction.In).valueOr:
     conn.close()
-    raise error.toException(QuicTransportError, "QuicTransport.accept failed")
+    return err(
+      TransportAcceptError(
+        kind: TransportAcceptErrorKind.Fatal,
+        message: "QuicTransport.accept failed: " & $error,
+      )
+    )
+  ok(wrapped)
 
 proc listenerEndpointFor(
     self: QuicTransport, address: TransportAddress

@@ -79,7 +79,7 @@ suite "Identify":
     asyncTest "default agent version":
       msListen.addHandler(identifyProto1)
       proc acceptHandler(): Future[void] {.async.} =
-        let c = await transport1.accept()
+        let c = (await transport1.accept()).get()
         await msListen.handle(c)
 
       acceptFut = acceptHandler()
@@ -103,7 +103,7 @@ suite "Identify":
       msListen.addHandler(identifyProto1)
 
       proc acceptHandler(): Future[void] {.async.} =
-        let c = await transport1.accept()
+        let c = (await transport1.accept()).get()
         await msListen.handle(c)
 
       acceptFut = acceptHandler()
@@ -138,7 +138,7 @@ suite "Identify":
 
       msListen.addHandler(LPProtocol.new(@[IdentifyCodec], noPubKeyHandler))
       proc acceptHandler(): Future[void] {.async.} =
-        let c = await transport1.accept()
+        let c = (await transport1.accept()).get()
         await msListen.handle(c)
 
       acceptFut = acceptHandler()
@@ -157,7 +157,7 @@ suite "Identify":
       proc acceptHandler() {.async: (raises: [CancelledError]).} =
         var conn: RawConn
         try:
-          conn = await transport1.accept()
+          conn = (await transport1.accept()).get()
           await msListen.handle(conn)
         except transport.TransportError as e:
           raiseAssert "unexpected error: " & e.msg
@@ -185,7 +185,7 @@ suite "Identify":
 
       msListen.addHandler(LPProtocol.new(@[IdentifyCodec], truncatedHandler))
       proc acceptHandler(): Future[void] {.async.} =
-        let c = await transport1.accept()
+        let c = (await transport1.accept()).get()
         await msListen.handle(c)
 
       acceptFut = acceptHandler()
@@ -200,7 +200,7 @@ suite "Identify":
       msListen.addHandler(identifyProto1)
       identifyProto1.sendSignedPeerRecord = true
       proc acceptHandler(): Future[void] {.async.} =
-        let c = await transport1.accept()
+        let c = (await transport1.accept()).get()
         await msListen.handle(c)
 
       acceptFut = acceptHandler()

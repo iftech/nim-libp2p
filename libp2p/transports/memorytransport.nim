@@ -74,9 +74,13 @@ method stop*(self: MemoryTransport) {.async: (raises: []).} =
 
 method accept*(
     self: MemoryTransport
-): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
+): Future[TransportAcceptResult] {.async: (raises: [CancelledError]).} =
   if not self.running:
-    raise newException(MemoryTransportError, "Transport closed, no more connections!")
+    return err(
+      TransportAcceptError(
+        kind: TransportAcceptErrorKind.Closed, message: "Memory transport closed"
+      )
+    )
 
   var listener: MemoryListener
   try:
@@ -85,12 +89,22 @@ method accept*(
     let conn = await listener.accept()
     self.connections.add(conn)
     self.listener = Opt.none(MemoryListener)
-    return conn
+    return ok(conn)
   except CancelledError as e:
     listener.close()
     raise e
+  except MemoryTransportAcceptStopped as e:
+    return err(
+      TransportAcceptError(
+        kind: TransportAcceptErrorKind.Closed, message: $e.name & ": " & e.msg
+      )
+    )
   except MemoryTransportError as e:
-    raise e
+    return err(
+      TransportAcceptError(
+        kind: TransportAcceptErrorKind.Fatal, message: $e.name & ": " & e.msg
+      )
+    )
   except CatchableError:
     raiseAssert "should never happen"
 

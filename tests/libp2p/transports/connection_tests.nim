@@ -20,7 +20,7 @@ template connectionTransportTest*(
 
     asyncTest "handle write":
       proc serverHandler(server: Transport) {.async.} =
-        let conn = await server.accept()
+        let conn = (await server.accept()).get()
         defer:
           await conn.close()
 
@@ -48,7 +48,7 @@ template connectionTransportTest*(
 
     asyncTest "handle read":
       proc serverHandler(server: Transport) {.async.} =
-        let conn = await server.accept()
+        let conn = (await server.accept()).get()
         defer:
           await conn.close()
 
@@ -79,7 +79,7 @@ template connectionTransportTest*(
 
       proc serverHandler(server: Transport) {.async.} =
         while true:
-          let conn = await server.accept()
+          let conn = (await server.accept()).get()
           await conn.write(message)
           await conn.close()
 
@@ -122,7 +122,7 @@ template connectionTransportTest*(
 
     asyncTest "read or write on closed connection":
       proc serverHandler(server: Transport) {.async.} =
-        let conn = await server.accept()
+        let conn = (await server.accept()).get()
         await conn.close()
 
       proc runClient(server: Transport) {.async.} =
@@ -157,7 +157,7 @@ template connectionTransportTest*(
       let acceptFut = server.accept()
       let client = transportProvider()
       let clientConn = await client.dial(server.addrs[0])
-      let serverConn = await acceptFut
+      let serverConn = (await acceptFut).get()
       defer:
         await clientConn.close()
         await serverConn.close()

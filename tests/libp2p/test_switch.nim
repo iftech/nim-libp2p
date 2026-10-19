@@ -688,7 +688,7 @@ suite "Switch":
     await transport.start(@[TcpWildcardAddress])
 
     proc acceptHandler() {.async.} =
-      let rawConn = await transport.accept()
+      let rawConn = (await transport.accept()).get()
       await rawConn.closeWithEOF()
 
     let handlerWait = acceptHandler()

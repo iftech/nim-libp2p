@@ -557,15 +557,23 @@ proc connHandler(
 
 method accept*(
     self: WsTransport
-): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
+): Future[TransportAcceptResult] {.async: (raises: [CancelledError]).} =
   if not self.running:
-    raise newTransportClosedError()
+    return err(
+      TransportAcceptError(
+        kind: TransportAcceptErrorKind.Closed, message: "WebSocket transport closed"
+      )
+    )
 
   let conn = await self.acceptResults.popFirst()
   if not conn.isNil:
-    return conn
+    return ok(conn)
 
-  raise newTransportClosedError()
+  return err(
+    TransportAcceptError(
+      kind: TransportAcceptErrorKind.Closed, message: "WebSocket transport closed"
+    )
+  )
 
 method dial*(
     self: WsTransport,

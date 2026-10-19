@@ -47,7 +47,7 @@ proc createServerAcceptConn*(
       async:
         (raises: [transport.TransportError, LPError, LPStreamError, CancelledError])
   .} =
-    let conn = await server.accept()
+    let conn = (await server.accept()).get()
     let muxer = QuicMuxer.new(conn)
     let stream = await muxer.newStream()
     defer:
@@ -162,7 +162,7 @@ proc serverHandlerSingleStream*(
     server: Transport, streamProvider: StreamProvider, handler: StreamHandler
 ) {.async: (raises: []).} =
   try:
-    let conn = await server.accept()
+    let conn = (await server.accept()).get()
     let muxer = streamProvider(conn, false)
     muxer.streamHandler = handler
 
