@@ -97,13 +97,19 @@ proc shuffle*[T](rng: Rng, x: var openArray[T]) =
   if x.len == 0:
     return
 
-  var randValues = newSeqUninit[byte](len(x) * 2)
+  # Fisher-Yates: the swap index for position i is drawn uniformly from [0, i].
+  # All randomness is drawn in one call; a value is only redrawn when it falls
+  # below the rejection threshold, which removes modulo bias.
+  var randValues = newSeqUninit[uint32](len(x))
   rng.generate(randValues)
 
   for i in countdown(x.high, 1):
     let
-      rand = randValues[i * 2].int32 or (randValues[i * 2 + 1].int32 shl 8)
-      y = rand mod i
+      bound = uint32(i + 1)
+      threshold = (0'u32 - bound) mod bound
+    while randValues[i] < threshold:
+      rng.generate(randValues[i])
+    let y = int(randValues[i] mod bound)
     swap(x[i], x[y])
 
 proc randBelow(rng: Rng, max: uint32): int =

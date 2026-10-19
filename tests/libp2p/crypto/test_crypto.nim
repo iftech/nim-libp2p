@@ -650,6 +650,25 @@ suite "Key interface test suite":
     rng().shuffle(cards)
     check cards.toSeq().sorted() == original
 
+  test "shuffle can produce every permutation":
+    let random = rng()
+
+    var seenPairs: seq[array[2, int]]
+    for _ in 0 ..< 200:
+      var xs = [1, 2]
+      random.shuffle(xs)
+      if xs notin seenPairs:
+        seenPairs.add(xs)
+    check seenPairs.len == 2
+
+    var seenTriples: seq[array[3, int]]
+    for _ in 0 ..< 600:
+      var xs = [1, 2, 3]
+      random.shuffle(xs)
+      if xs notin seenTriples:
+        seenTriples.add(xs)
+    check seenTriples.len == 6
+
   test "newBearSslRng wraps existing HMAC-DRBG context":
     var seed = [byte 1, 2, 3, 4, 5, 6, 7, 8]
     let ctx = (ref HmacDrbgContext)()
