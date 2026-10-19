@@ -598,6 +598,31 @@ suite "RSA 2048/3072/4096 test suite":
       RsaPublicKey.init(spkiPublicKeyDer(modulus, 2)).isErr()
       RsaPublicKey.init(spkiPublicKeyDer(modulus, 3)).isOk()
 
+  test "Oversized public exponents are rejected":
+    proc spki(exponent: openArray[byte]): seq[byte] =
+      derSequence(
+        [
+          derSequence([derField(Asn1Tag.Oid, Asn1OidRsaEncryption), derNull()]),
+          derBitString(
+            derSequence(
+              [
+                derField(Asn1Tag.Integer, rsa2048BitModulus()),
+                derField(Asn1Tag.Integer, exponent),
+              ]
+            )
+          ),
+        ]
+      )
+
+    var exponent = newSeq[byte](9)
+    exponent[0] = 0x01
+    exponent[^1] = 0x01
+    let pubDer = spki(exponent)
+    check:
+      RsaPublicKey.init(spkiPublicKeyDer(rsa2048BitModulus(), high(uint64))).isOk()
+      RsaPublicKey.init(pubDer).error == RsaKeyIncorrectError
+      PublicKey.init(libp2pPublicKeyBytes(pubDer)).error == KeyError
+
   test "[rsa4097] not allowed test":
     let modulus = rsaOversizedModulus()
     let pubDer = spkiPublicKeyDer(modulus)
