@@ -602,7 +602,7 @@ method dial*(
         @[hostHeaderHook(httpHostname)]
       else:
         @[]
-  if httpHostname.hasControlChar():
+  if httpHostname.hasControlChar() or serverName.hasControlChar():
     raise newException(
       transport.TransportDialError,
       "WsTransport.dial called with a control character in the hostname",
