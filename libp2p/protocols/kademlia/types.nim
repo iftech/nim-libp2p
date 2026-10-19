@@ -376,15 +376,15 @@ proc init*(
 type
   ReceivedTable* = TableRef[PeerId, Opt[EntryRecord]]
   CandidatePeers* = ref HashSet[PeerId]
-  LocalTable* = Table[Key, EntryRecord]
+  LocalTable* = Table[RecordKey, EntryRecord]
 
 proc insert*(
-    self: var LocalTable, key: Key, value: sink Value, time: Timestamp
+    self: var LocalTable, key: RecordKey, value: sink Value, time: Timestamp
 ) {.raises: [].} =
   trace "Local Kademlia record stored", key, value
   self[key] = EntryRecord(value: value, time: time)
 
-proc get*(self: LocalTable, key: Key): Opt[EntryRecord] {.raises: [].} =
+proc get*(self: LocalTable, key: RecordKey): Opt[EntryRecord] {.raises: [].} =
   if not self.hasKey(key):
     return Opt.none(EntryRecord)
   try:
@@ -394,25 +394,25 @@ proc get*(self: LocalTable, key: Key): Opt[EntryRecord] {.raises: [].} =
 
 type EntryValidator* = ref object of RootObj
 method isValid*(
-    self: EntryValidator, key: Key, record: EntryRecord
+    self: EntryValidator, key: RecordKey, record: EntryRecord
 ): bool {.base, raises: [], gcsafe.} =
   doAssert(false, "EntryValidator base not implemented")
 
 type EntrySelector* = ref object of RootObj
 method select*(
-    self: EntrySelector, key: Key, records: seq[EntryRecord]
+    self: EntrySelector, key: RecordKey, records: seq[EntryRecord]
 ): LPResult[int] {.base, raises: [], gcsafe.} =
   doAssert(false, "EntrySelection base not implemented")
 
 type DefaultEntryValidator* = ref object of EntryValidator
 method isValid*(
-    self: DefaultEntryValidator, key: Key, record: EntryRecord
+    self: DefaultEntryValidator, key: RecordKey, record: EntryRecord
 ): bool {.raises: [], gcsafe.} =
   return true
 
 type DefaultEntrySelector* = ref object of EntrySelector
 method select*(
-    self: DefaultEntrySelector, key: Key, records: seq[EntryRecord]
+    self: DefaultEntrySelector, key: RecordKey, records: seq[EntryRecord]
 ): LPResult[int] {.raises: [], gcsafe.} =
   if records.len == 0:
     return err("No records to choose from")

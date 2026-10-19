@@ -17,6 +17,7 @@ import
   ]
 import ../../../../libp2p/protocols/kademlia/protobuf as kad_protobuf
 import ../../../tools/[lifecycle, stall_server, unittest]
+import ../../kademlia/utils as kad_utils
 import ../utils
 
 proc sendRawMessage(
@@ -354,6 +355,6 @@ suite "Service Discovery Component - Error Handling":
 
     let storePeerId = storeNode.switch.peerInfo.peerId
     let value = Value.fromBytes(makeAdvertisement().encode())
-    discard await clientNode.dispatchPutVal(storePeerId, storePeerId.toKey(), value)
+    discard await clientNode.dispatchPutVal(storePeerId, storePeerId, value)
 
-    check storeNode.dataTable.get(storePeerId.toKey()).isNone()
+    check storeNode.dataTable.get(storePeerId).isNone()

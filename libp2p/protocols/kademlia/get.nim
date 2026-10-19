@@ -12,13 +12,13 @@ logScope:
   topics = "libp2p kademlia"
 
 proc dispatchGetVal*(
-    kad: KadDHT, peer: PeerId, key: Key
+    kad: KadDHT, peer: PeerId, key: RecordKey
 ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
-  let msg = Message(msgType: Opt.some(MessageType.getValue), key: Opt.some(key))
+  let msg = Message(msgType: Opt.some(MessageType.getValue), key: Opt.some(key.toKey()))
   await kad.dispatchRpc(peer, msg)
 
 proc bestValidRecord(
-    kad: KadDHT, key: Key, received: ReceivedTable, quorum: int
+    kad: KadDHT, key: RecordKey, received: ReceivedTable, quorum: int
 ): LPResult[EntryRecord] =
   var validRecords: seq[EntryRecord]
   for r in received.values():
@@ -39,7 +39,7 @@ proc bestValidRecord(
   ok(validRecords[selectedIdx])
 
 proc getValue*(
-    kad: KadDHT, key: Key, quorumOverride: Opt[int] = Opt.none(int)
+    kad: KadDHT, key: RecordKey, quorumOverride: Opt[int] = Opt.none(int)
 ): Future[LPResult[EntryRecord]] {.async: (raises: [CancelledError]), gcsafe.} =
   let received = ReceivedTable()
 
@@ -72,7 +72,7 @@ proc getValue*(
       trace "Get-value reply has no record", messageType = "getValue"
       return
 
-    if record.key.isNone or record.key.get() != key:
+    if record.key.isNone or record.key.get() != key.toKey():
       trace "GetValue returned record with mismatched key",
         expected = key, got = record.key
       return
@@ -96,7 +96,12 @@ proc getValue*(
   let quorumReached = proc(state: LookupState): bool {.gcsafe.} =
     received.len >= quorum
 
-  discard await kad.iterativeLookup(key, dispatchGetVal, onReply, quorumReached)
+  let dispatch = proc(
+      kad: KadDHT, peer: PeerId, target: Key
+  ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
+    await kad.dispatchGetVal(peer, key)
+
+  discard await kad.iterativeLookup(key.toKey(), dispatch, onReply, quorumReached)
 
   let best = ?kad.bestValidRecord(key, received, quorum)
 
@@ -124,6 +129,21 @@ proc getValue*(
 
   ok(best)
 
+proc liveLocalRecord(kad: KadDHT, key: Key): Opt[EntryRecord] =
+  ## Evicts an expired entry so the caller treats it as absent.
+  let recordKey = RecordKey.init(key).valueOr:
+    return Opt.none(EntryRecord)
+
+  let record = kad.dataTable.get(recordKey).valueOr:
+    return Opt.none(EntryRecord)
+
+  if record.isExpired(kad.config.recordExpirationInterval):
+    trace "Record expired, dropping", key
+    kad.dataTable.del(recordKey)
+    return Opt.none(EntryRecord)
+
+  Opt.some(record)
+
 method handleGetValue*(
     kad: KadDHT, stream: Stream, msg: Message
 ) {.base, async: (raises: [CancelledError]).} =
@@ -132,16 +152,7 @@ method handleGetValue*(
       reason = "missingKey", messageType = "getValue", stream
     return
 
-  # Evict the entry eagerly if it has expired so the response below treats it as
-  # absent and sends the standard "no record found" response.
-  var entryRecordOpt = kad.dataTable.get(key)
-  entryRecordOpt.ifValue(record):
-    if record.isExpired(kad.config.recordExpirationInterval):
-      trace "Record expired, dropping", key = key
-      kad.dataTable.del(key)
-      entryRecordOpt = Opt.none(EntryRecord)
-
-  let entryRecord = entryRecordOpt.valueOr:
+  let entryRecord = kad.liveLocalRecord(key).valueOr:
     let response = Message(
       msgType: Opt.some(MessageType.getValue),
       key: Opt.some(key),

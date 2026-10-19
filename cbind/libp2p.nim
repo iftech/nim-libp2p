@@ -848,7 +848,8 @@ proc libp2pKadPutValue*(
   ## Stores `value` under `key` on the DHT nodes closest to it.
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
-  let key = Key.fromBytes(req.key)
+  let key = RecordKey.fromBytes(req.key).valueOr:
+    return err(error)
   let value = Value.fromBytes(req.value)
   (await kad.putValue(key, value)).isOkOr:
     return err(error)
@@ -868,7 +869,8 @@ proc libp2pKadGetValue*(
       Opt.none(int)
     else:
       Opt.some(req.quorum)
-  let key = Key.fromBytes(req.key)
+  let key = RecordKey.fromBytes(req.key).valueOr:
+    return err(error)
   let res =
     try:
       await kad.getValue(key, quorum)

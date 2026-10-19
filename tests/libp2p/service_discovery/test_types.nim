@@ -54,31 +54,31 @@ suite "Service Discovery types":
   test "ExtEntryValidator accepts a record signed by the peer its key names":
     let ad = makeAdvertisement()
     let record = EntryRecord(value: ad.encode(), time: Timestamp.now())
-    check ExtEntryValidator().isValid(ad.data.peerId.toKey(), record)
+    check ExtEntryValidator().isValid(ad.data.peerId, record)
 
   test "ExtEntryValidator rejects a record signed by another peer":
     let ad = makeAdvertisement()
     let record = EntryRecord(value: ad.encode(), time: Timestamp.now())
-    check not ExtEntryValidator().isValid(randomPeerId().toKey(), record)
+    check not ExtEntryValidator().isValid(randomPeerId(), record)
 
   test "ExtEntryValidator rejects a record with oversized service data":
     let ad = makeOversizedAdvertisement("svc")
     let record = EntryRecord(value: ad.encode(), time: Timestamp.now())
-    check not ExtEntryValidator().isValid(ad.data.peerId.toKey(), record)
+    check not ExtEntryValidator().isValid(ad.data.peerId, record)
 
   test "ExtEntrySelector rejects an empty record list":
-    check ExtEntrySelector().select(randomPeerId().toKey(), @[]).isErr()
+    check ExtEntrySelector().select(randomPeerId(), @[]).isErr()
 
   test "ExtEntrySelector rejects records that do not decode":
     let records = @[
       EntryRecord(value: @[1'u8, 2, 3], time: Timestamp.now()),
       EntryRecord(value: @[], time: Timestamp.now()),
     ]
-    check ExtEntrySelector().select(randomPeerId().toKey(), records).isErr()
+    check ExtEntrySelector().select(randomPeerId(), records).isErr()
 
   test "ExtEntrySelector skips undecodable records and picks the highest seqNo":
     let privateKey = randomKey()
-    let key = PeerId.init(privateKey).get().toKey()
+    let key = PeerId.init(privateKey).get()
     let records = @[
       EntryRecord(value: @[1'u8, 2, 3], time: Timestamp.now()),
       EntryRecord(
