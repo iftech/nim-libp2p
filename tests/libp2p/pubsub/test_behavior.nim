@@ -737,6 +737,65 @@ suite "GossipSub Behavior":
     check:
       routingRecordsFut.finished() == false
 
+  asyncTest "handlePrune - do not trigger PeerExchange on Prune if peer score is below acceptPXThreshold":
+    let
+      (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic, populateMesh = true)
+      peer = peers[0]
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    # Given mesh peer with score above gossipThreshold but below acceptPXThreshold
+    gossipSub.parameters.acceptPXThreshold = 10.0
+    peer.score = 5.0
+
+    var routingRecordsCalled = false
+    gossipSub.routingRecordsHandler.add(
+      proc(peer: PeerId, tag: string, peers: seq[RoutingRecordsPair]) =
+        routingRecordsCalled = true
+    )
+
+    gossipSub.handlePrune(
+      peer,
+      @[
+        ControlPrune(
+          topicID: topic, peers: @[PeerInfoMsg(peerId: peer.peerId)], backoff: 300'u64
+        )
+      ],
+    )
+
+    check:
+      peer notin gossipSub.mesh.getOrDefault(topic)
+      routingRecordsCalled == false
+
+  asyncTest "handlePrune - trigger PeerExchange on Prune if peer score reaches acceptPXThreshold":
+    let
+      (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic, populateMesh = true)
+      peer = peers[0]
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    gossipSub.parameters.acceptPXThreshold = 10.0
+    peer.score = 10.0
+
+    var receivedRecords: seq[RoutingRecordsPair]
+    gossipSub.routingRecordsHandler.add(
+      proc(peer: PeerId, tag: string, peers: seq[RoutingRecordsPair]) =
+        receivedRecords = peers
+    )
+
+    gossipSub.handlePrune(
+      peer,
+      @[
+        ControlPrune(
+          topicID: topic, peers: @[PeerInfoMsg(peerId: peer.peerId)], backoff: 300'u64
+        )
+      ],
+    )
+
+    check:
+      receivedRecords.len == 1
+      receivedRecords[0].id == peer.peerId
+
   asyncTest "handleGraft - peer joins mesh for subscribed topic":
     # Given a GossipSub instance with one peer
     let

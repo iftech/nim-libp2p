@@ -317,7 +317,7 @@ proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) =
     g.pruned(peer, topic, setBackoff = false)
     g.mesh.removePeer(topic, peer)
 
-    if peer.score > g.parameters.gossipThreshold and prune.peers.len > 0 and
+    if peer.score >= g.parameters.acceptPXThreshold and prune.peers.len > 0 and
         g.routingRecordsHandler.len > 0:
       let routingRecords = prune.getPeers(peer)
 
