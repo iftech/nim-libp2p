@@ -651,6 +651,33 @@ suite "Dialer":
 
     check transport.dialedAddrs == @[handled]
 
+  asyncTest "Nested dnsaddr resolution selects a matching peer":
+    let
+      src = makeStandardSwitch(TcpAutoAddress)
+      dst = makeStandardSwitch(TcpAutoAddress)
+      other = makeStandardSwitch(TcpAutoAddress)
+    await allFutures(src.start(), dst.start(), other.start())
+    defer:
+      await allFutures(src.stop(), dst.stop(), other.stop())
+
+    # The nested lookup returns records for multiple peers.
+    let resolver = MockResolver.new()
+    resolver.txtResponses["_dnsaddr.a.example"] = @["dnsaddr=/dnsaddr/b.example"]
+    resolver.txtResponses["_dnsaddr.b.example"] = @[
+      "dnsaddr=" & $other.peerInfo.addrs[0] & "/p2p/" & $other.peerInfo.peerId,
+      "dnsaddr=" & $dst.peerInfo.addrs[0] & "/p2p/" & $dst.peerInfo.peerId,
+    ]
+
+    let dialer = Dialer.new(
+      src.peerInfo.peerId, src.connManager, src.peerStore, src.transports, src.ms,
+      resolver,
+    )
+
+    await dialer.connect(dst.peerInfo.peerId, @[ma("/dnsaddr/a.example")])
+
+    check src.connManager.connCount(dst.peerInfo.peerId) == 1
+    check src.connManager.connCount(other.peerInfo.peerId) == 0
+
   asyncTest "An address that failed is skipped while it is on backoff":
     let src = makeStandardSwitch()
     await src.start()
