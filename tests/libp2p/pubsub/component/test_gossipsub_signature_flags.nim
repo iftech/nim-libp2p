@@ -44,6 +44,15 @@ suite "GossipSub Component - Signature Flags":
       rm.signature.len > 0
       rm.key.len > 0
 
+  asyncTest "Seqno - each instance starts its counter at a random value, not zero":
+    let nodes = generateNodes(2, gossip = true) & generateNodes(2, gossip = false)
+
+    startAndDeferStop(nodes)
+
+    check:
+      nodes[0].msgSeqno != nodes[1].msgSeqno
+      nodes[2].msgSeqno != nodes[3].msgSeqno
+
   asyncTest "Sign flag - messages are not signed when sign=false":
     let nodes = generateNodes(
         2, gossip = true, sign = false, verifySignature = false, anonymize = false
