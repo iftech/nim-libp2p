@@ -596,8 +596,8 @@ proc cmp(a: openArray[byte], b: openArray[byte]): bool =
   var res, diff: int
   while n > 0:
     dec(n)
-    diff = int(a[n]) - int(b[n])
-    res = (res and - not (diff)) or diff
+    diff = int(a[n]) xor int(b[n])
+    res = res or diff
   res == 0
 
 proc `==`*[T](mh: MultiHash, mdigest: MDigest[T]): bool =
