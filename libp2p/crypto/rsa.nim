@@ -114,8 +114,7 @@ func validKeySize(bits: int): bool =
 func validPublicExponent(field: Asn1Field): bool =
   const
     IntegerSignBit = 0x80'u8
-    # Verification cost grows with the exponent length, so cap it at 64 bits
-    # like OpenSSL's OPENSSL_RSA_MAX_PUBEXP_BITS; real keys use 65537.
+    # Bound signature verification cost.
     MaxPublicExponentLength = 8
 
   if len(field) == 0 or len(field) > MaxPublicExponentLength:
