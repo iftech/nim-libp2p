@@ -138,6 +138,7 @@ proc init*(
     testExtensionConfig = Opt.none(TestExtensionConfig),
     partialMessageExtensionConfig = Opt.none(PartialMessageExtensionConfig),
     pingpongExtensionConfig = Opt.none(PingPongExtensionConfig),
+    acceptPXThreshold = 0.0,
 ): GossipSubParams =
   GossipSubParams(
     explicit: true,
@@ -160,6 +161,7 @@ proc init*(
     gossipThreshold: gossipThreshold,
     publishThreshold: publishThreshold,
     graylistThreshold: graylistThreshold,
+    acceptPXThreshold: acceptPXThreshold,
     opportunisticGraftThreshold: opportunisticGraftThreshold,
     decayInterval: decayInterval,
     decayToZero: decayToZero,

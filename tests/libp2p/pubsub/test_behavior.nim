@@ -704,39 +704,6 @@ suite "GossipSub Behavior":
       peer notin gossipSub.mesh.getOrDefault(topic)
       abs((actual - expected).nanoseconds) < 1.seconds.nanoseconds
 
-  asyncTest "handlePrune - do not trigger PeerExchange on Prune if peer score is below GossipThreshold threshold":
-    const gossipThreshold = -100.0
-    let
-      (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
-      peer = peers[0]
-    defer:
-      await teardownGossipSub(gossipSub, conns)
-
-    # Given peer with score below GossipThreshold
-    gossipSub.parameters.gossipThreshold = gossipThreshold
-    peer.score = gossipThreshold - 100.0
-
-    # and RoutingRecordsHandler added
-    var routingRecordsFut = newFuture[void]()
-    gossipSub.routingRecordsHandler.add(
-      proc(peer: PeerId, tag: string, peers: seq[RoutingRecordsPair]) =
-        routingRecordsFut.complete()
-    )
-
-    # and Prune message
-    let msg = ControlPrune(
-      topicID: topic, peers: @[PeerInfoMsg(peerId: peer.peerId)], backoff: 123'u64
-    )
-
-    # When Prune is handled
-    gossipSub.handlePrune(peer, @[msg])
-
-    # Then handler is not triggered
-    # Wait some time before asserting
-    await sleepAsync(300.milliseconds)
-    check:
-      routingRecordsFut.finished() == false
-
   asyncTest "handlePrune - do not trigger PeerExchange on Prune if peer score is below acceptPXThreshold":
     let
       (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic, populateMesh = true)
@@ -745,12 +712,12 @@ suite "GossipSub Behavior":
       await teardownGossipSub(gossipSub, conns)
 
     # Given mesh peer with score above gossipThreshold but below acceptPXThreshold
-    gossipSub.parameters.acceptPXThreshold = 10.0
+    gossipSub.parameters = GossipSubParams.init(acceptPXThreshold = 10.0)
     peer.score = 5.0
 
     var routingRecordsCalled = false
     gossipSub.routingRecordsHandler.add(
-      proc(peer: PeerId, tag: string, peers: seq[RoutingRecordsPair]) =
+      proc(sourcePeer: PeerId, tag: string, records: seq[RoutingRecordsPair]) =
         routingRecordsCalled = true
     )
 
@@ -774,13 +741,13 @@ suite "GossipSub Behavior":
     defer:
       await teardownGossipSub(gossipSub, conns)
 
-    gossipSub.parameters.acceptPXThreshold = 10.0
+    gossipSub.parameters = GossipSubParams.init(acceptPXThreshold = 10.0)
     peer.score = 10.0
 
-    var receivedRecords: seq[RoutingRecordsPair]
+    var receivedRecords: seq[RoutingRecordsPair] = @[]
     gossipSub.routingRecordsHandler.add(
-      proc(peer: PeerId, tag: string, peers: seq[RoutingRecordsPair]) =
-        receivedRecords = peers
+      proc(sourcePeer: PeerId, tag: string, records: seq[RoutingRecordsPair]) =
+        receivedRecords = records
     )
 
     gossipSub.handlePrune(

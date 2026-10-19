@@ -323,6 +323,9 @@ proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) =
 
       for handler in g.routingRecordsHandler:
         handler(peer.peerId, topic, routingRecords)
+    elif peer.score < g.parameters.acceptPXThreshold and prune.peers.len > 0:
+      trace "ignoring peer exchange, peer score below acceptPXThreshold",
+        peer, score = peer.score, acceptPXThreshold = g.parameters.acceptPXThreshold
 
 proc recordIWantRequest(g: GossipSub, peer: PubSubPeer, saltedId: SaltedId) =
   g.requestedIWants.mgetOrPut(saltedId, @[]).add(

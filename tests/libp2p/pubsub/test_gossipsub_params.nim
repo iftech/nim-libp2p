@@ -18,6 +18,7 @@ suite "GossipSubParams validation":
     check:
       params.validateParameters().isOk()
       params.seenMaxSize == GossipSubSeenMaxSize
+      params.acceptPXThreshold == 0.0
 
   test "dOut fails when equal to dLow":
     const errorMessage =
@@ -149,6 +150,12 @@ suite "GossipSubParams validation":
     var params = newDefaultValidParams()
     params.acceptPXThreshold = 0.0
     check params.validateParameters().isOk()
+
+  test "acceptPXThreshold can be configured through init":
+    let params = GossipSubParams.init(acceptPXThreshold = 10.0)
+    check:
+      params.acceptPXThreshold == 10.0
+      params.validateParameters().isOk()
 
   test "opportunisticGraftThreshold fails when negative":
     const errorMessage =
