@@ -97,9 +97,6 @@ proc shuffle*[T](rng: Rng, x: var openArray[T]) =
   if x.len == 0:
     return
 
-  # Fisher-Yates: the swap index for position i is drawn uniformly from [0, i].
-  # All randomness is drawn in one call; a value is only redrawn when it falls
-  # below the rejection threshold, which removes modulo bias.
   var randValues = newSeqUninit[uint32](len(x))
   rng.generate(randValues)
 
@@ -107,6 +104,7 @@ proc shuffle*[T](rng: Rng, x: var openArray[T]) =
     let
       bound = uint32(i + 1)
       threshold = (0'u32 - bound) mod bound
+    # Reject values below the threshold to avoid modulo bias.
     while randValues[i] < threshold:
       rng.generate(randValues[i])
     let y = int(randValues[i] mod bound)
