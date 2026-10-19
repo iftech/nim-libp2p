@@ -117,6 +117,19 @@ suite "MultiHash test suite":
         other != sha256.digest(data)
         sha256.digest(data) != other
 
+  test "empty identity digests compare equal":
+    let mh = MultiHash.digest("identity", newSeq[byte]()).get()
+    let decoded = MultiHash.init([byte 0x00, 0x00]).get()
+    let nonempty = MultiHash.digest("identity", [byte 0x00]).get()
+    let mdigest = default(MDigest[0])
+    check:
+      mh == decoded
+      decoded == mh
+      mh == mdigest
+      mdigest == mh
+      mh != nonempty
+      nonempty != mh
+
   test "decode rejects malformed input":
     for data in [
       @[byte 0x12], # no size
