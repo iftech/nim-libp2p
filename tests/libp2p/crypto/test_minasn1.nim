@@ -199,6 +199,7 @@ suite "Minimal ASN.1 encode/decode suite":
       decodeHex("0300").error == Asn1Error.Incorrect
       decodeHex("030180").error == Asn1Error.Incorrect
       decodeHex("030107").error == Asn1Error.Incorrect
+      decodeHex("0301").error == Asn1Error.Incomplete
       decodeHex("030200").error == Asn1Error.Incomplete
       decodeHex("030208FF").error == Asn1Error.Incorrect
 

@@ -537,6 +537,9 @@ proc read*(ab: var Asn1Buffer): Asn1Result[Asn1Field] =
           # bigger then 1.
           return err(Asn1Error.Incorrect)
         elif length == 1:
+          if not ab.isEnough(length):
+            return err(Asn1Error.Incomplete)
+
           if ab.buffer[ab.offset] != 0x00'u8:
             return err(Asn1Error.Incorrect)
           else:
