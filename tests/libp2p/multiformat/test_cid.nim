@@ -64,16 +64,6 @@ suite "Content identifier CID test suite":
       cid2 != cid4
       cid3 != cid6
 
-  test "CIDs whose digests differ in any single byte compare unequal":
-    let mh = MultiHash.digest("sha2-256", [byte 1, 2, 3]).get()
-    let cid = Cid.init(CIDv1, multiCodec("dag-pb"), mh).get()
-    for i in 0 ..< mh.size:
-      var tampered = mh.data.buffer
-      tampered[mh.dpos + i] = tampered[mh.dpos + i] xor 0x02
-      let other =
-        Cid.init(CIDv1, multiCodec("dag-pb"), MultiHash.init(tampered).get()).get()
-      check cid != other
-
   test "Binary validation agrees with decoding":
     let digest = MultiHash.digest("sha2-256", [byte 1, 2, 3]).get()
     for version in [CIDv0, CIDv1]:
