@@ -7,6 +7,16 @@ import chronos, protobuf_serialization, protobuf_serialization/extension
 
 Protobuf.extensionDefaults(Duration, pint64, defaultSeq = true)
 
+const MaxDurationSeconds = Duration.high.seconds
+
+func toDuration(secs: int64): Duration {.raises: [ProtobufValueError].} =
+  if secs < 0 or secs > MaxDurationSeconds:
+    raise newException(
+      ProtobufValueError,
+      "duration out of range: " & $secs & " not in 0.." & $MaxDurationSeconds,
+    )
+  secs.seconds
+
 func computeFieldSize*(
     field: int, value: Duration, ProtoType: type ProtobufExt, skipDefault: static bool
 ): int =
@@ -28,8 +38,7 @@ proc readFieldInto*(
     ProtoType: type ProtobufExt,
 ): bool {.raises: [SerializationError, IOError].} =
   if header.kind() == wireKind(pint64):
-    let intValue = stream.readValue(pint64).int64
-    value = intValue.seconds
+    value = stream.readValue(pint64).int64.toDuration()
     return true
   else:
     false
@@ -51,4 +60,4 @@ proc readFieldPackedInto*(
     ProtoType: type ProtobufExt,
 ): bool {.raises: [SerializationError, IOError].} =
   readFieldPackedIntoIt(stream, value, header, pint64):
-    value.add it.seconds
+    value.add it.toDuration()

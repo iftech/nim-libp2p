@@ -15,6 +15,14 @@ type
   DurationSeqMsg {.proto3.} = object
     durs {.fieldNumber: 1, ext.}: seq[Duration]
 
+  RawSecsMsg {.proto3.} = object
+    secs {.fieldNumber: 1, pint.}: int64
+
+  RawSecsSeqMsg {.proto3.} = object
+    secs {.fieldNumber: 1, pint.}: seq[int64]
+
+const MaxSecs = Duration.high.seconds
+
 suite "protobuf_chronos_sec":
   test "Duration zero round-trips":
     let enc = Protobuf.encode(DurationMsg(dur: 0.seconds))
@@ -88,3 +96,23 @@ suite "protobuf_chronos_sec":
   test "seq[Duration] re-encodes to same bytes":
     let msg = DurationSeqMsg(durs: @[1.seconds, 2.seconds])
     check Protobuf.encode(msg) == Protobuf.encode(msg)
+
+  test "Duration at max seconds decodes":
+    let
+      single = Protobuf.decode(Protobuf.encode(RawSecsMsg(secs: MaxSecs)), DurationMsg)
+      packed = Protobuf.decode(
+        Protobuf.encode(RawSecsSeqMsg(secs: @[0'i64, MaxSecs])), DurationSeqMsg
+      )
+    check single.dur == MaxSecs.seconds
+    check packed.durs == @[0.seconds, MaxSecs.seconds]
+
+  test "Duration out of range decodes to an error":
+    for bad in [int64.high, -1'i64, MaxSecs + 1, int64.low]:
+      expect ProtobufValueError:
+        let dec = Protobuf.decode(Protobuf.encode(RawSecsMsg(secs: bad)), DurationMsg)
+        checkpoint "decoded out-of-range duration: " & $dec.dur
+      expect ProtobufValueError:
+        let dec = Protobuf.decode(
+          Protobuf.encode(RawSecsSeqMsg(secs: @[1'i64, bad])), DurationSeqMsg
+        )
+        checkpoint "decoded out-of-range durations: " & $dec.durs
