@@ -18,7 +18,7 @@ const
   TopicStreamHeaderTimeout = 1.seconds
 
 logScope:
-  topics = "libp2p pubsub topic streams"
+  topics = "libp2p pubsub topic-streams"
 
 type
   TopicStreamsConfig* = object
