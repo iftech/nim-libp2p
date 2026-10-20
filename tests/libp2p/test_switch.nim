@@ -27,6 +27,7 @@ import
     transports/tcptransport,
     transports/wstransport,
     transports/quictransport,
+    utils/future,
   ]
 import
   ../tools/[unittest, trackers, futures, crypto, sync, switch_builder, multiaddress]
@@ -1237,6 +1238,18 @@ suite "Switch":
 
     await allFuturesRaising(clients.mapIt(it.stop()) & @[server.stop()])
 
+proc identified(s: Switch): Future[void].Raising([CancelledError]) =
+  # Identified fires after the identify stream closes, later than the peerStore update.
+  let fut = Future[void].Raising([CancelledError]).init("switch identified")
+
+  proc onIdentified(
+      peerId: PeerId, event: PeerEvent
+  ): Future[void] {.async: (raises: [CancelledError]).} =
+    fut.completeOnce()
+
+  s.addPeerEventHandler(onIdentified, PeerEventKind.Identified)
+  fut
+
 suite "Switch :: IdentifyPusher Service":
   var
     switch1 {.threadvar.}: Switch
@@ -1247,8 +1260,10 @@ suite "Switch :: IdentifyPusher Service":
     switch2 = makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
     await switch1.start()
     await switch2.start()
+    let identifiedFuts = @[switch1.identified(), switch2.identified()]
     await switch1.connect(switch2)
-    checkUntilTimeout:
+    await allFuturesRaising(identifiedFuts)
+    check:
       IdentifyPushCodec in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
       IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
 

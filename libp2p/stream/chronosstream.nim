@@ -114,7 +114,8 @@ proc completeWrite(
     # StreamTransport will only return written < msg.len on fatal failures where
     # further writing is not possible - in such cases, we'll raise here,
     # since we don't return partial writes lengths
-    var written = await fut
+    await fut.join() # chronos frees a cancelled write's buffer while it stays queued
+    let written = await fut
 
     if written < msgLen:
       raise (ref LPStreamClosedError)(

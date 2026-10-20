@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/sequtils
 import chronos, stew/byteutils
 import
   ../../../libp2p/[
@@ -226,3 +227,50 @@ template tcpTests*() =
       expect TcpTransportError:
         discard await transport.dial("", ma("/dns/example.com/tcp/1234"))
       await transport.stop()
+
+    asyncTest "cancelled write still sends its own bytes, in order":
+      const
+        chunkSize = 64 * 1024
+        maxChunks = 1024
+        noiseChunks = 16
+        markerLen = 128
+        sent = 0xAA'u8
+        noise = 0xBB'u8
+        marker = 0xCC'u8
+
+      let server = TcpTransport.new(upgrade = Upgrade())
+      await server.start(@[listenMA])
+      defer:
+        await server.stop()
+
+      let acceptFut = server.accept()
+      let peer = await connect(server.addrs[0])
+      defer:
+        await peer.closeWait()
+      let conn = await acceptFut
+      defer:
+        await conn.close()
+
+      # the peer does not read, so the kernel buffers fill and a write stays pending
+      var
+        chunks = 0
+        pending: Future[void]
+      while chunks < maxChunks:
+        let fut = conn.write(newSeqWith(chunkSize, sent))
+        inc chunks
+        if not fut.finished():
+          pending = fut
+          break
+      require not pending.isNil()
+
+      await pending.cancelAndWait()
+      let reuse = newSeqWith(noiseChunks, newSeqWith(chunkSize, noise))
+      let markerFut = conn.write(newSeqWith(markerLen, marker))
+
+      let sentLen = chunks * chunkSize
+      var received = newSeq[byte](sentLen + markerLen)
+      await peer.readExactly(addr received[0], received.len)
+      await markerFut
+      check:
+        received[0 ..< sentLen].allIt(it == sent)
+        received[sentLen ..< received.len].allIt(it == marker)
