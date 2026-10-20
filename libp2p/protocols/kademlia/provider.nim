@@ -510,7 +510,7 @@ method handleAddProvider*(
   # filter out infos that do not match sender's
   let peerBytes = stream.peerId.getBytes()
   let validPeers = msg.providerPeers
-    .filterIt(it.id.contains(peerBytes))
+    .filterIt(it.id == peerBytes)
     .mapIt(it.capAddrs())
 
   # The caps apply also without providerRejection; then no reply goes out.
@@ -519,7 +519,7 @@ method handleAddProvider*(
   var senderIsKnown = false
   kad.providerManager.knownKeys.withValue(msgKey, providers):
     existingCount = providers[].len
-    senderIsKnown = providers[].anyIt(it.id.contains(peerBytes))
+    senderIsKnown = providers[].anyIt(it.id == peerBytes)
   var atCap = false
   kad.config.limits.maxProvidersPerKey.ifValue(limit):
     let effectiveCount = existingCount - (if senderIsKnown: 1 else: 0)

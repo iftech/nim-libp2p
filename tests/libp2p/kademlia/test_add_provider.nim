@@ -57,9 +57,8 @@ suite "KadDHT - Add Provider":
     # kads[0] has kads[1] in its providermanager after adding provider
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.id.contains(
-        kads[1].rtable.selfId
-      )
+      kads[0].providerManager.providerRecords[0].provider.id ==
+        kads[1].rtable.selfId.toBytes()
 
   asyncTest "Provider expired":
     let kads = setupKadSwitches(2)
@@ -262,9 +261,8 @@ suite "KadDHT - Add Provider":
 
     checkUntilTimeout:
       receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.providerRecords[0].provider.id.contains(
+      receiverKad.providerManager.providerRecords[0].provider.id ==
         senderKad.switch.peerInfo.peerId.getBytes()
-      )
 
   asyncTest "Add provider accepts a non-multihash key within length bound":
     # Interop parity: go/js/py/dotnet advertise raw, non-multihash provider keys
@@ -366,9 +364,8 @@ suite "KadDHT - Add Provider":
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 1
       kads[0].providerManager.providerRecords[0].key == expectedKey
-      kads[0].providerManager.providerRecords[0].provider.id.contains(
-        kads[1].rtable.selfId
-      )
+      kads[0].providerManager.providerRecords[0].provider.id ==
+        kads[1].rtable.selfId.toBytes()
 
     let originalExpiresAt = kads[0].providerManager.providerRecords[0].expiresAt
 
@@ -443,9 +440,8 @@ suite "KadDHT - Add Provider":
     # Provider should be stored even without addresses
     checkUntilTimeout:
       receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.providerRecords[0].provider.id.contains(
+      receiverKad.providerManager.providerRecords[0].provider.id ==
         senderKad.switch.peerInfo.peerId.getBytes()
-      )
       receiverKad.providerManager.providerRecords[0].provider.addrs.len == 0
 
   asyncTest "Add provider keeps at most MaxProviderAddrs short addresses":
@@ -504,7 +500,7 @@ suite "KadDHT - Add Provider":
 
     let storedProvider = kads[0].providerManager.providerRecords[0].provider
     check:
-      storedProvider.id.contains(kads[1].rtable.selfId)
+      storedProvider.id == kads[1].rtable.selfId.toBytes()
       storedProvider.addrs == kads[1].switch.peerInfo.addrs
 
   asyncTest "Add provider completes when some peers fail":
@@ -525,9 +521,8 @@ suite "KadDHT - Add Provider":
     # Verify provider was stored at the successful receiver
     checkUntilTimeout:
       kads[1].providerManager.providerRecords.len == 1
-      kads[1].providerManager.providerRecords[0].provider.id.contains(
-        kads[0].rtable.selfId
-      )
+      kads[1].providerManager.providerRecords[0].provider.id ==
+        kads[0].rtable.selfId.toBytes()
 
   template optimisticProvideStores(seedEstimate: bool) =
     ## Without a seeded estimate `addProvider` takes the classic path, with one
@@ -547,9 +542,8 @@ suite "KadDHT - Add Provider":
 
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.id.contains(
-        kads[1].rtable.selfId
-      )
+      kads[0].providerManager.providerRecords[0].provider.id ==
+        kads[1].rtable.selfId.toBytes()
 
   asyncTest "Optimistic provider RPCs belong to the DHT before the lookup returns":
     var cfg = testKadConfig(timeout = 3.seconds, providerRejection = true)
@@ -772,9 +766,8 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     checkUntilTimeout:
       farKad.providerManager.providerRecords.len == 1
-      farKad.providerManager.providerRecords[0].provider.id.contains(
+      farKad.providerManager.providerRecords[0].provider.id ==
         senderKad.switch.peerInfo.peerId.getBytes()
-      )
 
   asyncTest "Normal replication still works when all nodes accept":
     # With unlimited capacity both discovered peers get the record via normal replication.

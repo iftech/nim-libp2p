@@ -504,7 +504,7 @@ suite "NATService (setupMappings)":
 
     let announced = await svc.setupMappings(@[privateAddr(9000)])
     check announced.len == 1
-    check svc.externalIp.contains(externalIp)
+    check svc.externalIp == externalIp
 
   asyncTest "an external IPv6 from the IGD maps the port but announces nothing":
     # the port mapping still succeeds, but a v6 external IP has no announced form

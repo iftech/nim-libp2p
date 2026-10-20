@@ -68,8 +68,8 @@ suite "AutonatV2 verifier":
     await pair.dialPeer()
 
     check:
-      (await pair.verifier.verify(addresses[0])).contains(AddrState.Confirmed)
-      (await pair.verifier.verify(addresses[1])).contains(AddrState.Confirmed)
+      (await pair.verifier.verify(addresses[0])) == AddrState.Confirmed
+      (await pair.verifier.verify(addresses[1])) == AddrState.Confirmed
 
       # one request per address, each carrying that address alone
       pair.client.allTestAddrs == @[@[addresses[0]], @[addresses[1]]]
@@ -84,7 +84,7 @@ suite "AutonatV2 verifier":
       await pair.stop()
     await pair.dialPeer()
 
-    check (await pair.verifier.verify(address)).contains(AddrState.Unreachable)
+    check (await pair.verifier.verify(address)) == AddrState.Unreachable
 
   asyncTest "a peer without a verdict leaves the state alone":
     let pair = makePair(Unknown)

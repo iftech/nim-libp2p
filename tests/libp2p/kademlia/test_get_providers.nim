@@ -326,8 +326,8 @@ suite "KadDHT - Get Providers":
     await c.switch.connect(a.switch)
     let reply =
       (await c.dispatchGetProviders(a.switch.peerInfo.peerId, providerKey)).value()
-    let bProvider = reply.providerPeers.filterIt(it.id.contains(bId.getBytes()))
-    let bCloser = reply.closerPeers.filterIt(it.id.contains(bId.getBytes()))
+    let bProvider = reply.providerPeers.filterIt(it.id == bId.getBytes())
+    let bCloser = reply.closerPeers.filterIt(it.id == bId.getBytes())
     check:
       bProvider.len == 1
       bCloser.len == 1

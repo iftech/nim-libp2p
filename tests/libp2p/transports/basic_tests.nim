@@ -219,7 +219,7 @@ template basicTransportTest*(
 
       # Verify address symmetry and correctness
       check:
-        clientConn.observedAddr.contains(serverConn.localAddr.get())
-        serverConn.localAddr.contains(server.addrs[0])
+        clientConn.observedAddr == serverConn.localAddr.get()
+        serverConn.localAddr == server.addrs[0]
         server.handles(clientConn.observedAddr.get())
         client.handles(serverConn.observedAddr.get())

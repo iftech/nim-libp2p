@@ -93,9 +93,9 @@ proc handleRelayedConnect(
 const ReservationFailedCause* = "Reservation failed"
 
 proc toRsvp(msg: HopMessage, relayPeerId: PeerId): LPResult[Rsvp] =
-  if not msg.msgType.contains(HopMessageType.Status):
+  if msg.msgType != HopMessageType.Status:
     return err("Unexpected relay response type")
-  if not msg.status.contains(Ok):
+  if msg.status != Ok:
     return err(ReservationFailedCause)
 
   let reservation = msg.reservation.valueOr:
@@ -156,9 +156,9 @@ proc reserve*(
 func checkHopResponse(msg: Result[RelayMessage, string]): LPResult[void] =
   let response = msg.valueOr:
     return err(error, "Hop can't open destination stream")
-  if not response.msgType.contains(RelayType.Status):
+  if response.msgType != RelayType.Status:
     return err("Hop can't open destination stream: wrong message type")
-  if not response.status.contains(StatusV1.Success):
+  if response.status != StatusV1.Success:
     return err("Hop can't open destination stream: status failed")
   ok()
 
@@ -201,9 +201,9 @@ proc dialPeerV1*(
   (await cl.tryDialPeerV1(stream, dstPeerId, dstAddrs)).valueOrRaise(RelayV1DialError)
 
 func checkStopResponse(msg: HopMessage): LPResult[void] =
-  if not msg.msgType.contains(HopMessageType.Status):
+  if msg.msgType != HopMessageType.Status:
     return err("Unexpected stop response")
-  if not msg.status.contains(Ok):
+  if msg.status != Ok:
     return err("Relay stop failure")
   ok()
 
@@ -262,7 +262,7 @@ proc handleStopStreamV2(
     return ok()
   trace "client circuit relay v2 handle stream", msg
 
-  if not msg.msgType.contains(StopMessageType.Connect):
+  if msg.msgType != StopMessageType.Connect:
     trace "Unexpected client / relayv2 handshake", msgType = msg.msgType
     await sendStopError(stream, MalformedMessage)
     return ok()

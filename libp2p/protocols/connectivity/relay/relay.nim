@@ -188,10 +188,10 @@ proc handleConnect(
     await dstStream.writeLp(encode(stopMsg))
     let msg = StopMessage.decode(await dstStream.readLp(r.msgSize)).valueOr:
       raise newException(SendStopError, "Malformed message")
-    if not msg.msgType.contains(StopMessageType.Status):
+    if msg.msgType != StopMessageType.Status:
       raise
         newException(SendStopError, "Unexpected stop response, not a status message")
-    if not msg.status.contains(Ok):
+    if msg.status != Ok:
       raise newException(SendStopError, "Relay stop failure")
     await srcStream.writeLp(
       encode(HopMessage(msgType: Opt.some(HopMessageType.Status), status: Opt.some(Ok)))
@@ -318,8 +318,8 @@ proc handleHop*(
     await sendStatus(srcStream, StatusV1.HopCantOpenDstStream)
     return
 
-  if not msgRcvFromDst.msgType.contains(RelayType.Status) or
-      not msgRcvFromDst.status.contains(StatusV1.Success):
+  if msgRcvFromDst.msgType != RelayType.Status or
+      msgRcvFromDst.status != StatusV1.Success:
     trace "Unexpected relay stop response", response = msgRcvFromDst
     await sendStatus(srcStream, StatusV1.HopCantOpenDstStream)
     return

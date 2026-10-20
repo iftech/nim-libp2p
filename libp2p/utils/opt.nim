@@ -6,6 +6,13 @@ import results
 
 export results
 
+func `==`*[T](self: Opt[T], value: T): bool =
+  ## An empty option never equals a plain value.
+  self.contains(value)
+
+func `==`*[T](value: T, self: Opt[T]): bool =
+  self.contains(value)
+
 func getOpt*[K, V](t: Table[K, V], key: K): Opt[V] =
   ## `Opt.some` of the value at `key`, `Opt.none` when `t` has no such key.
   try:

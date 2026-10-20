@@ -581,7 +581,7 @@ proc internalConnect(
     reuseConnection = true,
     dir = Direction.Out,
 ): Future[LPResult[Muxer]] {.async: (raises: [CancelledError]).} =
-  if peerId.contains(self.localPeerId):
+  if peerId == self.localPeerId:
     return err("internalConnect can't dial self!")
 
   # A dial without a peer id has no connection to reuse and no identity to
