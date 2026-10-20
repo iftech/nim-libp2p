@@ -96,6 +96,7 @@ suite "KadDHT Ping":
     )
 
   for msgType in [Opt.some(MessageType.ping), Opt.none(MessageType)]:
+    let msgType = msgType # the asyncTest closure cannot capture the lent loop variable
     asyncTest "Ping with a reply that differs from the request returns mismatch err: " &
       $msgType:
       let reply = Message(msgType: msgType, key: Opt.some(Key(@[1'u8])))
