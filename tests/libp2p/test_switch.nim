@@ -24,6 +24,7 @@ import
     stream/lpstream,
     nameresolving/mockresolver,
     stream/chronosstream,
+    transports/transport,
     transports/tcptransport,
     transports/wstransport,
     transports/quictransport,
@@ -34,6 +35,33 @@ import
 const TestCodec = "/test/proto/1.0.0"
 
 type TestProto = ref object of LPProtocol
+
+type FailingWsTransport = ref object of WsTransport
+  fail: bool
+  entered: AsyncEvent
+  gate: Future[void]
+
+method start(
+    self: FailingWsTransport, addrs: seq[MultiAddress]
+) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
+  if not self.gate.isNil():
+    self.entered.fire()
+    await self.gate.join()
+  if self.fail:
+    raise newException(TransportStartError, "injected start failure")
+  await procCall WsTransport(self).start(addrs)
+
+proc makeFailingWsSwitch(
+    listenAddrs: seq[MultiAddress]
+): (Switch, FailingWsTransport) {.raises: [LPError].} =
+  let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+    .withAddresses(listenAddrs)
+    .withTransport(
+      proc(config: TransportConfig): Transport =
+        FailingWsTransport.new(config.upgr, config.rng)
+    )
+    .build()
+  (switch, FailingWsTransport(switch.transports.filterIt(it of FailingWsTransport)[0]))
 
 suite "Switch":
   teardown:
@@ -1163,6 +1191,39 @@ suite "Switch":
     expect LPError:
       await switch.start()
     # test is that this doesn't leak
+
+  asyncTest "retried start after a failed start listens on the original addresses":
+    let listenAddrs = @[TcpAutoAddress, WsAutoAddress]
+    let (switch, ws) = makeFailingWsSwitch(listenAddrs)
+    ws.fail = true
+
+    expect LPError:
+      await switch.start()
+    check switch.peerInfo.listenAddrs == listenAddrs
+
+    ws.fail = false
+    await switch.start()
+    defer:
+      await switch.stop()
+
+    check switch.peerInfo.listenAddrs.len == listenAddrs.len
+    check switch.peerInfo.listenAddrs.countIt(TCP.match(it)) == 1
+    check switch.peerInfo.listenAddrs.countIt(WebSockets.match(it)) == 1
+    check switch.transports.allIt(it.running)
+
+  asyncTest "cancelled start restores the original listen addresses":
+    let listenAddrs = @[TcpAutoAddress, WsAutoAddress]
+    let (switch, ws) = makeFailingWsSwitch(listenAddrs)
+    ws.entered = newAsyncEvent()
+    ws.gate = newFuture[void]("test.gate")
+
+    let startFut = switch.start()
+    await ws.entered.wait()
+    await startFut.cancelAndWait()
+    check switch.peerInfo.listenAddrs == listenAddrs
+
+    ws.gate.complete()
+    await switch.stop()
 
   asyncTest "starting two times does not crash":
     let switch = makeStandardSwitch()
