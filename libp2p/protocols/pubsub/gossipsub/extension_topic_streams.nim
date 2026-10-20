@@ -94,7 +94,8 @@ proc new*(
 func isActive*(s: TopicStreams): bool =
   not s.isNil and not s.stopped and s.active
 
-proc fail(s: TopicStreams, reason: string) =
+proc fail(s: sink TopicStreams, reason: string) =
+  # Keep the transport alive while the violation callback disconnects the peer.
   trace "topic stream protocol violation", reason
   if not s.stopped:
     s.stopped = true
