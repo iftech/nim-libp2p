@@ -213,9 +213,7 @@ func validateOverheadRateLimit(parameters: GossipSubParams): Result[void, cstrin
 
 proc validateParameters*(parameters: GossipSubParams): Result[void, cstring] =
   parameters.topicStreamsConfig.ifValue(config):
-    if config.maxStreams < 3 or config.maxQueuedBytes <= 0 or
-        config.maxIncomingBytes <= 0 or config.maxQueuedMessages <= 0:
-      return err("gossipsub: invalid topic stream limits")
+    ?config.validate()
 
   if (parameters.dOut >= parameters.dLow) or (parameters.dOut > (parameters.d div 2)):
     err(
@@ -921,10 +919,9 @@ template processRPC(
 proc receiveTopicRPC(
     g: GossipSub, peer: PubSubPeer, incoming: sink RPCMsg, msgSize: int
 ) {.async: (raises: [CancelledError]).} =
-  var receivedRpc = move(incoming)
   try:
     ignoreGraylistedRPC(g, peer, msgSize)
-    processRPC(g, peer, receivedRpc, msgSize, true)
+    processRPC(g, peer, incoming, msgSize, true)
   except PeerRateLimitError as exc:
     trace "Topic stream RPC rate limited", peerId = peer.peerId, err = exc.msg
 
@@ -941,7 +938,7 @@ method rpcHandler*(
     await rateLimit(g, peer, msgSize)
     # Raising in the handler closes the gossipsub connection (but doesn't
     # disconnect the peer!)
-    # TODO evaluate behaviour penalty values
+    # TODO: iftech/nim-libp2p#3307
     peer.behaviourPenalty += 0.1
 
     raise newException(PeerMessageDecodeError, "Peer msg couldn't be decoded")
@@ -950,6 +947,7 @@ method rpcHandler*(
     if not g.extensionsState.negotiateTopicStreams(peer.peerId, rpcMsg):
       return
   elif g.extensionsState.peerHasTopicStreams(peer.peerId):
+    # A topic stream may arrive before an incompatible control protocol is known.
     g.pendingTasks.trackFut(g.disconnectPeer(peer))
     return
   processRPC(g, peer, rpcMsg, msgSize, false)
@@ -1347,6 +1345,7 @@ proc createTopicStreamProtocol(g: GossipSub): LPProtocol =
       await stream.reset()
       return
     let peer = g.getOrCreatePeer(stream.peerId, @[GossipSubCodec_13])
+    # An empty codec means control-stream protocol negotiation is still pending.
     if peer.codec != "" and not gossipExtensionsSupported(peer.codec):
       g.pendingTasks.trackFut(g.disconnectPeer(peer))
       await stream.reset()

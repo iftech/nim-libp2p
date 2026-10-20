@@ -65,6 +65,12 @@ type
     peers: Table[PeerId, TopicStreams]
     updatePeerBehaviorPenalty: UpdatePeerBehaviorPenaltyProc
 
+func validate*(config: TopicStreamsConfig): Result[void, cstring] =
+  if config.maxStreams < 3 or config.maxQueuedBytes <= 0 or config.maxIncomingBytes <= 0 or
+      config.maxQueuedMessages <= 0:
+    return err("gossipsub: invalid topic stream limits")
+  ok()
+
 proc new*(
     T: type TopicStreams,
     config: TopicStreamsConfig,
@@ -326,7 +332,7 @@ type PreparedTopicRPC* = object
   control: seq[byte]
   payloads: seq[tuple[topic: string, data: seq[byte]]]
 
-proc prepareTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
+proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
   for m in msg.messages:
     if m.data.len > 0:
       result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
@@ -372,6 +378,7 @@ proc peerHasTopicStreams*(ext: TopicStreamsExtension, peerId: PeerId): bool =
 proc negotiateTopicStreams*(
     ext: TopicStreamsExtension, peerId: PeerId, rpc: RPCMsg
 ): bool =
+  ## Return whether control RPC processing may continue; absent transports are ignored.
   ext.peers.withValue(peerId, streams):
     return streams[].negotiate(rpc)
   true
@@ -394,6 +401,7 @@ proc sendTopicRPC*(
 proc closeTopicStreams*(
     ext: TopicStreamsExtension, topic: string, incoming = false
 ): seq[Future[void]] =
+  result = newSeqOfCap[Future[void]](ext.peers.len)
   for streams in ext.peers.values:
     result.add(streams.closeTopic(topic, incoming))
 
@@ -405,7 +413,7 @@ proc closeTopicStreams*(
 proc stopTopicStreams*(
     ext: TopicStreamsExtension, peerId: PeerId
 ) {.async: (raises: []).} =
-  let streams = ext.peers.getOrDefault(peerId)
+  var streams: TopicStreams
   # Remove before awaiting so a reconnect cannot inherit this peer's transport.
-  ext.peers.del(peerId)
-  await streams.stop()
+  if ext.peers.pop(peerId, streams):
+    await streams.stop()

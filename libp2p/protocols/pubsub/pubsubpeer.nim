@@ -769,18 +769,16 @@ proc sendTopicRPC*(p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriori
 proc routeTopicRPC(
     p: PubSubPeer, msg: RPCMsg, anonymize: bool, priority: MessagePriority
 ): bool =
-  if not p.extensionsState.peerHasTopicStreams(p.peerId) or (
-    msg.messages.len == 0 and msg.partialMessageExtension.isNone and not p.hasObservers()
-  ):
+  if msg.messages.len == 0 and msg.partialMessageExtension.isNone and
+      not p.hasObservers():
     return false
+  if not p.extensionsState.peerHasTopicStreams(p.peerId):
+    return false
+  var msgCopy = msg
   if p.hasObservers():
-    var observed = msg
-    p.sendObservers(observed)
-    sendMetrics(observed)
-    p.sendTopicRPC(prepareTopicRPC(observed, anonymize), priority)
-  else:
-    sendMetrics(msg)
-    p.sendTopicRPC(prepareTopicRPC(msg, anonymize), priority)
+    p.sendObservers(msgCopy)
+  sendMetrics(msgCopy)
+  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority)
   true
 
 proc encodeRpcMsg(

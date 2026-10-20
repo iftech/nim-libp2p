@@ -51,7 +51,8 @@ proc broadcastResponse*(
 
   trace "broadcasting responses to peers", peers = sendPeers.len, rpcMsg = msg
 
-  if anyIt(sendPeers, it.hasObservers) or msg.messages.len > 1:
+  # Multiple messages need per-peer splitting on the legacy transport.
+  if msg.messages.len > 1 or anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
       p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
   else:
@@ -61,10 +62,10 @@ proc broadcastResponse*(
     var topicRPC: PreparedTopicRPC
     var prepared = false
     for peer in sendPeers:
-      if peer.extensionsState.peerHasTopicStreams(peer.peerId) and
-          (msg.messages.len > 0 or msg.partialMessageExtension.isSome):
+      if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
+          peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if not prepared:
-          topicRPC = prepareTopicRPC(msg, p.anonymize)
+          topicRPC = makePreparedTopicRPC(msg, p.anonymize)
           prepared = true
         peer.sendTopicRPC(topicRPC, priority)
       else:
