@@ -735,7 +735,7 @@ template streamTransportTest*(
 
           futs.add(startStreamHandlerAndCleanup())
 
-        let conn = (await server.accept()).get()
+        let conn = await server.accept()
         setupConnection(conn, i)
       await allFutures(futs)
 

@@ -18,15 +18,11 @@ import
 
 type
   StubAcceptBehavior* = enum
-    ClosedAlways ## every accept reports a closed transport
-    FatalAlways ## every accept returns a fatal error
-    RetryAlways ## every accept returns a retryable error
-    RetryThenAccept ## fail `retryCount` times, then accept normally
+    RaiseAlways ## every accept raises: the transport can never accept
     BlockingClose ## return connections whose close waits for `closeGate`
 
   MemoryTransportStub* = ref object of MemoryTransport
     behavior: StubAcceptBehavior
-    retryCount: int ## for RetryThenAccept: how many failures before accepting normally
     acceptLimit: int ## for BlockingClose: block after this many accepts
     acceptCalls*: int ## number of times accept was invoked
     closeCalls*: int ## number of blocking connection closes started
@@ -49,14 +45,12 @@ proc new*(
     upgrade: Upgrade,
     rng: Rng,
     behavior: StubAcceptBehavior,
-    retryCount: int = 0,
     acceptLimit: int = 0,
 ): T =
   let self = T(
     upgrader: upgrade,
     rng: rng,
     behavior: behavior,
-    retryCount: retryCount,
     acceptLimit: acceptLimit,
     closeGate: newAsyncEvent(),
   )
@@ -138,40 +132,16 @@ method dial*(
 
 method accept*(
     self: MemoryTransportStub
-): Future[TransportAcceptResult] {.async: (raises: [CancelledError]).} =
+): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
   inc self.acceptCalls
 
   case self.behavior
-  of ClosedAlways:
-    return err(
-      TransportAcceptError(
-        kind: TransportAcceptErrorKind.Closed, message: "stub transport closed"
-      )
-    )
-  of FatalAlways:
-    return err(
-      TransportAcceptError(
-        kind: TransportAcceptErrorKind.Fatal, message: "stub accept always fails"
-      )
-    )
-  of RetryAlways:
-    return err(
-      TransportAcceptError(
-        kind: TransportAcceptErrorKind.Retryable, message: "stub retryable failure"
-      )
-    )
-  of RetryThenAccept:
-    if self.acceptCalls <= self.retryCount:
-      return err(
-        TransportAcceptError(
-          kind: TransportAcceptErrorKind.Retryable, message: "stub retryable failure"
-        )
-      )
-    return await procCall MemoryTransport(self).accept()
+  of RaiseAlways:
+    raise newException(MemoryTransportError, "stub accept always fails")
   of BlockingClose:
     if self.acceptLimit > 0 and self.acceptCalls > self.acceptLimit:
       await sleepAsync(1.hours)
     await sleepAsync(0.milliseconds)
     let conn = BlockingCloseConnection(transport: self)
     conn.initStream()
-    return ok(RawConn(conn))
+    return conn

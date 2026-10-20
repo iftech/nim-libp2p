@@ -293,7 +293,7 @@ suite "Multistream select":
     asyncSpawn transport1.start(@[TcpAutoAddress])
 
     proc acceptHandler(): Future[void] {.async.} =
-      let stream = (await transport1.accept()).get()
+      let stream = await transport1.accept()
       await msListen.handle(stream)
       await stream.close()
 
@@ -346,7 +346,7 @@ suite "Multistream select":
 
     proc acceptHandler() {.async.} =
       while true:
-        let stream = (await transport1.accept()).get()
+        let stream = await transport1.accept()
         asyncSpawn acceptedOne(stream)
 
     var handlerWait = acceptHandler()
@@ -395,7 +395,7 @@ suite "Multistream select":
     let listenFut = transport1.start(@[TcpAutoAddress])
 
     proc acceptHandler(): Future[void] {.async.} =
-      let stream = (await transport1.accept()).get()
+      let stream = await transport1.accept()
       try:
         await msListen.handle(stream)
       except LPStreamEOFError as e:
@@ -440,7 +440,7 @@ suite "Multistream select":
     asyncSpawn transport1.start(@[TcpAutoAddress])
 
     proc acceptHandler(): Future[void] {.async.} =
-      let stream = (await transport1.accept()).get()
+      let stream = await transport1.accept()
       await msListen.handle(stream)
 
     let acceptFut = acceptHandler()
@@ -473,7 +473,7 @@ suite "Multistream :: stream limits":
       await c.close()
 
     while true:
-      let stream = (await transport.accept()).get()
+      let stream = await transport.accept()
       asyncSpawn acceptedOne(stream)
 
   proc makeBlockedHandler(entered: WaitGroup = nil): LPProtoHandler =

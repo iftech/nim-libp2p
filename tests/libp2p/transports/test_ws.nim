@@ -142,7 +142,7 @@ suite "WebSocket transport":
     let outboundFut = client.dial(server.addrs[0])
     # Keep accept() future bounded so a serialized accept 
     # cannot hide behind headersTimeout
-    let inbound = (await server.accept().wait(acceptTimeout)).get()
+    let inbound = await server.accept().wait(acceptTimeout)
     let outbound = await outboundFut
 
     await closeSlow()
@@ -180,7 +180,7 @@ suite "WebSocket transport":
     check correctPattern.match(transport1.addrs[0])
     proc acceptHandler() {.async.} =
       while true:
-        let conn = (await transport1.accept()).get()
+        let conn = await transport1.accept()
         if not isNil(conn):
           await conn.close()
 
@@ -207,7 +207,7 @@ suite "WebSocket transport":
       inboundConn = transport1.accept()
       outboundConn = await transport1.dial(transport1.addrs[0])
       closing = outboundConn.close()
-    await (await inboundConn).get().close()
+    await (await inboundConn).close()
     await closing
 
     await transport1.stop()
@@ -239,7 +239,7 @@ suite "WebSocket transport":
 
     let inboundFut = transport1.accept()
     let outbound = await transport1.dial("different.http.host", transport1.addrs[0])
-    let inbound = (await inboundFut).get()
+    let inbound = await inboundFut
     await allFutures(outbound.close(), inbound.close())
 
     expect TransportDialError:

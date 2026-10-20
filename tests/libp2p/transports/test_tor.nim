@@ -112,7 +112,7 @@ suite "Tor transport":
       await client.stop()
 
     proc serverAcceptHandler() {.async.} =
-      let conn = (await server.accept()).get()
+      let conn = await server.accept()
       var resp: array[6, byte]
       await conn.readExactly(addr resp, 6)
       check string.fromBytes(resp) == "client"
@@ -145,7 +145,7 @@ suite "Tor transport":
     let acceptFut = server.accept()
 
     let conn = await client.dial("", ma("/dns/" & maxDnsAddress & "/tcp/8080"))
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
     await conn.close()
     await serverConn.close()
     await server.stop()

@@ -48,8 +48,8 @@ method stop*(self: RelayTransport) {.async: (raises: []).} =
 
 method accept*(
     self: RelayTransport
-): Future[TransportAcceptResult] {.async: (raises: [CancelledError]).} =
-  ok(await self.queue.popFirst())
+): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
+  await self.queue.popFirst()
 
 type RelayAddr = object
   relay: MultiAddress

@@ -32,7 +32,7 @@ suite "Memory transport":
     await dialFut.value().close()
 
     # Closing one end closes the other, so the accepted side goes with it.
-    let accepted = (await acceptFut).get()
+    let accepted = await acceptFut
     check accepted.closed()
 
   asyncTest "a dial cancelled at any point leaves no socket open":
@@ -68,7 +68,7 @@ suite "Memory transport":
       await client.stop()
 
     proc serverAcceptHandler() {.async.} =
-      let conn = (await server.accept()).get()
+      let conn = await server.accept()
       var resp: array[6, byte]
       await conn.readExactly(addr resp, resp.len)
       check string.fromBytes(resp) == "client"
@@ -86,7 +86,7 @@ suite "Memory transport":
     await server.start(maddr)
 
     proc serverAcceptHandler() {.async.} =
-      let conn = (await server.accept()).get()
+      let conn = await server.accept()
       await conn.close()
 
     asyncSpawn serverAcceptHandler()
@@ -94,10 +94,8 @@ suite "Memory transport":
     # accept by server2 should not succeed
     let server2 = MemoryTransport.new(rng = rng())
     await server2.start(maddr)
-    let rejected = await server2.accept()
-    check rejected.isErr
-    check rejected.error.kind == TransportAcceptErrorKind.Fatal
-    check rejected.error.message == "MemoryTransportError: Memory address already in use"
+    expect MemoryTransportError:
+      discard await server2.accept()
 
     # dial to pass through server.accept()
     let conn = await server2.dial("", maddr[0])
@@ -112,9 +110,9 @@ suite "Memory transport":
     await server.start(maddr)
 
     proc serverAcceptHandler() {.async.} =
-      let accepted = await server.accept()
-      check accepted.isErr
-      check accepted.error.kind == TransportAcceptErrorKind.Closed
+      # should throw error when stopped
+      expect MemoryTransportAcceptStopped:
+        discard await server.accept()
 
     asyncSpawn serverAcceptHandler()
     await server.stop()
@@ -125,7 +123,7 @@ suite "Memory transport":
     await server.start(maddr)
 
     proc serverAcceptHandler() {.async.} =
-      let conn = (await server.accept()).get()
+      let conn = await server.accept()
       var resp: array[6, byte]
       await conn.readExactly(addr resp, resp.len)
       check string.fromBytes(resp) == "client"
@@ -154,7 +152,7 @@ suite "Memory transport":
     await server.start(maddr)
 
     proc serverAcceptHandler() {.async.} =
-      let conn = (await server.accept()).get()
+      let conn = await server.accept()
       expect LPStreamEOFError:
         await conn.write("server") # already closed
 

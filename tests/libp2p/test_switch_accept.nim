@@ -3,21 +3,18 @@
 
 {.used.}
 
-import sequtils
+import std/[sequtils, importutils]
 import chronos
 import
   ../../libp2p/
     [builders, switch, dial, multiaddress, transports/transport, stream/connection]
 import ../../libp2p/protocols/protocol
+import ../../libp2p/transports/tcptransport
 import ../stubs/transportstub
 import ../tools/[unittest, crypto, lifecycle, multiaddress, switch_builder]
 
 proc newStubAcceptSwitch(
-    behavior: StubAcceptBehavior,
-    retryCount = 0,
-    withTcp = false,
-    maxIn = 0,
-    acceptLimit = 0,
+    behavior: StubAcceptBehavior, withTcp = false, maxIn = 0, acceptLimit = 0
 ): (Switch, MemoryTransportStub) =
   var addrs = @[MemoryAutoAddress()]
   if withTcp:
@@ -31,9 +28,7 @@ proc newStubAcceptSwitch(
     .withAddresses(addrs)
     .withTransport(
       proc(config: TransportConfig): Transport =
-        MemoryTransportStub.new(
-          config.upgr, rng(), behavior, retryCount, acceptLimit = acceptLimit
-        )
+        MemoryTransportStub.new(config.upgr, rng(), behavior, acceptLimit = acceptLimit)
     )
   if withTcp:
     b = b.withTcpTransport()
@@ -63,12 +58,12 @@ suite "Switch accept-loop failure handling":
   teardown:
     checkTrackers()
 
-  asyncTest "fatal accept error exits the loop while the transport still looks reachable":
+  asyncTest "accept raising exits the loop while the transport still looks reachable":
     # A failed accept must not consume inbound capacity.
-    let (server, transport) = newStubAcceptSwitch(FatalAlways, maxIn = 1)
+    let (server, transport) = newStubAcceptSwitch(RaiseAlways, maxIn = 1)
     startAndDeferStop(@[server])
 
-    # A fatal result ends acceptance without respawning the loop.
+    # the loop calls accept, it raises, and the loop returns and is not respawned
     checkUntilTimeout:
       server.acceptFuts[0].finished
     check transport.acceptCalls == 1
@@ -80,28 +75,8 @@ suite "Switch accept-loop failure handling":
 
     check server.connManager.availableSlots(Direction.In) == 1
 
-  asyncTest "closed accept result exits without consuming inbound capacity":
-    let (server, transport) = newStubAcceptSwitch(ClosedAlways, maxIn = 1)
-    startAndDeferStop(@[server])
-    checkUntilTimeout:
-      server.acceptFuts[0].finished
-    check transport.acceptCalls == 1
-    check server.connManager.availableSlots(Direction.In) == 1
-
-  asyncTest "retryable accept error retries with backoff":
-    let (server, transport) = newStubAcceptSwitch(RetryAlways)
-    startAndDeferStop(@[server])
-
-    await sleepAsync(2 * AcceptRetryDelay + 50.milliseconds)
-    # One immediate accept, then retries after 100ms and 200ms.
-    check transport.acceptCalls <= 3
-    # Retryable failures keep the loop accepting after the backoff.
-    checkUntilTimeout:
-      transport.acceptCalls >= 5
-    check not server.acceptFuts[0].finished
-
   asyncTest "inbound connections are dropped after a transport's accept loop dies":
-    let (server, transport) = newStubAcceptSwitch(FatalAlways)
+    let (server, transport) = newStubAcceptSwitch(RaiseAlways)
     let client = makeStandardSwitch(MemoryAutoAddress())
     startAndDeferStop(@[server, client])
 
@@ -115,18 +90,17 @@ suite "Switch accept-loop failure handling":
     expect DialFailedError:
       await client.connect(server)
 
-  asyncTest "retryable accept errors do not consume a slot and a one-slot transport recovers":
-    const retryCount = 3
-    let (server, transport) =
-      newStubAcceptSwitch(RetryThenAccept, retryCount = retryCount, maxIn = 1)
-    let client = makeStandardSwitch(MemoryAutoAddress())
+  asyncTest "TCP retries do not consume a slot and a one-slot switch recovers":
+    privateAccess(TcpTransport)
+    let server = makeStandardSwitchBuilder(TcpAutoAddress).withMaxInOut(1, 8).build()
+    let client = makeStandardSwitch(TcpAutoAddress)
+    let transport = TcpTransport(server.transports[0])
+    let pending = typeof(transport.acceptFuts[0]).init("test failed accept")
+    pending.fail(newException(TransportTooManyError, "descriptor limit"))
+    transport.acceptFuts = @[pending]
     startAndDeferStop(@[server, client])
 
-    checkUntilTimeout:
-      transport.acceptCalls > retryCount
     check server.connManager.availableSlots(Direction.In) == 1
-
-    # the recovered accept serves a real inbound connection, and the one slot is used
     await client.connect(server)
     check client.isConnected(server)
     check server.connManager.availableSlots(Direction.In) == 0
@@ -162,7 +136,7 @@ suite "Switch accept-loop failure handling":
     check transport.acceptCalls == ConcurrentUpgrades
 
   asyncTest "one transport's accept failure does not stop other transports from accepting":
-    let (server, _) = newStubAcceptSwitch(FatalAlways, withTcp = true)
+    let (server, _) = newStubAcceptSwitch(RaiseAlways, withTcp = true)
     let client = makeStandardSwitch(TcpAutoAddress)
     startAndDeferStop(@[server, client])
 

@@ -28,17 +28,6 @@ type
   TransportStartError* = object of TransportError
   TransportDialError* = object of TransportError
 
-  TransportAcceptErrorKind* {.pure.} = enum
-    Retryable
-    Closed
-    Fatal
-
-  TransportAcceptError* = ref object
-    kind*: TransportAcceptErrorKind
-    message*: string
-
-  TransportAcceptResult* = Result[RawConn, TransportAcceptError]
-
   Transport* = ref object of RootObj
     addrs*: seq[MultiAddress]
     running*: bool
@@ -86,10 +75,9 @@ method stop*(self: Transport) {.base, async: (raises: []).} =
 
 method accept*(
     self: Transport
-): Future[TransportAcceptResult] {.gcsafe, base, async: (raises: [CancelledError]).} =
-  ## Success contains a non-nil connection. Retryable errors permit another
-  ## attempt; Closed and Fatal errors end acceptance. Cancellation propagates
-  ## as CancelledError.
+): Future[RawConn] {.gcsafe, base, async: (raises: [TransportError, CancelledError]).} =
+  ## Wait for a non-nil incoming connection, retrying recoverable failures internally.
+  ## Terminal failures raise TransportError; cancellation raises CancelledError.
 
   doAssert(false, "[Transport.accept] abstract method not implemented!")
 

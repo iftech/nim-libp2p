@@ -38,10 +38,10 @@ proc countCancelledDials*(
   proc acceptLoop() {.async: (raises: []).} =
     while true:
       try:
-        let conn = (await server.accept()).valueOr:
-          return
-        accepted.add(conn)
-      except CancelledError:
+        let conn = await server.accept()
+        if not conn.isNil():
+          accepted.add(conn)
+      except transport.TransportError, CancelledError:
         return
 
   let accepting = acceptLoop()
@@ -117,7 +117,7 @@ proc cancelUpgrade(
 
   let accepting = server.accept()
   let conn = await client.dial("", server.addrs[0])
-  let remote = (await accepting).get()
+  let remote = await accepting
   defer:
     await allFutures(conn.close(), remote.close())
 

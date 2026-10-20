@@ -78,7 +78,7 @@ suite "Noise":
     asyncSpawn transport1.start(server)
 
     proc acceptHandler() {.async.} =
-      let conn = (await transport1.accept()).get()
+      let conn = await transport1.accept()
       let sconn = await serverNoise.secure(conn, Opt.none(PeerId))
       try:
         await sconn.write("Hello!")
@@ -119,7 +119,7 @@ suite "Noise":
     proc acceptHandler() {.async.} =
       var conn: RawConn
       expect LPStreamError:
-        conn = (await transport1.accept()).get()
+        conn = await transport1.accept()
         discard await serverNoise.secure(conn, Opt.none(PeerId))
       await conn.close()
 
@@ -152,7 +152,7 @@ suite "Noise":
     asyncSpawn transport1.start(server)
 
     proc acceptHandler() {.async.} =
-      let conn = (await transport1.accept()).get()
+      let conn = await transport1.accept()
       let sconn = await serverNoise.secure(conn, Opt.none(PeerId))
       defer:
         await sconn.close()
@@ -193,7 +193,7 @@ suite "Noise":
       listenFut = transport1.start(server)
 
     proc acceptHandler() {.async.} =
-      let conn = (await transport1.accept()).get()
+      let conn = await transport1.accept()
       let sconn = await serverNoise.secure(conn, Opt.none(PeerId))
       defer:
         await sconn.close()

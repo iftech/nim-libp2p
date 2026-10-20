@@ -57,7 +57,7 @@ template basicTransportTest*(
 
       let acceptFut = server.accept()
       let clientConn = await client.dial(server.addrs[0])
-      let serverConn = (await acceptFut).get()
+      let serverConn = await acceptFut
 
       await allFutures(client.stop(), server.stop())
 
@@ -74,9 +74,8 @@ template basicTransportTest*(
       let acceptFut = server.accept()
       await server.stop()
 
-      let accepted = await acceptFut
-      check accepted.isErr
-      check accepted.error.kind == TransportAcceptErrorKind.Closed
+      expect TransportClosedError:
+        discard await acceptFut
 
     asyncTest "accept on a stopped transport reports it closed without waiting":
       let server = transportProvider()
@@ -84,18 +83,16 @@ template basicTransportTest*(
       await server.stop()
 
       let acceptFut = server.accept()
-      let accepted = await acceptFut.wait(200.milliseconds)
       check:
-        accepted.isErr
-        accepted.error.kind == TransportAcceptErrorKind.Closed
+        await acceptFut.withTimeout(200.milliseconds)
+        acceptFut.failed()
 
     asyncTest "accept on a never-started transport reports it closed without waiting":
       let server = transportProvider()
       let acceptFut = server.accept()
-      let accepted = await acceptFut.wait(200.milliseconds)
       check:
-        accepted.isErr
-        accepted.error.kind == TransportAcceptErrorKind.Closed
+        await acceptFut.withTimeout(200.milliseconds)
+        acceptFut.failed()
 
     asyncTest "transport start/stop events":
       let transport = transportProvider()
@@ -205,7 +202,7 @@ template basicTransportTest*(
 
       let acceptFut = server.accept()
       let clientConn = await client.dial(server.addrs[0])
-      let serverConn = (await acceptFut).get()
+      let serverConn = await acceptFut
 
       defer:
         await allFutures(clientConn.close(), serverConn.close())

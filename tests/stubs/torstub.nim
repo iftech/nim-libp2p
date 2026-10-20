@@ -92,7 +92,7 @@ proc start*(self: TorServerStub, address: TransportAddress) {.async.} =
 
   var msg = newSeq[byte](3)
   while self.tcpTransport.running:
-    let connSrc = (await self.tcpTransport.accept()).get()
+    let connSrc = await self.tcpTransport.accept()
     defer:
       await noCancel connSrc.close()
     await connSrc.readExactly(addr msg[0], 3)

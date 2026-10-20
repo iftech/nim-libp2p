@@ -145,7 +145,7 @@ suite "Quic transport":
       defer:
         await acceptFut.cancelAndWait()
       let clientConn = await client.dial("", server.addrs[0])
-      let serverConn = (await acceptFut).get()
+      let serverConn = await acceptFut
       check:
         not clientConn.closed()
         not serverConn.closed()
@@ -262,11 +262,11 @@ suite "Quic transport":
 
     let acceptFut1 = server.accept()
     let conn1 = await client1.dial("", server.addrs[0])
-    let serverConn1 = (await acceptFut1).get()
+    let serverConn1 = await acceptFut1
 
     let acceptFut2 = server.accept()
     let conn2 = await client2.dial("", server.addrs[1])
-    let serverConn2 = (await acceptFut2).get()
+    let serverConn2 = await acceptFut2
 
     check:
       not conn1.closed()
@@ -283,7 +283,7 @@ suite "Quic transport":
     let clientListenPort = extractPort(client.addrs[0])
     let acceptFut = server.accept()
     let clientConn = await client.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
     defer:
       await allFutures(clientConn.close(), serverConn.close())
 
@@ -307,7 +307,7 @@ suite "Quic transport":
 
     let acceptFut = server.accept()
     let clientConn = await client.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
     defer:
       await allFutures(clientConn.close(), serverConn.close())
 
@@ -327,7 +327,7 @@ suite "Quic transport":
 
     let acceptFut = server.accept()
     let clientConn = await client.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
     defer:
       await allFutures(clientConn.close(), serverConn.close())
 
@@ -353,7 +353,7 @@ suite "Quic transport":
 
     let acceptFut = server.accept()
     let dialerConn = await dialer.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
     defer:
       await allFutures(dialerConn.close(), serverConn.close())
 
@@ -376,7 +376,7 @@ suite "Quic transport":
 
     let acceptFut = server.accept()
     let dialerConn = await dialer.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
     defer:
       await allFutures(dialerConn.close(), serverConn.close())
 
@@ -415,7 +415,7 @@ suite "Quic transport":
 
     let acceptFut = server.accept()
     let clientConn = await client.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
 
     # Upgrade without providing peer ID - should extract from certificate
     let muxer = await client.upgrade(clientConn, Opt.none(PeerId))
@@ -432,9 +432,8 @@ suite "Quic transport":
     let server = await createQuicTransport(isServer = true)
     await server.stop()
 
-    let accepted = await server.accept()
-    check accepted.isErr
-    check accepted.error.kind == TransportAcceptErrorKind.Closed
+    expect QuicTransportAcceptStopped:
+      discard await server.accept()
 
   asyncTest "remote connection close closes the dialer's session":
     let server = await createQuicTransport(isServer = true)
@@ -445,7 +444,7 @@ suite "Quic transport":
 
     let acceptFut = server.accept()
     let clientConn = await client.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
 
     # what the switch does when the incoming connection limit is reached
     await serverConn.close()
@@ -476,7 +475,7 @@ suite "Quic transport":
 
     let acceptFut = server.accept()
     let clientConn = await client.dial("", server.addrs[0])
-    let serverConn = (await acceptFut).get()
+    let serverConn = await acceptFut
     let clientMuxer = QuicMuxer.new(clientConn)
     let serverMuxer = QuicMuxer.new(serverConn)
     let inboundTimeout = newFuture[Duration]()

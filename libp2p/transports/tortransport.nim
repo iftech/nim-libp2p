@@ -284,12 +284,12 @@ method start*(
 
 method accept*(
     self: TorTransport
-): Future[TransportAcceptResult] {.async: (raises: [CancelledError]).} =
+): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
   ## accept a new Tor connection
   ##
-  let conn = ?await self.tcpTransport.accept()
+  let conn = await self.tcpTransport.accept()
   conn.observedAddr = Opt.none(MultiAddress)
-  return ok(conn)
+  return conn
 
 method stop*(self: TorTransport) {.async: (raises: []).} =
   ## stop the transport

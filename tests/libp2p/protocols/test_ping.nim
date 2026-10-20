@@ -62,7 +62,7 @@ suite "Ping":
     msListen.addHandler(pingProto1)
     serverFut = transport1.start(@[maddr])
     proc acceptHandler(): Future[void] {.async.} =
-      let c = (await transport1.accept()).get()
+      let c = await transport1.accept()
       await msListen.handle(c)
 
     acceptFut = acceptHandler()
@@ -79,7 +79,7 @@ suite "Ping":
     msDial.addHandler(pingProto2)
     serverFut = transport1.start(@[maddr])
     proc acceptHandler(): Future[void] {.async.} =
-      let c = (await transport1.accept()).get()
+      let c = await transport1.accept()
       discard await msListen.select(c, PingCodec)
       discard await pingProto1.ping(c)
       await c.close()
@@ -111,7 +111,7 @@ suite "Ping":
     msListen.addHandler(fakePingProto)
     serverFut = transport1.start(@[maddr])
     proc acceptHandler(): Future[void] {.async.} =
-      let c = (await transport1.accept()).get()
+      let c = await transport1.accept()
       await msListen.handle(c)
 
     acceptFut = acceptHandler()

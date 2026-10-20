@@ -30,7 +30,7 @@ template tcpListenerIPTests(suiteName: string, listenMA: MultiAddress) =
       await server.start(@[listenMA])
 
       proc serverHandler() {.async.} =
-        let conn = (await server.accept()).get()
+        let conn = await server.accept()
         await conn.write(message)
         await conn.close()
 
@@ -49,7 +49,7 @@ template tcpListenerIPTests(suiteName: string, listenMA: MultiAddress) =
       await server.start(@[listenMA])
 
       proc serverHandler() {.async.} =
-        let conn = (await server.accept()).get()
+        let conn = await server.accept()
         var msg = newSeq[byte](message.len)
         await conn.readExactly(addr msg[0], message.len)
         check string.fromBytes(msg) == message
@@ -159,14 +159,14 @@ template tcpTests*() =
       let listeningPortTransport1 = transport1.addrs[0][multiCodec("tcp")].get()
 
       discard await transport1.dial(transport2.addrs[0])
-      let acceptedConn = (await transport2.accept()).get()
+      let acceptedConn = await transport2.accept()
       let acceptedPort2 = acceptedConn.observedAddr.get()[multiCodec("tcp")].get()
       check listeningPortTransport1 != acceptedPort2
 
       transport1.networkReachability = NetworkReachability.NotReachable
 
       discard await transport1.dial(transport3.addrs[0])
-      let acceptedConn3 = (await transport3.accept()).get()
+      let acceptedConn3 = await transport3.accept()
       let acceptedPort3 = acceptedConn3.observedAddr.get()[multiCodec("tcp")].get()
       check listeningPortTransport1 == acceptedPort3
 
@@ -178,7 +178,7 @@ template tcpTests*() =
       await server.start(@[listenMA])
 
       proc serverHandler() {.async.} =
-        let conn = (await server.accept()).get()
+        let conn = await server.accept()
         await conn.join()
 
       let handlerFut = serverHandler()
@@ -206,7 +206,7 @@ template tcpTests*() =
       dialer.networkReachability = NetworkReachability.NotReachable
 
       discard await dialer.dial(serverV6.addrs[0])
-      let acceptedConn = (await serverV6.accept()).get()
+      let acceptedConn = await serverV6.accept()
       let acceptedPort = acceptedConn.observedAddr.get()[multiCodec("tcp")].get()
       let listeningPort = dialer.addrs[1][multiCodec("tcp")].get()
       check acceptedPort == listeningPort
