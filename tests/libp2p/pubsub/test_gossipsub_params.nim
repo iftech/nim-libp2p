@@ -18,6 +18,15 @@ suite "GossipSubParams validation":
     check:
       params.validateParameters().isOk()
       params.seenMaxSize == GossipSubSeenMaxSize
+      params.topicStreamsConfig.isNone
+
+  test "topic stream configuration is validated":
+    check GossipSubParams
+      .init(topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+      .validateParameters().isOk
+    check GossipSubParams
+      .init(topicStreamsConfig = Opt.some(TopicStreamsConfig(maxStreams: 2)))
+      .validateParameters().isErr
 
   test "dOut fails when equal to dLow":
     const errorMessage =

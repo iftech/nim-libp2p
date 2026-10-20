@@ -321,16 +321,21 @@ proc broadcast*(
     var topicRPC: PreparedTopicRPC
     var prepared = false
     for peer in sendPeers:
-      if peer.extensionsState.peerHasTopicStreams(peer.peerId) and
-          (msg.messages.len > 0 or msg.partialMessageExtension.isSome):
+      if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
+          peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if not prepared:
-          topicRPC = prepareTopicRPC(msg, p.anonymize)
+          topicRPC = makePreparedTopicRPC(msg, p.anonymize)
           prepared = true
         peer.sendTopicRPC(topicRPC, priority)
       else:
         if not legacyPrepared:
           encoded = msg.encode(p.anonymize)
           legacyPrepared = true
+          if encoded.len > p.maxMessageSize:
+            warn "legacy RPC exceeds maximum message size; skipping legacy recipients",
+              encodedSize = encoded.len, maxMessageSize = p.maxMessageSize
+        if encoded.len > p.maxMessageSize:
+          continue
         var peerEncoded = encoded
         peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
 
