@@ -405,9 +405,10 @@ proc sendTopicRPC*(
 proc closeTopicStreams*(
     ext: TopicStreamsExtension, topic: string, incoming = false
 ): seq[Future[void]] =
-  result = newSeqOfCap[Future[void]](ext.peers.len)
+  var futures = newSeqOfCap[Future[void]](ext.peers.len)
   for streams in ext.peers.values:
-    result.add(streams.closeTopic(topic, incoming))
+    futures.add(streams.closeTopic(topic, incoming))
+  return futures
 
 proc closeTopicStreams*(
     ext: TopicStreamsExtension, peerId: PeerId, topic: string
