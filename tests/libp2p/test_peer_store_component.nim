@@ -121,9 +121,9 @@ suite "PeerStore Address TTL - Component":
     startAndDeferStop(@[switch])
 
     let
-      lowPeer = randomPeerId()
-      mediumPeer = randomPeerId()
-      highPeer = randomPeerId()
+      lowPeer = PeerId.random()
+      mediumPeer = PeerId.random()
+      highPeer = PeerId.random()
     switch.peerStore[AddressBook].extend(
       lowPeer, @[ma("/ip4/1.2.3.4/tcp/4001")], AddressConfidence.Low
     )
@@ -159,9 +159,9 @@ suite "PeerStore Address TTL - Component":
     startAndDeferStop(@[switch])
 
     let
-      zeroTtlPeer = randomPeerId()
-      infinitePeer = randomPeerId()
-      controlPeer = randomPeerId()
+      zeroTtlPeer = PeerId.random()
+      infinitePeer = PeerId.random()
+      controlPeer = PeerId.random()
     switch.peerStore[AddressBook].extend(
       zeroTtlPeer, @[ma("/ip4/1.2.3.4/tcp/4001")], AddressConfidence.Low
     )
