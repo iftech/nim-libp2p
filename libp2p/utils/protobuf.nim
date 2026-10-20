@@ -26,15 +26,18 @@ template trackDecodeBytes*(count: int, msgType: typedesc, domain: string) =
     libp2p_protobuf_messages_received.inc(labelValues = [label])
 
 macro decodeFor*(
-    _: type Protobuf, Types: untyped, withMetrics: bool = false, domain: string = ""
+    _: type Protobuf,
+    Types: untyped,
+    withMetrics: static bool = false,
+    domain: static string = "",
 ): untyped =
   ## This generates decode protobuf procs for `Types`
-  let doMetrics = newLit(withMetrics.eqIdent("true"))
+  let doMetrics = newLit(withMetrics)
   var stmts = newStmtList()
   for T in Types:
     let decodeName = ident("decode" & $T)
     let decodeError = newLit("failed to decode " & $T & " from protobuf bytes")
-    let metricLabel = newLit(makeLabel(domain.strVal, $T))
+    let metricLabel = newLit(makeLabel(domain, $T))
     stmts.add quote do:
       proc `decodeName`(buf2: seq[byte]): `T` {.raises: [SerializationError].} =
         when defined(libp2p_protobuf_metrics) and `doMetrics`:
@@ -54,16 +57,19 @@ macro decodeFor*(
   stmts
 
 macro serializerFor*(
-    _: type Protobuf, Types: untyped, withMetrics: bool = false, domain: string = ""
+    _: type Protobuf,
+    Types: untyped,
+    withMetrics: static bool = false,
+    domain: static string = "",
 ): untyped =
   ## Generates public protobuf `encode` and `T.decode` helpers.
   ## Define local `validateDecoded` for checks protobuf cannot express.
-  let doMetrics = newLit(withMetrics.eqIdent("true"))
+  let doMetrics = newLit(withMetrics)
   var stmts = newStmtList()
   for T in Types:
     let decodeName = ident("decode" & $T)
     let decodeError = newLit("failed to decode " & $T & " from protobuf bytes")
-    let metricLabel = newLit(makeLabel(domain.strVal, $T))
+    let metricLabel = newLit(makeLabel(domain, $T))
     stmts.add quote do:
       proc encode*(c: `T`): seq[byte] =
         let buf = encode(Protobuf, c)
