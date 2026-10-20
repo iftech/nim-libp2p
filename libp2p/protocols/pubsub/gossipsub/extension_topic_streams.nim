@@ -332,6 +332,9 @@ type PreparedTopicRPC* = object
   control: seq[byte]
   payloads: seq[tuple[topic: string, data: seq[byte]]]
 
+func isZero*(msg: PreparedTopicRPC): bool =
+  msg.control.len == 0 and msg.payloads.len == 0
+
 proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
   for m in msg.messages:
     if m.data.len > 0:
