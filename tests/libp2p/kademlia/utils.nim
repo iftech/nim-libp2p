@@ -356,11 +356,10 @@ proc addRandomPeers*(
     state: LookupState, kad: KadDHT, count: int, target: Key
 ): seq[PeerId] =
   let hasher = kad.rtable.config.hasher
-  var peers: seq[PeerId]
-  for i in 0 ..< count:
-    peers.add(randomPeerId())
-    state.shortlist[peers[i]] = xorDistance(peers[i], target, hasher)
-    kad.switch.peerStore[AddressBook][peers[i]] = @[ma("/ip4/127.0.0.1/tcp/1")]
+  let peers = PeerId.random(count)
+  for peerId in peers:
+    state.shortlist[peerId] = xorDistance(peerId, target, hasher)
+    kad.switch.peerStore[AddressBook][peerId] = @[ma("/ip4/127.0.0.1/tcp/1")]
   peers.sortPeers(target, hasher)
 
 proc sendAddProviderAndGetStatus*(
