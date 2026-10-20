@@ -378,7 +378,8 @@ proc peerHasTopicStreams*(ext: TopicStreamsExtension, peerId: PeerId): bool =
 proc negotiateTopicStreams*(
     ext: TopicStreamsExtension, peerId: PeerId, rpc: RPCMsg
 ): bool =
-  ## Return whether control RPC processing may continue; absent transports are ignored.
+  ## Return whether the GossipSub RPC may be processed.
+  ## Disabled topic streams create no transport state, so RPCs are allowed.
   ext.peers.withValue(peerId, streams):
     return streams[].negotiate(rpc)
   true
