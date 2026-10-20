@@ -268,7 +268,7 @@ suite "WebSocket transport":
       await client.stop()
 
     for hostname in ["a\r\nX-Injected: 1", "a\nb", "a\x00b", "a\x7Fb"]:
-      expect TransportDialError:
+      expectMsgContains TransportDialError, "control character in the hostname":
         discard await client.dial(hostname, server.addrs[0])
 
   asyncTest "dial with a control character in explicit SNI is a TransportDialError":
