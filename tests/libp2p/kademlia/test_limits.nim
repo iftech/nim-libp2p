@@ -70,7 +70,7 @@ suite "KadDHT - Limits":
       await stall.stop()
     kad.admissionSem = newAsyncSemaphore(1)
 
-    kad.admitPeers(@[PeerInfo(peerId: randomPeerId(), addrs: @[stall.address])])
+    kad.admitPeers(@[PeerInfo(peerId: PeerId.random(), addrs: @[stall.address])])
     check kad.admissionProbes.len == 1
 
     let probes = move kad.admissionProbes
@@ -99,13 +99,13 @@ suite "KadDHT - Limits":
     let kad = setupKad()
     kad.config.limits.maxShortlistSize = 5
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
     # Generate 20 fresh peers and feed them through updateShortlist.
     var peers: seq[Peer]
     for i in 0 ..< 20:
-      peers.add(closerPeer(randomPeerId().toKey()))
+      peers.add(closerPeer(PeerId.random().toKey()))
 
     let msg = Message(msgType: MessageType.findNode, closerPeers: peers)
     discard state.updateShortlist(msg)
@@ -163,12 +163,12 @@ suite "KadDHT - Limits":
     let kad = setupKad()
     kad.config.limits.maxShortlistSize = 1
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     state.shortlist.clear()
 
     let ranked =
-      @[randomPeerId(), randomPeerId()].sortPeers(targetKey, kad.rtable.config.hasher)
+      @[PeerId.random(), PeerId.random()].sortPeers(targetKey, kad.rtable.config.hasher)
     let (near, far) = (ranked[0], ranked[1])
 
     discard state.updateShortlist(
@@ -191,12 +191,12 @@ suite "KadDHT - Limits":
     kad.config.addressPolicy = publicRoutableAddressPolicy
     kad.config.limits.maxShortlistSize = 1
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     state.shortlist.clear()
 
     let ranked =
-      @[randomPeerId(), randomPeerId()].sortPeers(targetKey, kad.rtable.config.hasher)
+      @[PeerId.random(), PeerId.random()].sortPeers(targetKey, kad.rtable.config.hasher)
     let (near, far) = (ranked[0], ranked[1])
 
     discard state.updateShortlist(
@@ -264,8 +264,8 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxLocalRecords = Opt.some(1)
 
     let
-      existingKey = randomPeerId().toKey()
-      newKey = randomPeerId().toKey()
+      existingKey = PeerId.random().toKey()
+      newKey = PeerId.random().toKey()
       existingValue = @[1.byte]
       newValue = @[2.byte]
 
@@ -293,7 +293,7 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxLocalRecords = Opt.some(1)
 
     let
-      existingKey = randomPeerId().toKey()
+      existingKey = PeerId.random().toKey()
       lookupKey = kads[1].rtable.selfId
       existingValue = @[1.byte]
       lookupValue = @[2.byte]

@@ -72,7 +72,7 @@ suite "KadDHT Iterative Lookup":
     let peersInTable = kad.getPeersFromRoutingTable()
 
     # Initialize LookupState for a random target
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let state = LookupState.init(kad, targetKey)
 
     # Shortlist contains exactly k=20 peers
@@ -96,11 +96,11 @@ suite "KadDHT Iterative Lookup":
     )
     var servicePeers: seq[PeerId]
     for _ in 0 ..< 3:
-      let peerId = randomPeerId()
+      let peerId = PeerId.random()
       check serviceTable.insert(peerId)
       servicePeers.add(peerId)
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let state = LookupState.init(kad, targetKey, serviceTable)
 
     check state.shortlist.len == servicePeers.len
@@ -115,7 +115,7 @@ suite "KadDHT Iterative Lookup":
       randomServiceId(), RoutingTableConfig.new(selfIdPreHashed = true)
     )
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let state = LookupState.init(kad, targetKey, serviceTable)
 
     let expectedClosest = kad
@@ -139,7 +139,7 @@ suite "KadDHT Iterative Lookup":
     let peersInTable = kad.getPeersFromRoutingTable()
 
     # Initialize LookupState
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let state = LookupState.init(kad, targetKey)
 
     # SelectCloserPeers returns exactly alpha peers when more are available
@@ -153,11 +153,11 @@ suite "KadDHT Iterative Lookup":
   test "Shortlist excludes self peer from candidates":
     let kad = setupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
     let selfPid = kad.switch.peerInfo.peerId
-    let otherPeer = randomPeerId()
+    let otherPeer = PeerId.random()
 
     # Manually add self and another peer to shortlist
     state.shortlist[selfPid] = xorDistance(selfPid, targetKey, kad.rtable.config.hasher)
@@ -174,11 +174,11 @@ suite "KadDHT Iterative Lookup":
   test "updateShortlist ignores duplicate peers":
     let kad = setupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
-    let existingPeer = randomPeerId()
-    let newPeer = randomPeerId()
+    let existingPeer = PeerId.random()
+    let newPeer = PeerId.random()
 
     # Add existing peer to shortlist
     state.shortlist[existingPeer] =
@@ -206,11 +206,11 @@ suite "KadDHT Iterative Lookup":
   test "updateShortlist skips invalid peer IDs":
     let kad = setupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     let initialSize = state.shortlist.len
 
-    let validPeer = randomPeerId()
+    let validPeer = PeerId.random()
 
     # Create message with invalid peer ID (empty/malformed) and valid peer
     let msg = Message(
@@ -233,12 +233,12 @@ suite "KadDHT Iterative Lookup":
   test "selectCloserPeers excludes responded peers":
     let kad = setupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
-    let peer1 = randomPeerId()
-    let peer2 = randomPeerId()
-    let peer3 = randomPeerId()
+    let peer1 = PeerId.random()
+    let peer2 = PeerId.random()
+    let peer3 = PeerId.random()
 
     state.shortlist[peer1] = xorDistance(peer1, targetKey, kad.rtable.config.hasher)
     state.shortlist[peer2] = xorDistance(peer2, targetKey, kad.rtable.config.hasher)
@@ -260,7 +260,7 @@ suite "KadDHT Iterative Lookup":
   test "Core lookup converges when the beta closest nodes responded successfully":
     let kad = setupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
     let peers = state.addRandomPeers(kad, 4, targetKey)
@@ -278,7 +278,7 @@ suite "KadDHT Iterative Lookup":
   test "Core lookup doesn't converge when beta successes but closer peer not responded":
     let kad = setupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
     let peers = state.addRandomPeers(kad, 4, targetKey)
@@ -297,7 +297,7 @@ suite "KadDHT Iterative Lookup":
   test "Core lookup never waits for more than k responses":
     let kad = setupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     let peers = state.addRandomPeers(kad, 4, targetKey)
 
@@ -314,7 +314,7 @@ suite "KadDHT Iterative Lookup":
     let kad = setupKad()
     kad.config.replication = 3
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     let peers = state.addRandomPeers(kad, 5, targetKey)
 
@@ -331,11 +331,11 @@ suite "KadDHT Iterative Lookup":
     const maxRetries = 3
     kad.config.retries = maxRetries
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
-    let peer1 = randomPeerId()
-    let peer2 = randomPeerId()
+    let peer1 = PeerId.random()
+    let peer2 = PeerId.random()
     state.shortlist[peer1] = xorDistance(peer1, targetKey, kad.rtable.config.hasher)
     state.shortlist[peer2] = xorDistance(peer2, targetKey, kad.rtable.config.hasher)
 
@@ -353,14 +353,14 @@ suite "KadDHT Iterative Lookup":
     let kad = setupKad()
     kad.config.replication = 3 # small k for testing
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     let initialSize = state.shortlist.len
 
     # Create message with 10 peers (more than k=3)
     var peers: seq[Peer]
     for i in 0 ..< 10:
-      peers.add(closerPeer(randomPeerId().toKey()))
+      peers.add(closerPeer(PeerId.random().toKey()))
 
     let msg = Message(msgType: MessageType.findNode, closerPeers: peers)
     let added = state.updateShortlist(msg)
@@ -376,7 +376,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "Lookup confirms the k closest peers after converging on beta":
     let kad = setupLookupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let known = kad.seedRoutingTable(5, targetKey)
 
     let queried = new(seq[PeerId])
@@ -387,7 +387,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "Lookup drops a shortlisted peer it has no address for":
     let kad = setupLookupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let (closest, known) = kad.seedRoutingTableBelow(5, targetKey)
     # a reply shortlists the id even when admission stores no address for it
     kad.switch.peerStore[AddressBook][closest] = @[]
@@ -404,7 +404,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "Follow-up phase defers a peer it hears about to the next round":
     let kad = setupLookupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     # `closest` beats every seeded peer, so the lookup owes it a query
     let (closest, known) = kad.seedRoutingTableBelow(5, targetKey)
 
@@ -422,7 +422,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "Lookup keeps going for a stop condition the follow-up phase unblocks":
     let kad = setupLookupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let (closest, known) = kad.seedRoutingTableBelow(5, targetKey)
 
     let queried = new(seq[PeerId])
@@ -443,7 +443,7 @@ suite "KadDHT Iterative Lookup":
     # No retries, so the dead peer costs exactly one query
     let kad = setupLookupKad(retries = 0)
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let known = kad.seedRoutingTable(5, targetKey)
 
     let queried = new(seq[PeerId])
@@ -458,7 +458,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "External stop condition skips the follow-up phase":
     let kad = setupLookupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let known = kad.seedRoutingTable(5, targetKey)
 
     let queried = new(seq[PeerId])
@@ -473,7 +473,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "Lookup neither retries nor returns a peer whose dial failed":
     let kad = setupLookupKad()
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let known = kad.seedRoutingTable(5, targetKey)
 
     let queried = new(seq[PeerId])
@@ -490,7 +490,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "Lookup stops retrying a peer whose timed-out dial fails":
     let kad = setupLookupKad(timeout = 200.milliseconds)
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let known = kad.seedRoutingTable(5, targetKey)
 
     let queried = new(seq[PeerId])
@@ -513,7 +513,7 @@ suite "KadDHT Iterative Lookup":
   asyncTest "Lookup asks a refused peer again once its backoff ends":
     let kad = setupLookupKad(timeout = 200.milliseconds)
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let known = kad.seedRoutingTable(5, targetKey)
     let refused = toHashSet([known[0]])
 

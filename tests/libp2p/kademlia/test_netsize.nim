@@ -53,8 +53,8 @@ suite "KadDHT - Network Size Estimator":
   test "track records one measurement per closest-peer index":
     let
       est = NetworkSizeEstimator.new(4)
-      target = randomPeerId().toKey()
-      rtable = RoutingTable.new(randomPeerId().toKey())
+      target = PeerId.random().toKey()
+      rtable = RoutingTable.new(PeerId.random().toKey())
       peers = PeerId.random(4)
 
     check est.track(rtable, target, peers).isOk()
