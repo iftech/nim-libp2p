@@ -22,7 +22,8 @@ suite "Extended peer record":
       decoded = ExtendedPeerRecord.decode(encoded)
 
     check:
-      decoded.containsValue(extPR)
+      decoded.isOk() == true
+      decoded.get() == extPR
 
   test "Interop decode":
     let
@@ -56,7 +57,8 @@ suite "Signed Extended Peer Record":
 
     let decoded = SignedExtendedPeerRecord.decode(encoded)
     check:
-      decoded.containsValue(signedExtPR.get())
+      decoded.isOk() == true
+      decoded.get() == signedExtPR.get()
 
   test "Can't use mismatched public key":
     let
@@ -75,7 +77,7 @@ suite "Signed Extended Peer Record":
 
     check:
       encoded.len > 0
-      SignedExtendedPeerRecord.decode(encoded).containsError(EnvelopeInvalidSignature)
+      SignedExtendedPeerRecord.decode(encoded).error == EnvelopeInvalidSignature
 
   test "Decode fails if some addresses are invalid":
     let

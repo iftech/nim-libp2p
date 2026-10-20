@@ -225,7 +225,7 @@ suite "Variable integer test suite":
       buffer.setLen(PBedgeSizes[i] - 1)
       let res = PB.putUVarint(buffer, length, PBedgeValues[i])
       check:
-        res.containsError(VarintError.Overrun)
+        res.error() == VarintError.Overrun
         length == PBedgeSizes[i]
 
   test "[ProtoBuf] Buffer Incomplete edge cases test":
@@ -238,7 +238,7 @@ suite "Variable integer test suite":
         PB.putUVarint(buffer, length, PBedgeValues[i]).isOk()
       buffer.setLen(buffer.high)
       check:
-        PB.getUVarint(buffer, length, value).containsError(VarintError.Incomplete)
+        PB.getUVarint(buffer, length, value).error() == VarintError.Incomplete
 
   test "[ProtoBuf] Integer Overflow 32bit test":
     var buffer = newSeq[byte]()
@@ -249,7 +249,7 @@ suite "Variable integer test suite":
         buffer.setLen(PBedgeSizes[i])
         check:
           PB.putUVarint(buffer, length, PBedgeValues[i]).isOk()
-          PB.getUVarint(buffer, length, value).containsError(VarintError.Overflow)
+          PB.getUVarint(buffer, length, value).error() == VarintError.Overflow
 
   test "[ProtoBuf] Integer Overflow 64bit test":
     var buffer = newSeq[byte]()
@@ -263,28 +263,24 @@ suite "Variable integer test suite":
         buffer[9] = buffer[9] or 0x80'u8
         buffer[10] = 0x01'u8
         check:
-          PB.getUVarint(buffer, length, value).containsError(VarintError.Overflow)
+          PB.getUVarint(buffer, length, value).error() == VarintError.Overflow
 
   test "[ProtoBuf] Test vectors":
     # The test vectors which was obtained at:
     # https://github.com/dermesser/integer-encoding-rs/blob/master/src/varint_tests.rs
     # https://github.com/That3Percent/zigzag/blob/master/src/lib.rs
     check:
-      PB.encodeVarint(0'u64).containsValue(@[0x00'u8])
-      PB.encodeVarint(0'u32).containsValue(@[0x00'u8])
-      PB.encodeVarint(hint64(0)).containsValue(@[0x00'u8])
-      PB.encodeVarint(hint32(0)).containsValue(@[0x00'u8])
-      PB.encodeVarint(zint64(0)).containsValue(@[0x00'u8])
-      PB.encodeVarint(zint32(0)).containsValue(@[0x00'u8])
-      PB.encodeVarint(zint32(-1)).containsValue(PB.encodeVarint(1'u32).get())
-      PB.encodeVarint(zint64(150)).containsValue(PB.encodeVarint(300'u32).get())
-      PB.encodeVarint(zint64(-150)).containsValue(PB.encodeVarint(299'u32).get())
-      PB.encodeVarint(zint32(-2147483648)).containsValue(
-        PB.encodeVarint(4294967295'u64).get()
-      )
-      PB.encodeVarint(zint32(2147483647)).containsValue(
-        PB.encodeVarint(4294967294'u64).get()
-      )
+      PB.encodeVarint(0'u64).get() == @[0x00'u8]
+      PB.encodeVarint(0'u32).get() == @[0x00'u8]
+      PB.encodeVarint(hint64(0)).get() == @[0x00'u8]
+      PB.encodeVarint(hint32(0)).get() == @[0x00'u8]
+      PB.encodeVarint(zint64(0)).get() == @[0x00'u8]
+      PB.encodeVarint(zint32(0)).get() == @[0x00'u8]
+      PB.encodeVarint(zint32(-1)).get() == PB.encodeVarint(1'u32).get()
+      PB.encodeVarint(zint64(150)).get() == PB.encodeVarint(300'u32).get()
+      PB.encodeVarint(zint64(-150)).get() == PB.encodeVarint(299'u32).get()
+      PB.encodeVarint(zint32(-2147483648)).get() == PB.encodeVarint(4294967295'u64).get()
+      PB.encodeVarint(zint32(2147483647)).get() == PB.encodeVarint(4294967294'u64).get()
 
   test "[LibP2P] Success edge cases test":
     var buffer = newSeq[byte]()
@@ -305,7 +301,7 @@ suite "Variable integer test suite":
       buffer.setLen(PBedgeSizes[i] - 1)
       let res = LP.putUVarint(buffer, length, LPedgeValues[i])
       check:
-        res.containsError(VarintError.Overrun)
+        res.error() == VarintError.Overrun
         length == LPedgeSizes[i]
 
   test "[LibP2P] Buffer Incomplete edge cases test":
@@ -318,7 +314,7 @@ suite "Variable integer test suite":
         LP.putUVarint(buffer, length, LPedgeValues[i]).isOk()
       buffer.setLen(buffer.high)
       check:
-        LP.getUVarint(buffer, length, value).containsError(VarintError.Incomplete)
+        LP.getUVarint(buffer, length, value).error() == VarintError.Incomplete
 
   test "[LibP2P] Integer Overflow 32bit test":
     var buffer = newSeq[byte]()
@@ -329,7 +325,7 @@ suite "Variable integer test suite":
         buffer.setLen(LPedgeSizes[i])
         check:
           LP.putUVarint(buffer, length, LPedgeValues[i]).isOk()
-          LP.getUVarint(buffer, length, value).containsError(VarintError.Overflow)
+          LP.getUVarint(buffer, length, value).error() == VarintError.Overflow
 
   test "[LibP2P] Integer Overflow 64bit test":
     var buffer = newSeq[byte]()
@@ -343,7 +339,7 @@ suite "Variable integer test suite":
         buffer[8] = buffer[8] or 0x80'u8
         buffer[9] = 0x01'u8
         check:
-          LP.getUVarint(buffer, length, value).containsError(VarintError.Overflow)
+          LP.getUVarint(buffer, length, value).error() == VarintError.Overflow
 
   test "[LibP2P] Over 63bit test":
     var buffer = newSeq[byte](10)
@@ -351,21 +347,19 @@ suite "Variable integer test suite":
     check:
       LP.putUVarint(buffer, length, 0x7FFF_FFFF_FFFF_FFFF'u64).isOk()
 
-      LP.putUVarint(buffer, length, 0x8000_0000_0000_0000'u64).containsError(
+      LP.putUVarint(buffer, length, 0x8000_0000_0000_0000'u64).error() ==
         VarintError.Overflow
-      )
 
-      LP.putUVarint(buffer, length, 0xFFFF_FFFF_FFFF_FFFF'u64).containsError(
+      LP.putUVarint(buffer, length, 0xFFFF_FFFF_FFFF_FFFF'u64).error() ==
         VarintError.Overflow
-      )
 
   test "[LibP2P] encodeVarint for small widths and 64-bit overflow":
     check:
-      LP.encodeVarint(1'u8).containsValue(@[0x01'u8])
-      LP.encodeVarint(1'u16).containsValue(@[0x01'u8])
-      LP.encodeVarint(1'u32).containsValue(@[0x01'u8])
-      LP.encodeVarint(high(uint8)).containsValue(@[0xFF'u8, 0x01])
-      LP.encodeVarint(1'u64 shl 63).containsError(VarintError.Overflow)
+      LP.encodeVarint(1'u8).get() == @[0x01'u8]
+      LP.encodeVarint(1'u16).get() == @[0x01'u8]
+      LP.encodeVarint(1'u32).get() == @[0x01'u8]
+      LP.encodeVarint(high(uint8)).get() == @[0xFF'u8, 0x01]
+      LP.encodeVarint(1'u64 shl 63).error() == VarintError.Overflow
 
   test "[LibP2P] Overlong values test":
     const OverlongValues = [
@@ -396,7 +390,7 @@ suite "Variable integer test suite":
 
     for item in OverlongValues:
       check:
-        LP.getUVarint(item, length, value).containsError(VarintError.Overlong)
+        LP.getUVarint(item, length, value).error() == VarintError.Overlong
         length == 0
         value == 0
 
@@ -408,9 +402,7 @@ suite "Variable integer test suite":
 
     # But not overlonged zero value
     check:
-      LP.getUVarint(@[0x80'u8, 0x00'u8], length, value).containsError(
-        VarintError.Overlong
-      )
+      LP.getUVarint(@[0x80'u8, 0x00'u8], length, value).error() == VarintError.Overlong
       length == 0
       value == 0
 

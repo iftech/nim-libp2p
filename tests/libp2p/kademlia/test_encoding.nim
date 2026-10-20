@@ -15,7 +15,7 @@ suite "KadDHT Protobuffers":
     # encode with hideConnectionStatus=false to preserve connection type for round-trip check
     let peer =
       Peer(id: @[1'u8, 2, 3], addrs: maddrs, connection: ConnectionStatus.connected)
-    check Peer.decode(peer.encode(hideConnectionStatus = false)).containsValue(peer)
+    check peer == Peer.decode(peer.encode(hideConnectionStatus = false)).get()
 
     let msg = Message(
       msgType: MessageType.putValue,
@@ -25,7 +25,7 @@ suite "KadDHT Protobuffers":
       closerPeers: @[Peer(id: @[9'u8], addrs: maddrs, connection: canConnect)],
       providerPeers: @[Peer(id: @[9'u8], addrs: maddrs, connection: canConnect)],
     )
-    check Message.decode(msg.encode(hideConnectionStatus = false)).containsValue(msg)
+    check msg == Message.decode(msg.encode(hideConnectionStatus = false)).get()
 
   test "Peer with empty addr list and no connection":
     let peer = Peer(id: @[0x42'u8], addrs: @[], connection: Opt.none(ConnectionStatus))

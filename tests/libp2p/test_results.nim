@@ -48,21 +48,22 @@ suite "LPResultError":
   test "err on the type wraps a string":
     let r = DemoResult[int].err("bad peer")
     check:
-      r.containsError("bad peer")
+      r.isErr()
+      r.error == "bad peer"
 
   test "err on the type works for a void value":
     let r = DemoResult[void].err("bad peer")
-    check r.containsError("bad peer")
+    check r.error == "bad peer"
 
   test "err on the type still takes an LPResultError":
     let r = DemoResult[int].err(errorOf("bad peer"))
-    check r.containsError("bad peer")
+    check r.error == "bad peer"
 
   test "bare err with a concatenation compiles in a proc":
     proc fail(name: string): DemoResult[int] =
       err("bad " & name)
 
-    check fail("peer").containsError("bad peer")
+    check fail("peer").error == "bad peer"
 
   test "return err compiles as an early exit":
     proc fail(early: bool): DemoResult[int] =
@@ -71,13 +72,13 @@ suite "LPResultError":
       ok(1)
 
     check:
-      fail(true).containsError("early")
-      fail(false).containsValue(1)
+      fail(true).error == "early"
+      fail(false).get() == 1
 
   test "err on a var result sets the error":
     var r = DemoResult[int].ok(1)
     r.err("bad peer")
-    check r.containsError("bad peer")
+    check r.error == "bad peer"
 
   test "valueOrRaise raises the requested exception with the message":
     let r = DemoResult[int].err("bad peer")
@@ -104,7 +105,7 @@ suite "LPResultError":
     check:
       reserve(2).isOfError(NotEnoughMemory)
       reserve(3).isOfError(NotEnoughMemory)
-      reserve(2).containsError("not enough memory (missing: 2MB)")
+      reserve(2).error == "not enough memory (missing: 2MB)"
       not reserve(2).isOfError(PeerGone)
       not reserve(0).isOfError(NotEnoughMemory)
 
@@ -140,19 +141,17 @@ suite "LPResultError":
         return err(error, "start failed")
       ok(conn)
 
-    check start().containsError(
-      "start failed: peer gone: not enough memory (missing: 2MB)"
-    )
+    check start().error == "start failed: peer gone: not enough memory (missing: 2MB)"
 
   test "err with two strings sets the detail and the cause":
     proc parse(T: type): T =
       err("/ip4/1.2.3.4", "too few parts")
 
     check:
-      parse(DemoResult[int]).containsError("too few parts (/ip4/1.2.3.4)")
+      parse(DemoResult[int]).error == "too few parts (/ip4/1.2.3.4)"
       parse(DemoResult[int]).isOfError("too few parts")
       parse(DemoResult[int]).error.detail == "/ip4/1.2.3.4"
-      parse(Result[int, string]).containsError("too few parts (/ip4/1.2.3.4)")
+      parse(Result[int, string]).error == "too few parts (/ip4/1.2.3.4)"
 
   test "err with an inner error puts the outer message first in a string error":
     proc connect(): Result[int, string] =
@@ -160,9 +159,7 @@ suite "LPResultError":
         return err(error, "reservation failed")
       ok(1)
 
-    check connect().containsError(
-      "reservation failed: not enough memory (missing: 2MB)"
-    )
+    check connect().error == "reservation failed: not enough memory (missing: 2MB)"
 
   test "err with an exception wraps its message":
     proc parse(T: type): T =
@@ -172,10 +169,10 @@ suite "LPResultError":
         err(e, "parse failed")
 
     check:
-      parse(DemoResult[int]).containsError("parse failed: bad digit")
+      parse(DemoResult[int]).error == "parse failed: bad digit"
       parse(DemoResult[int]).isOfError("parse failed")
-      parse(LPResult[int]).containsError("parse failed: bad digit")
-      parse(Result[int, string]).containsError("parse failed: bad digit")
+      parse(LPResult[int]).error == "parse failed: bad digit"
+      parse(Result[int, string]).error == "parse failed: bad digit"
 
   test "err with an exception, cstring or LPResultError gives its message to a string error":
     proc fromException(): Result[int, string] =
@@ -212,13 +209,13 @@ suite "LPResultError":
       err(errorOf(PeerGone))
 
     check:
-      fromException().containsError("bad digit")
-      fromExceptionToError().containsError("bad digit")
+      fromException().error == "bad digit"
+      fromExceptionToError().error == "bad digit"
       keepsException().error.msg == "bad digit"
-      fromCString().containsError("bad peer")
-      fromCStringToError().containsError("bad peer")
-      keepsCString().containsError("bad peer")
-      fromLPResultError().containsError("not enough memory (missing: 2MB)")
+      fromCString().error == "bad peer"
+      fromCStringToError().error == "bad peer"
+      keepsCString().error == "bad peer"
+      fromLPResultError().error == "not enough memory (missing: 2MB)"
       keepsLPResultError().isOfError(PeerGone)
 
   test "err with an inner error of another type wraps its text":
@@ -229,10 +226,10 @@ suite "LPResultError":
       err(readStage, "send failed")
 
     check:
-      fail(DemoResult[int]).containsError("send failed: readStage")
+      fail(DemoResult[int]).error == "send failed: readStage"
       fail(DemoResult[int]).isOfError("send failed")
       fail(DemoResult[int]).isOfError("readStage")
-      fail(Result[int, string]).containsError("send failed: readStage")
+      fail(Result[int, string]).error == "send failed: readStage"
 
   test "isOfError matches every error of the chain":
     let r =

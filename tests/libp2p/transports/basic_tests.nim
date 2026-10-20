@@ -159,9 +159,7 @@ template basicTransportTest*(
       check:
         assignedPort > 0
         # Ensure IP address is the same
-        transport.addrs[0][multiCodec("ip4")].containsValue(
-          maddr[multiCodec("ip4")].get()
-        )
+        transport.addrs[0][multiCodec("ip4")].get() == maddr[multiCodec("ip4")].get()
 
     asyncTest "cannot bind second listener to same port":
       if isTcpTransport(maddr):

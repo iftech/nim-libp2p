@@ -104,9 +104,8 @@ proc stallUpgrade(
   case stage
   of SecurityHandshake:
     # Reads the first Noise frame header and never replies, so the dialer waits for handshake message 2.
-    check (await MultistreamSelect.tryHandle(remote, @[NoiseCodec])).containsValue(
+    check (await MultistreamSelect.tryHandle(remote, @[NoiseCodec])).get("") ==
       NoiseCodec
-    )
     var frameLen: array[2, byte]
     await remote.readExactly(addr frameLen[0], frameLen.len)
     remote

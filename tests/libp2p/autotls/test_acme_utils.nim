@@ -35,7 +35,7 @@ suite "ACME utils":
     headers.add("Replay-Nonce", "abc")
 
     check:
-      headers.header("Replay-Nonce").containsValue("abc")
+      headers.header("Replay-Nonce").get() == "abc"
       headers.header("Location").isErr()
 
   test "a CSR for a domain is base64url":
@@ -69,9 +69,9 @@ suite "ACME utils":
   test "tryGetStr returns the string field or an error":
     let node = %*{"status": "valid", "n": 1}
     check:
-      node.tryGetStr("status").containsValue("valid")
-      node.tryGetStr("n").containsError("missing string field (n)")
-      node.tryGetStr("absent").containsError("missing string field (absent)")
+      node.tryGetStr("status").get() == "valid"
+      node.tryGetStr("n").error == "missing string field (n)"
+      node.tryGetStr("absent").error == "missing string field (absent)"
 
   test "tryTo decodes the object or returns an error":
     check:
@@ -82,9 +82,6 @@ suite "ACME utils":
 
   test "tryParseEnum matches the enum string value":
     check:
-      tryParseEnum[ACMEChallengeStatus]("valid").containsValue(
-        ACMEChallengeStatus.VALID
-      )
-      tryParseEnum[ACMEChallengeStatus]("bogus").containsError(
+      tryParseEnum[ACMEChallengeStatus]("valid").get() == ACMEChallengeStatus.VALID
+      tryParseEnum[ACMEChallengeStatus]("bogus").error ==
         "invalid ACMEChallengeStatus (bogus)"
-      )

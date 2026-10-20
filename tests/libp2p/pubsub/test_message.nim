@@ -117,7 +117,8 @@ suite "Message":
     let msgIdResult = msg.defaultMsgIdProvider()
 
     check:
-      msgIdResult.containsError(ValidationResult.Reject)
+      msgIdResult.isErr
+      msgIdResult.error == ValidationResult.Reject
 
   test "defaultMsgIdProvider error - no source seqno":
     let
@@ -132,7 +133,8 @@ suite "Message":
       msgIdResult = msg.defaultMsgIdProvider()
 
     check:
-      msgIdResult.containsError(ValidationResult.Reject)
+      msgIdResult.isErr
+      msgIdResult.error == ValidationResult.Reject
 
   test "byteSize for RPCMsg":
     let msg = Message(

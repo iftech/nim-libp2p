@@ -493,9 +493,12 @@ suite "RSA 2048/3072/4096 test suite":
     var key2 = RsaPrivateKey.init(prvser)
     var key3 = RsaPublicKey.init(pubser)
     check:
-      key1.containsError(RsaLowSecurityError)
-      key2.containsError(RsaKeyIncorrectError)
-      key3.containsError(RsaKeyIncorrectError)
+      key1.isErr() == true
+      key2.isErr() == true
+      key3.isErr() == true
+      key1.error == RsaLowSecurityError
+      key2.error == RsaKeyIncorrectError
+      key3.error == RsaKeyIncorrectError
 
   test "[rsa1024] not allowed test":
     var key1 = RsaPrivateKey.random(rng(), 1024)
@@ -504,9 +507,12 @@ suite "RSA 2048/3072/4096 test suite":
     var key2 = RsaPrivateKey.init(prvser)
     var key3 = RsaPublicKey.init(pubser)
     check:
-      key1.containsError(RsaLowSecurityError)
-      key2.containsError(RsaKeyIncorrectError)
-      key3.containsError(RsaKeyIncorrectError)
+      key1.isErr() == true
+      key2.isErr() == true
+      key3.isErr() == true
+      key1.error == RsaLowSecurityError
+      key2.error == RsaKeyIncorrectError
+      key3.error == RsaKeyIncorrectError
 
   proc rsa2047BitModulus(): array[MinKeySize shr 3, byte] =
     # 256 octets used to satisfy the old byte-length check, but the leading
@@ -580,8 +586,10 @@ suite "RSA 2048/3072/4096 test suite":
     var key1 = RsaPrivateKey.init(pkcs1PrivateKeyDer(modulus))
     var key2 = RsaPublicKey.init(spkiPublicKeyDer(modulus))
     check:
-      key1.containsError(RsaKeyIncorrectError)
-      key2.containsError(RsaKeyIncorrectError)
+      key1.isErr() == true
+      key2.isErr() == true
+      key1.error == RsaKeyIncorrectError
+      key2.error == RsaKeyIncorrectError
 
   test "Invalid public exponents are rejected":
     let modulus = rsa2048BitModulus()
@@ -646,10 +654,14 @@ suite "RSA 2048/3072/4096 test suite":
     var key3 = RsaPublicKey.init(pubDer)
     var key4 = PublicKey.init(libp2pPublicKeyBytes(pubDer))
     check:
-      key1.containsError(RsaKeyTooLargeError)
-      key2.containsError(RsaKeyIncorrectError)
-      key3.containsError(RsaKeyIncorrectError)
-      key4.containsError(KeyError)
+      key1.isErr() == true
+      key2.isErr() == true
+      key3.isErr() == true
+      key4.isErr() == true
+      key1.error == RsaKeyTooLargeError
+      key2.error == RsaKeyIncorrectError
+      key3.error == RsaKeyIncorrectError
+      key4.error == KeyError
 
   test "PKCS#1 private key DER with a malformed field is rejected":
     proc parse(data: seq[byte]): Result[void, Asn1Error] =
@@ -668,14 +680,14 @@ suite "RSA 2048/3072/4096 test suite":
 
     check:
       parse(derSequence(fields)).isOk()
-      parse(derUint(0)).containsError(Asn1Error.Incorrect)
-      parse(derSequence(badVersion)).containsError(Asn1Error.Incorrect)
-      RsaPrivateKey.init(derUint(0)).containsError(RsaKeyIncorrectError)
+      parse(derUint(0)).error == Asn1Error.Incorrect
+      parse(derSequence(badVersion)).error == Asn1Error.Incorrect
+      RsaPrivateKey.init(derUint(0)).error == RsaKeyIncorrectError
 
     for i in 0 ..< len(fields):
       var bad = fields
       bad[i] = derNull()
-      check parse(derSequence(bad)).containsError(Asn1Error.Incorrect)
+      check parse(derSequence(bad)).error == Asn1Error.Incorrect
 
   test "SPKI public key DER with a malformed field is rejected":
     proc parse(data: seq[byte]): Result[void, Asn1Error] =
@@ -696,28 +708,23 @@ suite "RSA 2048/3072/4096 test suite":
       parse(derSequence([algorithm, key])).isOk()
       parse(derSequence([algorithm, derBitString(derSequence([n, paddedExponent]))]))
         .isOk()
-      parse(derUint(0)).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derUint(0), key])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derSequence([derNull(), derNull()]), key])).containsError(
+      parse(derUint(0)).error == Asn1Error.Incorrect
+      parse(derSequence([derUint(0), key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([derNull(), derNull()]), key])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([ecAlgorithm, key])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derSequence([rsaOid, derUint(0)]), key])).containsError(
+      parse(derSequence([ecAlgorithm, key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([rsaOid, derUint(0)]), key])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([algorithm, derSequence([n, e])])).containsError(
+      parse(derSequence([algorithm, derSequence([n, e])])).error == Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derUint(0))])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([algorithm, derBitString(derUint(0))])).containsError(
+      parse(derSequence([algorithm, derBitString(derSequence([derNull(), e]))])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([algorithm, derBitString(derSequence([derNull(), e]))]))
-        .containsError(Asn1Error.Incorrect)
-      parse(derSequence([algorithm, derBitString(derSequence([n, derNull()]))]))
-        .containsError(Asn1Error.Incorrect)
-      parse(derSequence([algorithm, derBitString(derSequence([n, negativeExponent]))]))
-        .containsError(Asn1Error.Incorrect)
-      RsaPublicKey.init(derUint(0)).containsError(RsaKeyIncorrectError)
+      parse(derSequence([algorithm, derBitString(derSequence([n, derNull()]))])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derSequence([n, negativeExponent]))])).error ==
+        Asn1Error.Incorrect
+      RsaPublicKey.init(derUint(0)).error == RsaKeyIncorrectError
 
   test "Nil and empty keys and signatures":
     let pubkey =
@@ -725,18 +732,18 @@ suite "RSA 2048/3072/4096 test suite":
     var buf = newSeq[byte](16)
 
     check:
-      RsaPrivateKey(nil).toBytes(buf).containsError(RsaKeyIncorrectError)
-      RsaPublicKey(nil).toBytes(buf).containsError(RsaKeyIncorrectError)
-      RsaSignature(nil).toBytes(buf).containsError(RsaSignatureError)
-      RsaPrivateKey(nil).getBytes().containsError(RsaKeyIncorrectError)
-      RsaPublicKey(nil).getBytes().containsError(RsaKeyIncorrectError)
-      RsaSignature(nil).getBytes().containsError(RsaSignatureError)
-      RsaPrivateKey().toBytes(buf).containsError(RsaKeyIncorrectError)
-      RsaPrivateKey().getBytes().containsError(RsaKeyIncorrectError)
-      RsaPublicKey().toBytes(buf).containsError(RsaKeyIncorrectError)
-      RsaPublicKey().getBytes().containsError(RsaKeyIncorrectError)
-      RsaPrivateKey(nil).sign("message").containsError(RsaKeyIncorrectError)
-      RsaSignature.init(newSeq[byte]()).containsError(RsaSignatureError)
+      RsaPrivateKey(nil).toBytes(buf).error == RsaKeyIncorrectError
+      RsaPublicKey(nil).toBytes(buf).error == RsaKeyIncorrectError
+      RsaSignature(nil).toBytes(buf).error == RsaSignatureError
+      RsaPrivateKey(nil).getBytes().error == RsaKeyIncorrectError
+      RsaPublicKey(nil).getBytes().error == RsaKeyIncorrectError
+      RsaSignature(nil).getBytes().error == RsaSignatureError
+      RsaPrivateKey().toBytes(buf).error == RsaKeyIncorrectError
+      RsaPrivateKey().getBytes().error == RsaKeyIncorrectError
+      RsaPublicKey().toBytes(buf).error == RsaKeyIncorrectError
+      RsaPublicKey().getBytes().error == RsaKeyIncorrectError
+      RsaPrivateKey(nil).sign("message").error == RsaKeyIncorrectError
+      RsaSignature.init(newSeq[byte]()).error == RsaSignatureError
       not RsaSignature(buffer: @[]).verify("message", pubkey)
       $RsaPublicKey(nil) == "Empty or uninitialized RSA key"
       $RsaPublicKey() == "Empty or uninitialized RSA key"

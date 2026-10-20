@@ -670,25 +670,20 @@ suite "EC NIST-P256/384/521 test suite":
 
     check:
       parse(derSequence([version, key, curve])).isOk()
-      parse(@[0x30'u8]).containsError(Asn1Error.Incomplete)
-      parse(version).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derNull(), key, curve])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derUint(2), key, curve])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([version, derUint(1), curve])).containsError(
+      parse(@[0x30'u8]).error == Asn1Error.Incomplete
+      parse(version).error == Asn1Error.Incorrect
+      parse(derSequence([derNull(), key, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([derUint(2), key, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, derUint(1), curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, derContext(0, [derUint(1)])])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([version, key, derContext(0, [derUint(1)])])).containsError(
-        Asn1Error.Incorrect
-      )
-      parse(derSequence([version, shortKey, curve])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([version, key, unknownCurve])).containsError(
-        Asn1Error.Incorrect
-      )
-      parse(derSequence([version, key, curveIn1])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([version, key, bareCurve])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([version, zeroKey, curve])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([version, orderKey, curve])).containsError(Asn1Error.Incorrect)
-      EcPrivateKey.init(version).containsError(EcKeyIncorrectError)
+      parse(derSequence([version, shortKey, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, unknownCurve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, curveIn1])).error == Asn1Error.Incorrect
+      parse(derSequence([version, key, bareCurve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, zeroKey, curve])).error == Asn1Error.Incorrect
+      parse(derSequence([version, orderKey, curve])).error == Asn1Error.Incorrect
+      EcPrivateKey.init(version).error == EcKeyIncorrectError
 
   test "Public key DER with a malformed field is rejected":
     proc parse(data: seq[byte]): Result[void, Asn1Error] =
@@ -711,25 +706,20 @@ suite "EC NIST-P256/384/521 test suite":
 
     check:
       EcPublicKey.init(derSequence([algorithm, key])).expect("public key") == pair.pubkey
-      parse(derUint(1)).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derUint(1), key])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derSequence([derNull(), curve]), key])).containsError(
+      parse(derUint(1)).error == Asn1Error.Incorrect
+      parse(derSequence([derUint(1), key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([derNull(), curve]), key])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([rsaAlgorithm, key])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([derSequence([ecPublicKey, derNull()]), key])).containsError(
+      parse(derSequence([rsaAlgorithm, key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([ecPublicKey, derNull()]), key])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([unknownCurve, key])).containsError(Asn1Error.Incorrect)
-      parse(derSequence([algorithm, derField(Asn1Tag.OctetString, point)]))
-        .containsError(Asn1Error.Incorrect)
-      parse(derSequence([algorithm, derBitString(offCurve)])).containsError(
+      parse(derSequence([unknownCurve, key])).error == Asn1Error.Incorrect
+      parse(derSequence([algorithm, derField(Asn1Tag.OctetString, point)])).error ==
         Asn1Error.Incorrect
-      )
-      parse(derSequence([algorithm, derBitString([])])).containsError(
+      parse(derSequence([algorithm, derBitString(offCurve)])).error ==
         Asn1Error.Incorrect
-      )
-      EcPublicKey.init(derUint(1)).containsError(EcKeyIncorrectError)
+      parse(derSequence([algorithm, derBitString([])])).error == Asn1Error.Incorrect
+      EcPublicKey.init(derUint(1)).error == EcKeyIncorrectError
 
   test "Nil and uninitialized keys and signatures":
     var buf = newSeq[byte](256)
@@ -741,25 +731,25 @@ suite "EC NIST-P256/384/521 test suite":
       emptyPubkey = EcPublicKey()
 
     check:
-      nilSeckey.toBytes(buf).containsError(EcKeyIncorrectError)
-      nilPubkey.toBytes(buf).containsError(EcKeyIncorrectError)
-      nilSig.toBytes(buf).containsError(EcSignatureError)
-      nilSeckey.getBytes().containsError(EcKeyIncorrectError)
-      nilPubkey.getBytes().containsError(EcKeyIncorrectError)
-      nilSig.getBytes().containsError(EcSignatureError)
-      nilSeckey.getRawBytes().containsError(EcKeyIncorrectError)
-      nilPubkey.getRawBytes().containsError(EcKeyIncorrectError)
-      nilSig.getRawBytes().containsError(EcSignatureError)
-      nilSeckey.getPublicKey().containsError(EcKeyIncorrectError)
-      nilSeckey.sign("message").containsError(EcKeyIncorrectError)
-      emptySeckey.toBytes(buf).containsError(EcKeyIncorrectError)
-      emptySeckey.getBytes().containsError(EcKeyIncorrectError)
-      emptySeckey.getRawBytes().containsError(EcKeyIncorrectError)
-      emptySeckey.getPublicKey().containsError(EcKeyIncorrectError)
-      emptySeckey.sign("message").containsError(EcKeyIncorrectError)
-      emptyPubkey.toBytes(buf).containsError(EcKeyIncorrectError)
-      emptyPubkey.getBytes().containsError(EcKeyIncorrectError)
-      emptyPubkey.getRawBytes().containsError(EcKeyIncorrectError)
+      nilSeckey.toBytes(buf).error == EcKeyIncorrectError
+      nilPubkey.toBytes(buf).error == EcKeyIncorrectError
+      nilSig.toBytes(buf).error == EcSignatureError
+      nilSeckey.getBytes().error == EcKeyIncorrectError
+      nilPubkey.getBytes().error == EcKeyIncorrectError
+      nilSig.getBytes().error == EcSignatureError
+      nilSeckey.getRawBytes().error == EcKeyIncorrectError
+      nilPubkey.getRawBytes().error == EcKeyIncorrectError
+      nilSig.getRawBytes().error == EcSignatureError
+      nilSeckey.getPublicKey().error == EcKeyIncorrectError
+      nilSeckey.sign("message").error == EcKeyIncorrectError
+      emptySeckey.toBytes(buf).error == EcKeyIncorrectError
+      emptySeckey.getBytes().error == EcKeyIncorrectError
+      emptySeckey.getRawBytes().error == EcKeyIncorrectError
+      emptySeckey.getPublicKey().error == EcKeyIncorrectError
+      emptySeckey.sign("message").error == EcKeyIncorrectError
+      emptyPubkey.toBytes(buf).error == EcKeyIncorrectError
+      emptyPubkey.getBytes().error == EcKeyIncorrectError
+      emptyPubkey.getRawBytes().error == EcKeyIncorrectError
       $nilPubkey == "Empty or uninitialized ECNIST key"
       $emptyPubkey == "Empty or uninitialized ECNIST key"
       $nilSig == "Empty or uninitialized ECNIST signature"
@@ -793,8 +783,8 @@ suite "EC NIST-P256/384/521 test suite":
     let p384 = EcKeyPair.random(Secp384r1, rng()).expect("random key")
 
     check:
-      EcSignature.init(newSeq[byte]()).containsError(EcSignatureError)
-      EcSignature.initRaw(newSeq[byte](10)).containsError(EcSignatureError)
+      EcSignature.init(newSeq[byte]()).error == EcSignatureError
+      EcSignature.initRaw(newSeq[byte](10)).error == EcSignatureError
       getSecret(p256.pubkey, p384.seckey).len == 0
       getSecret(p256.pubkey, p256.seckey).len == Secret256Length
 

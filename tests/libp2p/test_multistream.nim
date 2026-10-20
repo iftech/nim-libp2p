@@ -696,14 +696,12 @@ suite "Multistream :: result API":
     res
 
   asyncTest "trySelect returns HandshakeFailed on a wrong header":
-    check (await selectAgainstHeader("/other/1.0.0\n")).containsError(
+    check (await selectAgainstHeader("/other/1.0.0\n")).error ==
       MultiStreamFailure.HandshakeFailed
-    )
 
   asyncTest "trySelect returns MalformedMessage on a header without newline":
-    check (await selectAgainstHeader("/multistream/1.0.0")).containsError(
+    check (await selectAgainstHeader("/multistream/1.0.0")).error ==
       MultiStreamFailure.MalformedMessage
-    )
 
   asyncTest "tryHandle returns InvalidFirstMessage before the handshake":
     let (client, server) = bridgedConnections()
@@ -712,7 +710,7 @@ suite "Multistream :: result API":
       await client.close()
       await server.close()
     await client.writeLp(codecs & "\n")
-    check (await handling).containsError(MultiStreamFailure.InvalidFirstMessage)
+    check (await handling).error == MultiStreamFailure.InvalidFirstMessage
 
   asyncTest "handle raises MultiStreamError with the failure text":
     let (client, server) = bridgedConnections()

@@ -30,9 +30,9 @@ suite "ContentId extensions":
     check:
       $cid1 == expected1
       cid1.version == CIDv1
-      cid1.contentType.containsValue(multiCodec("codec_mc1"))
+      cid1.contentType.get == multiCodec("codec_mc1")
       cid1.mhash.get.mcodec == multiCodec("codec_mc2")
       $cid2 == expected2
       cid2.version == CIDv1
-      cid2.contentType.containsValue(multiCodec("codec_mc2"))
+      cid2.contentType.get == multiCodec("codec_mc2")
       cid2.mhash.get.mcodec == multiCodec("codec_mc1")

@@ -72,27 +72,27 @@ suite "MultiBase test suite":
       MultiBase.decodedLength('\x00', 0) == -1
       MultiBase.decodedLength('\x00', 1) == 0
     check:
-      MultiBase.encode("identity", plain).containsValue("\x00")
+      MultiBase.encode("identity", plain).get() == "\x00"
       # MultiBase.encode("base1", plain) == "1"
       # MultiBase.encode("base2", plain) == "0"
       # MultiBase.encode("base8", plain) == "7"
       # MultiBase.encode("base10", plain) == "9"
       # MultiBase.encode("base16", plain) == "f"
       # MultiBase.encode("base16upper", plain) == "F"
-      MultiBase.encode("base32hex", plain).containsValue("v")
-      MultiBase.encode("base32hexupper", plain).containsValue("V")
-      MultiBase.encode("base32hexpad", plain).containsValue("t")
-      MultiBase.encode("base32hexpadupper", plain).containsValue("T")
-      MultiBase.encode("base32", plain).containsValue("b")
-      MultiBase.encode("base32upper", plain).containsValue("B")
-      MultiBase.encode("base32pad", plain).containsValue("c")
-      MultiBase.encode("base32padupper", plain).containsValue("C")
-      MultiBase.encode("base58btc", plain).containsValue("z")
-      MultiBase.encode("base58flickr", plain).containsValue("Z")
-      MultiBase.encode("base64", plain).containsValue("m")
-      MultiBase.encode("base64pad", plain).containsValue("M")
-      MultiBase.encode("base64url", plain).containsValue("u")
-      MultiBase.encode("base64urlpad", plain).containsValue("U")
+      MultiBase.encode("base32hex", plain).get() == "v"
+      MultiBase.encode("base32hexupper", plain).get() == "V"
+      MultiBase.encode("base32hexpad", plain).get() == "t"
+      MultiBase.encode("base32hexpadupper", plain).get() == "T"
+      MultiBase.encode("base32", plain).get() == "b"
+      MultiBase.encode("base32upper", plain).get() == "B"
+      MultiBase.encode("base32pad", plain).get() == "c"
+      MultiBase.encode("base32padupper", plain).get() == "C"
+      MultiBase.encode("base58btc", plain).get() == "z"
+      MultiBase.encode("base58flickr", plain).get() == "Z"
+      MultiBase.encode("base64", plain).get() == "m"
+      MultiBase.encode("base64pad", plain).get() == "M"
+      MultiBase.encode("base64url", plain).get() == "u"
+      MultiBase.encode("base64urlpad", plain).get() == "U"
     check:
       len(MultiBase.decode("\x00").get()) == 0
       # len(MultiBase.decode("1")) == 0
@@ -227,8 +227,8 @@ suite "MultiBase test suite":
       var bexpect = cast[seq[byte]](expect)
       var outlen = 0
       check:
-        MultiBase.encode(encoding, bexpect).containsValue(encoded)
-        MultiBase.decode(encoded).containsValue(bexpect)
+        MultiBase.encode(encoding, bexpect).get() == encoded
+        MultiBase.decode(encoded).get() == bexpect
 
       let elength = MultiBase.encodedLength(encoding, len(expect))
       var ebuffer = newString(elength)
@@ -271,27 +271,22 @@ suite "MultiBase test suite":
     let encoded = MultiBase.encode("base58flickr", data).get()
     check:
       encoded[0] == 'Z'
-      MultiBase.decode(encoded).containsValue(data)
+      MultiBase.decode(encoded).get() == data
 
   test "decode and encode errors":
     var dbuffer = newSeq[byte](100)
     var ebuffer = newString(10)
     var outlen = 0
     check:
-      MultiBase.decode("zI0").containsError("multibase: Decoding error (Incorrect)")
+      MultiBase.decode("zI0").error() == "multibase: Decoding error (Incorrect)"
       MultiBase.decode("zI0", dbuffer, outlen) == MultiBaseStatus.Incorrect
-      MultiBase.decode("m!!!").containsError("multibase: Decoding error (Incorrect)")
+      MultiBase.decode("m!!!").error() == "multibase: Decoding error (Incorrect)"
       MultiBase.decode("m!!!", dbuffer, outlen) == MultiBaseStatus.Incorrect
-      MultiBase.decode("").containsError(
-        "multibase: Could not decode zero-length string"
-      )
+      MultiBase.decode("").error() == "multibase: Could not decode zero-length string"
       MultiBase.decode("", dbuffer, outlen) == MultiBaseStatus.Incorrect
-      MultiBase.decode("0101").containsError(
-        "multibase: MultiBase scheme is not supported!"
-      )
+      MultiBase.decode("0101").error() == "multibase: MultiBase scheme is not supported!"
       MultiBase.decode("0101", dbuffer, outlen) == MultiBaseStatus.NotSupported
-      MultiBase.encode("base2", [byte 1]).containsError(
+      MultiBase.encode("base2", [byte 1]).error() ==
         "multibase: Encoding scheme is not supported!"
-      )
       MultiBase.encode("base2", [byte 1], ebuffer, outlen) ==
         MultiBaseStatus.NotSupported

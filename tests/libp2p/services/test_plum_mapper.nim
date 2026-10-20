@@ -42,7 +42,8 @@ suite "PlumMapper":
       await m.close()
 
     let r = await m.unmap(Port(9000), mpTcp)
-    check r.containsError("plum unmap: no known mapping for external port (9000)")
+    check r.isErr()
+    check r.error() == "plum unmap: no known mapping for external port (9000)"
 
   asyncTest "a second mapper shares the ref-counted libplum instance":
     # overlapping mappers must not double-init or tear down the shared singleton.

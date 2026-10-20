@@ -16,7 +16,8 @@ suite "Wire":
     let expected = TransportAddress(
       family: AddressFamily.Unix, address_un: address_un, port: Port(1)
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv4/TCP address":
     let res = initTAddress(ma("/ip4/127.0.0.1/tcp/1234"))
@@ -25,7 +26,8 @@ suite "Wire":
       address_v4: [127'u8, 0, 0, 1], # IPv4 address 127.0.0.1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv6/TCP address":
     let res = initTAddress(ma("/ip6/::1/tcp/1234"))
@@ -35,7 +37,8 @@ suite "Wire":
         # IPv6 address ::1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv4/UDP address":
     let res = initTAddress(ma("/ip4/127.0.0.1/udp/1234"))
@@ -44,7 +47,8 @@ suite "Wire":
       address_v4: [127'u8, 0, 0, 1], # IPv4 address 127.0.0.1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv6/UDP address":
     let res = initTAddress(ma("/ip6/::1/udp/1234"))
@@ -54,7 +58,8 @@ suite "Wire":
         # IPv6 address ::1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv4/TCP/WS address":
     let res = initTAddress(ma("/ip4/127.0.0.1/tcp/1234/ws"))
@@ -63,7 +68,8 @@ suite "Wire":
       address_v4: [127'u8, 0, 0, 1], # IPv4 address 127.0.0.1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv6/TCP/WS address":
     let res = initTAddress(ma("/ip6/::1/tcp/1234/ws"))
@@ -73,7 +79,8 @@ suite "Wire":
         # IPv6 address ::1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv4/TCP/WSS address":
     let res = initTAddress(ma("/ip4/127.0.0.1/tcp/1234/wss"))
@@ -82,7 +89,8 @@ suite "Wire":
       address_v4: [127'u8, 0, 0, 1], # IPv4 address 127.0.0.1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns ok and correct result for an IPv6/TCP/WSS address":
     let res = initTAddress(ma("/ip6/::1/tcp/1234/wss"))
@@ -92,7 +100,8 @@ suite "Wire":
         # IPv6 address ::1
       port: Port(1234),
     )
-    check res.containsValue(expected)
+    check res.isOk
+    check res.get() == expected
 
   test "initTAddress returns error for a DNS/TCP/ws address":
     let res = initTAddress(ma("/dns4/localhost/tcp/1234/ws"))

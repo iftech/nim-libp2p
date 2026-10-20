@@ -20,15 +20,15 @@ suite "PeerInfo":
     var peerId = PeerId.init(seckey).get()
 
     check peerId == peerInfo.peerId
-    check seckey.getPublicKey().containsValue(peerInfo.publicKey)
+    check seckey.getPublicKey().get() == peerInfo.publicKey
 
   test "tryNew returns the peer info without raising":
     let seckey = PrivateKey.random(Ed25519, rng()).get()
     let peerInfo = PeerInfo.tryNew(seckey, protocols = ["/test/1.0.0"]).get()
 
     check:
-      PeerId.init(seckey).containsValue(peerInfo.peerId)
-      seckey.getPublicKey().containsValue(peerInfo.publicKey)
+      peerInfo.peerId == PeerId.init(seckey).get()
+      peerInfo.publicKey == seckey.getPublicKey().get()
       peerInfo.protocols == @["/test/1.0.0"]
 
   test "Signed peer record":

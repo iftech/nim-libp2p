@@ -106,7 +106,8 @@ suite "AutoTLS certificate issuance and renewal":
 
     let certResult = await service.getCertWhenReady()
     check:
-      certResult.containsError("ACMEApiStub refused https://acme.example/new-account")
+      certResult.isErr()
+      certResult.error == "ACMEApiStub refused https://acme.example/new-account"
 
   asyncTest "a failed round is retried on the next heartbeat":
     # No retries, so a round is one request.
