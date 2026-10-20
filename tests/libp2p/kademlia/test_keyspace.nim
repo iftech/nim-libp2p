@@ -93,7 +93,7 @@ suite "KadDHT Keyspace Regions":
 
   test "closestFirst orders peers by distance to the key":
     let key = PeerId.random().toKey()
-    let peers = PeerId.random(8, rng()).get()
+    let peers = PeerId.random(8)
 
     let ordered = peers.closestFirst(key, DefaultHash)
     check:

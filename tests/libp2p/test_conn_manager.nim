@@ -52,7 +52,7 @@ proc newWatermark*(
   return ConnManager.new(watermark = Opt.some(wtCfg), scoring = scCfg)
 
 proc storeMuxers(connMngr: ConnManager, count: uint): Future[seq[PeerId]] {.async.} =
-  let peers = PeerId.random(count, rng()).tryGet()
+  let peers = PeerId.random(count.int)
   for fut in peers.mapIt(connMngr.storeMuxer(makeMuxer(it))):
     check (await fut).isOk()
   return peers
@@ -79,7 +79,7 @@ suite "Connection Manager":
   asyncTest "get all connections":
     let connMngr = newMaxTotal()
 
-    let peers = PeerId.random(5, rng()).tryGet()
+    let peers = PeerId.random(5)
     let muxs = peers.mapIt(makeMuxer(it))
     for mux in muxs:
       check (await connMngr.storeMuxer(mux)).isOk()
@@ -791,7 +791,7 @@ suite "Connection Manager Watermark":
     defer:
       await connMngr.stop()
 
-    let peers = PeerId.random(3, rng()).tryGet()
+    let peers = PeerId.random(3)
     let prunedPeer = peers[2]
 
     var
@@ -843,7 +843,7 @@ suite "Connection Manager Watermark":
     defer:
       await connMngr.stop()
 
-    let peers = PeerId.random(3, rng()).tryGet()
+    let peers = PeerId.random(3)
     let prunedPeer = peers[2]
 
     check (await connMngr.storeMuxer(makeMuxer(peers[0]))).isOk()
@@ -863,7 +863,7 @@ suite "Connection Manager Watermark":
     defer:
       await connMngr.stop()
 
-    let peers = PeerId.random(3, rng()).tryGet()
+    let peers = PeerId.random(3)
     let target = peers[2]
     var events: seq[string]
 

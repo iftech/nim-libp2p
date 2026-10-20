@@ -55,7 +55,7 @@ suite "KadDHT - Network Size Estimator":
       est = NetworkSizeEstimator.new(4)
       target = randomPeerId().toKey()
       rtable = RoutingTable.new(randomPeerId().toKey())
-      peers = PeerId.random(4, rng()).get()
+      peers = PeerId.random(4)
 
     check est.track(rtable, target, peers).isOk()
 
