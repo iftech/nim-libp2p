@@ -76,8 +76,7 @@ method stop*(self: Transport) {.base, async: (raises: []).} =
 method accept*(
     self: Transport
 ): Future[RawConn] {.gcsafe, base, async: (raises: [TransportError, CancelledError]).} =
-  ## Wait for a non-nil incoming connection, retrying recoverable failures internally.
-  ## Terminal failures raise TransportError; cancellation raises CancelledError.
+  ## Retry recoverable failures internally; success always returns a non-nil connection.
 
   doAssert(false, "[Transport.accept] abstract method not implemented!")
 
