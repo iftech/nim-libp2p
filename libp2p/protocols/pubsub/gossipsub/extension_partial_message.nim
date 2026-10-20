@@ -245,7 +245,7 @@ proc unionWithSentPartsMetadata(
       warn "Parts metadata union failed", reason = unionRes.error
       hasChanged = true
       peerState.sentPartsMetadata = Opt.some(newMetadata)
-    elif not unionRes.containsValue(peerState.sentPartsMetadata.get()):
+    elif unionRes.get() != peerState.sentPartsMetadata.get():
       # union has produced different metadata then what has been sent
       hasChanged = true
       peerState.sentPartsMetadata = Opt.some(unionRes.get())
