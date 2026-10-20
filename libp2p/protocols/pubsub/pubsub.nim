@@ -315,22 +315,18 @@ proc broadcast*(
     for peer in sendPeers:
       p.send(peer, msg, priority, useCustomStream)
   else:
-    # Encode each wire format at most once, only if a recipient needs it.
+    # Lazily encode each wire format and reuse it across recipients.
     var encoded: seq[byte]
-    var legacyPrepared = false
     var topicRPC: PreparedTopicRPC
-    var prepared = false
     for peer in sendPeers:
       if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
-        if not prepared:
+        if topicRPC.isZero():
           topicRPC = makePreparedTopicRPC(msg, p.anonymize)
-          prepared = true
         peer.sendTopicRPC(topicRPC, priority)
       else:
-        if not legacyPrepared:
+        if encoded.len == 0:
           encoded = msg.encode(p.anonymize)
-          legacyPrepared = true
           if encoded.len > p.maxMessageSize:
             warn "legacy RPC exceeds maximum message size; skipping legacy recipients",
               encodedSize = encoded.len, maxMessageSize = p.maxMessageSize
