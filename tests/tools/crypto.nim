@@ -16,9 +16,6 @@ proc getRng(): Rng =
 template rng*(): Rng =
   getRng()
 
-proc randomPeerId*(r: Rng = rng()): PeerId =
-  PeerId.random(r).expect("the rng produces a valid peer id")
-
 proc random*(T: typedesc[PeerId]): PeerId =
   ## A random peer id drawn from the shared test rng.
   PeerId.random(rng()).expect("the rng produces a valid peer id")
