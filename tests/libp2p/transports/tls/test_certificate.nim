@@ -27,7 +27,7 @@ suite "Certificate roundtrip tests":
   test "verified identity key matches peer id":
     let keypair = KeyPair.random(Ed25519, rng()).tryGet()
     let peerId = PeerId.init(keypair.pubkey).tryGet()
-    let otherPeerId = PeerId.random(rng()).tryGet()
+    let otherPeerId = PeerId.random()
 
     let certX509 = generateX509(keypair, encodingFormat = EncodingFormat.DER)
     let cert = parse(certX509.certificate).get()
