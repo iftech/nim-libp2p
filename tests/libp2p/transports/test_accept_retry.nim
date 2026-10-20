@@ -20,15 +20,15 @@ suite "Transport accept retries":
   teardown:
     checkTrackers()
 
-  asyncTest "TCP retries recoverable failures within one accept call with backoff":
-    for exhausted in [true, false]:
+  for failure in ["descriptor exhaustion", "connection abort"]:
+    asyncTest "TCP retries " & failure & " within one accept call with backoff":
       let server = TcpTransport.new(upgrade = Upgrade())
       let client = TcpTransport.new(upgrade = Upgrade())
       await server.start(@[TcpAutoAddress])
       defer:
         await allFutures(client.stop(), server.stop())
 
-      if exhausted:
+      if failure == "descriptor exhaustion":
         server.failNextAccept(newException(TransportTooManyError, "descriptor limit"))
       else:
         server.failNextAccept(newException(TransportAbortedError, "connection aborted"))
