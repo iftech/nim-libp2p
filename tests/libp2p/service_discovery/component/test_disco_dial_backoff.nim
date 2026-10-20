@@ -33,7 +33,7 @@ suite "Service Discovery Component - Dial Backoff":
     check disco.addProvidedService(service).isOk()
     let table = disco.rtManager.getTable(service.id.hashServiceId()).get()
 
-    let deadPeerId = randomPeerId()
+    let deadPeerId = PeerId.random()
     let deadAddrs = @[ma("/ip4/127.0.0.1/tcp/1")]
     disco.switch.peerStore[AddressBook].set(
       deadPeerId, deadAddrs, AddressConfidence.Low

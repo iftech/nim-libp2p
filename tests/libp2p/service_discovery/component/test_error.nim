@@ -52,7 +52,7 @@ suite "Service Discovery Component - Error Handling":
       await stall.stop()
       await clientNode.switch.stop()
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     clientNode.switch.peerStore[AddressBook][peerId] = @[stall.address]
     let pending = clientNode.send(
       peerId,
