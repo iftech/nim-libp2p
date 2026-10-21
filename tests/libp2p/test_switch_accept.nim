@@ -100,6 +100,8 @@ suite "Switch accept-loop failure handling":
     transport.acceptFuts = @[pending]
     startAndDeferStop(@[server, client])
 
+    check transport.acceptFuts[0] != pending
+    check not server.acceptFuts[0].finished
     check server.connManager.availableSlots(Direction.In) == 1
     await client.connect(server)
     check client.isConnected(server)

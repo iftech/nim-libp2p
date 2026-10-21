@@ -39,8 +39,7 @@ proc countCancelledDials*(
     while true:
       try:
         let conn = await server.accept()
-        if not conn.isNil():
-          accepted.add(conn)
+        accepted.add(conn)
       except transport.TransportError, CancelledError:
         return
 

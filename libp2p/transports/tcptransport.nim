@@ -25,7 +25,7 @@ export transport, connection, upgrade
 
 const
   TcpTransportTrackerName* = "libp2p.tcptransport"
-  AcceptRetryDelay = 100.millis
+  AcceptRetryDelay* = 100.millis
 
 type
   AcceptFuture = typeof(default(StreamServer).accept())
@@ -199,6 +199,53 @@ method stop*(self: TcpTransport): Future[void] {.async: (raises: []).} =
     await noCancel allFutures(self.closeFuts)
     self.closeFuts = @[]
 
+proc acceptCon(
+    self: TcpTransport
+): Future[StreamTransport] {.
+    async: (raises: [transport.TransportError, CancelledError])
+.} =
+  if not self.running:
+    raise newTransportClosedError()
+
+  if self.servers.len == 0:
+    raise (ref TcpTransportError)(msg: "No listeners configured")
+  elif self.acceptFuts.len == 0:
+    self.acceptFuts = self.servers.mapIt(it.accept())
+
+  let finished =
+    try:
+      await one(self.acceptFuts)
+    except ValueError:
+      raiseAssert "Accept futures should not be empty"
+
+  if not self.running: # Stopped while waiting
+    if finished.completed():
+      safeCloseWait(finished.value())
+    raise newTransportClosedError()
+
+  # Keep every listener accepting while this connection is processed.
+  let index = self.acceptFuts.find(finished)
+  self.acceptFuts[index] = self.servers[index].accept()
+  try:
+    return await finished
+  except TransportTooManyError as exc:
+    if self.descriptorWarnings.allowLog():
+      warn "Connection acceptance limited by file descriptor exhaustion",
+        err = exc.msg, errType = exc.name, transport = "tcp"
+    return nil
+  except TransportAbortedError as exc:
+    debug "Transport connection aborted", err = exc.msg
+    return nil
+  except TransportUseClosedError as exc:
+    raise newTransportClosedError(exc)
+  except TransportOsError as exc:
+    raise (ref TcpTransportError)(
+      msg: "TransportOs error in accept:" & exc.msg, parent: exc
+    )
+  except common.TransportError as exc: # Needed for chronos 4.0.0 support
+    raise
+      (ref TcpTransportError)(msg: "TransportError in accept: " & exc.msg, parent: exc)
+
 method accept*(
     self: TcpTransport
 ): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
@@ -206,57 +253,18 @@ method accept*(
   ## Terminal failures and cancellation propagate to the caller.
   try:
     while true:
-      if not self.running:
+      let transp = await self.acceptCon()
+      if not self.running: # Stopped before the accepted socket was registered
+        safeCloseWait(transp)
         raise newTransportClosedError()
-
-      if self.servers.len == 0:
-        raise (ref TcpTransportError)(msg: "No listeners configured")
-      elif self.acceptFuts.len == 0:
-        self.acceptFuts = self.servers.mapIt(it.accept())
-
-      let finished =
-        try:
-          await one(self.acceptFuts)
-        except ValueError:
-          raiseAssert "Accept futures should not be empty"
-
-      if not self.running: # Stopped while waiting
-        if finished.completed():
-          safeCloseWait(finished.value())
-        raise newTransportClosedError()
-
-      # Keep every listener accepting while this connection is processed.
-      let index = self.acceptFuts.find(finished)
-      self.acceptFuts[index] = self.servers[index].accept()
-      let transp =
-        try:
-          await finished
-        except TransportTooManyError as exc:
-          if self.descriptorWarnings.allowLog():
-            warn "Connection acceptance limited by file descriptor exhaustion",
-              err = exc.msg, errType = exc.name, transport = "tcp"
-          await sleepAsync(AcceptRetryDelay)
-          continue
-        except TransportAbortedError as exc:
-          debug "Transport connection aborted", err = exc.msg
-          await sleepAsync(AcceptRetryDelay)
-          continue
-        except TransportUseClosedError as exc:
-          raise newTransportClosedError(exc)
-        except TransportOsError as exc:
-          raise (ref TcpTransportError)(
-            msg: "TransportOs error in accept:" & exc.msg, parent: exc
-          )
-        except common.TransportError as exc: # Needed for chronos 4.0.0 support
-          raise (ref TcpTransportError)(
-            msg: "TransportError in accept: " & exc.msg, parent: exc
-          )
+      if transp.isNil:
+        await sleepAsync(AcceptRetryDelay)
+        continue
 
       let addrs = transp.connAddrs().valueOr:
         # A connection can close before its addresses are read.
         safeCloseWait(transp)
         debug "Cannot read address", err = error
-        await sleepAsync(AcceptRetryDelay)
         continue
       return self.connHandler(
         transp, Opt.some(addrs.observed), Opt.some(addrs.local), Direction.In
