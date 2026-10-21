@@ -20,7 +20,7 @@ proc random*(T: typedesc[PeerId]): PeerId =
   ## A random peer id drawn from the shared test rng.
   PeerId.random(rng()).expect("the rng produces a valid peer id")
 
-proc random*(T: typedesc[PeerId], count: Natural): seq[PeerId] =
+proc random*(T: typedesc[PeerId], count: int): seq[PeerId] =
   ## `count` random peer ids drawn from the shared test rng.
   PeerId.random(count.uint, rng()).expect("the rng produces valid peer ids")
 
