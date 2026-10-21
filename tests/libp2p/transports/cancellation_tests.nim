@@ -51,7 +51,7 @@ proc countCancelledDials*(
   var step = 0
   while true:
     let dialFut = client.dial("", server.addrs[0])
-    
+
     step.inc()
     await stepsAsync(step)
 
