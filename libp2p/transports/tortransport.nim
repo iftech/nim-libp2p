@@ -288,6 +288,8 @@ method accept*(
   ## accept a new Tor connection
   ##
   let conn = await self.tcpTransport.accept()
+  if conn.isNil:
+    return nil
   conn.observedAddr = Opt.none(MultiAddress)
   return conn
 

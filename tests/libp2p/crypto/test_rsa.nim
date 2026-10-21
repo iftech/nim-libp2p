@@ -536,14 +536,15 @@ suite "RSA 2048/3072/4096 test suite":
       modulus[i] = 0xFF'u8
     modulus
 
-  proc pkcs1PrivateKeyDer(modulus: openArray[byte]): seq[byte] =
+  proc pkcs1PrivateKeyDer(
+      modulus: openArray[byte], exponent = uint64(DefaultPublicExponent)
+  ): seq[byte] =
     var b = Asn1Buffer.init()
     var p = Asn1Composite.init(Asn1Tag.Sequence)
     p.write(0'u64)
     p.write(Asn1Tag.Integer, modulus)
-    p.write(uint64(DefaultPublicExponent))
-    # The RSA importer checks these fields are present before accepting the key.
-    # Placeholder values keep the fixture small; the modulus-size check must fail first.
+    p.write(exponent)
+    # Placeholder CRT fields isolate import validation from RSA arithmetic.
     for _ in 0 ..< 6:
       p.write(1'u64)
     p.finish()
@@ -591,12 +592,59 @@ suite "RSA 2048/3072/4096 test suite":
       key2.error == RsaKeyIncorrectError
 
   test "Invalid public exponents are rejected":
-    var modulus = rsa2047BitModulus()
-    modulus[0] = 0x80
+    let modulus = rsa2048BitModulus()
+    for exponent in [0'u64, 1, 2]:
+      check:
+        RsaPublicKey.init(spkiPublicKeyDer(modulus, exponent)).error ==
+          RsaKeyIncorrectError
+        RsaPrivateKey.init(pkcs1PrivateKeyDer(modulus, exponent)).error ==
+          RsaKeyIncorrectError
+    for exponent in [3'u64, uint64(DefaultPublicExponent), uint64(high(int32))]:
+      let privateKey =
+        RsaPrivateKey.init(pkcs1PrivateKeyDer(modulus, exponent)).expect("private key")
+      check:
+        RsaPublicKey.init(spkiPublicKeyDer(modulus, exponent)).isOk()
+        RsaPublicKey
+          .init(privateKey.getPublicKey().getBytes().expect("public key"))
+          .isOk()
+
+  test "Oversized public exponents are rejected":
+    proc spki(exponent: openArray[byte]): seq[byte] =
+      derSequence(
+        [
+          derSequence([derField(Asn1Tag.Oid, Asn1OidRsaEncryption), derNull()]),
+          derBitString(
+            derSequence(
+              [
+                derField(Asn1Tag.Integer, rsa2048BitModulus()),
+                derField(Asn1Tag.Integer, exponent),
+              ]
+            )
+          ),
+        ]
+      )
+
+    var exponent = newSeq[byte](9)
+    exponent[0] = 0x01
+    exponent[^1] = 0x01
+    let pubDer = spki(exponent)
     check:
-      RsaPublicKey.init(spkiPublicKeyDer(modulus, 1)).isErr()
-      RsaPublicKey.init(spkiPublicKeyDer(modulus, 2)).isErr()
-      RsaPublicKey.init(spkiPublicKeyDer(modulus, 3)).isOk()
+      RsaPublicKey.init(spkiPublicKeyDer(rsa2048BitModulus(), uint64(high(int32)))).isOk()
+      RsaPublicKey.init(pubDer).error == RsaKeyIncorrectError
+      PublicKey.init(libp2pPublicKeyBytes(pubDer)).error == KeyError
+
+    for exponent in [
+      0x80000001'u64, uint64(high(uint32)), 0x100000001'u64, high(uint64)
+    ]:
+      let
+        pubDer = spkiPublicKeyDer(rsa2048BitModulus(), exponent)
+        privDer = pkcs1PrivateKeyDer(rsa2048BitModulus(), exponent)
+      var privateKey: RsaPrivateKey
+      check:
+        privateKey.init(privDer).error == Asn1Error.Incorrect
+        RsaPrivateKey.init(privDer).error == RsaKeyIncorrectError
+        RsaPublicKey.init(pubDer).error == RsaKeyIncorrectError
+        PublicKey.init(libp2pPublicKeyBytes(pubDer)).error == KeyError
 
   test "[rsa4097] not allowed test":
     let modulus = rsaOversizedModulus()

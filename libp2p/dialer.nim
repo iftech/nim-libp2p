@@ -214,6 +214,11 @@ proc expandDnsAddr(
     if lastPart.protoCode == LPResult[MultiCodec].ok(multiCodec("p2p")):
       let addrPeerId = PeerId.init(?lastPart.protoArgument()).valueOr:
         return err(error)
+      # Keep the requested peer constraint after recursive DNSADDR resolution.
+      if peerId.isSome and peerId.get() != addrPeerId:
+        trace "Resolved address skipped because it names another peer",
+          peerId, address = resolvedAddress
+        continue
       addrs.add((?resolvedAddress[0 ..^ 2], Opt.some(addrPeerId)))
     else:
       addrs.add((resolvedAddress, peerId))

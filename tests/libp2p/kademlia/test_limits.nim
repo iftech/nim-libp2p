@@ -6,7 +6,8 @@
 import chronos, results, sequtils, tables
 import ../../../libp2p/[protocols/kademlia, switch, builders, multihash]
 import ../../../libp2p/utils/future
-import ../../tools/[lifecycle, multiaddress, stall_server, topology, unittest]
+import
+  ../../tools/[bufferstream, lifecycle, multiaddress, stall_server, topology, unittest]
 import ./utils.nim
 
 suite "KadDHT - Limits":
@@ -70,7 +71,7 @@ suite "KadDHT - Limits":
       await stall.stop()
     kad.admissionSem = newAsyncSemaphore(1)
 
-    kad.admitPeers(@[PeerInfo(peerId: randomPeerId(), addrs: @[stall.address])])
+    kad.admitPeers(@[PeerInfo(peerId: PeerId.random(), addrs: @[stall.address])])
     check kad.admissionProbes.len == 1
 
     let probes = move kad.admissionProbes
@@ -99,13 +100,13 @@ suite "KadDHT - Limits":
     let kad = setupKad()
     kad.config.limits.maxShortlistSize = 5
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
     # Generate 20 fresh peers and feed them through updateShortlist.
     var peers: seq[Peer]
     for i in 0 ..< 20:
-      peers.add(closerPeer(randomPeerId().toKey()))
+      peers.add(closerPeer(PeerId.random().toKey()))
 
     let msg = Message(msgType: MessageType.findNode, closerPeers: peers)
     discard state.updateShortlist(msg)
@@ -163,12 +164,12 @@ suite "KadDHT - Limits":
     let kad = setupKad()
     kad.config.limits.maxShortlistSize = 1
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     state.shortlist.clear()
 
     let ranked =
-      @[randomPeerId(), randomPeerId()].sortPeers(targetKey, kad.rtable.config.hasher)
+      @[PeerId.random(), PeerId.random()].sortPeers(targetKey, kad.rtable.config.hasher)
     let (near, far) = (ranked[0], ranked[1])
 
     discard state.updateShortlist(
@@ -191,12 +192,12 @@ suite "KadDHT - Limits":
     kad.config.addressPolicy = publicRoutableAddressPolicy
     kad.config.limits.maxShortlistSize = 1
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     state.shortlist.clear()
 
     let ranked =
-      @[randomPeerId(), randomPeerId()].sortPeers(targetKey, kad.rtable.config.hasher)
+      @[PeerId.random(), PeerId.random()].sortPeers(targetKey, kad.rtable.config.hasher)
     let (near, far) = (ranked[0], ranked[1])
 
     discard state.updateShortlist(
@@ -264,8 +265,8 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxLocalRecords = Opt.some(1)
 
     let
-      existingKey = randomPeerId().toKey()
-      newKey = randomPeerId().toKey()
+      existingKey = PeerId.random()
+      newKey = PeerId.random().toKey()
       existingValue = @[1.byte]
       newValue = @[2.byte]
 
@@ -285,6 +286,42 @@ suite "KadDHT - Limits":
       kads[0].containsData(existingKey, existingValue)
       kads[0].containsNoData(newKey)
 
+  asyncTest "handlePutValue drops a record whose key is empty or over MaxRecordKeyLen":
+    let kad = setupKad()
+    let stream = TestBufferStream.new(
+      proc(data: sink seq[byte]) {.async: (raises: [CancelledError, LPStreamError]).} =
+        raiseAssert "handlePutValue replied to an invalid key"
+    )
+    for keyLen in [0, MaxRecordKeyLen + 1]:
+      let key = Key.fromBytes(newSeq[byte](keyLen))
+      let request = Message(
+        msgType: MessageType.putValue,
+        key: key,
+        record: Record(key: key, value: Value.init([1.byte])),
+      )
+      await kad.handlePutValue(stream, request)
+
+      check kad.dataTable.len == 0
+
+    await stream.close()
+
+  asyncTest "handleGetValue answers an invalid key with closer peers and no record":
+    let kads = setupKadSwitches(3)
+    startAndDeferStop(kads)
+    await connectHub(kads[0], kads[1 ..^ 1])
+
+    let conn = await kads[1].switch.dial(kads[0].switch, kads[0].codec)
+    for keyLen in [0, MaxRecordKeyLen + 1]:
+      let key = Key.fromBytes(newSeq[byte](keyLen))
+      await kads[0].handleGetValue(
+        conn, Message(msgType: MessageType.getValue, key: key)
+      )
+
+      let response = Message.decode(await conn.readLp(MaxMsgSize)).tryGet()
+      check:
+        response.record.isNone()
+        response.closerPeers.toHashSet().containsPeer(kads[2])
+
   asyncTest "getValue skips local insert when maxLocalRecords is reached":
     let kads = setupKadSwitches(2)
     startAndDeferStop(kads)
@@ -293,7 +330,7 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxLocalRecords = Opt.some(1)
 
     let
-      existingKey = randomPeerId().toKey()
+      existingKey = PeerId.random()
       lookupKey = kads[1].rtable.selfId
       existingValue = @[1.byte]
       lookupValue = @[2.byte]

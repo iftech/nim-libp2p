@@ -506,7 +506,8 @@ nimble genbindings_cddl # Generate the CDDL schema
 | `daily_test_all_latest_deps.yml` | Daily tests that run using latest dependencies |
 | `daily_test_all_no_flags.yml` | Tests without experimental flags |
 | `daily_ci_report.yml` | Daily CI failure reporting: opens/updates GitHub issues for failed daily CI runs |
-| `daily_nimbus.yml` | Nimbus-specific test matrix |
+| `nimbus_test.yml` | Nimbus build and tests against this nim-libp2p commit (daily, on PR label, or manual) |
+| `nimbus_fleet.yml` | Pushes a passed, `test-nimbus`-labelled or manual Nimbus test commit to the nimbus-eth2 fleet branch |
 | `daily_runnable_examples.yml` | Daily runnable examples checks |
 | `cbindings.yml` | FFI library build + C/CDDL binding generation |
 | `coverage.yml` | Code coverage |

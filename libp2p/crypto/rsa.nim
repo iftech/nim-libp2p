@@ -31,6 +31,8 @@ const
     ## Maximal allowed RSA key size in bits.
     ## This matches BearSSL's BR_MAX_RSA_SIZE.
   DefaultKeySize* = 3072 ## Default RSA key size in bits.
+  MaxPublicExponentBits = 31
+    # Bound verification cost and match Go crypto/rsa across architectures.
 
   RsaOidSha1* = [byte 0x05, 0x2B, 0x0E, 0x03, 0x02, 0x1A]
     ## RSA PKCS#1.5 SHA-1 hash object identifier.
@@ -114,7 +116,7 @@ func validKeySize(bits: int): bool =
 func validPublicExponent(field: Asn1Field): bool =
   const IntegerSignBit = 0x80'u8
 
-  if len(field) == 0:
+  if len(field) == 0 or bitLength(field) > MaxPublicExponentBits:
     return false
 
   let
@@ -423,9 +425,8 @@ proc getBytes*(sig: RsaSignature): RsaResult[seq[byte]] =
 
 proc init*(key: var RsaPrivateKey, data: openArray[byte]): Result[void, Asn1Error] =
   ## Initialize RSA private key ``key`` from ASN.1 DER binary representation
-  ## ``data``.
-  ##
-  ## Procedure returns ``Asn1Status``.
+  ## ``data``. The public exponent must be odd and in [3, 2^31 - 1].
+  ## Invalid exponents return ``Asn1Error.Incorrect``.
   var field, rawn, rawpube, rawprie, rawp, rawq, rawdp, rawdq, rawiq: Asn1Field
 
   # Asn1Field is not trivial so avoid too much Result
@@ -487,8 +488,8 @@ proc init*(key: var RsaPrivateKey, data: openArray[byte]): Result[void, Asn1Erro
     return err(Asn1Error.Incorrect)
 
   let nBitlen = bitLength(rawn)
-  if validKeySize(nBitlen) and len(rawp) > 0 and len(rawq) > 0 and len(rawdp) > 0 and
-      len(rawdq) > 0 and len(rawiq) > 0:
+  if validKeySize(nBitlen) and validPublicExponent(rawpube) and len(rawp) > 0 and
+      len(rawq) > 0 and len(rawdp) > 0 and len(rawdq) > 0 and len(rawiq) > 0:
     key = new RsaPrivateKey
     key.buffer = @data
     key.pubk.n = addr key.buffer[rawn.offset]
@@ -514,9 +515,8 @@ proc init*(key: var RsaPrivateKey, data: openArray[byte]): Result[void, Asn1Erro
 
 proc init*(key: var RsaPublicKey, data: openArray[byte]): Result[void, Asn1Error] =
   ## Initialize RSA public key ``key`` from ASN.1 DER binary representation
-  ## ``data``.
-  ##
-  ## Procedure returns ``Asn1Status``.
+  ## ``data``. The public exponent must be odd and in [3, 2^31 - 1].
+  ## Invalid exponents return ``Asn1Error.Incorrect``.
   var field, rawn, rawe: Asn1Field
   var ab = Asn1Buffer.init(data)
 
@@ -603,8 +603,9 @@ proc init*[T: RsaPKI](sospk: var T, data: string): Result[void, Asn1Error] =
 proc init*(
     t: typedesc[RsaPrivateKey], data: openArray[byte]
 ): RsaResult[RsaPrivateKey] =
-  ## Initialize RSA private key from ASN.1 DER binary representation ``data``
-  ## and return constructed object.
+  ## Initialize RSA private key from ASN.1 DER binary representation ``data``.
+  ## The public exponent must be odd and in [3, 2^31 - 1]; invalid keys return
+  ## ``RsaKeyIncorrectError``.
   var res: RsaPrivateKey
   if res.init(data).isErr:
     err(RsaKeyIncorrectError)
@@ -612,8 +613,9 @@ proc init*(
     ok(res)
 
 proc init*(t: typedesc[RsaPublicKey], data: openArray[byte]): RsaResult[RsaPublicKey] =
-  ## Initialize RSA public key from ASN.1 DER binary representation ``data``
-  ## and return constructed object.
+  ## Initialize RSA public key from ASN.1 DER binary representation ``data``.
+  ## The public exponent must be odd and in [3, 2^31 - 1]; invalid keys return
+  ## ``RsaKeyIncorrectError``.
   var res: RsaPublicKey
   if res.init(data).isErr:
     err(RsaKeyIncorrectError)

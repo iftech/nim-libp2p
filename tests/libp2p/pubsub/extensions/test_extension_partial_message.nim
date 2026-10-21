@@ -122,7 +122,7 @@ proc sendGroupMetadata(
   )
 
 suite "GossipSub Extensions :: Partial Message Extension":
-  let peerId = PeerId.random(rng()).get()
+  let peerId = PeerId.random()
   let groupId = "group-id-1".toBytes
 
   test "isSupported":
@@ -378,7 +378,7 @@ suite "GossipSub Extensions :: Partial Message Extension":
         # but in this test this list is ignored because test is publishing to selected peers.
     )
     var ext = PartialMessageExtension.new(cr.config())
-    let selectedPeerId = PeerId.random(rng()).get()
+    let selectedPeerId = PeerId.random()
 
     # must subscribe all peers with partial capability
     ext.subscribe(peerId, topic, true)
@@ -434,7 +434,7 @@ suite "GossipSub Extensions :: Partial Message Extension":
       requested.add((topic, groupId, metadata))
       cr.store.materializeParts(topic, groupId, metadata)
     var ext = PartialMessageExtension.new(config)
-    let requestingPeerId = PeerId.random(rng()).get()
+    let requestingPeerId = PeerId.random()
 
     ext.subscribe(peerId, topic, true)
     ext.subscribe(requestingPeerId, topic, true)
@@ -480,7 +480,7 @@ suite "GossipSub Extensions :: Partial Message Extension":
     const topic = "logos-partial"
     var cr = CallbackRecorder()
     var ext = PartialMessageExtension.new(cr.config())
-    let publisherPeerId = PeerId.random(rng()).get()
+    let publisherPeerId = PeerId.random()
 
     # publisher sent metadata for this group but is not subscribed to the topic
     ext.handlePartialMessage(
@@ -554,8 +554,8 @@ suite "GossipSub Extensions :: Partial Message Extension":
     # the stateOnlyPeer is intentionally not subscribed, it is reached
     # only through groupState.peerState.keys and receives metadata-only.
     const topic = "logos-partial"
-    let publishTargetPeerId = PeerId.random(rng()).get()
-    let stateOnlyPeerId = PeerId.random(rng()).get()
+    let publishTargetPeerId = PeerId.random()
+    let stateOnlyPeerId = PeerId.random()
     var cr = CallbackRecorder(publishToPeers: @[publishTargetPeerId])
     var ext = PartialMessageExtension.new(cr.config())
 
@@ -771,7 +771,7 @@ suite "GossipSub Extensions :: Partial Message Extension":
 
     # distinct peers each adding one group so per-peer cap is not the limiter
     for i in 0 ..< 10:
-      let p = PeerId.random(rng()).get()
+      let p = PeerId.random()
       ext.sendGroupMetadata(p, topic, "g-" & $i)
 
     # all groups are accepted; the global limit is enforced lazily on heartbeat
@@ -788,9 +788,9 @@ suite "GossipSub Extensions :: Partial Message Extension":
     cfg.heartbeatsTillEviction = 10
     var ext = PartialMessageExtension.new(cfg)
 
-    let p1 = PeerId.random(rng()).get()
-    let p2 = PeerId.random(rng()).get()
-    let p3 = PeerId.random(rng()).get()
+    let p1 = PeerId.random()
+    let p2 = PeerId.random()
+    let p3 = PeerId.random()
 
     ext.sendGroupMetadata(p1, topic, "g-1")
     ext.sendGroupMetadata(p2, topic, "g-2")
@@ -823,7 +823,7 @@ suite "GossipSub Extensions :: Partial Message Extension":
     check ext.trackedGroups == 2
 
     # a different peer still has its own budget
-    let otherPeer = PeerId.random(rng()).get()
+    let otherPeer = PeerId.random()
     ext.sendGroupMetadata(otherPeer, topic, "other")
     check ext.trackedGroups == 3
 

@@ -728,6 +728,7 @@ method initPubSub*(p: PubSub) {.base, raises: [InitializationError].} =
   p.observers = new(seq[PubSubObserver])
   if p.msgIdProvider == nil:
     p.msgIdProvider = defaultMsgIdProvider
+  p.rng.generate(p.msgSeqno)
 
 {.pop.}
 

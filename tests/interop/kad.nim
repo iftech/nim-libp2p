@@ -36,7 +36,7 @@ proc kadInteropTest*(
   defer:
     await switch.stop()
 
-  let key = Key.fromBytes("key".toBytes())
+  let key = RecordKey.fromBytes("key".toBytes()).tryGet()
   let value = Value.fromBytes("value".toBytes())
 
   let res = await kad.putValue(key, value).wait(timeout)

@@ -307,15 +307,13 @@ suite "Circuit Relay":
 
     let tooShort = await transport.tryDial(ma("/ip4/127.0.0.1/tcp/1"))
     check:
-      tooShort.isErr()
-      tooShort.isOfError("dial address not valid")
+      tooShort.isOfError(InvalidDialAddressCause)
 
     let noRelay = await transport.tryDial(
       ma("/ip4/127.0.0.1/tcp/1/p2p-circuit/p2p/" & $dst.peerInfo.peerId)
     )
     check:
-      noRelay.isErr()
-      noRelay.isOfError("Relay doesn't exist")
+      noRelay.isOfError(NoRelayCause)
 
     let noCircuit = await transport.tryDial(
       ma(
@@ -324,5 +322,4 @@ suite "Circuit Relay":
       )
     )
     check:
-      noCircuit.isErr()
-      noCircuit.isOfError("missing p2p-circuit")
+      noCircuit.isOfError(MissingCircuitCause)

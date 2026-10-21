@@ -87,6 +87,10 @@ suite "Content identifier CID test suite":
       Cid.init("").error() == CidError.Incorrect
       Cid.init("!abc").error() == CidError.Incorrect
 
+  test "decode rejects multibase text that decodes to zero bytes":
+    for text in ["M=", "U=", "c========", "t========", "C========"]:
+      check Cid.init(text).error() == CidError.Incorrect
+
   test "init rejects unsupported version, content type and hash":
     let data = [byte 1, 2, 3]
     let sha = MultiHash.digest("sha2-256", data).get()

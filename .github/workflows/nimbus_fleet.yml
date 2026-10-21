@@ -1,0 +1,106 @@
+name: Nimbus fleet
+
+# workflow_run takes this file from the default branch, so a PR cannot change the steps that hold the nimbus-eth2 token.
+on:
+  workflow_run:
+    workflows: [Nimbus test]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NIMBUS_REPO: status-im/nimbus-eth2
+  NIMBUS_BASE: unstable
+  FLEET_BRANCH: nim-libp2p-auto-bump-unstable
+
+jobs:
+  fleet:
+    name: Push to the nimbus fleet branch
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'workflow_dispatch' ||
+        (github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: bump-status-im/nimbus-eth2-unstable
+      cancel-in-progress: false
+    steps:
+      - name: Read and check the pins
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          if ! gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n nimbus-pins -D pins; then
+            echo "no pins: the test run skipped the testnet" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          nimbus_sha=$(jq -r .nimbus_sha pins/nimbus-pins.json)
+          libp2p_sha=$(jq -r .libp2p_sha pins/nimbus-pins.json)
+          for sha in "$nimbus_sha" "$libp2p_sha"; do
+            [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::invalid sha in pins: $sha"; exit 1; }
+          done
+
+          status=$(gh api "repos/$NIMBUS_REPO/compare/$nimbus_sha...$NIMBUS_BASE" --jq .status)
+          [[ $status == behind || $status == identical ]] || { echo "::error::$nimbus_sha is not on $NIMBUS_REPO $NIMBUS_BASE"; exit 1; }
+
+          if [[ $EVENT == pull_request ]]; then
+            [[ $libp2p_sha == "$HEAD_SHA" ]] || { echo "::error::pinned $libp2p_sha is not the PR head $HEAD_SHA"; exit 1; }
+            [[ -n $PR_NUMBER ]] || { echo "::error::no PR for run $RUN_ID"; exit 1; }
+            if ! gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.labels[].name' | grep -qx test-nimbus; then
+              echo "PR $PR_NUMBER has no test-nimbus label" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+
+          {
+            echo "push=true"
+            echo "nimbus_sha=$nimbus_sha"
+            echo "libp2p_sha=$libp2p_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout nim-libp2p tools
+        if: steps.pin.outputs.push
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          path: libp2p-ci
+          persist-credentials: false
+
+      - name: Build the nimbus-eth2 test tree
+        if: steps.pin.outputs.push
+        uses: ./libp2p-ci/.github/actions/nimbus-tree
+        with:
+          nimbus-repo: ${{ env.NIMBUS_REPO }}
+          nimbus-sha: ${{ steps.pin.outputs.nimbus_sha }}
+          libp2p-sha: ${{ steps.pin.outputs.libp2p_sha }}
+
+      - name: Force-push the test commit to the fleet branch
+        if: steps.pin.outputs.push
+        env:
+          LIBP2P_SHA: ${{ steps.pin.outputs.libp2p_sha }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
+          TOKEN: ${{ secrets.ACTIONS_GITHUB_TOKEN_NIMBUS_ETH2 }}
+        working-directory: nbc
+        run: |
+          git config user.email "$ACTOR@users.noreply.github.com"
+          git config user.name "$ACTOR"
+          git add .gitmodules vendor
+          git commit --quiet --allow-empty -m "test nim-libp2p $LIBP2P_SHA${PR_NUMBER:+ (nim-libp2p PR $PR_NUMBER)}"
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push --quiet --force origin "HEAD:refs/heads/$FLEET_BRANCH"
+          echo "nimbus-eth2 \`$FLEET_BRANCH\` now at $(git rev-parse HEAD); the hoodi libp2p nodes build it on their next update timer" >> "$GITHUB_STEP_SUMMARY"

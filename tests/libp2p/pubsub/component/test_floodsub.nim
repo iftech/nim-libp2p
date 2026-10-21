@@ -23,7 +23,7 @@ import ../../../../libp2p/protocols/pubsub/errors as pubsub_errors
 import ../../../tools/[lifecycle, topology, unittest, futures]
 
 proc addRateLimitedPeer(f: FloodSub, bucket: TokenBucket): PubSubPeer =
-  let peerId = randomPeerId()
+  let peerId = PeerId.random()
   proc getStream(): Future[Stream] {.
       async: (raises: [CancelledError, GetStreamDialError])
   .} =
@@ -348,7 +348,7 @@ suite "FloodSub Component", timeout = 120.seconds:
     let node = generateNodes(1).toFloodSub()[0]
     node.topicsHigh = 10
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     proc getStream(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
@@ -383,7 +383,7 @@ suite "FloodSub Component", timeout = 120.seconds:
   asyncTest "FloodSub unsubscribePeer clears emptied topics":
     let node = generateNodes(1).toFloodSub()[0]
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     proc getStream(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
@@ -436,7 +436,7 @@ suite "FloodSub Component", timeout = 120.seconds:
     let node = generateNodes(1).toFloodSub()[0]
     node.overheadRateLimit = Opt.some(RateLimit(bytes: 10, interval: 1.hours))
 
-    let peer = node.getOrCreatePeer(randomPeerId(), @[FloodSubCodec])
+    let peer = node.getOrCreatePeer(PeerId.random(), @[FloodSubCodec])
     check peer.overheadRateLimitOpt.isSome()
 
   asyncTest "FloodSub keeps the bucket a known peer already spent":
@@ -454,7 +454,7 @@ suite "FloodSub Component", timeout = 120.seconds:
     let node = generateNodes(1).toFloodSub()[0]
     node.overheadRateLimit = Opt.some(RateLimit(bytes: 0, interval: 1.hours))
 
-    let peer = node.getOrCreatePeer(randomPeerId(), @[FloodSubCodec])
+    let peer = node.getOrCreatePeer(PeerId.random(), @[FloodSubCodec])
     check:
       peer.overheadRateLimitOpt.isNone()
       peer.tryCharge(1024)

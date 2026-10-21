@@ -92,6 +92,19 @@ suite "Minimal ASN.1 encode/decode suite":
       res.isErr()
       res.error == Asn1Error.Incomplete
 
+  test "ASN.1 DER huge long form length does not overflow bounds check":
+    when sizeof(int) == 8:
+      const HugeLengthError = Asn1Error.Incomplete
+    else:
+      const HugeLengthError = Asn1Error.Overflow
+    check:
+      decodeHex("30887FFFFFFFFFFFFFFF").error == HugeLengthError
+      decodeHex("02887FFFFFFFFFFFFFFF").error == HugeLengthError
+      decodeHex("03887FFFFFFFFFFFFFFF").error == HugeLengthError
+      decodeHex("04887FFFFFFFFFFFFFFF").error == HugeLengthError
+      decodeHex("06887FFFFFFFFFFFFFFF").error == HugeLengthError
+      decodeHex("308480000000").error == HugeLengthError
+
   test "ASN.1 DER INTEGER encoding/decoding of native unsigned values test":
     proc decodeBuffer(data: openArray[byte]): uint64 =
       var ab = Asn1Buffer.init(data)
@@ -199,6 +212,7 @@ suite "Minimal ASN.1 encode/decode suite":
       decodeHex("0300").error == Asn1Error.Incorrect
       decodeHex("030180").error == Asn1Error.Incorrect
       decodeHex("030107").error == Asn1Error.Incorrect
+      decodeHex("0301").error == Asn1Error.Incomplete
       decodeHex("030200").error == Asn1Error.Incomplete
       decodeHex("030208FF").error == Asn1Error.Incorrect
 

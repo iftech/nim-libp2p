@@ -16,7 +16,7 @@ suite "Dial backoff":
       DialBackoffConfig(tolerance: 2, base: 1.seconds, factor: 2, maxDelay: 8.seconds)
     noTolerance =
       DialBackoffConfig(tolerance: 0, base: 1.seconds, factor: 2, maxDelay: 8.seconds)
-    peerId = PeerId.random(rng()).tryGet()
+    peerId = PeerId.random()
 
   test "A failure under the tolerance blocks nothing":
     let
@@ -161,14 +161,14 @@ suite "Dial backoff":
 
   test "An address is keyed by the peer it reaches":
     let
-      relayId = PeerId.random(rng()).tryGet()
+      relayId = PeerId.random()
       relay =
         MultiAddress.init("/ip4/1.2.3.4/tcp/4001").tryGet() &
         MultiAddress.init(multiCodec("p2p"), relayId.data).tryGet() &
         MultiAddress.init("/p2p-circuit").tryGet()
       direct = memoryAddr(0)
-      first = PeerId.random(rng()).tryGet()
-      second = PeerId.random(rng()).tryGet()
+      first = PeerId.random()
+      second = PeerId.random()
 
     check:
       backoffKey(direct, Opt.none(PeerId)) == direct

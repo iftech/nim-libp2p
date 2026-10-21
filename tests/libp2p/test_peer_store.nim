@@ -4,6 +4,7 @@
 {.used.}
 
 import std/[tables, sequtils]
+from std/times import nil
 import chronos
 import
   ../../libp2p/[
@@ -16,6 +17,10 @@ import
     utils/opt,
   ]
 import ../tools/[unittest, crypto, multiaddress]
+
+type
+  GenericBook[T] = ref object of PeerBook[T]
+  IntBook = GenericBook[int]
 
 suite "PeerStore":
   # Testvars
@@ -71,6 +76,26 @@ suite "PeerStore":
     check peerId1 notin peerStore[AddressBook]
     # Now try and del it again
     peerStore.del(peerId1)
+
+  test "PeerStore API (generics)":
+    let peerStore = PeerStore.new(nil)
+
+    peerStore[GenericBook[int]][peerId1] = 1
+    peerStore[GenericBook[string]][peerId1] = "a"
+    peerStore[GenericBook[Duration]][peerId1] = 2.seconds
+    peerStore[GenericBook[times.Duration]][peerId1] = times.initDuration(seconds = 3)
+    check:
+      peerStore[IntBook][peerId1] == 1
+      peerStore[GenericBook[string]][peerId1] == "a"
+      peerStore[GenericBook[Duration]][peerId1] == 2.seconds
+      peerStore[GenericBook[times.Duration]][peerId1] == times.initDuration(seconds = 3)
+
+    peerStore.del(peerId1)
+    check:
+      peerId1 notin peerStore[GenericBook[int]]
+      peerId1 notin peerStore[GenericBook[string]]
+      peerId1 notin peerStore[GenericBook[Duration]]
+      peerId1 notin peerStore[GenericBook[times.Duration]]
 
   test "updatePeerInfo stores and updates only fresh signed peer records":
     let
@@ -232,8 +257,8 @@ suite "PeerStore":
 
 suite "AddressBook TTL / confidence":
   let
-    peerId1 = PeerId.random(rng()).get()
-    peerId2 = PeerId.random(rng()).get()
+    peerId1 = PeerId.random()
+    peerId2 = PeerId.random()
     addr1 = ma("/ip4/1.2.3.4/tcp/1234")
     addr2 = ma("/ip4/5.6.7.8/tcp/5678")
 
@@ -550,7 +575,7 @@ suite "AddressBook TTL / confidence":
   test "pruneExpired notifies changed peers and skips untouched ones":
     let
       book = makeBook(1.seconds, 1.hours, 24.hours)
-      peerId3 = PeerId.random(rng()).get()
+      peerId3 = PeerId.random()
     # peerId1 keeps a fresh address but loses an expired one (partial eviction).
     book.set(peerId1, @[addr1], AddressConfidence.Low)
     book.extend(peerId1, @[addr2], AddressConfidence.Medium)
@@ -572,7 +597,7 @@ suite "AddressBook TTL / confidence":
 
 suite "AddressBook TTL pruning loop":
   let
-    peerId1 = PeerId.random(rng()).get()
+    peerId1 = PeerId.random()
     addr1 = ma("/ip4/1.2.3.4/tcp/1234")
 
   proc makeStore(low, medium, high: Duration): PeerStore =

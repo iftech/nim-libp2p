@@ -22,20 +22,20 @@ suite "KadDHT - Probe backoff":
     kad.config.limits.maxProbeFailures = 8
 
     for i in 0 ..< 100:
-      kad.probeRecordFailure(randomPeerId(), deadAddrs(40000 + i))
+      kad.probeRecordFailure(PeerId.random(), deadAddrs(40000 + i))
 
     check kad.probeFailures.len <= 8
 
   test "a flood of one-shot failures does not evict a repeat offender":
     let kad = setupKad()
     kad.config.limits.maxProbeFailures = 8
-    let offender = randomPeerId()
+    let offender = PeerId.random()
     let offenderAddrs = deadAddrs(59999)
 
     for _ in 0 ..< 3:
       kad.probeRecordFailure(offender, offenderAddrs)
     for i in 0 ..< 100:
-      kad.probeRecordFailure(randomPeerId(), deadAddrs(40000 + i))
+      kad.probeRecordFailure(PeerId.random(), deadAddrs(40000 + i))
 
     check kad.probeBackedOff(offender, offenderAddrs)
 
@@ -43,7 +43,7 @@ suite "KadDHT - Probe backoff":
     let kad = setupKad()
     kad.config.limits.maxProbeFailures = 1
     kad.config.timeout = 1.nanoseconds
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let addrs = deadAddrs(59999)
 
     kad.probeRecordFailure(peerId, addrs)
@@ -54,8 +54,9 @@ suite "KadDHT - Probe backoff":
   test "a full cache drops elapsed entries before it records a new failure":
     var failures: Table[PeerId, ProbeFailure]
     for _ in 0 ..< 4:
-      failures[randomPeerId()] = ProbeFailure(count: 1, until: Moment.now() - 1.seconds)
-    let peerId = randomPeerId()
+      failures[PeerId.random()] =
+        ProbeFailure(count: 1, until: Moment.now() - 1.seconds)
+    let peerId = PeerId.random()
 
     failures.recordFailure(peerId, deadAddrs(59999), 1.seconds, 1.minutes, 4)
 
@@ -76,7 +77,7 @@ suite "KadDHT - Probe backoff":
     let kad = setupKad()
     kad.config.timeout = 1.seconds
     kad.config.probeBackoffMax = 1.hours
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let addrs = deadAddrs(59999)
 
     var untils: seq[Moment]
@@ -91,7 +92,7 @@ suite "KadDHT - Probe backoff":
 
   asyncTest "a peer whose probe failed is not probed again while backed off":
     let kad = setupKad()
-    let peer = PeerInfo(peerId: randomPeerId(), addrs: deadAddrs(59999))
+    let peer = PeerInfo(peerId: PeerId.random(), addrs: deadAddrs(59999))
 
     kad.admitPeers(@[peer])
     checkUntilTimeout:
@@ -106,7 +107,7 @@ suite "KadDHT - Probe backoff":
   asyncTest "a backed-off peer named with other addresses is probed again":
     ## A bogus address must not keep the peer's working address out of the table.
     let kad = setupKad()
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
 
     kad.admitPeers(@[PeerInfo(peerId: peerId, addrs: deadAddrs(59999))])
     checkUntilTimeout:
