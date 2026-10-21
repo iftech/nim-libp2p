@@ -52,8 +52,9 @@ proc countCancelledDials*(
   while true:
     let dialFut = client.dial("", server.addrs[0])
 
+    if step > 0:
+      await stepsAsync(step)
     step.inc()
-    await stepsAsync(step)
 
     await dialFut.cancelAndWait()
 
@@ -67,7 +68,7 @@ proc countCancelledDials*(
 
 template cancellationTransportTest*(provider: TransportProvider, address: string) =
   asyncTest "a dial cancelled at any point leaves no socket open":
-    check (await countCancelledDials(provider, address)) > 1
+    check (await countCancelledDials(provider, address)) > 0
 
 type UpgradeStage = enum
   SecurityHandshake

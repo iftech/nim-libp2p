@@ -834,8 +834,9 @@ suite "Dialer":
       let dialFut =
         src.dialer.dialAndUpgrade(Opt.some(dst.peerInfo.peerId), dst.peerInfo.addrs)
 
+      if step > 0:
+        await stepsAsync(step)
       step.inc()
-      await stepsAsync(step)
 
       await dialFut.cancelAndWait()
 
