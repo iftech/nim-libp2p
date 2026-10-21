@@ -268,13 +268,13 @@ proc boundXpr*(key: Key, value: Value): Opt[SignedExtendedPeerRecord] =
 
 type ExtEntryValidator* = ref object of EntryValidator
 method isValid*(
-    self: ExtEntryValidator, key: Key, record: EntryRecord
+    self: ExtEntryValidator, key: RecordKey, record: EntryRecord
 ): bool {.raises: [], gcsafe.} =
-  boundXpr(key, record.value).isSome()
+  boundXpr(key.toKey(), record.value).isSome()
 
 type ExtEntrySelector* = ref object of EntrySelector
 method select*(
-    self: ExtEntrySelector, key: Key, records: seq[EntryRecord]
+    self: ExtEntrySelector, key: RecordKey, records: seq[EntryRecord]
 ): LPResult[int] {.raises: [], gcsafe.} =
   if records.len == 0:
     return err("No records to choose from")

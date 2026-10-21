@@ -450,7 +450,11 @@ proc publishXpr(
     disco: ServiceDiscovery, xpr: SignedXpr
 ) {.async: (raises: [CancelledError]).} =
   ## A random walk finds the record only when its signer is a DHT peer.
-  (await disco.putValue(xpr.peerId.toKey(), Value.fromBytes(xpr.bytes))).isOkOr:
+  let key = RecordKey.init(xpr.peerId.toKey()).valueOr:
+    debug "Failed to put signed peer record", err = error, peerId = xpr.peerId
+    return
+
+  (await disco.putValue(key, Value.fromBytes(xpr.bytes))).isOkOr:
     debug "Failed to put signed peer record", err = error, peerId = xpr.peerId
 
 proc publishXprs(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =

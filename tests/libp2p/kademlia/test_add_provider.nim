@@ -3,7 +3,7 @@
 
 {.used.}
 
-import algorithm, chronos, results, sets, sequtils, tables, stew/byteutils
+import algorithm, chronos, results, sets, sequtils, strutils, tables, stew/byteutils
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
 import ../../tools/[lifecycle, topology, unittest, multiaddress]
@@ -442,6 +442,40 @@ suite "KadDHT - Add Provider":
       receiverKad.providerManager.providerRecords[0].provider.id.get() ==
         senderKad.switch.peerInfo.peerId.getBytes()
       receiverKad.providerManager.providerRecords[0].provider.addrs.len == 0
+
+  asyncTest "Add provider keeps at most MaxProviderAddrs short addresses":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+
+    # handleAddProvider only accepts providers matching stream.peerId
+    let conn = await kads[0].switch.dial(kads[1].switch, kads[1].codec)
+    defer:
+      await conn.close()
+
+    let
+      longAddr = ma("/dns4/" & 'a'.repeat(MaxProviderAddrLen) & "/tcp/4001")
+      shortAddrs = (0 ..< 1000).mapIt(
+        ma("/ip4/10.0." & $(it div 256) & "." & $(it mod 256) & "/tcp/4001")
+      )
+      provider = Peer(
+        id: kads[1].switch.peerInfo.peerId.getBytes(),
+        addrs: @[longAddr] & shortAddrs,
+        connection: ConnectionStatus.connected,
+      )
+
+    await kads[0].handleAddProvider(
+      conn,
+      Message(
+        msgType: MessageType.addProvider,
+        key: kads[1].rtable.selfId,
+        providerPeers: @[provider],
+      ),
+    )
+
+    check:
+      kads[0].providerManager.providerRecords.len == 1
+      kads[0].providerManager.providerRecords[0].provider.addrs ==
+        shortAddrs[0 ..< MaxProviderAddrs]
 
   asyncTest "Add provider includes local multiaddresses":
     let kads = setupKadSwitches(2)

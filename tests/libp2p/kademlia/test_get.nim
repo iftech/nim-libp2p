@@ -223,7 +223,7 @@ suite "KadDHT Get":
       getValueResponse = Opt.some(
         Message(
           msgType: MessageType.getValue,
-          key: key,
+          key: key.toKey(),
           record: Opt.some(
             protobuf.Record(
               key: Key.init(wrongKey), # get value response with mismatched recored key
@@ -250,7 +250,7 @@ suite "KadDHT Get":
     check:
       record.isErr()
       kad.containsNoData(key)
-      kad.containsNoData(wrongKey)
+      kad.containsNoData(wrongKey.toRecordKey())
 
   asyncTest "Get value rejects response without record":
     let kad = setupKad()
@@ -260,7 +260,7 @@ suite "KadDHT Get":
       getValueResponse = Opt.some(
         Message(
           msgType: MessageType.getValue,
-          key: key,
+          key: key.toKey(),
           record: Opt.none(protobuf.Record), # get value response with empty record
           closerPeers: @[],
         )
@@ -289,10 +289,10 @@ suite "KadDHT Get":
       getValueResponse = Opt.some(
         Message(
           msgType: MessageType.getValue,
-          key: key,
+          key: key.toKey(),
           record: Opt.some(
             protobuf.Record(
-              key: key,
+              key: key.toKey(),
               value: Opt.none(Value), # get value response with empty record value
               timeReceived: Timestamp.now(),
             )
@@ -326,7 +326,7 @@ suite "KadDHT Get":
       getValueResponse = Opt.some(
         Message(
           msgType: MessageType.getValue,
-          key: key,
+          key: key.toKey(),
           record: Opt.some(
             protobuf.Record(
               key: Key.init(wrongKey), # get value response with mismatched recored key

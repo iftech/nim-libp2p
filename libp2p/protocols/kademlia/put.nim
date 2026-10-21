@@ -11,7 +11,7 @@ import ./[protobuf, types, find, rpc, kademlia_metrics]
 logScope:
   topics = "libp2p kademlia"
 
-proc isBestValue(kad: KadDHT, key: Key, record: EntryRecord): bool =
+proc isBestValue(kad: KadDHT, key: RecordKey, record: EntryRecord): bool =
   ## Returns whether `value` is a better value than what we have locally
   ## Always returns `true` if we don't have the value locally
 
@@ -39,7 +39,7 @@ proc manageExpiredRecords*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   ## loop until cancelled (e.g. via `cancelSoon` or `cancelAndWait`).
   heartbeat "cleanup expired data entries", kad.config.cleanupDataEntriesInterval:
     let currentUnixSeconds = nowUnixSeconds()
-    var toRemove: seq[Key]
+    var toRemove: seq[RecordKey]
     for key, record in kad.dataTable:
       if record.isExpired(kad.config.recordExpirationInterval, currentUnixSeconds):
         toRemove.add(key)
@@ -48,12 +48,12 @@ proc manageExpiredRecords*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
       trace "Expired record removed", key
 
 proc dispatchPutVal*(
-    kad: KadDHT, peer: PeerId, key: Key, value: Value
+    kad: KadDHT, peer: PeerId, key: RecordKey, value: Value
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let msg = Message(
     msgType: Opt.some(MessageType.putValue),
-    key: Opt.some(key),
-    record: Opt.some(Record(key: Opt.some(key), value: Opt.some(value))),
+    key: Opt.some(key.toKey()),
+    record: Opt.some(Record(key: Opt.some(key.toKey()), value: Opt.some(value))),
   )
   let reply = ?await kad.dispatchRpc(peer, msg)
 
@@ -66,7 +66,7 @@ proc dispatchPutVal*(
 
   ok()
 
-proc canStoreLocalRecord*(kad: KadDHT, key: Key): bool {.raises: [].} =
+proc canStoreLocalRecord*(kad: KadDHT, key: RecordKey): bool {.raises: [].} =
   if kad.dataTable.hasKey(key):
     return true
   kad.config.limits.maxLocalRecords.ifValue(limit):
@@ -74,7 +74,7 @@ proc canStoreLocalRecord*(kad: KadDHT, key: Key): bool {.raises: [].} =
   true
 
 proc putValue*(
-    kad: KadDHT, key: Key, value: Value
+    kad: KadDHT, key: RecordKey, value: Value
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   if value.len > kad.config.limits.maxValueSize:
     return err(
@@ -89,7 +89,7 @@ proc putValue*(
   if not kad.isBestValue(key, record):
     return err("Value rejected, we have a better one")
 
-  let peers = await kad.findNode(key)
+  let peers = await kad.findNode(key.toKey())
 
   let storedLocally = kad.canStoreLocalRecord(key)
   if storedLocally:
@@ -142,6 +142,11 @@ proc handlePutValue*(
       reason = "missingKey", messageType = "putValue", stream
     return
 
+  let key = RecordKey.init(msgKey).valueOr:
+    trace "Put-value request rejected",
+      reason = "invalidKeyLength", messageType = "putValue", stream, err = error
+    return
+
   if record.key.isNone or record.key.get() != msgKey:
     trace "Put-value request rejected",
       reason = "keyMismatch", messageType = "putValue", stream
@@ -161,22 +166,22 @@ proc handlePutValue*(
   let entryRecord = EntryRecord(value: value, time: Timestamp.now())
 
   # Value sanitisation done. Start insertion process
-  if not kad.config.validator.isValid(msgKey, entryRecord):
+  if not kad.config.validator.isValid(key, entryRecord):
     trace "Put-value request rejected",
       reason = "invalidRecord", messageType = "putValue", stream
     return
 
-  if not kad.isBestValue(msgKey, entryRecord):
+  if not kad.isBestValue(key, entryRecord):
     trace "Dropping received value, we have a better one"
     await stream.reset()
     return
 
-  if not kad.canStoreLocalRecord(msgKey):
+  if not kad.canStoreLocalRecord(key):
     debug "PutValue: local record limit reached", stream, current = kad.dataTable.len
     await stream.reset()
     return
 
-  kad.dataTable.insert(msgKey, entryRecord.value, Timestamp.now())
+  kad.dataTable.insert(key, entryRecord.value, Timestamp.now())
   # consistent with following link, echo message without change
   # https://github.com/libp2p/js-libp2p/blob/cf9aab5c841ec08bc023b9f49083c95ad78a7a07/packages/kad-dht/src/rpc/handlers/put-value.ts#L22
   let encoded = msg.encode(kad.config.hideConnectionStatus)

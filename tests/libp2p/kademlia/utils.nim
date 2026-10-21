@@ -19,6 +19,12 @@ converter toValue*(bytes: seq[byte]): Value =
 converter toOptKey*(key: Key): Opt[Key] =
   Opt.some(key)
 
+converter toRecordKey*(key: Key): RecordKey =
+  RecordKey.init(key).tryGet()
+
+converter peerIdToRecordKey*(peerId: PeerId): RecordKey =
+  RecordKey.init(peerId.toKey()).tryGet()
+
 converter toOptValue*(value: Value): Opt[Value] =
   Opt.some(value)
 
@@ -56,20 +62,22 @@ converter toOptMessageType*(a: MessageType): Opt[MessageType] =
   Opt.some(a)
 
 type PermissiveValidator* = ref object of EntryValidator
-method isValid*(self: PermissiveValidator, key: Key, record: EntryRecord): bool =
+method isValid*(self: PermissiveValidator, key: RecordKey, record: EntryRecord): bool =
   true
 
 type RestrictiveValidator* = ref object of EntryValidator
-method isValid(self: RestrictiveValidator, key: Key, record: EntryRecord): bool =
+method isValid(self: RestrictiveValidator, key: RecordKey, record: EntryRecord): bool =
   false
 
 type CandSelector* = ref object of EntrySelector
-method select*(self: CandSelector, key: Key, values: seq[EntryRecord]): LPResult[int] =
+method select*(
+    self: CandSelector, key: RecordKey, values: seq[EntryRecord]
+): LPResult[int] =
   return ok(0)
 
 type OthersSelector* = ref object of EntrySelector
 method select*(
-    self: OthersSelector, key: Key, values: seq[EntryRecord]
+    self: OthersSelector, key: RecordKey, values: seq[EntryRecord]
 ): LPResult[int] =
   if values.len == 0:
     return err("no values were given")
@@ -210,7 +218,7 @@ proc countBucketEntries*(buckets: seq[Bucket], key: Key): uint32 =
         res += 1
   return res
 
-proc containsData*(kad: KadDHT, key: Key, value: Value): bool =
+proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
   let record = kad.dataTable.get(key).valueOr:
     checkpoint("containsData: key not found: " & $key.shortLog())
     return false
@@ -224,7 +232,7 @@ proc containsData*(kad: KadDHT, key: Key, value: Value): bool =
 
   true
 
-proc containsNoData*(kad: KadDHT, key: Key): bool =
+proc containsNoData*(kad: KadDHT, key: RecordKey): bool =
   kad.dataTable.get(key).isNone()
 
 proc pluckPeerIds*(kads: seq[KadDHT]): seq[PeerId] =

@@ -257,6 +257,30 @@ suite "WebSocket transport":
     expect TransportDialError:
       discard await transport.dial("", ma("/dns/example.com/tcp/1234/ws"))
 
+  asyncTest "dial with a control character in the hostname is a TransportDialError":
+    let server = wsTransProvider()
+    await server.start(@[ma(wsAddress)])
+    defer:
+      await server.stop()
+
+    let client = wsTransProvider()
+    defer:
+      await client.stop()
+
+    for hostname in ["a\r\nX-Injected: 1", "a\nb", "a\x00b", "a\x7Fb"]:
+      expectMsgContains TransportDialError, "control character in the hostname":
+        discard await client.dial(hostname, server.addrs[0])
+
+  asyncTest "dial with a control character in explicit SNI is a TransportDialError":
+    let client = wsTransProvider()
+    defer:
+      await client.stop()
+
+    for sni in ["a\r\nb", "a\nb", "a\x00b", "a\tb", "a\x7Fb"]:
+      let address = ma("/ip4/127.0.0.1/tcp/1/tls/sni/" & sni & "/ws")
+      expectMsgContains TransportDialError, "control character in the hostname":
+        discard await client.dial("valid.http.host", address)
+
 suite "WebSocket transport with autotls":
   teardown:
     checkTrackers()

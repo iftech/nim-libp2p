@@ -8,6 +8,7 @@ import ../../../../libp2p/[extended_peer_record, peerid, utils/future]
 import ../../../../libp2p/protocols/[kademlia, protocol, service_discovery]
 import ../../../../libp2p/stream/connection
 import ../../../tools/[lifecycle, topology, unittest]
+import ../../kademlia/utils as kad_utils
 import ../utils
 
 proc foreignXpr(): Value =
@@ -38,7 +39,7 @@ suite "Service Discovery - XPR key binding":
     startAndDeferStop(discos)
     await connectStar(discos)
 
-    let servedKey = discos[2].switch.peerInfo.peerId.toKey()
+    let servedKey = discos[2].switch.peerInfo.peerId
     discos[2].dataTable.insert(servedKey, foreignXpr(), Timestamp.now())
 
     check (await discos[1].lookupRandom()).len == 0
@@ -54,7 +55,7 @@ suite "Service Discovery - XPR key binding":
     check discos[0].startAdvertising(service, Opt.some(advert.encode())).isOk()
 
     checkUntilTimeout:
-      discos[2].dataTable.get(signer.peerId.toKey()).isSome()
+      discos[2].dataTable.get(signer.peerId).isSome()
 
     let records = await discos[1].lookupRandom()
     check records.mapIt(it.peerId) == @[signer.peerId]

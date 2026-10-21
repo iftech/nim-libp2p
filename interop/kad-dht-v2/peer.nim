@@ -80,8 +80,8 @@ proc buildSwitch(config: KadConfig): Switch =
 proc provideKey(testKey: string): Key =
   Key.fromBytes(("interop-test-key-" & testKey).toBytes())
 
-proc valueKey(testKey: string): Key =
-  Key.fromBytes(("/example/data/" & testKey).toBytes())
+proc valueKey(testKey: string): RecordKey =
+  RecordKey.fromBytes(("/example/data/" & testKey).toBytes()).expect("short key")
 
 proc newKad(switch: Switch): KadDHT =
   KadDHT.new(

@@ -14,6 +14,10 @@ jobs:
   bumper:
     runs-on: ubuntu-latest
     name: Bump libp2p version for ${{ matrix.target.repository }}:${{ matrix.target.ref }}
+    # nimbus_fleet.yml joins this group to serialize its pushes to the same auto-bump branch.
+    concurrency:
+      group: bump-${{ matrix.target.repository }}-${{ matrix.target.ref }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
