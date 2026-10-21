@@ -16,9 +16,9 @@ import
   ../../utils/heartbeat,
   ../../utils/future,
   ../../stream/connection,
-  ../../utils/offsettedseq
+  ../../utils/idseq
 
-export chronicles, offsettedseq
+export chronicles, idseq
 
 logScope:
   topics = "libp2p rendezvous"
@@ -97,12 +97,9 @@ type
 
   # For any custom peer record type E, constructor has to be implemented
   GenericRendezVous*[E] = ref object of LPProtocol
-    # Registered needs to be an offsetted sequence
-    # because we need stable index for the cookies.
-    registered*: OffsettedSeq[RegisteredData]
-    # Namespaces is a table whose key is a salted namespace and
-    # the value is the index sequence corresponding to this
-    # namespace in the offsettedqueue.
+    # The cookies need a stable, increasing id per registration.
+    registered*: IdSeq[RegisteredData]
+    # Salted namespace -> ascending ids of its entries in `registered`.
     namespaces*: Table[string, seq[int]]
     # Number of entries of `registered` per peer.
     registeredCount*: Table[PeerId, int]
@@ -206,6 +203,30 @@ proc recountRegistered[E](rdv: GenericRendezVous[E]) =
   for reg in rdv.registered.s:
     rdv.registeredCount.mgetOrPut(reg.peerId, 0).inc()
 
+proc indexOfPeer[E](
+    rdv: GenericRendezVous[E], ids: openArray[int], peerId: PeerId
+): int =
+  for i, id in ids:
+    if rdv.registered[id].peerId == peerId:
+      return i
+  -1
+
+proc store[E](
+    rdv: GenericRendezVous[E], ids: var seq[int], reg: RegisteredData, update: bool
+) =
+  let known = rdv.indexOfPeer(ids, reg.peerId)
+  if known >= 0 and not update:
+    return
+
+  # A refresh gets a new id, so a cookie past the old id still sees it.
+  if known >= 0:
+    rdv.registered[ids[known]].expiration = rdv.expiredDT
+    ids.delete(known)
+
+  rdv.registeredCount.mgetOrPut(reg.peerId, 0).inc()
+  rdv.registered.add(reg)
+  ids.add(rdv.registered.high)
+
 proc save*[E](
     rdv: GenericRendezVous[E],
     ns: string,
@@ -218,20 +239,13 @@ proc save*[E](
       rdv.namespaces.len >= rdv.config.namespaceLimit():
     return err("Namespace limit reached")
 
-  for index in rdv.namespaces.getOrDefault(nsSalted):
-    if rdv.registered[index].peerId == peerId:
-      if update == false:
-        return ok()
-      rdv.registered[index].expiration = rdv.expiredDT
-  rdv.registered.add(
-    RegisteredData(
-      peerId: peerId,
-      expiration: Moment.now() + r.ttl.get(rdv.config.minTTL).int64.seconds,
-      data: r,
-    )
+  let reg = RegisteredData(
+    peerId: peerId,
+    expiration: Moment.now() + r.ttl.get(rdv.config.minTTL).int64.seconds,
+    data: r,
   )
-  rdv.registeredCount.mgetOrPut(peerId, 0).inc()
-  rdv.namespaces.mgetOrPut(nsSalted, @[]).add(rdv.registered.high)
+
+  rdv.store(rdv.namespaces.mgetOrPut(nsSalted, @[]), reg, update)
   ok()
 
 proc register*[E](
@@ -263,12 +277,14 @@ proc unregister*[E](rdv: GenericRendezVous[E], stream: Stream, u: Unregister) =
       rdv.registered[index].expiration = rdv.expiredDT
       libp2p_rendezvous_registered.dec()
 
-iterator discoverIndexes(nsIndexes: Opt[seq[int]], first, last: int): int =
+iterator discoverIndexes[E](
+    rdv: GenericRendezVous[E], nsIndexes: Opt[seq[int]], first: int
+): int =
   if nsIndexes.isSome():
     for index in nsIndexes.get():
       yield index
   else:
-    for index in first .. last:
+    for index in rdv.registered.idsFrom(first):
       yield index
 
 proc discover*[E](
@@ -307,14 +323,13 @@ proc discover*[E](
     else:
       Opt.none(seq[int])
   let
-    first = max(cookie.offset.int, rdv.registered.offset)
-    last = rdv.registered.high()
+    first = max(cookie.offset.int, rdv.registered.low())
     n = Moment.now()
   var
     nextOffset = cookie.offset
     s: seq[Register] = @[]
     hasCandidates = false
-  for index in discoverIndexes(nsIndexes, first, last):
+  for index in rdv.discoverIndexes(nsIndexes, first):
     hasCandidates = true
     if limit == 0:
       break
@@ -586,7 +601,6 @@ proc new*(
     rng: rng,
     config: config,
     salt: string.fromBytes(generateBytes(rng, 8)),
-    registered: initOffsettedSeq[RegisteredData](),
     expiredDT: Moment.now() - 1.days,
     #registerEvent: newAsyncEvent(),
     sema: newAsyncSemaphore(SemaphoreDefaultSize),
@@ -648,19 +662,13 @@ func isLive(reg: RegisteredData, n: Moment): bool =
   reg.expiration >= n
 
 proc clearExpiredRegistrations[E](rdv: GenericRendezVous[E], n: Moment) =
-  rdv.registered.flushIfIt(it.expiration < n)
+  rdv.registered.keepItIf(it.isLive(n))
 
-  # An entry behind a live one keeps its index so the cookies stay valid.
-  for reg in rdv.registered.mitems():
-    if not reg.isLive(n):
-      reg = RegisteredData(expiration: rdv.expiredDT)
-
-proc dropExpiredNamespaces[E](rdv: GenericRendezVous[E], n: Moment) =
+proc dropExpiredNamespaces[E](rdv: GenericRendezVous[E]) =
   var emptied: seq[string] = @[]
 
   for ns, indexes in rdv.namespaces.mpairs():
-    indexes =
-      indexes.filterIt(it >= rdv.registered.offset and rdv.registered[it].isLive(n))
+    indexes.keepItIf(it in rdv.registered)
     if indexes.len == 0:
       emptied.add(ns)
 
@@ -679,7 +687,7 @@ proc deletesRegister*[E](
   heartbeat "Register timeout", interval:
     let n = Moment.now()
     rdv.clearExpiredRegistrations(n)
-    rdv.dropExpiredNamespaces(n)
+    rdv.dropExpiredNamespaces()
     rdv.recountRegistered()
     libp2p_rendezvous_registered.set(int64(rdv.liveRegistrations()))
     libp2p_rendezvous_namespaces.set(int64(rdv.namespaces.len))

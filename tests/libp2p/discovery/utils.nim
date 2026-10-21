@@ -68,7 +68,7 @@ proc populatePeerRegistrations*(
 
   let record = targetRdv.registered.s[0]
   for i in 0 ..< count - 1:
-    targetRdv.registered.s.add(record)
+    targetRdv.registered.add(record)
   targetRdv.registeredCount[record.peerId] = count
 
 proc createCorruptedSignedPeerRecord*(peerId: PeerId): SignedPeerRecord =
