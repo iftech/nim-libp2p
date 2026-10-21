@@ -22,6 +22,8 @@ import
 import ../../tools/[unittest, crypto, multiaddress]
 import ./utils
 
+const CancelSteps = 12 ## Event-loop turns to walk cancellation through.
+
 proc countCancelledDials*(
     provider: TransportProvider, address: string
 ): Future[int] {.async: (raises: [CatchableError]).} =
@@ -48,13 +50,15 @@ proc countCancelledDials*(
     await allFutures(accepted.mapIt(it.close()))
     await allFutures(client.stop(), server.stop())
 
-  var step = 0
-  while true:
+  var cancelled = 0
+  for steps in 0 .. CancelSteps:
     let dialFut = client.dial("", server.addrs[0])
 
-    if step > 0:
-      await stepsAsync(step)
-    step.inc()
+    for _ in 0 ..< steps:
+      # A zero-duration timer yields to I/O as well as scheduled callbacks.
+      # `stepsAsync` only drives callback ticks and can leave Tor's dial
+      # cancellation stuck after the SOCKS handshake has started.
+      await sleepAsync(0.milliseconds)
 
     await dialFut.cancelAndWait()
 
@@ -62,9 +66,10 @@ proc countCancelledDials*(
       let conn = dialFut.value()
       if not conn.isNil():
         await conn.close()
-        break # this dial completed before cancellation, so stop probing later delays
+    elif dialFut.cancelled():
+      cancelled.inc()
 
-  step
+  cancelled
 
 template cancellationTransportTest*(provider: TransportProvider, address: string) =
   asyncTest "a dial cancelled at any point leaves no socket open":
