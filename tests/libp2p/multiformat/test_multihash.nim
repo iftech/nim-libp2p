@@ -105,6 +105,31 @@ suite "MultiHash test suite":
       MultiHash.digest("blake2b-512", data).get() == blake2_512.digest(data)
       MultiHash.digest("blake2s-256", data).get() == blake2_256.digest(data)
 
+  test "digests differing in any single byte compare unequal":
+    let data = [byte 1, 2, 3]
+    let mh = MultiHash.digest("sha2-256", data).get()
+    for i in 0 ..< mh.size:
+      var tampered = mh.data.buffer
+      tampered[mh.dpos + i] = tampered[mh.dpos + i] xor 0x02
+      let other = MultiHash.init(tampered).get()
+      check:
+        mh != other
+        other != sha256.digest(data)
+        sha256.digest(data) != other
+
+  test "empty identity digests compare equal":
+    let mh = MultiHash.digest("identity", newSeq[byte]()).get()
+    let decoded = MultiHash.init([byte 0x00, 0x00]).get()
+    let nonempty = MultiHash.digest("identity", [byte 0x00]).get()
+    let mdigest = default(MDigest[0])
+    check:
+      mh == decoded
+      decoded == mh
+      mh == mdigest
+      mdigest == mh
+      mh != nonempty
+      nonempty != mh
+
   test "decode rejects malformed input":
     for data in [
       @[byte 0x12], # no size

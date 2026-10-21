@@ -150,7 +150,7 @@ suite "KadDHT Put":
 
     # PUT_VALUE with no record at all
     let msgNoRecord =
-      Message(msgType: MessageType.putValue, key: key, record: Opt.none(Record))
+      Message(msgType: MessageType.putValue, key: key.toKey(), record: Opt.none(Record))
     await kads[0].handlePutValue(conn, msgNoRecord)
 
     # No data should be stored
@@ -159,8 +159,8 @@ suite "KadDHT Put":
     # PUT_VALUE with record but no value
     let msgNoValue = Message(
       msgType: MessageType.putValue,
-      key: key,
-      record: Record(key: key, value: Opt.none(Value)),
+      key: key.toKey(),
+      record: Record(key: key.toKey(), value: Opt.none(Value)),
     )
 
     await kads[0].handlePutValue(conn, msgNoValue)
@@ -180,8 +180,8 @@ suite "KadDHT Put":
     # Build the PUT_VALUE request message
     let request = Message(
       msgType: MessageType.putValue,
-      key: key,
-      record: Record(key: key, value: Value.init(value)),
+      key: key.toKey(),
+      record: Record(key: key.toKey(), value: Value.init(value)),
     )
 
     let conn = await kads[1].switch.dial(
@@ -277,7 +277,7 @@ suite "KadDHT Put":
       await conn.close()
 
     let key = kads[0].rtable.selfId
-    let record = Record(key: key, value: Value.init([1.byte, 2, 3]))
+    let record = Record(key: key.toKey(), value: Value.init([1.byte, 2, 3]))
 
     await kads[0].handlePutValue(
       conn, Message(msgType: MessageType.putValue, record: record)
@@ -285,7 +285,7 @@ suite "KadDHT Put":
     check kads[0].containsNoData(key)
 
     await kads[0].handlePutValue(
-      conn, Message(msgType: MessageType.putValue, key: key, record: record)
+      conn, Message(msgType: MessageType.putValue, key: key.toKey(), record: record)
     )
     check kads[0].containsNoData(key)
 
@@ -310,22 +310,26 @@ suite "KadDHT Put":
       conn,
       Message(
         msgType: MessageType.putValue,
-        key: key,
-        record: Record(key: key, value: Value.init(value)),
+        key: key.toKey(),
+        record: Record(key: key.toKey(), value: Value.init(value)),
       ),
     )
     check kads[0].containsData(key, value)
 
-    await kads[0].handleGetValue(conn, Message(msgType: MessageType.getValue, key: key))
-    await kads[0].handleFindNode(conn, Message(msgType: MessageType.findNode, key: key))
+    await kads[0].handleGetValue(
+      conn, Message(msgType: MessageType.getValue, key: key.toKey())
+    )
+    await kads[0].handleFindNode(
+      conn, Message(msgType: MessageType.findNode, key: key.toKey())
+    )
     await kads[0].handleAddProvider(
       conn,
       Message(
         msgType: MessageType.addProvider,
-        key: key,
+        key: key.toKey(),
         providerPeers: @[kads[1].switch.peerInfo.toPeer()],
       ),
     )
     await kads[0].handleGetProviders(
-      conn, Message(msgType: MessageType.getProviders, key: key)
+      conn, Message(msgType: MessageType.getProviders, key: key.toKey())
     )

@@ -607,9 +607,9 @@ suite "AutonatV2":
           maxConcurrentRequestsPerPeer = 1, maxConcurrentRequestsTotal = 2
         ),
       )
-      peerA = PeerId.random(rng()).get()
-      peerB = PeerId.random(rng()).get()
-      peerC = PeerId.random(rng()).get()
+      peerA = PeerId.random()
+      peerB = PeerId.random()
+      peerC = PeerId.random()
 
     check:
       autonatServer.reserveIncoming(peerA)

@@ -270,16 +270,20 @@ proc add*(
 
   s.services.add(service)
 
+const
+  MissingHandlerCause* = "Protocol has to define a handle method or proc"
+  MissingCodecCause* = "Protocol has to define a codec string"
+
 proc tryMount*[T: LPProtocol](
     s: Switch, proto: T, matcher: Matcher = nil
-): Result[void, string] {.gcsafe, raises: [].} =
+): LPResult[void] {.gcsafe, raises: [].} =
   ## mount a protocol to the switch, or return why the protocol is invalid
 
   if proto.handler.isNil:
-    return err("Protocol has to define a handle method or proc")
+    return err(MissingHandlerCause)
 
   if proto.codecs.len == 0 or proto.codec.len == 0:
-    return err("Protocol has to define a codec string")
+    return err(MissingCodecCause)
 
   if s.started and not proto.started:
     return err("Protocol needs to be started when mounting to started Switch")

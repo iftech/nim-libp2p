@@ -121,7 +121,7 @@ proc setupGossipSubWithPeers*(
   for i in 0 ..< numPeers:
     let conn = TestBufferStream.new(noop)
     conns &= conn
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     conn.peerId = peerId
     let peer = gossipSub.getPubSubPeer(peerId)
     peer.sendStream = conn

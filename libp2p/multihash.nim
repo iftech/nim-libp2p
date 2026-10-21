@@ -21,7 +21,7 @@
 import tables
 import nimcrypto/[sha, sha2, keccak, blake2, hash, utils]
 import varint, vbuffer, multicodec, multibase
-import stew/base58
+import stew/[base58, ctops]
 import results
 export results
 # This is workaround for Nim `import` bug.
@@ -592,13 +592,7 @@ proc init58*(mhtype: typedesc[MultiHash], data: string): MultiHash =
 proc cmp(a: openArray[byte], b: openArray[byte]): bool =
   if len(a) != len(b):
     return false
-  var n = len(a)
-  var res, diff: int
-  while n > 0:
-    dec(n)
-    diff = int(a[n]) - int(b[n])
-    res = (res and - not (diff)) or diff
-  res == 0
+  len(a) == 0 or CT.isEqual(a, b)
 
 proc `==`*[T](mh: MultiHash, mdigest: MDigest[T]): bool =
   ## Compares MultiHash with nimcrypto's MDigest[T], returns ``true`` if

@@ -60,7 +60,7 @@ proc sendChallenge*(
   let payload = %*{"value": keyAuth, "addresses": strMultiaddresses}
 
   # drop a bearer we already know to be expired so we re-authenticate
-  # instead of looping on `PeerIDAuthError("Bearer expired")`
+  # instead of looping on `PeerIDAuthError(BearerExpiredCause)`
   if self.bearer.isSome():
     let cached = self.bearer.get()
     if cached.expires.isSome() and cached.expires.get() <= now():

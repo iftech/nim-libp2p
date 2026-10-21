@@ -8,6 +8,7 @@ import ../../../../libp2p/[extended_peer_record, peerid, utils/future]
 import ../../../../libp2p/protocols/[kademlia, protocol, service_discovery]
 import ../../../../libp2p/stream/connection
 import ../../../tools/[lifecycle, topology, unittest]
+import ../../kademlia/utils as kad_utils
 import ../utils
 
 proc foreignXpr(): Value =
@@ -25,10 +26,10 @@ suite "Service Discovery - XPR key binding":
 
     check:
       replyXpr(ownKey, reply).isSome()
-      replyXpr(randomPeerId().toKey(), reply).isNone()
+      replyXpr(PeerId.random().toKey(), reply).isNone()
 
   test "replyXpr rejects a reply with no record or a record with no value":
-    let key = randomPeerId().toKey()
+    let key = PeerId.random().toKey()
     check:
       replyXpr(key, Message()).isNone()
       replyXpr(key, Message(record: Opt.some(Record(key: Opt.some(key))))).isNone()
@@ -38,7 +39,7 @@ suite "Service Discovery - XPR key binding":
     startAndDeferStop(discos)
     await connectStar(discos)
 
-    let servedKey = discos[2].switch.peerInfo.peerId.toKey()
+    let servedKey = discos[2].switch.peerInfo.peerId
     discos[2].dataTable.insert(servedKey, foreignXpr(), Timestamp.now())
 
     check (await discos[1].lookupRandom()).len == 0
@@ -54,7 +55,7 @@ suite "Service Discovery - XPR key binding":
     check discos[0].startAdvertising(service, Opt.some(advert.encode())).isOk()
 
     checkUntilTimeout:
-      discos[2].dataTable.get(signer.peerId.toKey()).isSome()
+      discos[2].dataTable.get(signer.peerId).isSome()
 
     let records = await discos[1].lookupRandom()
     check records.mapIt(it.peerId) == @[signer.peerId]
@@ -127,6 +128,4 @@ suite "Service Discovery Component - Find Random":
     let discos = setupServiceDiscoveryNodes(2)
     startAndDeferStop(discos)
 
-    check await discos[0].ping(
-      discos[1].switch.peerInfo.peerId, discos[1].switch.peerInfo.addrs
-    )
+    check (await discos[0].ping(discos[1].switch.peerInfo)).isOk()

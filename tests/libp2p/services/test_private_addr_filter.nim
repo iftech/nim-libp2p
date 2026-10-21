@@ -20,7 +20,7 @@ import ../../tools/[unittest, crypto, switch_builder, multiaddress]
 
 suite "PeerStore addressPolicy":
   test "updatePeerInfo stores all addresses with default policy":
-    let peerId = PeerId.random(rng()).tryGet()
+    let peerId = PeerId.random()
     let peerStore = PeerStore.new(nil)
 
     peerStore.updatePeerInfo(
@@ -35,7 +35,7 @@ suite "PeerStore addressPolicy":
       @[ma("/ip4/192.168.1.5/tcp/4001"), ma("/ip4/1.1.1.1/tcp/4001")]
 
   test "updatePeerInfo filters private addresses when addressPolicy is set":
-    let peerId = PeerId.random(rng()).tryGet()
+    let peerId = PeerId.random()
     let peerStore = PeerStore.new(nil)
     peerStore.addressPolicy = publicRoutableAddressPolicy
 
@@ -53,7 +53,7 @@ suite "PeerStore addressPolicy":
     check peerStore[AddressBook][peerId] == @[ma("/ip4/1.1.1.1/tcp/4001")]
 
   test "updatePeerInfo skips storage when all addresses are filtered":
-    let peerId = PeerId.random(rng()).tryGet()
+    let peerId = PeerId.random()
     let peerStore = PeerStore.new(nil)
     peerStore.addressPolicy = publicRoutableAddressPolicy
 
@@ -68,7 +68,7 @@ suite "PeerStore addressPolicy":
     check peerStore[AddressBook][peerId].len == 0
 
   test "updatePeerInfo clears stale addresses when a later update filters everything":
-    let peerId = PeerId.random(rng()).tryGet()
+    let peerId = PeerId.random()
     let peerStore = PeerStore.new(nil)
     peerStore.addressPolicy = publicRoutableAddressPolicy
 
@@ -83,7 +83,7 @@ suite "PeerStore addressPolicy":
     check peerStore[AddressBook][peerId].len == 0
 
   test "circuit relay addresses pass through the filter":
-    let peerId = PeerId.random(rng()).tryGet()
+    let peerId = PeerId.random()
     let peerStore = PeerStore.new(nil)
     peerStore.addressPolicy = publicRoutableAddressPolicy
 
@@ -102,7 +102,7 @@ suite "KadDHT updatePeers address policy":
     let kad = KadDHT.new(switch, @[], config, rng = rng())
     switch.mount(kad)
 
-    let remotePeer = PeerId.random(rng()).tryGet()
+    let remotePeer = PeerId.random()
     kad.updatePeers(
       @[
         PeerInfo(
@@ -123,7 +123,7 @@ suite "KadDHT updatePeers address policy":
     let kad = KadDHT.new(switch, @[], config, rng = rng())
     switch.mount(kad)
 
-    let remotePeer = PeerId.random(rng()).tryGet()
+    let remotePeer = PeerId.random()
     kad.updatePeers(
       @[
         PeerInfo(
@@ -142,7 +142,7 @@ suite "KadDHT updatePeers address policy":
     let kad = KadDHT.new(switch, @[], config, rng = rng())
     switch.mount(kad)
 
-    let remotePeer = PeerId.random(rng()).tryGet()
+    let remotePeer = PeerId.random()
     kad.updatePeers(
       @[PeerInfo(peerId: remotePeer, addrs: @[ma("/ip4/192.168.1.5/tcp/4001")])]
     )
@@ -162,16 +162,16 @@ suite "KadDHT updatePeers address policy":
     switch.mount(kad)
 
     let
-      v4PeerA = PeerId.random(rng()).tryGet()
-      v4PeerB = PeerId.random(rng()).tryGet()
-      v4PeerC = PeerId.random(rng()).tryGet()
-      v4PeerD = PeerId.random(rng()).tryGet()
-      v4PeerE = PeerId.random(rng()).tryGet()
-      v6PeerA = PeerId.random(rng()).tryGet()
-      v6PeerB = PeerId.random(rng()).tryGet()
-      v6PeerC = PeerId.random(rng()).tryGet()
-      v6PeerD = PeerId.random(rng()).tryGet()
-      v6PeerE = PeerId.random(rng()).tryGet()
+      v4PeerA = PeerId.random()
+      v4PeerB = PeerId.random()
+      v4PeerC = PeerId.random()
+      v4PeerD = PeerId.random()
+      v4PeerE = PeerId.random()
+      v6PeerA = PeerId.random()
+      v6PeerB = PeerId.random()
+      v6PeerC = PeerId.random()
+      v6PeerD = PeerId.random()
+      v6PeerE = PeerId.random()
 
     kad.updatePeers(
       @[

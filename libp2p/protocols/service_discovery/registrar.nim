@@ -163,6 +163,8 @@ proc updateLowerBounds*(
       registrar.boundIp[ipKey] = now + waitDuration
       registrar.timestampIp[ipKey] = now
 
+const OversizedAdvertisementCause* = "oversized"
+
 proc isValidAdvertisement*(
     regMsg: RegisterMessage, serviceId: ServiceId
 ): LPResult[Advertisement] =
@@ -170,7 +172,7 @@ proc isValidAdvertisement*(
     return err("advertisement not set")
 
   if advertisment.len > MaxXPRSize:
-    return err("oversized")
+    return err(OversizedAdvertisementCause)
 
   let ad = Advertisement.decode(advertisment).valueOr:
     return err(error, "cannot decode")

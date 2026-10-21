@@ -1,0 +1,104 @@
+name: Nimbus test
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  pull_request:
+    types: [opened, labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "nim-libp2p commit, branch, or tag to test"
+        required: true
+
+# An event for another label gets its own group, so it cannot cancel a running test.
+concurrency:
+  group: nimbus-test-${{ github.event.pull_request.number || inputs.commit || github.ref }}${{ github.event.label.name && github.event.label.name != 'test-nimbus' && github.event.label.name != 'run-daily-ci' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NIMBUS_REPO: status-im/nimbus-eth2
+  NIMBUS_BASE: unstable
+
+jobs:
+  resolve:
+    name: Pin the nimbus-eth2 and nim-libp2p commits
+    if: >
+      github.event_name != 'pull_request' ||
+      (github.event.label.name == 'test-nimbus' || github.event.label.name == 'run-daily-ci') ||
+      (!github.event.label.name &&
+        (contains(github.event.pull_request.labels.*.name, 'test-nimbus') ||
+          contains(github.event.pull_request.labels.*.name, 'run-daily-ci')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      nimbus_sha: ${{ steps.pin.outputs.nimbus_sha }}
+      libp2p_sha: ${{ steps.pin.outputs.libp2p_sha }}
+    steps:
+      - name: Resolve the commits
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIBP2P_REF: ${{ inputs.commit || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          nimbus_sha=$(gh api "repos/$NIMBUS_REPO/commits/heads/$NIMBUS_BASE" --jq .sha)
+          libp2p_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$LIBP2P_REF" --jq .sha)
+          {
+            echo "nimbus_sha=$nimbus_sha"
+            echo "libp2p_sha=$libp2p_sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "nimbus-eth2 $NIMBUS_BASE $nimbus_sha, nim-libp2p $libp2p_sha" >> "$GITHUB_STEP_SUMMARY"
+          printf '{"nimbus_sha":"%s","libp2p_sha":"%s"}\n' "$nimbus_sha" "$libp2p_sha" > nimbus-pins.json
+
+      # nimbus_fleet.yml reads the pins; it validates them because this workflow runs PR code.
+      - name: Upload the pins
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nimbus-pins
+          path: nimbus-pins.json
+          retention-days: 1
+
+  local-testnet:
+    name: Local testnet (${{ matrix.preset }})
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [minimal, mainnet]
+    steps:
+      - name: Checkout nim-libp2p tools
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          path: libp2p-ci
+          persist-credentials: false
+
+      - name: Build the nimbus-eth2 test tree
+        uses: ./libp2p-ci/.github/actions/nimbus-tree
+        with:
+          nimbus-repo: ${{ env.NIMBUS_REPO }}
+          nimbus-sha: ${{ needs.resolve.outputs.nimbus_sha }}
+          libp2p-sha: ${{ needs.resolve.outputs.libp2p_sha }}
+
+      # One thread runs each column KZG check on the event loop and stalls libp2p reads; a full taskpool starves the runner.
+      - name: Run the local testnet
+        working-directory: nbc
+        run: |
+          cmd=$(make -s -n local-testnet-${{ matrix.preset }} | sed -E 's/--num-threads[:=][0-9]+//')
+          eval "$cmd --num-threads:2"
+
+      - name: Upload testnet logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-testnet-${{ matrix.preset }}-${{ needs.resolve.outputs.libp2p_sha }}
+          path: nbc/local-testnet-${{ matrix.preset }}/logs
+          retention-days: 14

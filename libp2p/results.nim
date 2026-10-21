@@ -11,13 +11,13 @@ export results
 
 # a ref keeps the error one pointer wide: refc corrupts Result[T, E] when T holds a RootObj and E has several GC fields
 type LPResultError* = ref object
-  cause*: string
+  cause: string
   detail*: string
   wrapped: seq[LPResultError] # underlying errors, nearest first, each one unwrapped
 
 type LPResult*[T] = Result[T, LPResultError]
 
-func init(T: type LPResultError, cause: string, detail = ""): T =
+func init*(T: type LPResultError, cause: string, detail = ""): T =
   T(cause: cause, detail: detail)
 
 func wrapError*(inner, outer: LPResultError): LPResultError =

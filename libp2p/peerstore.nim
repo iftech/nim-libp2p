@@ -399,8 +399,15 @@ proc shouldStoreSignedPeerRecord(
 ##################
 macro getTypeName(t: type): untyped =
   # Generate unique name in form of Module.Type
-  let typ = getTypeImpl(t)[1]
-  newLit(repr(typ.owner()) & "." & repr(typ))
+  func qualify(n: NimNode): NimNode =
+    if n.kind == nnkSym:
+      return newDotExpr(ident(repr(n.owner())), n)
+    let res = copyNimNode(n)
+    for child in n:
+      res.add qualify(child)
+    res
+
+  newLit(repr(qualify(getTypeImpl(t)[1])))
 
 proc `[]`*(p: PeerStore, _: type[AddressBook]): AddressBook =
   ## Get the AddressBook, initialising it with the store's configured TTLs.

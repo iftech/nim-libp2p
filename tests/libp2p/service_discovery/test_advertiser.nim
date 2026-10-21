@@ -466,7 +466,7 @@ suite "Advertiser - maintainRegistrations":
     await stream.hung.wait()
 
     let stalled = toSeq(disco.advertiser.running)[0]
-    let replacement = randomPeerId()
+    let replacement = PeerId.random()
     disco.switch.peerStore[AddressBook][replacement] = @[makeMultiAddress("127.0.0.1")]
     let table = disco.rtManager.getTable(serviceId).get()
     let pos = table.buckets[stalled.bucketIdx].peers.find(stalled.registrar.toKey())

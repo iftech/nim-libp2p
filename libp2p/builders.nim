@@ -601,7 +601,7 @@ proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
     of NetworkReachability.Unknown:
       discard
 
-proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
+proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if not switch.peerStore.identify.isNil:
     ?switch.tryMount(switch.peerStore.identify)
 

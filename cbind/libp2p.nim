@@ -848,7 +848,8 @@ proc libp2pKadPutValue*(
   ## Stores `value` under `key` on the DHT nodes closest to it.
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
-  let key = Key.fromBytes(req.key)
+  let key = RecordKey.fromBytes(req.key).valueOr:
+    return err(error)
   let value = Value.fromBytes(req.value)
   (await kad.putValue(key, value)).isOkOr:
     return err(error)
@@ -868,7 +869,8 @@ proc libp2pKadGetValue*(
       Opt.none(int)
     else:
       Opt.some(req.quorum)
-  let key = Key.fromBytes(req.key)
+  let key = RecordKey.fromBytes(req.key).valueOr:
+    return err(error)
   let res =
     try:
       await kad.getValue(key, quorum)
@@ -912,26 +914,24 @@ proc libp2pKadStopProviding*(
   kad.stopProviding(c)
   ok(true)
 
+func makeProviderInfo(providers: HashSet[Provider]): seq[ProviderInfo] =
+  var infos: seq[ProviderInfo]
+  for provider in providers:
+    let providerId = provider.id.valueOr:
+      continue
+    let peerId = PeerId.init(providerId).valueOr:
+      continue
+    infos.add(ProviderInfo(peerId: $peerId, addrs: provider.addrs.mapIt($it)))
+  infos
+
 proc libp2pKadGetProviders*(
     lib: LibP2P, cid: string
 ): Future[Result[ProvidersResponse, string]] {.ffi.} =
   ## Finds the peers advertising themselves as providers of `cid`.
   let (kad, c) = kadAndCid(lib, cid).valueOr:
     return err(error)
-  let providersSet =
-    try:
-      await kad.getProviders(c.toKey())
-    except LPError as e:
-      return err(e)
-
-  var providers: seq[ProviderInfo]
-  for provider in providersSet.toSeq():
-    let providerId = provider.id.valueOr:
-      continue
-    let peerId = PeerId.init(providerId).valueOr:
-      continue
-    providers.add(ProviderInfo(peerId: $peerId, addrs: provider.addrs.mapIt($it)))
-  ok(ProvidersResponse(providers: providers))
+  let providersSet = await kad.getProviders(c.toKey())
+  ok(ProvidersResponse(providers: providersSet.makeProviderInfo()))
 
 proc runningServiceDiscovery(lib: LibP2P): Result[ServiceDiscovery, string] =
   let kad = lib.kad.valueOr:

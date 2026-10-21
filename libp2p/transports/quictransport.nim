@@ -227,10 +227,9 @@ proc parseCertificate(certificatesDer: seq[seq[byte]]): LPResult[P2pCertificate]
   if certificatesDer.len != 1:
     return err($certificatesDer.len, "certificate count is not one")
 
-  try:
-    ok(parse(certificatesDer[0]))
-  except CertificateParsingError as e:
-    err(e, "cannot parse certificate")
+  let cert = parse(certificatesDer[0]).valueOr:
+    return err(error, "cannot parse certificate")
+  ok(cert)
 
 proc certificatePeerId(certificatesDer: seq[seq[byte]]): LPResult[PeerId] =
   let cert = ?parseCertificate(certificatesDer)

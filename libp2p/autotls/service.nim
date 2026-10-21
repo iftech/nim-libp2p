@@ -77,7 +77,7 @@ type AutotlsService* = ref object of Service
   acmeClient*: ACMEClient
   broker*: AutotlsBroker
   cert*: Opt[AutotlsCert]
-  certFailure: Opt[string]
+  certFailure: Opt[LPResultError]
   certReady*: AsyncEvent
   certUpdates: AsyncEventQueue[Opt[AutotlsCert]]
   running*: AsyncEvent
@@ -103,16 +103,18 @@ method getCertWhenReady*(
   await self.certReady.wait()
   if self.cert.isSome():
     return ok(self.cert.get())
-  err(self.certFailure.get("certificate issuance failed without an error"))
+  let failure = self.certFailure.valueOr:
+    return err("certificate issuance failed without an error")
+  err(failure)
 
 proc resetCertWait(self: AutotlsService) =
-  self.certFailure = Opt.none(string)
+  self.certFailure = Opt.none(LPResultError)
   self.certReady.clear()
 
 proc installCertificate(self: AutotlsService, cert: AutotlsCert) =
   ## Install a certificate and notify listeners that terminate TLS themselves.
   self.cert = Opt.some(cert)
-  self.certFailure = Opt.none(string)
+  self.certFailure = Opt.none(LPResultError)
   self.certReady.fire()
   if not self.certUpdates.isNil:
     self.certUpdates.emit(Opt.some(cert))
@@ -193,7 +195,7 @@ proc new*(
     ),
     broker: AutotlsBroker.new(rng, config.registrationURL),
     cert: Opt.none(AutotlsCert),
-    certFailure: Opt.none(string),
+    certFailure: Opt.none(LPResultError),
     certReady: newAsyncEvent(),
     certUpdates: newAsyncEventQueue[Opt[AutotlsCert]](),
     running: newAsyncEvent(),
@@ -428,13 +430,15 @@ proc tryIssueCertificate(
     expiry = (if self.cert.isSome: $self.cert.get().expiry else: "none")
 
   if self.cert.isNone():
-    self.certFailure = Opt.some($lastError)
+    self.certFailure = Opt.some(lastError)
     self.certReady.fire()
 
 proc needsRenewal(expiry: DateTime, renewBufferTime: Duration): bool =
   ## Compare absolute times to avoid overflowing Chronos's nanosecond Duration
   ## for certificates that expire far in the future.
   expiry.toTime.toUnix <= now().toTime.toUnix + renewBufferTime.seconds
+
+const MissingTcpTransportCause* = "Could not find a TcpTransport in switch"
 
 method start*(
     self: AutotlsService, switch: Switch
@@ -446,9 +450,8 @@ method start*(
   # transport to be running here could fail when the service starts first, so
   # AutotlsService should only check whether a transport exists.
   if not switch.hasTcpTransport():
-    const failure = "Could not find a TcpTransport in switch"
-    error failure
-    self.certFailure = Opt.some(failure)
+    error MissingTcpTransportCause
+    self.certFailure = Opt.some(LPResultError.init(MissingTcpTransportCause))
     self.certReady.fire()
     return
 

@@ -52,3 +52,5 @@ result
 /interop/autonatv2/nim-peer/src/nim_peer
 /interop/partial-message/go-peer/peer
 /interop/partial-message/nim-peer/src/peer
+
+__pycache__/

@@ -38,7 +38,7 @@ proc newPeer(
     getStream: GetStream, baseDelay, maxDelay: Duration, onEvent: OnEvent = nil
 ): PubSubPeer =
   PubSubPeer.new(
-    randomPeerId(),
+    PeerId.random(),
     getStream,
     onEvent,
     GossipSubCodec_12,
@@ -138,7 +138,7 @@ suite "PubSubPeer receive streams":
       inc received
 
     let peer =
-      PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 1024, handler)
+      PubSubPeer.new(PeerId.random(), nil, nil, GossipSubCodec_12, 1024, handler)
     var streams: seq[TestBufferStream]
     var readers: seq[Future[void]]
     for i in 0 ..< MaxInboundStreamsPerPeer * 10:
@@ -186,7 +186,7 @@ suite "PubSubPeer receive streams":
         inc cleaned
 
     let peer =
-      PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 1024, handler)
+      PubSubPeer.new(PeerId.random(), nil, nil, GossipSubCodec_12, 1024, handler)
     var readers: seq[Future[void]]
     for i in 0 ..< MaxInboundStreamsPerPeer:
       let stream = TestBufferStream.new(noop)

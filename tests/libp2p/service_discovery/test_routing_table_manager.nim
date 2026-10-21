@@ -696,7 +696,7 @@ suite "ServiceDiscovery liveness over service tables":
     )
     let serviceTable = disco.rtManager.getTable(serviceId).get()
 
-    let peer = randomPeerId()
+    let peer = PeerId.random()
     check serviceTable.insert(peer)
     # No addresses → liveness path evicts without dialling.
     agePeerPastLivenessGrace(serviceTable, peer.toKey(), grace)
