@@ -76,6 +76,9 @@ when defined(pubsubpeer_queue_metrics):
 
 const
   MaxInboundStreamsPerPeer* = 4
+  MaxOversizedFrameDrainFactor* = 4'u64
+    ## Inbound frames up to this many times `maxMessageSize` are drained and
+    ## skipped; larger ones get the stream reset.
   DefaultMaxHighPriorityQueueLen* = 256
   DefaultMaxMediumPriorityQueueLen* = 512
   DefaultMaxLowPriorityQueueLen* = 1024
@@ -352,6 +355,34 @@ proc sendObservers(p: PubSubPeer, msg: var RPCMsg) =
         if not (isNil(obs.onSend)):
           obs.onSend(p, msg)
 
+proc drainOversizedFrame(
+    p: PubSubPeer, stream: Stream, size: uint64
+): Future[bool] {.async: (raises: [CancelledError]).} =
+  ## Discards an oversized frame's body so reading can resume at the next one.
+  ## False when the frame is too large to drain or the stream failed: reset it.
+  let maxLen = uint64(max(p.maxMessageSize, 0))
+  if maxLen == 0 or size div MaxOversizedFrameDrainFactor > maxLen:
+    debug "Resetting pubsub stream, oversized frame too large to drain",
+      peerId = p, stream, frameSize = size, maxMessageSize = p.maxMessageSize
+    return false
+
+  debug "Dropping oversized pubsub frame",
+    peerId = p, stream, frameSize = size, maxMessageSize = p.maxMessageSize
+
+  # Drain through a buffer no larger than a message we would accept anyway.
+  var buf = newSeqUninit[byte](int(min(size, maxLen)))
+  var remaining = size
+  try:
+    while remaining > 0:
+      let chunk = int(min(remaining, uint64(buf.len)))
+      await stream.readExactly(addr buf[0], chunk)
+      remaining -= uint64(chunk)
+  except LPStreamError as e:
+    debug "Resetting pubsub stream, failed to drain oversized frame",
+      err = e.msg, peerId = p, stream, frameSize = size
+    return false
+  true
+
 proc runHandleLoop*(
     p: PubSubPeer, stream: Stream
 ) {.async: (raises: [CancelledError]).} =
@@ -360,15 +391,22 @@ proc runHandleLoop*(
     trace "exiting pubsub read loop", stream, peerId = p, closed = stream.closed
 
   while not p.stopped and not stream.atEof:
-    var data =
-      try:
-        await stream.readLp(p.maxMessageSize)
-      except LPStreamEOFError:
-        return
-      except LPStreamError as e:
-        trace "Exception occurred reading message PubSubPeer.handle",
-          err = e.msg, stream, peer = p, closed = stream.closed
-        return
+    var data: seq[byte]
+    try:
+      data = await stream.readLp(p.maxMessageSize)
+    except MaxSizeError as e:
+      # A peer with a larger limit may send frames we refuse; skip the frame
+      # and keep the stream so the messages behind it still arrive.
+      if await p.drainOversizedFrame(stream, e.msgLen):
+        continue
+      await stream.reset()
+      return
+    except LPStreamEOFError:
+      return
+    except LPStreamError as e:
+      trace "Exception occurred reading message PubSubPeer.handle",
+        err = e.msg, stream, peer = p, closed = stream.closed
+      return
 
     if p.stopped:
       return
