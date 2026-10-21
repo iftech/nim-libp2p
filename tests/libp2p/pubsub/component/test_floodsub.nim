@@ -322,6 +322,40 @@ suite "FloodSub Component", timeout = 120.seconds:
     check:
       messageReceived == 2
 
+  asyncTest "oversized message from a larger-limit peer does not break the stream":
+    # A peer with a larger maxMessageSize may send a frame we refuse; the next
+    # acceptable message must still arrive on the same stream.
+    var received: seq[seq[byte]]
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      received.add(data)
+
+    let
+      bigNode = generateNodes(1).toFloodSub()[0]
+      smallNode = generateNodes(1, maxMessageSize = 1024).toFloodSub()[0]
+      nodes = @[bigNode, smallNode]
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    subscribeAllNodes(nodes, topic, handler)
+    waitSubscribeStar(nodes, topic)
+
+    let
+      # Over smallNode's limit, within its drain bound.
+      oversized = newSeq[byte](2048)
+      small1 = @[1.byte]
+      small2 = @[2.byte]
+
+    check (await bigNode.publish(topic, small1)) > 0
+    checkUntilTimeout:
+      received == @[small1]
+
+    check (await bigNode.publish(topic, oversized)) > 0
+    check (await bigNode.publish(topic, small2)) > 0
+
+    checkUntilTimeout:
+      received == @[small1, small2]
+
   asyncTest "FloodSub message size validation 2":
     var messageReceived = 0
     proc handler(topic: string, data: seq[byte]) {.async.} =

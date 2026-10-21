@@ -240,3 +240,56 @@ suite "PubSubPeer receive streams":
     let stream = TestBufferStream.new(noop)
     await peer.handleRecvStream(stream)
     check stream.closed
+
+  asyncTest "oversized frames are dropped and the next message still arrives":
+    var received: seq[seq[byte]]
+    proc handler(
+        peer: PubSubPeer, data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
+      received.add(data)
+
+    let peer = PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 16, handler)
+    let stream = TestBufferStream.new(noop)
+    let reader = peer.handleRecvStream(stream)
+
+    # 32 bytes: over the 16-byte limit, within the drain bound. Two pushes so
+    # draining spans partial reads.
+    let oversized = newSeqWith(32, byte 0xAA)
+    await stream.pushData(@[byte 32] & oversized[0 ..< 10])
+    await stream.pushData(oversized[10 ..< 32] & @[byte 1, 42])
+    await stream.pushEof()
+    await reader
+
+    check received == @[@[byte 42]]
+
+    await peer.stopTasks()
+    await stream.close()
+
+  asyncTest "frames too large to drain reset the stream, peer keeps serving":
+    var received: seq[seq[byte]]
+    proc handler(
+        peer: PubSubPeer, data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
+      received.add(data)
+
+    let peer = PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 16, handler)
+    let stream = TestBufferStream.new(noop)
+    let reader = peer.handleRecvStream(stream)
+
+    # Declare 1024 bytes, beyond the drain bound for a 16-byte limit.
+    await stream.pushData(@[byte 0x80, 0x08])
+    await reader
+    check:
+      stream.closed
+      received.len == 0
+
+    # The peer is still live: a re-opened stream delivers.
+    let reopened = TestBufferStream.new(noop)
+    let reopenedReader = peer.handleRecvStream(reopened)
+    await reopened.pushData(@[byte 1, 42])
+    await reopened.pushEof()
+    await reopenedReader
+    check received == @[@[byte 42]]
+
+    await peer.stopTasks()
+    await reopened.close()

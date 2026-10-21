@@ -61,6 +61,8 @@ type
 
   InvalidVarintError* = object of LPStreamError
   MaxSizeError* = object of LPStreamError
+    msgLen*: uint64 ## length of the incoming message, as declared by its prefix
+    maxLen*: uint64 ## the limit that `msgLen` exceeded
 
   StreamTracker* = ref object of TrackerBase
     opened*: uint64
@@ -231,7 +233,11 @@ method readLp*(
     maxLen = uint64(if maxSize < 0: int.high else: maxSize)
 
   if length > maxLen:
-    raise (ref MaxSizeError)(msg: "Message exceeds maximum length")
+    raise (ref MaxSizeError)(
+      msg: "Message length " & $length & " exceeds maximum " & $maxLen,
+      msgLen: length,
+      maxLen: maxLen,
+    )
 
   if length == 0:
     return
