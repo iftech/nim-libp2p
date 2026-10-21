@@ -151,6 +151,18 @@ suite "PeerStore":
 
     peerStore.checkStoredPeerRecord(peerId1, 1, multiaddr1)
 
+  test "updatePeerInfo caps addresses after the dialable filter":
+    let
+      peerStore = PeerStore.new(nil)
+      undialable = (0 ..< MaxIdentifyAddrs).mapIt(ma("/ip4/0.0.0.0/tcp/" & $(it + 1)))
+      dialable = (0 .. MaxIdentifyAddrs).mapIt(ma("/ip4/127.0.0.1/tcp/" & $(it + 1)))
+
+    peerStore.updatePeerInfo(
+      IdentifyInfo(peerId: peerId1, addrs: undialable & dialable)
+    )
+
+    check peerStore[AddressBook][peerId1] == dialable[0 ..< MaxIdentifyAddrs]
+
   test "PeerStore listeners":
     # Set up peer store with listener
     var

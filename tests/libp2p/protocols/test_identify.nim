@@ -6,7 +6,6 @@
 import chronos, protobuf_serialization, sets
 import
   ../../../libp2p/[
-    protocols/identify,
     protocols/ping,
     protocols/protocol,
     multiaddress,
@@ -24,17 +23,59 @@ import
     crypto/crypto,
     upgrademngrs/upgrade,
     peerstore,
+    routing_record,
     muxers/mplex/mplex,
     stream/bridgestream,
   ]
+import ../../../libp2p/protocols/identify {.all.}
 import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 
 type IdentifyMsgNoPubKey {.proto2.} = object
   protocols {.fieldNumber: 3.}: seq[string]
 
+const firstTestPort = 10000
+
+proc addEntries(pi: PeerInfo, addrCount, protoCount: int) =
+  for i in 0 ..< addrCount:
+    pi.addrs.add(ma("/ip4/127.0.0.1/tcp/" & $(firstTestPort + i)))
+  for i in 0 ..< protoCount:
+    pi.protocols.add("/p/" & $i)
+
 suite "Identify":
   teardown:
     checkTrackers()
+
+  test "makeIdentifyMsg sends at most the cap of addresses and protocols":
+    for extra in [0, 1]:
+      let pi = PeerInfo.new(PrivateKey.random(ECDSA, rng()).get())
+      pi.addEntries(MaxIdentifyAddrs + extra, MaxIdentifyProtos + extra)
+
+      let msg = makeIdentifyMsg(pi, Opt.none(MultiAddress), sign = false)
+
+      check:
+        msg.listenAddrs == pi.addrs[0 ..< MaxIdentifyAddrs]
+        msg.protocols == pi.protocols[0 ..< MaxIdentifyProtos]
+
+  test "makeIdentifyInfo caps protocols and drops an oversized peer record":
+    for extra in [0, 1]:
+      let
+        key = PrivateKey.random(ECDSA, rng()).get()
+        pi = PeerInfo.new(key)
+      pi.addEntries(MaxIdentifyAddrs + extra, MaxIdentifyProtos + extra)
+      let record =
+        SignedPeerRecord.init(key, PeerRecord.init(pi.peerId, pi.addrs, 1)).tryGet()
+      let msg = IdentifyMsg(
+        listenAddrs: pi.addrs,
+        protocols: pi.protocols,
+        signedPeerRecord: Opt.some(record.envelope.encode()),
+      )
+
+      let info = makeIdentifyInfo(pi.peerId, msg)
+
+      check:
+        info.addrs == pi.addrs
+        info.protos == pi.protocols[0 ..< MaxIdentifyProtos]
+        info.signedPeerRecord.isSome() == (extra == 0)
 
   suite "handle identify message":
     var

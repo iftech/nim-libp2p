@@ -55,6 +55,8 @@ jobs:
         uses: libp2p/test-plans/.github/actions/run-interop-hole-punch-test@master
         with:
           test-filter: nim-libp2p-hp-head
+          # js cells are known to fail upstream; see libp2p/test-plans#864.
+          test-ignore: js-v3.x
           extra-versions: ${{ github.workspace }}/interop/hole-punching/version.json
           s3-cache-bucket: ${{ vars.S3_LIBP2P_BUILD_CACHE_BUCKET_NAME }}
           s3-access-key-id: ${{ vars.S3_LIBP2P_BUILD_CACHE_AWS_ACCESS_KEY_ID }}
