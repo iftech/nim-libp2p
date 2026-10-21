@@ -62,7 +62,7 @@ suite "PeerInfo":
       rec.addresses[0].address == multiAddresses[0]
       rec.addresses[1].address == multiAddresses[1]
 
-  test "Public address mapping":
+  asyncTest "Public address mapping":
     let
       seckey = PrivateKey.random(ECDSA, rng()).get()
       multiAddresses = @[ma("/ip4/0.0.0.0/tcp/24"), ma("/ip4/0.0.0.0/tcp/25")]
@@ -72,12 +72,11 @@ suite "PeerInfo":
         input: seq[MultiAddress]
     ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
       check input == multiAddresses
-      await sleepAsync(0.seconds)
       return multiAddresses2
 
     var peerInfo =
       PeerInfo.new(seckey, multiAddresses, addressMappers = @[addressMapper])
-    waitFor peerInfo.update()
+    await peerInfo.update()
     check peerInfo.addrs == multiAddresses2
 
   asyncTest "Direct construction initializes the address-expansion lock":

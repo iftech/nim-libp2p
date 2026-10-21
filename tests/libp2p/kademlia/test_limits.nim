@@ -397,7 +397,7 @@ suite "KadDHT - Limits":
     let f2 = kads[0].dispatchFindNode(kads[1].switch.peerInfo.peerId, target)
     # Yield so both coroutines get a chance to start; with a 1-slot semaphore
     # f1 holds the slot (suspended in dial) while f2 is blocked on acquire.
-    await sleepAsync(0)
+    await stepsAsync(1)
     check kads[0].rpcSem.availableSlots == 0
     await allFutures(f1, f2)
     check:

@@ -147,22 +147,22 @@ method accept*(
     # the switch retries immediately whenever accept returns nil.
     # without an await here, that retry loop would run non-stop and never let any
     # other async task run, so the test would hang.
-    # sleepAsync(0) pauses this task for an instant each retry, letting the rest
+    # await stepsAsync(1) pauses this task for an instant each retry, letting the rest
     # of the test run. a real transport's accept pauses here anyway while it waits
     # for a connection.
-    await sleepAsync(0.milliseconds)
+    await stepsAsync(1)
     return nil
   of NilThenAccept:
     if self.acceptCalls <= self.nilCount:
       # pause an instant each retry, else this loop runs non-stop and hangs the test
-      await sleepAsync(0.milliseconds)
+      await stepsAsync(1)
       return nil
     # accept normally by delegating to the base transport
     return await procCall MemoryTransport(self).accept()
   of BlockingClose:
     if self.acceptLimit > 0 and self.acceptCalls > self.acceptLimit:
       await sleepAsync(1.hours)
-    await sleepAsync(0.milliseconds)
+    await stepsAsync(1)
     let conn = BlockingCloseConnection(transport: self)
     conn.initStream()
     return conn

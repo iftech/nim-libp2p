@@ -22,8 +22,6 @@ import
 import ../../tools/[unittest, crypto, multiaddress]
 import ./utils
 
-const CancelSteps = 12 ## Poll steps to walk the cancel through, one dial per step.
-
 proc countCancelledDials*(
     provider: TransportProvider, address: string
 ): Future[int] {.async: (raises: [CatchableError]).} =
@@ -50,27 +48,26 @@ proc countCancelledDials*(
     await allFutures(accepted.mapIt(it.close()))
     await allFutures(client.stop(), server.stop())
 
-  var cancelled = 0
-  for steps in 0 .. CancelSteps:
+  var step = 0
+  while true:
     let dialFut = client.dial("", server.addrs[0])
-    for _ in 0 ..< steps:
-      await sleepAsync(0.milliseconds)
+    
+    step.inc()
+    await stepsAsync(step)
 
     await dialFut.cancelAndWait()
 
-    # A dial that won the race with the cancel hands back a connection.
     if dialFut.completed():
       let conn = dialFut.value()
       if not conn.isNil():
         await conn.close()
-    elif dialFut.cancelled():
-      cancelled.inc()
+        break # this dial completed before cancellation, so stop probing later delays
 
-  cancelled
+  step
 
 template cancellationTransportTest*(provider: TransportProvider, address: string) =
   asyncTest "a dial cancelled at any point leaves no socket open":
-    check (await countCancelledDials(provider, address)) > 0
+    check (await countCancelledDials(provider, address)) > 1
 
 type UpgradeStage = enum
   SecurityHandshake
