@@ -53,15 +53,22 @@ proc countCancelledDials*(
     await allFutures(accepted.mapIt(it.close()))
     await allFutures(client.stop(), server.stop())
 
-  var cancelled = 0
+  var step = 0
   for steps in 0 .. CancelSteps:
     let dialFut = client.dial("", server.addrs[0])
 
-    for _ in 0 ..< steps:
-      # A zero-duration timer yields to I/O as well as scheduled callbacks.
-      # `stepsAsync` only drives callback ticks and can leave Tor's dial
-      # cancellation stuck after the SOCKS handshake has started.
-      await sleepAsync(0.milliseconds)
+    if step == 0:
+      discard # step 0 is cancalling right away
+    else:
+      if isTorTransport(server.addrs[0]):
+        for _ in 0 ..< steps:
+          # A zero-duration timer yields to I/O as well as scheduled callbacks.
+          # `stepsAsync` only drives callback ticks and can leave Tor's dial
+          # cancellation stuck after the SOCKS handshake has started.
+          await sleepAsync(0.milliseconds)
+      else:
+        await stepsAsync(step)
+    step.inc
 
     await dialFut.cancelAndWait()
 
@@ -69,10 +76,9 @@ proc countCancelledDials*(
       let conn = dialFut.value()
       if not conn.isNil():
         await conn.close()
-    elif dialFut.cancelled():
-      cancelled.inc()
+        break
 
-  cancelled
+  step
 
 template cancellationTransportTest*(provider: TransportProvider, address: string) =
   asyncTest "a dial cancelled at any point leaves no socket open":

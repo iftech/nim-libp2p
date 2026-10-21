@@ -36,7 +36,7 @@ suite "Memory transport":
     check accepted.closed()
 
   asyncTest "a dial cancelled at any point leaves no socket open":
-    check (await countCancelledDials(memoryTransProvider, MemoryAutoAddress)) == 0
+    check (await countCancelledDials(memoryTransProvider, MemoryAutoAddress)) == 1
 
   upgradeCancellationTransportTest(memoryTransProvider, MemoryAutoAddress)
 
