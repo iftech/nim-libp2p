@@ -60,6 +60,8 @@ const
   MaxMsgSize* = 1 shl 22 # 4 MiB
 
   DefaultMaxProvidersPerKey* = 20 ## upper bound on providers stored per key
+  ProviderRecordsPerPeerDivisor* = 10
+    ## one sender may fill at most 1/10 of the provider record table
   DefaultMaxShortlistSize* = DefaultReplication * 2
     ## upper bound on iterative-lookup shortlist
   DefaultMaxReceivedSize* = DefaultReplication
@@ -292,6 +294,7 @@ type
     providerRecords*: ProviderRecords
     providedKeys*: ProvidedKeys
     knownKeys*: Table[Key, HashSet[Provider]]
+    recordsPerPeer*: CountTable[PeerId]
 
 func len*(bucket: Bucket): int =
   bucket.peers.len
@@ -445,6 +448,9 @@ type KadDHTLimits* = object
     ## Maximum number of distinct providers stored per key.
     ## ``Opt.none`` means unlimited; when limits are derived by the
     ## ``KadDHTConfig`` constructor this defaults to ``replication``.
+  maxProviderRecordsPerPeer*: Opt[int]
+    ## Maximum number of provider records stored for one sender, so that one
+    ## peer cannot evict the records of all others. ``Opt.none`` means unlimited.
   maxShortlistSize*: int
     ## Maximum number of peers retained in an iterative-lookup shortlist.
     ## When exceeded, farther peers are dropped so the shortlist stays bounded.
@@ -504,13 +510,20 @@ func diversityCaps*(limits: KadDHTLimits): DiversityCaps =
       diversityCap(limits.maxPeersPerIpv6Subnet, limits.maxPeersPerIpv6SubnetPerBucket),
   )
 
-proc new*(T: typedesc[KadDHTLimits], replication: int, quorum: int): T {.raises: [].} =
-  ## Builds a limits object whose shortlist/received caps and providers-per-key
-  ## are sized off the actual ``replication`` and ``quorum`` so the configuration
-  ## stays internally consistent (e.g. ``maxShortlistSize >= replication``,
-  ## ``maxReceivedSize >= quorum``).
+proc new*(
+    T: typedesc[KadDHTLimits],
+    replication: int,
+    quorum: int,
+    providerRecordCapacity: int = DefaultProviderRecordCapacity,
+): T {.raises: [].} =
+  ## Builds a limits object whose shortlist/received caps and provider caps are
+  ## sized off the actual ``replication``, ``quorum`` and ``providerRecordCapacity``
+  ## so the configuration stays internally consistent (e.g.
+  ## ``maxShortlistSize >= replication``, ``maxReceivedSize >= quorum``).
   T(
     maxProvidersPerKey: Opt.some(replication),
+    maxProviderRecordsPerPeer:
+      Opt.some(max(1, providerRecordCapacity div ProviderRecordsPerPeerDivisor)),
     maxShortlistSize: replication * 2,
     maxReceivedSize: max(replication, quorum),
     maxValueSize: DefaultMaxValueSize,
@@ -613,13 +626,16 @@ proc new*(
     bootstrapTimeout: chronos.Duration = bucketRefreshTime,
 ): K {.raises: [].} =
   let actualLimits = limits.valueOr:
-    KadDHTLimits.new(replication, quorum)
+    KadDHTLimits.new(replication, quorum, providerRecordCapacity)
   doAssert republishRegionBits.isNone or republishRegionBits.get() in 0 .. MaxRegionBits,
     "republishRegionBits must be in 0 .. " & $MaxRegionBits &
       "; use Opt.none(int) to derive it from the routing table"
   doAssert actualLimits.maxProvidersPerKey.isNone or
     actualLimits.maxProvidersPerKey.get() > 0,
     "maxProvidersPerKey must be > 0; use Opt.none(int) for unlimited"
+  doAssert actualLimits.maxProviderRecordsPerPeer.isNone or
+    actualLimits.maxProviderRecordsPerPeer.get() > 0,
+    "maxProviderRecordsPerPeer must be > 0; use Opt.none(int) for unlimited"
   doAssert beta > 0, "beta must be > 0"
   doAssert beta <= replication,
     "beta must be <= replication, since the follow-up phase never reaches past the k closest peers"

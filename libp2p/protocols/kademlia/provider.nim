@@ -2,11 +2,11 @@
 # Copyright (c) Status Research & Development GmbH
 
 ## Provider record management for the Kademlia DHT.
-## Receivers always enforce ``KadDHTConfig.limits.maxProvidersPerKey``; when
-## ``providerRejection`` is true they additionally reply accepted/rejected on
-## field 11 so senders can spill over to farther peers. Without
-## ``providerRejection`` the limit is enforced silently — over-cap
-## advertisements are dropped without a reply.
+## Receivers always enforce ``KadDHTConfig.limits.maxProvidersPerKey`` and
+## ``maxProviderRecordsPerPeer``; when ``providerRejection`` is true they
+## additionally reply accepted/rejected on field 11 so senders can spill over
+## to farther peers. Without ``providerRejection`` the receiver drops over-cap
+## advertisements and sends no reply.
 ## Re-advertisements are always accepted.
 
 import std/[math, sequtils, tables, sets, heapqueue]
@@ -72,13 +72,16 @@ proc isFull*(pr: ProviderRecords): bool =
 proc `[]`*(pr: ProviderRecords, i: int): ProviderRecord =
   pr.records[i]
 
-proc removeProviderRecord(pm: ProviderManager, record: ProviderRecord) =
-  ## Remove provider record and related keys
+proc countRecord(pm: ProviderManager, record: ProviderRecord, delta: int) =
+  let id = record.provider.id.valueOr:
+    return
+  PeerId.init(id).ifValue(peerId):
+    # CountTable.inc inserts a negative count for an absent key.
+    if delta < 0 and pm.recordsPerPeer.getOrDefault(peerId) <= 0:
+      return
+    pm.recordsPerPeer.inc(peerId, delta)
 
-  let recordIdx = pm.providerRecords.find(record)
-  if recordIdx != -1:
-    pm.providerRecords.del(recordIdx)
-
+proc forgetKey(pm: ProviderManager, record: ProviderRecord) =
   try:
     pm.knownKeys[record.key].excl(record.provider)
     if pm.knownKeys[record.key].len() == 0:
@@ -86,13 +89,27 @@ proc removeProviderRecord(pm: ProviderManager, record: ProviderRecord) =
   except KeyError:
     return
 
+proc removeProviderRecord(pm: ProviderManager, record: ProviderRecord) =
+  ## Remove provider record and related keys
+
+  let recordIdx = pm.providerRecords.find(record)
+  if recordIdx != -1:
+    pm.providerRecords.del(recordIdx)
+    pm.countRecord(record, -1)
+
+  pm.forgetKey(record)
+
+proc dropOldestProviderRecord(pm: ProviderManager) =
+  let oldest = pm.providerRecords.pop()
+  pm.countRecord(oldest, -1)
+  pm.forgetKey(oldest)
+
 proc addProviderRecord(pm: ProviderManager, record: ProviderRecord) =
   # remove previous providerRecord if any
   pm.removeProviderRecord(record)
 
   if pm.providerRecords.isFull():
-    let oldest = pm.providerRecords.pop()
-    pm.removeProviderRecord(oldest)
+    pm.dropOldestProviderRecord()
 
   if not pm.knownKeys.hasKey(record.key):
     pm.knownKeys[record.key] = initHashSet[Provider]()
@@ -101,6 +118,7 @@ proc addProviderRecord(pm: ProviderManager, record: ProviderRecord) =
     pm.knownKeys[record.key].incl(record.provider)
 
     pm.providerRecords.push(record)
+    pm.countRecord(record, 1)
   except KeyError:
     raiseAssert("checked with hasKey")
 
@@ -450,8 +468,7 @@ proc anyExpired(pr: ProviderRecords): bool =
 proc manageExpiredProviders*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   heartbeat "cleanup expired provider records", kad.config.cleanupProvidersInterval:
     while kad.providerManager.providerRecords.anyExpired():
-      let expired = kad.providerManager.providerRecords.pop()
-      kad.providerManager.removeProviderRecord(expired)
+      kad.providerManager.dropOldestProviderRecord()
 
 proc sendAddProviderResponse(
     stream: Stream, kad: KadDHT, status: AddProviderStatus
@@ -496,21 +513,26 @@ method handleAddProvider*(
     .filterIt(it.id.isSome and it.id.get() == peerBytes)
     .mapIt(it.capAddrs())
 
-  # Per-key cap is enforced regardless of providerRejection: when rejection is
-  # disabled the receiver still drops over-cap providers, just silently.
+  # The caps apply also without providerRejection; then no reply goes out.
+  var existingCount = 0
+  # A re-advertisement replaces its record, so it is exempt from both caps.
+  var senderIsKnown = false
+  kad.providerManager.knownKeys.withValue(msgKey, providers):
+    existingCount = providers[].len
+    senderIsKnown = providers[].anyIt(it.id.isSome and it.id.get() == peerBytes)
   var atCap = false
   kad.config.limits.maxProvidersPerKey.ifValue(limit):
-    let existingProviders =
-      kad.providerManager.knownKeys.getOrDefault(msgKey, initHashSet[Provider]())
-    let senderIsKnown =
-      existingProviders.anyIt(it.id.isSome and it.id.get() == peerBytes)
-    # Re-advertisements by the same provider are exempt: addProviderRecord
-    # replaces the existing record so the set size doesn't grow.
-    let effectiveCount = existingProviders.len - (if senderIsKnown: 1 else: 0)
+    let effectiveCount = existingCount - (if senderIsKnown: 1 else: 0)
     if effectiveCount >= limit:
       atCap = true
       trace "Add-provider request rejected",
         reason = "perKeyLimit", keySize = msgKey.len, limit = limit
+  kad.config.limits.maxProviderRecordsPerPeer.ifValue(limit):
+    let senderRecords = kad.providerManager.recordsPerPeer.getOrDefault(stream.peerId)
+    if not senderIsKnown and senderRecords >= limit:
+      atCap = true
+      trace "Add-provider request rejected",
+        reason = "perPeerLimit", peerId = stream.peerId, limit = limit
 
   if not atCap:
     for peer in validPeers:

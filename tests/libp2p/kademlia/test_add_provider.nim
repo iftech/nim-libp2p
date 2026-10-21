@@ -3,7 +3,8 @@
 
 {.used.}
 
-import algorithm, chronos, results, sets, sequtils, strutils, tables, stew/byteutils
+import
+  algorithm, chronos, metrics, results, sets, sequtils, strutils, tables, stew/byteutils
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
 import ../../tools/[lifecycle, topology, unittest, multiaddress]
@@ -853,6 +854,139 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     check status.value() == AddProviderStatus.rejected
     # Limit enforced: still only one record
     check receiverKad.providerManager.providerRecords.len == 1
+
+  proc advertiseStatus(
+      sender, receiver: KadDHT, key: Key
+  ): Future[AddProviderStatus] {.async.} =
+    let status = await sender.sendAddProviderAndGetStatus(receiver, key)
+    check status.isOk()
+    return status.value()
+
+  asyncTest "Receiver rejects ADD_PROVIDER when per-peer limit reached":
+    const capacity = 10
+    const perPeerCap = 3
+    var receiverConfig = testKadConfig(providerRejection = true)
+    receiverConfig.providerRecordCapacity = capacity
+    receiverConfig.providerExpirationInterval = 30.seconds
+    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
+    let receiverKad = setupKad(receiverConfig)
+    let peerA = setupKad(testKadConfig(providerRejection = true))
+    let peerB = setupKad(testKadConfig(providerRejection = true))
+
+    startAndDeferStop(@[receiverKad, peerA, peerB])
+    await connect(peerA, receiverKad)
+    await connect(peerB, receiverKad)
+
+    let k0 = randomServiceId()
+    check (await peerA.advertiseStatus(receiverKad, k0)) == AddProviderStatus.accepted
+
+    let keysB = (0 .. perPeerCap).mapIt(randomServiceId())
+    let rejectionsBefore = kad_provider_rejections_sent.value()
+    for key in keysB[0 ..< perPeerCap]:
+      check (await peerB.advertiseStatus(receiverKad, key)) == AddProviderStatus.accepted
+    check (await peerB.advertiseStatus(receiverKad, keysB[perPeerCap])) ==
+      AddProviderStatus.rejected
+    check kad_provider_rejections_sent.value() == rejectionsBefore + 1
+
+    check:
+      receiverKad.providerManager.knownKeys.hasKey(k0)
+      receiverKad.providerManager.recordsPerPeer[peerB.switch.peerInfo.peerId] ==
+        perPeerCap
+      not receiverKad.providerManager.knownKeys.hasKey(keysB[perPeerCap])
+
+    check (await peerB.advertiseStatus(receiverKad, keysB[0])) ==
+      AddProviderStatus.accepted
+
+  asyncTest "Eviction at full capacity decrements the evicted owner's per-peer count":
+    const capacity = 3
+    var receiverConfig = testKadConfig(providerRejection = true)
+    receiverConfig.providerRecordCapacity = capacity
+    receiverConfig.providerExpirationInterval = 30.seconds
+    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.none(int)
+    let receiverKad = setupKad(receiverConfig)
+    let peerA = setupKad(testKadConfig(providerRejection = true))
+    let peerB = setupKad(testKadConfig(providerRejection = true))
+
+    startAndDeferStop(@[receiverKad, peerA, peerB])
+    await connect(peerA, receiverKad)
+    await connect(peerB, receiverKad)
+
+    let idA = peerA.switch.peerInfo.peerId
+    let idB = peerB.switch.peerInfo.peerId
+
+    check (await peerA.advertiseStatus(receiverKad, randomServiceId())) ==
+      AddProviderStatus.accepted
+    for _ in 1 ..< capacity:
+      check (await peerB.advertiseStatus(receiverKad, randomServiceId())) ==
+        AddProviderStatus.accepted
+
+    check:
+      receiverKad.providerManager.providerRecords.len == capacity
+      receiverKad.providerManager.recordsPerPeer[idA] == 1
+      receiverKad.providerManager.recordsPerPeer[idB] == capacity - 1
+
+    # Full table: this push evicts peerA's record, the oldest one.
+    check (await peerB.advertiseStatus(receiverKad, randomServiceId())) ==
+      AddProviderStatus.accepted
+
+    check:
+      receiverKad.providerManager.providerRecords.len == capacity
+      receiverKad.providerManager.recordsPerPeer.getOrDefault(idA) == 0
+      receiverKad.providerManager.recordsPerPeer[idB] == capacity
+
+  asyncTest "Expired records free the per-peer quota so the sender is accepted again":
+    const perPeerCap = 1
+    var receiverConfig = testKadConfig(providerRejection = true)
+    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
+    let receiverKad = setupKad(receiverConfig)
+    let peerA = setupKad(testKadConfig(providerRejection = true))
+
+    startAndDeferStop(@[receiverKad, peerA])
+    await connect(peerA, receiverKad)
+
+    let idA = peerA.switch.peerInfo.peerId
+    let k1 = randomServiceId()
+    let k2 = randomServiceId()
+
+    check (await peerA.advertiseStatus(receiverKad, k1)) == AddProviderStatus.accepted
+    check (await peerA.advertiseStatus(receiverKad, k2)) == AddProviderStatus.rejected
+    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
+
+    checkUntilTimeout:
+      receiverKad.providerManager.providerRecords.len == 0
+      receiverKad.providerManager.recordsPerPeer.getOrDefault(idA) == 0
+
+    check (await peerA.advertiseStatus(receiverKad, k2)) == AddProviderStatus.accepted
+    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
+
+  asyncTest "Re-advertising the same key does not increase the per-peer count":
+    const perPeerCap = 2
+    const readvertisements = 3
+    var receiverConfig = testKadConfig(providerRejection = true)
+    receiverConfig.providerExpirationInterval = 30.seconds
+    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
+    let receiverKad = setupKad(receiverConfig)
+    let peerA = setupKad(testKadConfig(providerRejection = true))
+
+    startAndDeferStop(@[receiverKad, peerA])
+    await connect(peerA, receiverKad)
+
+    let idA = peerA.switch.peerInfo.peerId
+    let k1 = randomServiceId()
+    let k2 = randomServiceId()
+    let k3 = randomServiceId()
+
+    for _ in 0 ..< readvertisements:
+      check (await peerA.advertiseStatus(receiverKad, k1)) == AddProviderStatus.accepted
+    check:
+      receiverKad.providerManager.providerRecords.len == 1
+      receiverKad.providerManager.recordsPerPeer[idA] == 1
+
+    # A double-counted k1 would leave no room for k2.
+    check (await peerA.advertiseStatus(receiverKad, k2)) == AddProviderStatus.accepted
+    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
+    check (await peerA.advertiseStatus(receiverKad, k3)) == AddProviderStatus.rejected
+    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
 
   asyncTest "mixed: sender without rejection ignores reply from rejection-enabled receiver":
     # Sender has providerRejection=false so it never reads replies.
