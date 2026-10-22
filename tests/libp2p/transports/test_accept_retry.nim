@@ -24,6 +24,7 @@ suite "Transport accept retries":
     checkTrackers()
 
   for failure in ["descriptor exhaustion", "connection abort"]:
+    let failure = failure # the asyncTest closure cannot capture the lent loop variable
     asyncTest "TCP retries " & failure & " within one accept call with backoff":
       let server = TcpTransport.new(upgrade = Upgrade())
       let client = TcpTransport.new(upgrade = Upgrade())
