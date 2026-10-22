@@ -281,42 +281,18 @@ suite "PubSubPeer receive streams":
     await peer.handleRecvStream(stream)
     check stream.closed
 
-  asyncTest "oversized frames are dropped and the next message still arrives":
+  asyncTest "oversized frames reset the stream, peer keeps serving":
     var received: seq[seq[byte]]
     proc handler(
         peer: PubSubPeer, data: sink seq[byte]
     ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
       received.add(data)
 
-    let peer = PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 16, handler)
+    let peer = PubSubPeer.new(PeerId.random(), nil, nil, GossipSubCodec_12, 16, handler)
     let stream = TestBufferStream.new(noop)
     let reader = peer.handleRecvStream(stream)
 
-    # 32 bytes: over the 16-byte limit, within the drain bound. Two pushes so
-    # draining spans partial reads.
-    let oversized = newSeqWith(32, byte 0xAA)
-    await stream.pushData(@[byte 32] & oversized[0 ..< 10])
-    await stream.pushData(oversized[10 ..< 32] & @[byte 1, 42])
-    await stream.pushEof()
-    await reader
-
-    check received == @[@[byte 42]]
-
-    await peer.stopTasks()
-    await stream.close()
-
-  asyncTest "frames too large to drain reset the stream, peer keeps serving":
-    var received: seq[seq[byte]]
-    proc handler(
-        peer: PubSubPeer, data: sink seq[byte]
-    ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
-      received.add(data)
-
-    let peer = PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 16, handler)
-    let stream = TestBufferStream.new(noop)
-    let reader = peer.handleRecvStream(stream)
-
-    # Declare 1024 bytes, beyond the drain bound for a 16-byte limit.
+    # Declare 1024 bytes, over the 16-byte limit; the body never has to arrive.
     await stream.pushData(@[byte 0x80, 0x08])
     await reader
     check:
