@@ -140,6 +140,46 @@ jobs:
           cd ../nim-peer
           ./src/nim_peer
 
+  run-topic-streams-interop:
+    name: Run Topic Streams interoperability tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: interop/topic-streams/go-peer/go.sum
+
+      - name: Set up Nim
+        uses: "./.github/actions/install_nim"
+        with:
+          os: linux
+          cpu: amd64
+          shell: bash
+          nim_ref: v2.2.10
+
+      - name: Build the Go peer
+        working-directory: interop/topic-streams/go-peer
+        run: go build -o ../../../build/topic-streams-go .
+
+      - name: Build the Nim peer
+        run: |
+          NIM_VERSION=$(nim --version | sed -n 's/^Nim Compiler Version \([^ ]*\).*/\1/p')
+          nimble --noLockfile --requires:"nim == $NIM_VERSION" --resolver:minver -l setup -y
+          # Existing standalone imports trigger these diagnostics; keep them visible as warnings.
+          nim c --nimcache:build/topic-streams-nimcache \
+            --warningAsError:UseBase:off --warningAsError:UnusedImport:off \
+            --hintAsError:XCannotRaiseY:off --out:build/topic-streams-nim \
+            interop/topic-streams/nim-peer/src/peer.nim
+
+      - name: Run Go and Nim together
+        run: bash interop/topic-streams/run.sh
+
   run-partial-message-interop:
     name: Run Partial Message interoperability tests
     runs-on: ubuntu-22.04
