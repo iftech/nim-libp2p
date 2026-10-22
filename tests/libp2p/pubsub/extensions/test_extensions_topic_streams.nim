@@ -38,7 +38,7 @@ suite "GossipSub Extensions :: Topic streams":
   test "absent transports allow control RPCs without activating topic streams":
     for config in [Opt.none(TopicStreamsConfig), Opt.some(TopicStreamsConfig())]:
       let state = TopicStreamsExtension.new(config, noopBehaviorPenaltyProc)
-      let peer = randomPeerId()
+      let peer = PeerId.random()
       check state.negotiateTopicStreams(peer, RPCMsg())
       check state.negotiateTopicStreams(peer, supported())
       check not state.peerHasTopicStreams(peer)
@@ -49,14 +49,14 @@ suite "GossipSub Extensions :: Topic streams":
       ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
     check disabled.makeControlExtensions().topicStreams.isNone
     check enabled.makeControlExtensions().topicStreams == Opt.some(true)
-    let peer = randomPeerId()
+    let peer = PeerId.random()
     check not disabled.peerHasTopicStreams(peer)
     check not enabled.peerHasTopicStreams(peer)
 
   asyncTest "extension routes payloads and closes topic writers across peers":
     let state =
       TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
-    let peers = [randomPeerId(), randomPeerId()]
+    let peers = [PeerId.random(), PeerId.random()]
     var remotes: seq[Stream]
     proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
       let (local, remote) = bridgedConnections()
@@ -106,7 +106,7 @@ suite "GossipSub Extensions :: Topic streams":
   asyncTest "stopping a peer does not remove a replacement transport":
     let state =
       TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
-    let peer = randomPeerId()
+    let peer = PeerId.random()
     let pending = newAsyncEvent()
     var cancelled = 0
     proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
