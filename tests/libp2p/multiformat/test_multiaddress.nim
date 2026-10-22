@@ -363,6 +363,10 @@ suite "MultiAddress test suite":
         part.protoAddress().tryGet() == pid.getBytes()
         $ma == "/" & proto & "/" & legacyPeerId
 
+  test "p2p rejects CID text that decodes to zero bytes":
+    for text in ["M=", "c========"]:
+      check MultiAddress.init("/p2p/" & text).isErr()
+
   test "MultiAddress pattern matching test vectors":
     for item in PatternVectors:
       for gitem in item.good:

@@ -82,6 +82,8 @@ func weightedStats(obs: seq[NetSizeMeasurement]): (float64, float64) =
   let denom = float64(obs.len - 1) / float64(obs.len) * sumWeights
   (avg, sqrt(sumWeightedDiffs / denom))
 
+const DegenerateRegressionCause* = "degenerate regression"
+
 proc networkSize*(est: NetworkSizeEstimator): LPResult[int] =
   ## Current estimate, or an error while there is not enough data yet.
   # Linear regression through the origin, inverse variances as fit weights: a
@@ -101,7 +103,7 @@ proc networkSize*(est: NetworkSizeEstimator): LPResult[int] =
     x2Sum += fitWeight * x * x
 
   if xySum <= 0.0:
-    return err("degenerate regression")
+    return err(DegenerateRegressionCause)
 
   let netSize = int(x2Sum / xySum - 1.0)
   if netSize < 1:

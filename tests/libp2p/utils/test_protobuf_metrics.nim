@@ -23,7 +23,7 @@ when defined(libp2p_protobuf_metrics):
       0.0
 
   proc makePeerRecord(): PeerRecord =
-    PeerRecord.init(PeerId.random(rng()).get(), @[ma("/ip4/127.0.0.1/tcp/1234")])
+    PeerRecord.init(PeerId.random(), @[ma("/ip4/127.0.0.1/tcp/1234")])
 
   suite "protobuf_metrics":
     test "PeerRecord encode does not increment sent counter (withMetrics = false)":

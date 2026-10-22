@@ -80,8 +80,8 @@ proc buildSwitch(config: KadConfig): Switch =
 proc provideKey(testKey: string): Key =
   Key.fromBytes(("interop-test-key-" & testKey).toBytes())
 
-proc valueKey(testKey: string): Key =
-  Key.fromBytes(("/example/data/" & testKey).toBytes())
+proc valueKey(testKey: string): RecordKey =
+  RecordKey.fromBytes(("/example/data/" & testKey).toBytes()).expect("short key")
 
 proc newKad(switch: Switch): KadDHT =
   KadDHT.new(
@@ -138,11 +138,8 @@ proc runQuerier(
   # Find the provider record.
   let pkey = provideKey(testKey)
   var providerCount = 0
-  for attempt in 0 ..< LookupAttempts:
-    try:
-      providerCount = (await kad.getProviders(pkey)).len
-    except LPStreamError as e:
-      debug "getProviders attempt failed", attempt = attempt, err = e.msg
+  for _ in 0 ..< LookupAttempts:
+    providerCount = (await kad.getProviders(pkey)).len
     if providerCount > 0:
       break
     await sleepAsync(LookupDelay)

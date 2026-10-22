@@ -464,6 +464,13 @@ proc sendAddProviderResponse(
   except LPStreamError as exc:
     trace "Failed to send add-provider response", err = exc.msg, stream, status = status
 
+func capAddrs(peer: Peer): Peer =
+  var capped = peer
+  capped.addrs = peer.addrs.filterIt(it.bytes().len <= MaxProviderAddrLen)
+  if capped.addrs.len > MaxProviderAddrs:
+    capped.addrs.setLen(MaxProviderAddrs)
+  capped
+
 method handleAddProvider*(
     kad: KadDHT, stream: Stream, msg: Message
 ) {.base, async: (raises: [CancelledError]).} =
@@ -485,9 +492,9 @@ method handleAddProvider*(
 
   # filter out infos that do not match sender's
   let peerBytes = stream.peerId.getBytes()
-  let validPeers = msg.providerPeers.filterIt(
-    it.id.isSome and it.id.get() == peerBytes and PeerId.init(it.id.get()).isOk()
-  )
+  let validPeers = msg.providerPeers
+    .filterIt(it.id.isSome and it.id.get() == peerBytes)
+    .mapIt(it.capAddrs())
 
   # Per-key cap is enforced regardless of providerRejection: when rejection is
   # disabled the receiver still drops over-cap providers, just silently.
@@ -541,9 +548,7 @@ proc dispatchGetProviders*(
 
 proc getProviders*(
     kad: KadDHT, key: Key
-): Future[HashSet[Provider]] {.
-    async: (raises: [LPStreamError, CancelledError]), gcsafe
-.} =
+): Future[HashSet[Provider]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Get providers for a given `key` from the nodes closest to that `key`.
 
   var allProviders: HashSet[Provider]

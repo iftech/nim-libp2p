@@ -93,32 +93,29 @@ proc generate*(rng: Rng, T: type): T {.noinit.} =
   rng.generate(v)
   v
 
+proc randBelow(rng: Rng, value: var uint32, max: uint32): int =
+  let threshold = (0'u32 - max) mod max
+  # Reject values below the threshold to avoid modulo bias.
+  while value < threshold:
+    rng.generate(value)
+  int(value mod max)
+
 proc shuffle*[T](rng: Rng, x: var openArray[T]) =
-  if x.len == 0:
+  if x.len <= 1:
     return
 
-  var randValues = newSeqUninit[byte](len(x) * 2)
+  var randValues = newSeqUninit[uint32](len(x) - 1)
   rng.generate(randValues)
 
   for i in countdown(x.high, 1):
-    let
-      rand = randValues[i * 2].int32 or (randValues[i * 2 + 1].int32 shl 8)
-      y = rand mod i
+    let y = rng.randBelow(randValues[i - 1], uint32(i + 1))
     swap(x[i], x[y])
 
 proc randBelow(rng: Rng, max: uint32): int =
-  ## Returns a uniformly random integer in the range [0, max).
-  ## Uses 32-bit rejection sampling to eliminate modulo bias and to
-  ## support max values larger than 65536.
-  let threshold = (0'u32 - max) mod max
-  while true:
-    var bytes: array[4, byte]
-    rng.generate(bytes)
-    let r =
-      bytes[0].uint32 or (bytes[1].uint32 shl 8) or (bytes[2].uint32 shl 16) or
-      (bytes[3].uint32 shl 24)
-    if r >= threshold:
-      return (r mod max).int
+  ## Return a uniformly random integer in [0, max) using 32-bit rejection sampling.
+  var value: uint32
+  rng.generate(value)
+  rng.randBelow(value, max)
 
 proc rand*(rng: Rng, low, high: int): int =
   ## Return a uniformly random integer in the inclusive range [`low`, `high`].

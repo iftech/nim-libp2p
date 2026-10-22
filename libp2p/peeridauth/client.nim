@@ -124,6 +124,8 @@ proc sign(
     return err(error, "Failed to sign")
   ok(PeerIDAuthSignature(base64.encode(sig.getBytes(), safe = true)))
 
+const UndecodableSignatureCause* = "Failed to decode server's signature"
+
 proc tryCheckSignature*(
     serverSig: PeerIDAuthSignature,
     serverPublicKey: PublicKey,
@@ -134,7 +136,7 @@ proc tryCheckSignature*(
   let params = ?getSigParams(false, hostname, challengeServer, clientPublicKey)
   let bytesToSign = ?params.genDataToSign()
   let sigBytes = serverSig.tryDecode().valueOr:
-    return err(error, "Failed to decode server's signature")
+    return err(error, UndecodableSignatureCause)
 
   var serverSignature: Signature
   if not serverSignature.init(sigBytes):
@@ -336,13 +338,15 @@ proc sendWithoutBearer(
 
   ok((authorization.bearer, authorization.response))
 
+const BearerExpiredCause* = "Bearer expired"
+
 proc sendWithBearer(
     self: PeerIDAuthClient, uri: Uri, payload: auto, bearer: BearerToken
 ): Future[LPResult[(BearerToken, PeerIDAuthResponse)]] {.
     async: (raises: [CancelledError])
 .} =
   if bearer.expires.isSome() and bearer.expires.get() <= now():
-    return err("Bearer expired")
+    return err(BearerExpiredCause)
 
   let authHeader = PeerIDAuthPrefix & " bearer=\"" & bearer.token & "\""
   let response = (await self.tryPost(uri, $payload, authHeader)).valueOr:

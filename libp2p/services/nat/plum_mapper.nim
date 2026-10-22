@@ -21,6 +21,8 @@ logScope:
   topics = "libp2p nat-traversal"
 
 const
+  PlumMapperClosedCause* = "PlumMapper closed"
+
   # Private defaults for new(); the public NAT knobs live in natservice.
   DefaultDiscoverTimeout = 10.seconds
   DefaultMappingTimeout = 10.seconds
@@ -109,7 +111,7 @@ method map*(
     self: PlumMapper, internalPort: Port, externalPort: Port, proto: MapProto
 ): Future[LPResult[MappedPort]] {.async: (raises: [CancelledError]), gcsafe.} =
   if self.closed:
-    return err("PlumMapper closed")
+    return err(PlumMapperClosedCause)
 
   await self.lock.acquire()
   defer:
@@ -117,7 +119,7 @@ method map*(
 
   # close() may have run (and torn libplum down) while we waited for the lock.
   if self.closed:
-    return err("PlumMapper closed")
+    return err(PlumMapperClosedCause)
 
   # Reuse a still-live mapping for this listen port rather than asking libplum
   # for a fresh one (which would orphan the previous id).
@@ -138,7 +140,7 @@ method map*(
   # close() may have torn libplum down during the await; drop the new mapping.
   if self.closed:
     destroyMapping(res.id)
-    return err("PlumMapper closed")
+    return err(PlumMapperClosedCause)
 
   let externalIp =
     try:
@@ -156,14 +158,14 @@ method unmap*(
     self: PlumMapper, externalPort: Port, proto: MapProto
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   if self.closed:
-    return err("PlumMapper closed")
+    return err(PlumMapperClosedCause)
 
   await self.lock.acquire()
   defer:
     self.lock.safeRelease()
 
   if self.closed:
-    return err("PlumMapper closed")
+    return err(PlumMapperClosedCause)
 
   # The PortMapper contract keys unmap on the external port; find the entry
   # whose assigned external port matches.

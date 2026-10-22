@@ -136,8 +136,7 @@ suite "Circuit Relay V2":
     asyncTest "tryReserve returns a refused reservation as an error":
       let res = await cl2.tryReserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
       check:
-        res.isErr()
-        res.error == "Reservation failed"
+        res.isOfError(ReservationFailedCause)
 
     asyncTest "Too many reservations + Reconnect":
       expect ReservationError:

@@ -179,7 +179,7 @@ suite "PeerID Auth Client":
       parseUri(ExampleURL), peerInfo, "somepayload", Opt.some(expired)
     )
 
-    check sent.error == "Bearer expired"
+    check sent.isOfError(BearerExpiredCause)
     check client.requestedUris.len == 0
 
   test "tryCheckSignature reports a signature that is not base64":
@@ -187,8 +187,7 @@ suite "PeerID Auth Client":
 
     let checked = tryCheckSignature("!!!", key, "challenge", key, "example.com")
 
-    check checked.isErr()
-    check checked.isOfError("Failed to decode server's signature")
+    check checked.isOfError(UndecodableSignatureCause)
 
   asyncTest "authentication fields match names rather than substrings":
     client.authenticationInfo = Opt.some(

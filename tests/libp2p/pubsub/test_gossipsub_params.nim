@@ -18,6 +18,7 @@ suite "GossipSubParams validation":
     check:
       params.validateParameters().isOk()
       params.seenMaxSize == GossipSubSeenMaxSize
+      params.acceptPXThreshold == 0.0
 
   test "dOut fails when equal to dLow":
     const errorMessage =

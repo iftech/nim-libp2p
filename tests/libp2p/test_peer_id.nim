@@ -266,6 +266,8 @@ suite "Peer testing suite":
       PeerId.init(wrongCodecCid).isErr()
       PeerId.init("z" & legacyPeerId).isErr()
       PeerId.init(malformedCid).isErr()
+      PeerId.init("M=").isErr()
+      PeerId.init("c========").isErr()
 
   test "Reject PeerId with trailing bytes":
     let

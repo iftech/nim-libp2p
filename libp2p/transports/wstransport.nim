@@ -180,6 +180,10 @@ proc getSni(address: MultiAddress): string =
     return ""
   string.fromBytes(value)
 
+func hasControlChar(s: string): bool =
+  ## A CR or LF in a Host header value would start a new header line.
+  s.anyIt(it in {'\x00' .. '\x1F', '\x7F'})
+
 proc secure*(self: WsTransport): bool =
   not (isNil(self.tlsPrivateKey) or isNil(self.tlsCertificate))
 
@@ -598,6 +602,11 @@ method dial*(
         @[hostHeaderHook(httpHostname)]
       else:
         @[]
+  if httpHostname.hasControlChar() or serverName.hasControlChar():
+    raise newException(
+      transport.TransportDialError,
+      "WsTransport.dial called with a control character in the hostname",
+    )
   trace "Creating websocket",
     address = initAddress,
     secure = secure,

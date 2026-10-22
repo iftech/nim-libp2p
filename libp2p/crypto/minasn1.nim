@@ -98,7 +98,7 @@ template isEmpty*(ab: Asn1Buffer): bool =
   ab.offset >= len(ab.buffer)
 
 template isEnough*(ab: Asn1Buffer, length: int64): bool =
-  len(ab.buffer) >= ab.offset + length
+  length >= 0 and length <= int64(len(ab.buffer) - ab.offset)
 
 proc len*[T: Asn1Buffer | Asn1Composite](abc: T): int =
   len(abc.buffer) - abc.offset
@@ -376,7 +376,7 @@ proc getLength(ab: var Asn1Buffer): Asn1Result[int] =
       var lengthU: uint64 = 0
       for i in 0 ..< octets:
         lengthU = (lengthU shl 8) or safeConvert[uint64](ab.buffer[ab.offset + i + 1])
-      if lengthU > uint64(int64.high):
+      if lengthU > uint64(int.high):
         return err(Asn1Error.Overflow)
       let length = int(lengthU)
       ab.offset = ab.offset + octets + 1
@@ -537,6 +537,9 @@ proc read*(ab: var Asn1Buffer): Asn1Result[Asn1Field] =
           # bigger then 1.
           return err(Asn1Error.Incorrect)
         elif length == 1:
+          if not ab.isEnough(length):
+            return err(Asn1Error.Incomplete)
+
           if ab.buffer[ab.offset] != 0x00'u8:
             return err(Asn1Error.Incorrect)
           else:
