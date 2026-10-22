@@ -1,0 +1,30 @@
+name: Nimbus soak
+
+on:
+  schedule:
+    - cron: "20 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nimbus-soak
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  poll:
+    name: Check the hoodi libp2p nodes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout nim-libp2p tools
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Update the nimbus-soak status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/nimbus_soak.py poll
