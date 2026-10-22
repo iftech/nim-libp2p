@@ -37,17 +37,17 @@ proc new*(
   client.setup(switch)
   T(switch: switch, client: client, rng: rng)
 
-proc selectPeer(self: AutonatV2Verifier): Opt[PeerId] =
+proc selectPeer(self: AutonatV2Verifier, exclude: seq[PeerId]): Opt[PeerId] =
   ## A peer which dialed us proves nothing. It has a path to us already.
   self.rng.pickOne(
     self.switch.connectedPeers(Direction.Out).filterIt(
-      not self.switch.hasIncomingConn(it)
+      not self.switch.hasIncomingConn(it) and it notin exclude
     )
   )
 
 proc askPeer(
     self: AutonatV2Verifier, peerId: PeerId, address: MultiAddress
-): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
+): Future[Opt[VerificationResult]] {.async: (raises: [CancelledError]).} =
   let reachability =
     try:
       (await self.client.sendDialRequest(peerId, @[address]).wait(AskTimeout)).reachability
@@ -55,29 +55,29 @@ proc askPeer(
       raise e
     except AsyncTimeoutError:
       trace "DialRequest timed out", peerId, address
-      return Opt.none(AddrState)
+      return Opt.none(VerificationResult)
     except LPError as e:
       trace "DialRequest failed", peerId, err = e.msg, address
-      return Opt.none(AddrState)
+      return Opt.none(VerificationResult)
 
   case reachability
   of Reachable:
-    Opt.some(AddrState.Confirmed)
+    Opt.some(VerificationResult(state: AddrState.Confirmed, peerId: peerId))
   of NotReachable:
-    Opt.some(AddrState.Unreachable)
+    Opt.some(VerificationResult(state: AddrState.Unreachable, peerId: peerId))
   of Unknown:
-    Opt.none(AddrState)
+    Opt.none(VerificationResult)
 
 method verify*(
-    self: AutonatV2Verifier, address: MultiAddress
-): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
+    self: AutonatV2Verifier, address: MultiAddress, exclude: seq[PeerId]
+): Future[Opt[VerificationResult]] {.async: (raises: [CancelledError]).} =
   ## One request carrying that one address, to a random peer.
   if not self.switch.hasEnoughIncomingSlots():
     trace "No incoming slots left, skipping verification", address
-    return Opt.none(AddrState)
+    return Opt.none(VerificationResult)
 
-  let peerId = self.selectPeer().valueOr:
+  let peerId = self.selectPeer(exclude).valueOr:
     trace "No peer to ask", address
-    return Opt.none(AddrState)
+    return Opt.none(VerificationResult)
 
   await self.askPeer(peerId, address)

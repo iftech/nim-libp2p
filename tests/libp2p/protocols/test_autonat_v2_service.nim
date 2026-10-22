@@ -118,15 +118,17 @@ suite "AutonatV2 Service":
     let
       (service, _) = newService(NotReachable)
       switch = createSwitch(service)
-      peer = createSwitch()
+      firstPeer = createSwitch()
+      secondPeer = createSwitch()
       notified = service.awaitReachability(NotReachable)
       publicAddr = ma("/ip4/1.2.3.4/tcp/4040")
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(switch.start(), firstPeer.start(), secondPeer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(switch.stop(), firstPeer.stop(), secondPeer.stop())
     switch.addressManager.add(publicAddr, AddrSource.Upnp)
-    await switch.connect(peer)
+    await switch.connect(firstPeer)
+    await switch.connect(secondPeer)
 
     await notified
 
@@ -161,16 +163,20 @@ suite "AutonatV2 Service":
 
   asyncTest "a node which becomes reachable later notifies both changes":
     let
-      (service, client) = newService(NotReachable, expectedDials = 2)
+      (service, client) = newService(NotReachable)
       switch = createSwitch(service)
-      peer = createSwitch()
+      firstPeer = createSwitch()
+      secondPeer = createSwitch()
       notReachable = service.awaitReachability(NotReachable)
       reachable = service.awaitReachability(Reachable)
+      publicAddr = ma("/ip4/1.2.3.4/tcp/4040")
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(switch.start(), firstPeer.start(), secondPeer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
-    await switch.connect(peer)
+      await allFuturesRaising(switch.stop(), firstPeer.stop(), secondPeer.stop())
+    switch.addressManager.add(publicAddr, AddrSource.Upnp)
+    await switch.connect(firstPeer)
+    await switch.connect(secondPeer)
 
     await notReachable
     client.response = mockResponse(Reachable)

@@ -59,6 +59,7 @@ type
   Verdict = object
     address: MultiAddress
     state: AddrState
+    peerId: Opt[PeerId]
 
   StubVerifier = ref object of Verifier
     verdicts: seq[Verdict]
@@ -67,8 +68,10 @@ type
     delay: Duration
     slow: seq[MultiAddress] ## the addresses `delay` applies to, all when empty
 
-func verdict(address: MultiAddress, state: AddrState): Verdict =
-  Verdict(address: address, state: state)
+func verdict(
+    address: MultiAddress, state: AddrState, peerId = Opt.none(PeerId)
+): Verdict =
+  Verdict(address: address, state: state, peerId: peerId)
 
 proc makeStubVerifier(
     verdicts: seq[Verdict] = @[], delay = ZeroDuration, slow: seq[MultiAddress] = @[]
@@ -79,8 +82,8 @@ func timesAsked(self: StubVerifier, address: MultiAddress): int =
   self.asked.countIt(it == address)
 
 method verify(
-    self: StubVerifier, address: MultiAddress
-): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
+    self: StubVerifier, address: MultiAddress, exclude: seq[PeerId]
+): Future[Opt[VerificationResult]] {.async: (raises: [CancelledError]).} =
   self.asked.add(address)
   self.ran.fire()
   if self.slow.len == 0 or address in self.slow:
@@ -88,8 +91,10 @@ method verify(
 
   for verdict in self.verdicts:
     if verdict.address == address:
-      return Opt.some(verdict.state)
-  Opt.none(AddrState)
+      let peerId = verdict.peerId.get(randomPeerId())
+      if peerId notin exclude:
+        return Opt.some(VerificationResult(state: verdict.state, peerId: peerId))
+  Opt.none(VerificationResult)
 
 proc interfaceProvider(hosts: seq[string]): NetworkInterfaceProvider =
   proc(addrFamily: AddressFamily): seq[InterfaceAddress] {.gcsafe, raises: [].} =
@@ -516,8 +521,28 @@ suite "AddressManager verification":
     check manager.reachability() == NetworkReachability.NotReachable
 
     manager.add(second, AddrSource.Upnp)
+    check manager.reachability() == NetworkReachability.Unknown
+
     manager.update(second, AddrState.Confirmed)
     check manager.reachability() == NetworkReachability.Reachable
+
+  asyncTest "removing the verifier clears its verdicts":
+    let
+      address = ma("/ip4/1.2.3.4/tcp/1")
+      verifier = makeStubVerifier(@[verdict(address, AddrState.Confirmed)])
+      manager = makeManager(verifyInterval = VerifyInterval, verifier = verifier)
+
+    startAndDeferStop(manager)
+    manager.add(address, AddrSource.Listen)
+
+    checkUntilTimeout:
+      manager.confirmedAddrs() == @[address]
+
+    manager.verifier = nil
+    check:
+      manager.confirmedAddrs().len == 0
+      manager.candidates()[0].state == AddrState.Unverified
+      manager.reachability() == NetworkReachability.Unknown
 
   asyncTest "a verify run which changes the summary fires the handler once":
     let
@@ -644,7 +669,7 @@ suite "AddressManager verification":
     checkUntilTimeout:
       verifier.timesAsked(observed) >= 2
 
-  asyncTest "a refuted identify guess makes the node unreachable":
+  asyncTest "a refuted identify guess does not make the node unreachable":
     let
       observed = ma("/ip4/8.8.8.8/tcp/9")
       verifier = makeStubVerifier(@[verdict(observed, AddrState.Unreachable)])
@@ -658,7 +683,8 @@ suite "AddressManager verification":
     check manager.addObservation(PeerId.random(), observed)
 
     checkUntilTimeout:
-      manager.reachability() == NetworkReachability.NotReachable
+      observed notin manager.candidates().mapIt(it.address)
+    check manager.reachability() == NetworkReachability.Unknown
 
   asyncTest "newer refutations evict the oldest refuted guess, which becomes eligible":
     let
@@ -719,6 +745,71 @@ suite "AddressManager verification":
       manager.candidates().anyIt(
         it.address == observed and it.sources == {AddrSource.Identify}
       )
+
+  asyncTest "identify candidates follow the current observations":
+    let
+      observer = randomPeerId()
+      first = ma("/ip4/8.8.8.8/tcp/1")
+      last = ma("/ip4/9.9.9.9/tcp/1")
+      verifier = makeStubVerifier()
+      manager =
+        makeManager(minCount = 1, verifyInterval = VerifyInterval, verifier = verifier)
+      peerInfo = makePeerInfo()
+
+    manager.deriveIdentifyCandidates = true
+    startAndDeferStop(manager, peerInfo)
+    check manager.addObservation(observer, first)
+
+    checkUntilTimeout:
+      first in manager.candidates().mapIt(it.address)
+
+    check manager.addObservation(observer, last)
+    checkUntilTimeout:
+      last in manager.candidates().mapIt(it.address)
+      first notin manager.candidates().mapIt(it.address)
+
+    manager.deriveIdentifyCandidates = false
+    check last notin manager.candidates().mapIt(it.address)
+
+  asyncTest "two different peers must refute a confirmed identify candidate":
+    let
+      observed = ma("/ip4/8.8.8.8/tcp/1")
+      confirmingPeer = randomPeerId()
+      firstRefuter = randomPeerId()
+      secondRefuter = randomPeerId()
+      verifier = makeStubVerifier(
+        @[verdict(observed, AddrState.Confirmed, Opt.some(confirmingPeer))]
+      )
+      manager = makeManager(minCount = 1, verifyInterval = 1.hours, verifier = verifier)
+      peerInfo = makePeerInfo()
+
+    manager.deriveIdentifyCandidates = true
+    startAndDeferStop(manager, peerInfo)
+    check manager.addObservation(randomPeerId(), observed)
+    manager.triggerVerification()
+
+    checkUntilTimeout:
+      manager.confirmedAddrs() == @[observed]
+
+    verifier.verdicts = @[
+      verdict(observed, AddrState.Unreachable, Opt.some(firstRefuter)),
+      verdict(observed, AddrState.Unreachable, Opt.some(secondRefuter)),
+    ]
+    let beforeFirstRefutation = verifier.asked.len
+    await sleepAsync(VerifyInterval)
+    manager.triggerVerification()
+
+    checkUntilTimeout:
+      verifier.asked.len > beforeFirstRefutation
+    check manager.confirmedAddrs() == @[observed]
+
+    let beforeSecondRefutation = verifier.asked.len
+    await sleepAsync(VerifyInterval)
+    manager.triggerVerification()
+
+    checkUntilTimeout:
+      verifier.asked.len > beforeSecondRefutation
+      observed notin manager.candidates().mapIt(it.address)
 
 suite "AddressManager address mapper":
   teardown:
