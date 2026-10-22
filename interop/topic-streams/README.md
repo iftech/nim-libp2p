@@ -6,7 +6,8 @@ Tests the local Nim implementation against go-libp2p-pubsub
 
 The Go peer connects to a Nim echo peer over loopback TCP, Noise, and Yamux.
 It sends two rounds of signed messages on two topics (32 bytes and 256 KiB)
-and checks each echo's sender, topic, and exact payload. Both peers retain
+after Go's router reports a mesh peer ready for publishing, and checks each
+echo's sender, topic, and exact payload. Both peers retain
 signature verification, exercising reconstruction of the topic omitted on
 topic streams. The Go peer also requires exactly two `/gsts/v0beta` streams
 in each direction after both rounds, checking topic separation and reuse
