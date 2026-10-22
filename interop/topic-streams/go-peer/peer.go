@@ -54,16 +54,6 @@ func run() error {
 	if err := host.Connect(ctx, *remote); err != nil {
 		return err
 	}
-	for _, topic := range topics {
-		for len(topic.ListPeers()) == 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(20 * time.Millisecond):
-			}
-		}
-	}
-
 	// Two rounds verify reuse of each topic's stream. Signatures remain enabled:
 	// successful delivery also checks reconstruction of the omitted topic name.
 	for round := 0; round < 2; round++ {
@@ -73,8 +63,8 @@ func run() error {
 				size = 256 * 1024
 			}
 			payload := bytes.Repeat([]byte{byte(round + 1)}, size)
-			if err := topic.Publish(ctx, payload); err != nil {
-				return err
+			if err := topic.Publish(ctx, payload, pubsub.WithReadiness(pubsub.MinTopicSize(1))); err != nil {
+				return fmt.Errorf("publish %s round %d: %w", topic.String(), round, err)
 			}
 			for {
 				msg, err := subs[i].Next(ctx)
