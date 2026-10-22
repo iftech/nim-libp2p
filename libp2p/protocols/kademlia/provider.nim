@@ -509,9 +509,7 @@ method handleAddProvider*(
 
   # filter out infos that do not match sender's
   let peerBytes = stream.peerId.getBytes()
-  let validPeers = msg.providerPeers
-    .filterIt(it.id == peerBytes)
-    .mapIt(it.capAddrs())
+  let validPeers = msg.providerPeers.filterIt(it.id == peerBytes).mapIt(it.capAddrs())
 
   # The caps apply also without providerRejection; then no reply goes out.
   var existingCount = 0
