@@ -51,14 +51,26 @@ proc broadcastResponse*(
 
   trace "broadcasting responses to peers", peers = sendPeers.len, rpcMsg = msg
 
-  if anyIt(sendPeers, it.hasObservers) or msg.messages.len > 1:
+  # Multiple messages need per-peer splitting on the legacy transport.
+  if msg.messages.len > 1 or anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
       p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
   else:
-    # Fast path that only encodes message once
-    let encoded = msg.encode(p.anonymize)
+    # Lazily encode each wire format and reuse it across recipients.
+    var encoded: seq[byte]
+    var preparedRPC: PreparedTopicRPC
     for peer in sendPeers:
-      var peerEncoded = encoded
-      peer.trackSend(
-        peer.sendEncoded(move(peerEncoded), priority, useCustomStream, relayedSaltedId)
-      )
+      if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
+          peer.extensionsState.peerHasTopicStreams(peer.peerId):
+        if preparedRPC.isZero():
+          preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
+        peer.sendTopicRPC(preparedRPC, priority)
+      else:
+        if encoded.len == 0:
+          encoded = msg.encode(p.anonymize)
+        var peerEncoded = encoded
+        peer.trackSend(
+          peer.sendEncoded(
+            move(peerEncoded), priority, useCustomStream, relayedSaltedId
+          )
+        )

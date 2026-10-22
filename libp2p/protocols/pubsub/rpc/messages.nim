@@ -64,6 +64,7 @@ type
 
     # Experimental extensions fields:
     testExtension* {.fieldNumber: 6492434.}: Opt[bool]
+    topicStreams* {.fieldNumber: 6492435.}: Opt[bool]
     pingpongExtension* {.fieldNumber: 3145728.}: Opt[bool]
     preambleExtension* {.fieldNumber: 4194304.}: Opt[bool]
 
@@ -181,6 +182,7 @@ func shortLog*(so: Opt[ControlExtensions]): auto =
     (
       partialMessageExtension: "<unset>",
       testExtension: "<unset>",
+      topicStreams: "<unset>",
       pingpongExtension: "<unset>",
       preambleExtension: "<unset>",
     )
@@ -189,6 +191,7 @@ func shortLog*(so: Opt[ControlExtensions]): auto =
     (
       partialMessageExtension: shortLog(s.partialMessageExtension),
       testExtension: shortLog(s.testExtension),
+      topicStreams: shortLog(s.topicStreams),
       pingpongExtension: shortLog(s.pingpongExtension),
       preambleExtension: shortLog(s.preambleExtension),
     )
@@ -342,13 +345,14 @@ static:
   expectedFields(
     ControlExtensions,
     @[
-      "partialMessageExtension", "testExtension", "pingpongExtension",
+      "partialMessageExtension", "testExtension", "topicStreams", "pingpongExtension",
       "preambleExtension",
     ],
   )
 proc byteSize(controlExtensions: ControlExtensions): int =
   controlExtensions.partialMessageExtension.byteSize() +
     controlExtensions.testExtension.byteSize() +
+    controlExtensions.topicStreams.byteSize() +
     controlExtensions.pingpongExtension.byteSize() +
     controlExtensions.preambleExtension.byteSize()
 
