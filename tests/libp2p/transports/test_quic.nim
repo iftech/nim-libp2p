@@ -222,7 +222,7 @@ suite "Quic transport":
 
   asyncTest "dial rejects mismatched peer ID":
     let serverPrivateKey = PrivateKey.random(ECDSA, rng()).tryGet()
-    let wrongPeerId = PeerId.random(rng()).tryGet()
+    let wrongPeerId = PeerId.random()
     let server = await createQuicTransport(
       isServer = true, privateKey = Opt.some(serverPrivateKey)
     )

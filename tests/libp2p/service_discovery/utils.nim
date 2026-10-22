@@ -49,7 +49,7 @@ proc randomKey*(): PrivateKey =
   PrivateKey.random(rng()).get()
 
 proc makePeerInfo*(
-    peerId: PeerId = randomPeerId(), addrs: seq[MultiAddress] = @[]
+    peerId: PeerId = PeerId.random(), addrs: seq[MultiAddress] = @[]
 ): PeerInfo =
   PeerInfo(peerId: peerId, addrs: addrs)
 
@@ -197,11 +197,11 @@ proc hasPeerInMainTable*(disco: ServiceDiscovery, peerId: PeerId): bool =
 
 proc populateRoutingTable*(disco: ServiceDiscovery, count: int) =
   for i in 0 ..< count:
-    discard disco.rtable.insert(randomPeerId())
+    discard disco.rtable.insert(PeerId.random())
 
 proc populateAdvertisementTable*(disco: ServiceDiscovery, serviceId: ServiceId) =
   for i in 0 ..< disco.discoConfig.kRegister:
-    discard disco.rtable.insert(randomPeerId())
+    discard disco.rtable.insert(PeerId.random())
   discard disco.rtManager.addService(
     serviceId, disco.rtable, disco.config.replication, disco.discoConfig.bucketsCount,
     Interest,

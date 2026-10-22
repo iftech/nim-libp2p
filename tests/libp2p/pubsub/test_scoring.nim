@@ -500,7 +500,7 @@ suite "GossipSub Scoring":
     let now = Moment.now()
 
     # Create expired peer stats for disconnected peer
-    let expiredPeerId = randomPeerId()
+    let expiredPeerId = PeerId.random()
     gossipSub.peerStats[expiredPeerId] = PeerStats(
       expire: now - 1.seconds, # Already expired
       score: -5.0,

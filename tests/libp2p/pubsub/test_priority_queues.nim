@@ -125,7 +125,7 @@ proc createTestPeer(
     maxMessageSize: int = 100,
 ): PubSubPeer =
   PubSubPeer.new(
-    PeerId.random(rng()).expect("random peer id"),
+    PeerId.random(),
     dummyGetConn,
     onEvent,
     GossipSubCodec_12,

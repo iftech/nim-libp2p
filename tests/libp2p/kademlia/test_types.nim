@@ -41,7 +41,7 @@ suite "KadDHT Types":
       )
 
   test "toPeerIds skips a peer without a valid id":
-    let pid = randomPeerId()
+    let pid = PeerId.random()
     let peers = @[
       Peer(id: Opt.none(seq[byte])),
       Peer(id: Opt.some(@[0xFF'u8])),

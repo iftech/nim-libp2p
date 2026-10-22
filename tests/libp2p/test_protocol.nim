@@ -78,9 +78,9 @@ template assertNoLimits(p: LPProtocol) =
 suite "LPProtocol stream budget":
   const codecs = @["/test/1.0.0"]
   let
-    peerId1 = PeerId.random(rng()).get()
-    peerId2 = PeerId.random(rng()).get()
-    peerId3 = PeerId.random(rng()).get()
+    peerId1 = PeerId.random()
+    peerId2 = PeerId.random()
+    peerId3 = PeerId.random()
 
   setup:
     clearGauges(codecs)

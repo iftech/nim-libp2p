@@ -3,21 +3,18 @@
 
 {.used.}
 
-import sequtils
+import std/[sequtils, importutils]
 import chronos
 import
   ../../libp2p/
     [builders, switch, dial, multiaddress, transports/transport, stream/connection]
 import ../../libp2p/protocols/protocol
+import ../../libp2p/transports/tcptransport
 import ../stubs/transportstub
 import ../tools/[unittest, crypto, lifecycle, multiaddress, switch_builder]
 
 proc newStubAcceptSwitch(
-    behavior: StubAcceptBehavior,
-    nilCount = 0,
-    withTcp = false,
-    maxIn = 0,
-    acceptLimit = 0,
+    behavior: StubAcceptBehavior, withTcp = false, maxIn = 0, acceptLimit = 0
 ): (Switch, MemoryTransportStub) =
   var addrs = @[MemoryAutoAddress()]
   if withTcp:
@@ -31,9 +28,7 @@ proc newStubAcceptSwitch(
     .withAddresses(addrs)
     .withTransport(
       proc(config: TransportConfig): Transport =
-        MemoryTransportStub.new(
-          config.upgr, rng(), behavior, nilCount, acceptLimit = acceptLimit
-        )
+        MemoryTransportStub.new(config.upgr, rng(), behavior, acceptLimit = acceptLimit)
     )
   if withTcp:
     b = b.withTcpTransport()
@@ -80,18 +75,6 @@ suite "Switch accept-loop failure handling":
 
     check server.connManager.availableSlots(Direction.In) == 1
 
-  asyncTest "accept returning nil retries with backoff":
-    let (server, transport) = newStubAcceptSwitch(NilAlways)
-    startAndDeferStop(@[server])
-
-    await sleepAsync(2 * AcceptRetryDelay + 50.milliseconds)
-    # One immediate accept, then retries after 100ms and 200ms.
-    check transport.acceptCalls <= 3
-    # nil remains non-fatal, so the loop keeps accepting after the backoff
-    checkUntilTimeout:
-      transport.acceptCalls >= 5
-    check not server.acceptFuts[0].finished
-
   asyncTest "inbound connections are dropped after a transport's accept loop dies":
     let (server, transport) = newStubAcceptSwitch(RaiseAlways)
     let client = makeStandardSwitch(MemoryAutoAddress())
@@ -107,18 +90,19 @@ suite "Switch accept-loop failure handling":
     expect DialFailedError:
       await client.connect(server)
 
-  asyncTest "nil accepts do not consume a slot and a one-slot transport recovers":
-    const nilCount = 3
-    let (server, transport) =
-      newStubAcceptSwitch(NilThenAccept, nilCount = nilCount, maxIn = 1)
-    let client = makeStandardSwitch(MemoryAutoAddress())
+  asyncTest "TCP retries do not consume a slot and a one-slot switch recovers":
+    privateAccess(TcpTransport)
+    let server = makeStandardSwitchBuilder(TcpAutoAddress).withMaxInOut(1, 8).build()
+    let client = makeStandardSwitch(TcpAutoAddress)
+    let transport = TcpTransport(server.transports[0])
+    let pending = typeof(transport.acceptFuts[0]).init("test failed accept")
+    pending.fail(newException(TransportTooManyError, "descriptor limit"))
+    transport.acceptFuts = @[pending]
     startAndDeferStop(@[server, client])
 
-    checkUntilTimeout:
-      transport.acceptCalls > nilCount
+    check transport.acceptFuts[0] != pending
+    check not server.acceptFuts[0].finished
     check server.connManager.availableSlots(Direction.In) == 1
-
-    # the recovered accept serves a real inbound connection, and the one slot is used
     await client.connect(server)
     check client.isConnected(server)
     check server.connManager.availableSlots(Direction.In) == 0

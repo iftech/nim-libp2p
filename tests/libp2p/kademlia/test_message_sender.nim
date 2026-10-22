@@ -85,7 +85,7 @@ proc faultSender(stream: FaultStream): MessageSender {.raises: [LPError].} =
 proc requestOverFaultStream(
     sender: MessageSender, timeout: Duration
 ): Future[Result[seq[byte], SendError]] {.async: (raises: [CancelledError]).} =
-  await sender.sendRequest(randomPeerId(), @[], @[byte 1], timeout)
+  await sender.sendRequest(PeerId.random(), @[], @[byte 1], timeout)
 
 proc errorAfter(
     stream: FaultStream, timeout: Duration
@@ -207,7 +207,7 @@ suite "KadDHT message sender":
     defer:
       await sender.stop()
 
-    let unreachable = randomPeerId()
+    let unreachable = PeerId.random()
     # Windows retries a refused loopback connect for about 2 seconds.
     let reply = await sender.sendRequest(
       unreachable, @[ma("/ip4/127.0.0.1/tcp/1")], @[byte 1], 5.seconds
@@ -266,7 +266,7 @@ suite "KadDHT message sender":
       await sender.stop()
       await client.stop()
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let started = Moment.now()
     let reply =
       await sender.sendRequest(peerId, @[stall.address], @[byte 1], 200.milliseconds)
@@ -288,7 +288,7 @@ suite "KadDHT message sender":
       await sender.stop()
       await client.stop()
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let rpc = sender.sendRequest(peerId, @[stall.address], @[byte 1], timeout)
     await stall.waitAccepted()
 
@@ -321,7 +321,7 @@ suite "KadDHT message sender":
     defer:
       await sender.stop()
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let (stream, remote) = bridgedConnections()
     let ps = sender.senderFor(peerId)
     ps.stream = stream
@@ -451,7 +451,7 @@ suite "KadDHT message sender":
       await stream.close()
       await fresh.close()
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let first = sender.sendRequest(peerId, @[], @[byte 1], 5.seconds)
     await stream.hung.wait()
     let queued = sender.sendRequest(peerId, @[], @[byte 2], 5.seconds)

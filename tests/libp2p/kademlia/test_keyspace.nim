@@ -92,8 +92,8 @@ suite "KadDHT Keyspace Regions":
     check rtable.regionBits() == Opt.some(6)
 
   test "closestFirst orders peers by distance to the key":
-    let key = PeerId.random(rng()).get().toKey()
-    let peers = PeerId.random(8, rng()).get()
+    let key = PeerId.random().toKey()
+    let peers = PeerId.random(8)
 
     let ordered = peers.closestFirst(key, DefaultHash)
     check:

@@ -47,7 +47,6 @@ const
   ConcurrentUpgrades* = 32
   MaxRejectedConnectionCloses = ConcurrentUpgrades
   UpgradeTimeout* = 30.seconds
-  AcceptRetryDelay* = 100.millis
 
 # a Switch built field by field, as TorSwitch and SwitchStub do, must copy it
 const MissingAddressManager = "switch has no AddressManager"
@@ -365,22 +364,7 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
   while transport.running:
     var conn: RawConn
     try:
-      conn =
-        try:
-          await transport.accept()
-        except CancelledError as exc:
-          raise exc
-        except CatchableError as exc:
-          raise
-            newException(CatchableError, "failed to accept connection: " & exc.msg, exc)
-      if isNil(conn):
-        # A nil connection means that we might have hit a
-        # file-handle limit (or another non-fatal error),
-        # we can get one on the next try
-        trace "Transport connection acceptance returned no connection",
-          addresses = transport.addrs
-        await sleepAsync(AcceptRetryDelay)
-        continue
+      conn = await transport.accept()
 
       let slot = s.connManager.tryGetIncomingSlot().valueOr:
         debug "Incoming connection limit reached", conn

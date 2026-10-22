@@ -243,7 +243,7 @@ suite "KadDHT Bootstrap Component":
 
   asyncTest "bootstrap with unreachable peer completes gracefully", timeout = 30.seconds:
     # Fake bootstrap peer with valid address format
-    let fakePeerId = randomPeerId()
+    let fakePeerId = PeerId.random()
     let fakeAddrs = @[ma("/ip4/127.0.0.1/tcp/59999")]
 
     let config = testKadConfig(timeout = chronos.milliseconds(100))
@@ -309,7 +309,7 @@ suite "KadDHT Bootstrap Component":
     let kad = setupMockKad()
     startAndDeferStop(@[kad])
 
-    let orphan = randomPeerId()
+    let orphan = PeerId.random()
     check kad.rtable.insert(orphan)
     # No AddressBook entry.
 
@@ -324,7 +324,7 @@ suite "KadDHT Bootstrap Component":
     let kad = setupMockKad()
     startAndDeferStop(@[kad])
 
-    let peer = randomPeerId()
+    let peer = PeerId.random()
     check kad.rtable.insert(peer)
     # Fresh insert: within grace, and no AddressBook entry.
     await kad.probeAndEvictPeers(kad.rtable)
@@ -336,7 +336,7 @@ suite "KadDHT Bootstrap Component":
     let kad = setupMockKad()
     startAndDeferStop(@[kad])
 
-    let peer = randomPeerId()
+    let peer = PeerId.random()
     check kad.rtable.insert(peer)
     agePeerPastLivenessGrace(kad.rtable, peer.toKey())
     kad.rtable.markUseful(peer)
@@ -349,7 +349,7 @@ suite "KadDHT Bootstrap Component":
     let kad = setupMockKad()
     startAndDeferStop(@[kad])
 
-    let orphan = randomPeerId()
+    let orphan = PeerId.random()
     check kad.rtable.insert(orphan)
     agePeerPastLivenessGrace(kad.rtable, orphan.toKey())
 
@@ -407,7 +407,7 @@ suite "KadDHT Bootstrap Component":
     let kad = setupMockKad()
     startAndDeferStop(@[kad])
 
-    let peer = randomPeerId()
+    let peer = PeerId.random()
     check kad.rtable.insert(peer)
     agePeerPastLivenessGrace(kad.rtable, peer.toKey())
 
@@ -453,7 +453,7 @@ suite "KadDHT Bootstrap Component":
     let kad = setupMockKad()
     startAndDeferStop(@[kad])
 
-    let peer = randomPeerId()
+    let peer = PeerId.random()
     check kad.rtable.insert(peer)
     agePeerPastLivenessGrace(kad.rtable, peer.toKey())
 
@@ -479,7 +479,7 @@ suite "KadDHT Bootstrap Component":
 
     let done = newFuture[void]("liveness-probe-finished")
     done.complete()
-    kad.livenessProbes[randomPeerId()] = done
+    kad.livenessProbes[PeerId.random()] = done
     kad.maintainableTablesCalls = 0
     await sleepAsync(chronos.milliseconds(100))
 
@@ -498,7 +498,7 @@ suite "KadDHT Bootstrap Component":
 
     await kad.start()
     let hang = newFuture[void]("liveness-loop-stop-hang")
-    kad.livenessProbes[randomPeerId()] = hang
+    kad.livenessProbes[PeerId.random()] = hang
     # Several idle intervals, so the loop parks on the in-flight probe.
     await sleepAsync(chronos.milliseconds(100))
 

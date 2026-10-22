@@ -21,7 +21,7 @@ proc sendOver(
 ): Future[LPResult[kad_protobuf.Message]] {.async: (raises: [CancelledError, LPError]).} =
   let clientNode = setupServiceDiscoveryNode()
   clientNode.switch = FaultSwitch.new(clientNode.switch, stream)
-  let peerId = randomPeerId()
+  let peerId = PeerId.random()
   clientNode.switch.peerStore[AddressBook][peerId] = @[makeMultiAddress("127.0.0.1")]
   await clientNode.send(
     peerId,

@@ -26,10 +26,10 @@ suite "Service Discovery - XPR key binding":
 
     check:
       replyXpr(ownKey, reply).isSome()
-      replyXpr(randomPeerId().toKey(), reply).isNone()
+      replyXpr(PeerId.random().toKey(), reply).isNone()
 
   test "replyXpr rejects a reply with no record or a record with no value":
-    let key = randomPeerId().toKey()
+    let key = PeerId.random().toKey()
     check:
       replyXpr(key, Message()).isNone()
       replyXpr(key, Message(record: Opt.some(Record(key: Opt.some(key))))).isNone()

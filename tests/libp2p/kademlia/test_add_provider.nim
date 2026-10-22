@@ -749,7 +749,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     # Directly inject a record into closeKad to trigger rejection without
     # involving an extra sender (which would also discover and fill farKad).
-    let existingPeer = Peer(id: randomPeerId().getBytes())
+    let existingPeer = Peer(id: PeerId.random().getBytes())
     closeKad.providerManager.knownKeys[key] = initHashSet[Provider]()
     closeKad.providerManager.knownKeys[key].incl(existingPeer)
     closeKad.providerManager.providerRecords.push(
@@ -872,7 +872,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     # same key that will appear in the ADD_PROVIDER message so the rejection check
     # finds the existing record.
     let msgKey = key.toCid().toKey()
-    let existingPeer = Peer(id: randomPeerId().getBytes())
+    let existingPeer = Peer(id: PeerId.random().getBytes())
     receiverKad.providerManager.knownKeys[msgKey] = initHashSet[Provider]()
     receiverKad.providerManager.knownKeys[msgKey].incl(existingPeer)
     receiverKad.providerManager.providerRecords.push(

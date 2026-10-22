@@ -238,7 +238,7 @@ suite "Switch":
     # with invalid PeerId, will fail
     let fakeMa = concat(
         switch1.peerInfo.addrs[0],
-        MultiAddress.init(multiCodec("p2p"), PeerId.random(rng()).tryGet().data).tryGet(),
+        MultiAddress.init(multiCodec("p2p"), PeerId.random().data).tryGet(),
       )
       .tryGet()
     expect(DialFailedError):

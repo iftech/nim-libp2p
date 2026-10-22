@@ -76,9 +76,6 @@ method stop*(self: Transport) {.base, async: (raises: []).} =
 method accept*(
     self: Transport
 ): Future[RawConn] {.gcsafe, base, async: (raises: [TransportError, CancelledError]).} =
-  ## accept incoming connections
-  ##
-
   doAssert(false, "[Transport.accept] abstract method not implemented!")
 
 method dial*(

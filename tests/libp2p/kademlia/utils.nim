@@ -253,7 +253,7 @@ proc randomServiceId*(): Key =
 
 proc populateRoutingTable*(kad: KadDHT, count: int) =
   for i in 0 ..< count:
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     if kad.rtable.insert(peerId):
       kad.switch.peerStore[AddressBook][peerId] = @[ma("/ip4/127.0.0.1/tcp/1")]
 
@@ -265,7 +265,7 @@ proc insertRandomPeers*(kad: KadDHT, count: int): seq[PeerId] =
   for _ in 0 ..< maxAttempts:
     if peers.len == count:
       break
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     # A bucket only holds k peers, and which bucket an id lands in is random, so
     # a full bucket rejects the insert and the id is simply redrawn.
     if not kad.rtable.insert(peerId):
@@ -282,7 +282,7 @@ proc peersWithAddrs*(count: int): seq[PeerInfo] =
   ## `count` fresh peers on distinct ports, so the IP-diversity caps admit them.
   (0 ..< count).mapIt(
     PeerInfo(
-      peerId: randomPeerId(), addrs: @[ma("/ip4/127.0.0.1/tcp/" & $(40000 + it))]
+      peerId: PeerId.random(), addrs: @[ma("/ip4/127.0.0.1/tcp/" & $(40000 + it))]
     )
   )
 
@@ -364,11 +364,10 @@ proc addRandomPeers*(
     state: LookupState, kad: KadDHT, count: int, target: Key
 ): seq[PeerId] =
   let hasher = kad.rtable.config.hasher
-  var peers: seq[PeerId]
-  for i in 0 ..< count:
-    peers.add(randomPeerId())
-    state.shortlist[peers[i]] = xorDistance(peers[i], target, hasher)
-    kad.switch.peerStore[AddressBook][peers[i]] = @[ma("/ip4/127.0.0.1/tcp/1")]
+  let peers = PeerId.random(count)
+  for peerId in peers:
+    state.shortlist[peerId] = xorDistance(peerId, target, hasher)
+    kad.switch.peerStore[AddressBook][peerId] = @[ma("/ip4/127.0.0.1/tcp/1")]
   peers.sortPeers(target, hasher)
 
 proc sendAddProviderAndGetStatus*(

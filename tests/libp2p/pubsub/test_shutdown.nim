@@ -36,7 +36,7 @@ suite "PubSub shutdown":
         connectionsRunningAtCancellation = sw.connManager.isRunning()
 
     let peer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, GossipSubCodec_12, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, GossipSubCodec_12, 1024, voidPeerHandler
     )
     gossip.peers[peer.peerId] = peer
     sw.mount(gossip)
@@ -68,7 +68,7 @@ suite "PubSub shutdown":
         cancelled = true
 
     let peer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
     )
     flood.peers[peer.peerId] = peer
     await flood.start()
@@ -77,7 +77,7 @@ suite "PubSub shutdown":
     check:
       cancelled
       flood.peers.len == 0
-    flood.subscribePeer(randomPeerId())
+    flood.subscribePeer(PeerId.random())
     check flood.peers.len == 0
     let lateStream = TestBufferStream.new(noop)
     await flood.handleConn(lateStream, FloodSubCodec)
@@ -86,7 +86,7 @@ suite "PubSub shutdown":
       flood.peers.len == 0
     await flood.start()
     let nextPeer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
     )
     flood.peers[nextPeer.peerId] = nextPeer
     cancelled = false
@@ -131,7 +131,7 @@ suite "PubSub shutdown":
     check reconnect.cancelled
     await noCancel reconnect.cancelAndWait()
 
-    let latePeer = randomPeerId()
+    let latePeer = PeerId.random()
     gossip.subscribePeer(latePeer)
     check latePeer notin gossip.peers
     let directDial = gossip.addDirectPeer(latePeer, client.peerInfo.addrs)
@@ -161,7 +161,7 @@ suite "PubSub shutdown":
         cleanupFinished = true
 
     let peer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
     )
     flood.peers[peer.peerId] = peer
     peer.connect()

@@ -127,7 +127,7 @@ suite "GossipSub":
     let
       gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
       connMngr = gossipSub.switch.connManager
-      peerId = randomPeerId()
+      peerId = PeerId.random()
       muxer = Muxer(connection: Connection.new(peerId, Direction.In))
       unblockConnected = newAsyncEvent()
       connectedStartedFut = newFuture[void]("connectedStarted")
@@ -170,7 +170,7 @@ suite "GossipSub":
       await teardownGossipSub(gossipSub, conns)
 
     # And a non-existent peer ID
-    let nonExistentPeerId = randomPeerId()
+    let nonExistentPeerId = PeerId.random()
 
     # When unsubscribePeer is called with non-existent peer
     gossipSub.unsubscribePeer(nonExistentPeerId)
@@ -188,7 +188,7 @@ suite "GossipSub":
     # in onTopicSubscription (via sendSubs -> send -> sendObservers). We use it
     # to mutate `gossipSub.peers` mid-iteration, standing in for an incoming
     # subscription arriving on the network path.
-    let extraPeerId = randomPeerId()
+    let extraPeerId = PeerId.random()
     let extraPeer = peers[0]
 
     var injected = false
@@ -333,7 +333,7 @@ suite "GossipSub":
       await teardownGossipSub(gossipSub, conns)
 
     # And peer is not in gossipSub.peers
-    let nonExistentPeerId = randomPeerId()
+    let nonExistentPeerId = PeerId.random()
     peer.peerId = nonExistentPeerId # override PeerId
 
     # When a subscribe message is sent via RPC handler
@@ -348,7 +348,7 @@ suite "GossipSub":
     defer:
       await teardownGossipSub(gossipSub, conns)
 
-    let disconnectedPeer = randomPeerId()
+    let disconnectedPeer = PeerId.random()
     let pubSubPeer = gossipSub.getOrCreatePeer(disconnectedPeer, @[], GossipSubCodec_12)
 
     check:
@@ -382,7 +382,7 @@ suite "GossipSub":
   test "PubSubPeer requires a non-nil handler":
     expect AssertionDefect:
       discard
-        PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 1024 * 1024, nil)
+        PubSubPeer.new(PeerId.random(), nil, nil, GossipSubCodec_12, 1024 * 1024, nil)
 
   asyncTest "runHandleLoop dispatches the first message":
     var handled = false
@@ -395,7 +395,7 @@ suite "GossipSub":
     let
       stream = TestBufferStream.new(noop)
       peer = PubSubPeer.new(
-        randomPeerId(), nil, nil, GossipSubCodec_12, 1024 * 1024, handler = handler
+        PeerId.random(), nil, nil, GossipSubCodec_12, 1024 * 1024, handler = handler
       )
     defer:
       await peer.stopTasks()
@@ -528,7 +528,7 @@ suite "GossipSub":
     let lotOfSubs = RPCMsg.withSubs(tooManyTopics, true)
 
     let conn = TestBufferStream.new(noop)
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     conn.peerId = peerId
     let peer = gossipSub.getPubSubPeer(peerId)
 
@@ -545,7 +545,7 @@ suite "GossipSub":
     gossipSub.topicsHigh = 10
 
     let conn = TestBufferStream.new(noop)
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     conn.peerId = peerId
     let peer = gossipSub.getPubSubPeer(peerId)
 
@@ -609,7 +609,7 @@ suite "GossipSub":
     )
     gossipSub.topicsHigh = 2
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let peer = gossipSub.getPubSubPeer(peerId)
 
     var subs: seq[SubOpts]
@@ -629,7 +629,7 @@ suite "GossipSub":
   asyncTest "rpcHandler - invalid message bytes":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let peer = gossipSub.getPubSubPeer(peerId)
 
     expect PeerMessageDecodeError:

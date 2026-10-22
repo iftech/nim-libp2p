@@ -181,8 +181,7 @@ suite "WebSocket transport":
     proc acceptHandler() {.async.} =
       while true:
         let conn = await transport1.accept()
-        if not isNil(conn):
-          await conn.close()
+        await conn.close()
 
     let handlerWait = acceptHandler()
     defer:

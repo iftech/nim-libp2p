@@ -118,12 +118,12 @@ suite "Discovery tracker":
     check disco.tracker.discoveries(serviceId).len == 0
 
   test "stops recording at the provider cap":
-    let tracker = DiscoveryTracker.new(randomPeerId(), maxProviders = 2)
+    let tracker = DiscoveryTracker.new(PeerId.random(), maxProviders = 2)
     let serviceId = makeServiceId()
 
     tracker.startInterest(serviceId)
     for i in 0 ..< 5:
-      tracker.recordProvider(serviceId, randomPeerId(), FromLookup)
+      tracker.recordProvider(serviceId, PeerId.random(), FromLookup)
 
     check tracker.discoveries(serviceId).len == 2
 
