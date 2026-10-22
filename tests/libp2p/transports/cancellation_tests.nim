@@ -39,6 +39,8 @@ proc countCancelledDials*(
     while true:
       try:
         let conn = await server.accept()
+        # previusly accepted connections are closed on client side
+        await allFutures(accepted.mapIt(it.close()))
         accepted.add(conn)
       except transport.TransportError, CancelledError:
         return
