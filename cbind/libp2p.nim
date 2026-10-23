@@ -36,6 +36,7 @@ type StreamRegistry = ref object
   streams: Table[uint64, Stream]
   nextStreamId: uint64
   releaseWaiters: Table[uint64, Future[void].Raising([CancelledError])]
+  reading: HashSet[uint64]
 
 type LibP2P* = ref object
   ## Main library state. The FFI context owns one instance; its tables mutate
@@ -93,10 +94,12 @@ type StreamWriteRequest {.ffi.} = object
 type StreamReadExactlyRequest {.ffi.} = object
   streamId: uint64
   numBytes: int64
+  timeoutMs: int64
 
 type StreamReadLpRequest {.ffi.} = object
   streamId: uint64
   maxSize: int64
+  timeoutMs: int64
 
 type PublishRequest {.ffi.} = object
   topic: string
@@ -239,6 +242,13 @@ func get(reg: StreamRegistry, id: uint64): Result[Stream, string] =
   let stream = reg.streams.getOrDefault(id, nil)
   if stream.isNil():
     return err("unknown stream handle")
+  ok(stream)
+
+proc beginRead(reg: StreamRegistry, id: uint64): Result[Stream, string] =
+  ## Marks `id` as being read; the caller must `excl` it from `reading` when done.
+  let stream = ?reg.get(id)
+  if reg.reading.containsOrIncl(id):
+    return err("read already in progress")
   ok(stream)
 
 proc release(reg: StreamRegistry, id: uint64) =
@@ -646,32 +656,54 @@ func validateReadLength(n: int64): Result[int, string] =
     return err("read length too large")
   ok(int(n))
 
+proc readBytes(
+    stream: Stream, n: int
+): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError]).} =
+  var buf = newSeqUninit[byte](n)
+  await stream.readExactly(addr buf[0], n)
+  buf
+
+proc readWithin(
+    stream: Stream,
+    read: Future[seq[byte]].Raising([CancelledError, LPStreamError]),
+    timeoutMs: int64,
+): Future[Result[seq[byte], string]] {.async: (raises: [CancelledError]).} =
+  try:
+    ok(await read.wait(callTimeout(timeoutMs)))
+  except AsyncTimeoutError:
+    # A cut read leaves the stream mid-frame, so no later read can resync.
+    await stream.reset()
+    err("read timeout")
+  except LPStreamError as e:
+    err(e)
+
 proc libp2pStreamReadExactly*(
     lib: LibP2P, req: StreamReadExactlyRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
   ## Reads exactly `numBytes` from the stream, capped at `MAX_READ_BYTES`.
-  let stream = ?lib.streams.get(req.streamId)
+  ## A timeout resets the stream; `timeoutMs <= 0` waits forever.
+  let stream = ?lib.streams.beginRead(req.streamId)
+  defer:
+    lib.streams.reading.excl(req.streamId)
+
   let expected = ?validateReadLength(req.numBytes)
   if expected == 0:
     return ok(ReadResponse(data: @[]))
-  var buf = newSeqUninit[byte](expected)
-  try:
-    await stream.readExactly(addr buf[0], expected)
-  except LPStreamError as e:
-    return err(e)
-  ok(ReadResponse(data: buf))
+
+  let data = ?await stream.readWithin(stream.readBytes(expected), req.timeoutMs)
+  ok(ReadResponse(data: data))
 
 proc libp2pStreamReadLp*(
     lib: LibP2P, req: StreamReadLpRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
   ## Reads one length-prefixed message, rejecting a prefix above `maxSize`.
-  let stream = ?lib.streams.get(req.streamId)
+  ## A timeout resets the stream; `timeoutMs <= 0` waits forever.
+  let stream = ?lib.streams.beginRead(req.streamId)
+  defer:
+    lib.streams.reading.excl(req.streamId)
+
   let maxSize = ?validateReadLength(req.maxSize)
-  let data =
-    try:
-      await stream.readLp(maxSize)
-    except LPStreamError as e:
-      return err(e)
+  let data = ?await stream.readWithin(stream.readLp(maxSize), req.timeoutMs)
   ok(ReadResponse(data: data))
 
 proc libp2pStreamWrite*(
@@ -707,8 +739,11 @@ proc libp2pStreamClose*(
 proc libp2pStreamCloseWithEof*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
-  ## Closes the stream and waits for the peer's EOF.
-  let stream = ?lib.streams.get(streamId)
+  ## Closes the stream and waits for the peer's EOF; fails while a read is pending.
+  let stream = ?lib.streams.beginRead(streamId)
+  defer:
+    lib.streams.reading.excl(streamId)
+
   await stream.closeWithEOF()
   ok(true)
 
