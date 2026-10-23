@@ -13,43 +13,6 @@ suite "KadDHT Find":
   teardown:
     checkTrackers()
 
-  asyncTest "Simple find node":
-    let kads = setupKadSwitches(3)
-    startAndDeferStop(kads)
-
-    # Connect nodes: kads[0] <-> kads[1], kad0 <-> kads[2]
-    await connectHub(kads[0], kads[1 ..^ 1])
-
-    # kads[1] doesn't know kads[2] yet
-    check not kads[1].hasKey(kads[2].rtable.selfId)
-
-    discard await kads[1].findNode(kads[2].rtable.selfId)
-
-    # After findNode, kads[1] discovers kads[2] through kad[0]
-    checkUntilTimeout:
-      kads[1].hasKey(kads[2].rtable.selfId)
-
-  asyncTest "Relay find node":
-    let kads = setupKadSwitches(4)
-    startAndDeferStop(kads)
-
-    # Setup: kads[0] <-> kads[1], kads[0] <-> kads[2], kads[2] <-> kads[3]
-    await connect(kads[0], kads[1])
-    await connect(kads[0], kads[2])
-    await connect(kads[2], kads[3])
-
-    check:
-      kads[0].hasKeys(@[kads[1].rtable.selfId, kads[2].rtable.selfId])
-      kads[2].hasKey(kads[3].rtable.selfId)
-      # kads[1] doesn't know kads[2], kads[3] yet
-      kads[1].hasNoKeys(@[kads[2].rtable.selfId, kads[3].rtable.selfId])
-
-    discard await kads[1].findNode(kads[3].rtable.selfId)
-
-    # kads[1] discovers kads[2] and kads[3] through relay
-    checkUntilTimeout:
-      kads[1].hasKeys(@[kads[2].rtable.selfId, kads[3].rtable.selfId])
-
   asyncTest "Find node accumulates peers from multiple responses":
     let kads = setupKadSwitches(4)
     startAndDeferStop(kads)

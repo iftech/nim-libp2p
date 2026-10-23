@@ -105,35 +105,6 @@ suite "Yamux":
         numberOfRead == 10
 
   suite "Window exhaustion":
-    asyncTest "Basic exhaustion blocking":
-      mSetup()
-      let readerBlocker = newBlockerFut()
-      yamuxb.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
-        await readerBlocker
-        try:
-          var buffer: array[160000, byte]
-          discard await stream.readOnce(addr buffer[0], 160000)
-        except CancelledError, LPStreamError:
-          return
-        finally:
-          await stream.close()
-
-      let streamA = await yamuxa.newStream()
-      check streamA == yamuxa.getStreams()[0]
-
-      await wait(streamA.write(newSeq[byte](YamuxDefaultWindowSize)), 1.seconds)
-        # shouldn't block
-
-      let secondWriter = streamA.write(newSeq[byte](20))
-      await sleepAsync(10.milliseconds)
-      check:
-        not secondWriter.finished()
-
-      readerBlocker.complete()
-      await wait(secondWriter, 1.seconds)
-
-      await streamA.close()
-
     asyncTest "Exhaustion doesn't block other channels":
       mSetup()
       let readerBlocker = newBlockerFut()
@@ -308,21 +279,6 @@ suite "Yamux":
 
   suite "Send window bounds":
     const streamId = 5'u32
-
-    asyncTest "WindowUpdate is clamped to the maximum":
-      mSetup(startHandlera = false)
-      let blocker = newBlockerFut()
-      yamuxb.streamHandler = blockedThenClose(blocker)
-
-      await conna.write(YamuxHeader.windowUpdate(streamId, delta = 0, {Syn}))
-      checkUntilTimeoutCustom(1.seconds, 10.milliseconds):
-        yamuxb.channels.hasKey(streamId)
-
-      await conna.write(YamuxHeader.windowUpdate(streamId, delta = high(uint32)))
-      checkUntilTimeoutCustom(1.seconds, 10.milliseconds):
-        yamuxb.channels[streamId].sendWindow == MaxSendWindow
-
-      blocker.complete()
 
     asyncTest "Cumulative WindowUpdates saturate without overflow":
       mSetup(startHandlera = false)

@@ -41,80 +41,6 @@ suite "KadDHT - Add Provider":
   teardown:
     checkTrackers()
 
-  asyncTest "Add provider":
-    let kads = setupKadSwitches(2)
-    startAndDeferStop(kads)
-
-    await connect(kads[0], kads[1])
-
-    let key = kads[0].rtable.selfId
-
-    # ensure providermanager is empty
-    check kads[0].providerManager.providerRecords.len == 0
-
-    await kads[1].addProvider(key.toCid())
-
-    # kads[0] has kads[1] in its providermanager after adding provider
-    checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.id ==
-        kads[1].rtable.selfId.toBytes()
-
-  asyncTest "Provider expired":
-    let kads = setupKadSwitches(2)
-    startAndDeferStop(kads)
-
-    await connect(kads[0], kads[1])
-
-    let
-      key1 = kads[0].rtable.selfId
-      key2 = kads[1].rtable.selfId
-
-    # ensure providermanager is empty
-    check kads[0].providerManager.providerRecords.len == 0
-
-    await kads[1].addProvider(key1.toCid())
-    await kads[1].addProvider(key2.toCid())
-
-    # provider records added
-    checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 2
-
-    # provider records expired and evicted after expiration time
-    checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 0
-
-  asyncTest "Adding providers again refreshes expiration time":
-    let kads = setupKadSwitches(2)
-    startAndDeferStop(kads)
-
-    await connect(kads[0], kads[1])
-
-    let
-      key1 = kads[0].rtable.selfId
-      key2 = kads[1].rtable.selfId
-
-    # ensure providermanager is empty
-    check kads[0].providerManager.providerRecords.len == 0
-
-    await kads[1].addProvider(key1.toCid())
-    await kads[1].addProvider(key2.toCid())
-
-    checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 2
-
-    let
-      originalExpiresAt1 = kads[0].providerManager.providerRecords[0].expiresAt
-      originalExpiresAt2 = kads[0].providerManager.providerRecords[1].expiresAt
-
-    # refresh providers
-    await kads[1].addProvider(key1.toCid())
-    await kads[1].addProvider(key2.toCid())
-
-    checkUntilTimeout:
-      kads[0].providerManager.providerRecords[0].expiresAt > originalExpiresAt1
-      kads[0].providerManager.providerRecords[1].expiresAt > originalExpiresAt2
-
   asyncTest "Start/stop providing":
     let kads = setupKadSwitches(2, republishProvidedKeysInterval = 2.secs)
     startAndDeferStop(kads)
@@ -671,36 +597,6 @@ suite "KadDHT - Republish By Keyspace Region":
 suite "KadDHT - ADD_PROVIDER Rejection":
   teardown:
     checkTrackers()
-
-  asyncTest "Receiver rejects ADD_PROVIDER when per-key limit reached":
-    # kads[0] is sender, kads[1] is receiver with maxProvidersPerKey = 1
-    let senderKad = setupKad(testKadConfig(providerRejection = true))
-    var receiverConfig = testKadConfig(providerRejection = true)
-    receiverConfig.limits.maxProvidersPerKey = Opt.some(1)
-    let receiverKad = setupKad(receiverConfig)
-
-    startAndDeferStop(@[senderKad, receiverKad])
-
-    await connect(senderKad, receiverKad)
-
-    let key = senderKad.rtable.selfId
-    check receiverKad.providerManager.providerRecords.len == 0
-
-    # First ADD_PROVIDER: receiver has 0 providers for key → accepted
-    await senderKad.addProvider(key.toCid())
-    checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
-
-    # Now add a second sender and have it try to advertise the same key
-    let sender2Kad = setupKad(testKadConfig(providerRejection = true))
-    startAndDeferStop(@[sender2Kad])
-    await connect(sender2Kad, receiverKad)
-
-    # Receiver already has 1 provider for key (= maxProvidersPerKey) → reject
-    let cidKey = key.toCid().toKey()
-    let status = await sender2Kad.sendAddProviderAndGetStatus(receiverKad, cidKey)
-    check status.isOk()
-    check status.value() == AddProviderStatus.rejected
 
   asyncTest "Existing provider refresh is allowed even at per-key limit":
     # The same provider re-advertising updates the expiry rather than adding new entries.

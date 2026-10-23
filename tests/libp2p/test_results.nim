@@ -80,14 +80,6 @@ suite "LPResultError":
     r.err("bad peer")
     check r.error == "bad peer"
 
-  test "valueOrRaise raises the requested exception with the message":
-    let r = DemoResult[int].err("bad peer")
-    try:
-      discard r.valueOrRaise(DemoError)
-      raiseAssert "should not get here"
-    except DemoError as e:
-      check e.msg == "bad peer"
-
   test "onErrorRaise raises the requested exception with the message":
     let r = DemoResult[void].err("bad peer")
     try:

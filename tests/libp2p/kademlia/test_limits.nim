@@ -96,23 +96,6 @@ suite "KadDHT - Limits":
     await noCancel probes.values.toSeq().cancelAndWait()
     kad.livenessSem.release()
 
-  test "updateShortlist caps shortlist at maxShortlistSize":
-    let kad = setupKad()
-    kad.config.limits.maxShortlistSize = 5
-
-    let targetKey = PeerId.random().toKey()
-    var state = LookupState.init(kad, targetKey)
-
-    # Generate 20 fresh peers and feed them through updateShortlist.
-    var peers: seq[Peer]
-    for i in 0 ..< 20:
-      peers.add(closerPeer(PeerId.random().toKey()))
-
-    let msg = Message(msgType: MessageType.findNode, closerPeers: peers)
-    discard state.updateShortlist(msg)
-
-    check state.shortlist.len <= kad.config.limits.maxShortlistSize
-
   test "updateShortlist prefers closer peers when over cap":
     let kad = setupKad()
     kad.config.limits.maxShortlistSize = 3

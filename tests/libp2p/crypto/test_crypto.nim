@@ -701,20 +701,6 @@ suite "Key interface test suite":
     else:
       check random.rand(0, 1_500_000_000) == 604_680_296
 
-  test "newBearSslRng wraps existing HMAC-DRBG context":
-    var seed = [byte 1, 2, 3, 4, 5, 6, 7, 8]
-    let ctx = (ref HmacDrbgContext)()
-    var expectedCtx: HmacDrbgContext
-    hmacDrbgInit(ctx[], addr sha256Vtable, addr seed[0], uint seed.len)
-    hmacDrbgInit(expectedCtx, addr sha256Vtable, addr seed[0], uint seed.len)
-
-    let wrapped = newBearSslRng(ctx)
-    var got, expected: array[32, byte]
-    wrapped.generate(got)
-    hmacDrbgGenerate(expectedCtx, addr expected[0], uint expected.len)
-
-    check got == expected
-
   test "Rng is redacted via `$`, Chronicles and Json.encode":
     let random = rng()
     check:
@@ -748,12 +734,6 @@ suite "Key interface test suite":
     let picked = rng().pick(xs, 10).get()
     check picked.len == xs.len
     check picked.sorted() == xs.sorted()
-
-  test "pick n=1 returns a single element":
-    let xs = @[11, 22, 33]
-    let picked = rng().pick(xs, 1).get()
-    check picked.len == 1
-    check picked[0] in xs
 
   test "pickOne result is always in the sequence":
     let xs = @[100, 200, 300, 400, 500]

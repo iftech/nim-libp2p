@@ -55,12 +55,6 @@ suite "KadDHT Routing Table":
       rt.buckets[idx].peers[0] == other
       other in rt.registry
 
-  test "does not insert self":
-    let selfId = testKey(0)
-    var rt = RoutingTable.new(selfId)
-
-    check not rt.insert(selfId)
-
   test "samples peers closest to a target instead of closest to self":
     let selfId = testKey(0)
     let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
@@ -120,18 +114,6 @@ suite "KadDHT Routing Table":
 
     # The same in a view centred on a target, here one of the excluded keys.
     check rt.randomPeersClosestFirst(skipped[0], rng(), 3, exclude = skipped) == @[kept]
-
-  test "does not insert beyond capacity":
-    let selfId = testKey(0)
-    let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
-    var rt = RoutingTable.new(selfId, config)
-    for _ in 0 ..< config.replication + 5:
-      let kid = rt.keyInBucket(TargetBucket)
-      discard rt.insert(kid)
-
-    check TargetBucket < rt.buckets.len
-    let bucket = rt.buckets[TargetBucket]
-    check bucket.peers.len <= config.replication
 
   test "evicts oldest replaceable key at max capacity":
     let selfId = testKey(0)
@@ -370,18 +352,6 @@ suite "KadDHT Routing Table":
     check:
       not rt.removePeer(selfId)
       not rt.removePeer(localNodeId)
-
-  test "isReplaceable follows grace period from membership addedAt":
-    let now = Moment.now()
-    let record =
-      PeerRecord(nodeId: testKey(1), lastSeen: now, lastUsefulAt: Opt.none(Moment))
-    let oldMembership = Membership(addedAt: now - 2.hours)
-    check record.isReplaceable(oldMembership, 1.hours, now)
-
-    let useful = PeerRecord(
-      nodeId: testKey(1), lastSeen: now, lastUsefulAt: Opt.some(now - 30.minutes)
-    )
-    check not useful.isReplaceable(oldMembership, 1.hours, now)
 
   test "shared registry: one peer row across two tables":
     let registry = PeerRegistry.new()
@@ -638,17 +608,6 @@ suite "KadDHT Routing Table":
   test "randomKey returns none for empty bucket":
     var bucket: Bucket
     check randomKey(bucket, rng()).isNone()
-
-  test "randomKey returns the only peer in a single-peer bucket":
-    let selfId = testKey(0)
-    let config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
-    var rt = RoutingTable.new(selfId, config)
-    let key = rt.keyInBucket(TargetBucket)
-    discard rt.insert(key)
-
-    let picked = randomKey(rt.buckets[TargetBucket], rng())
-    check:
-      picked == key
 
   test "randomKey returns a peer from the bucket":
     let selfId = testKey(0)

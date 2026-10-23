@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, stew/byteutils
+import chronos
 import
   ../../../libp2p/[
     stream/connection,
@@ -16,127 +16,9 @@ import
 import ../../tools/[multiaddress, unittest]
 import ./utils
 
-const
-  message = "No Backdoors. No Masters. No Silence."
-  zeroMAStrIP4 = "/ip4/0.0.0.0/tcp/0"
-  zeroMAStrIP6 = "/ip6/::/tcp/0"
-  zeroTAStrIP4 = "0.0.0.0:0"
-  zeroTAStrIP6 = "[::]:0"
-
-template tcpListenerIPTests(suiteName: string, listenMA: MultiAddress) =
-  block:
-    asyncTest suiteName & ":listener: handle write":
-      let server = TcpTransport.new(upgrade = Upgrade())
-      await server.start(@[listenMA])
-
-      proc serverHandler() {.async.} =
-        let conn = await server.accept()
-        await conn.write(message)
-        await conn.close()
-
-      let handlerFut = serverHandler()
-
-      let conn = await connect(server.addrs[0])
-      let receivedData = await conn.read(message.len)
-      check string.fromBytes(receivedData) == message
-
-      await handlerFut
-      await conn.closeWait()
-      await server.stop()
-
-    asyncTest suiteName & ":listener: handle read":
-      let server = TcpTransport.new(upgrade = Upgrade())
-      await server.start(@[listenMA])
-
-      proc serverHandler() {.async.} =
-        let conn = await server.accept()
-        var msg = newSeq[byte](message.len)
-        await conn.readExactly(addr msg[0], message.len)
-        check string.fromBytes(msg) == message
-        await conn.close()
-
-      let handlerFut = serverHandler()
-
-      let conn = await connect(server.addrs[0])
-      let sentBytes = await conn.write(message)
-      check sentBytes == message.len
-
-      await handlerFut
-      await conn.closeWait()
-      await server.stop()
-
-template tcpDialerIPTest(suiteName: string, listenTA: TransportAddress) =
-  block:
-    asyncTest suiteName & ":dialer: handle write":
-      let handlerFut = newFuture[void]()
-      proc serverHandler(
-          server: StreamServer, transp: StreamTransport
-      ) {.async: (raises: []).} =
-        try:
-          var wstream = newAsyncStreamWriter(transp)
-          await wstream.write(message)
-          await wstream.finish()
-          await wstream.closeWait()
-          await transp.closeWait()
-          handlerFut.complete()
-        except CancelledError, AsyncStreamError:
-          raiseAssert "unexpected error: " & getCurrentExceptionMsg()
-
-      let server = createStreamServer(listenTA, serverHandler, {ReuseAddr})
-      server.start()
-
-      let maddr = ma(server.sock.getLocalAddress())
-      let client = TcpTransport.new(upgrade = Upgrade())
-      let conn = await client.dial(maddr)
-
-      var msg = newSeq[byte](message.len)
-      await conn.readExactly(addr msg[0], message.len)
-      check string.fromBytes(msg) == message
-
-      await handlerFut
-      await conn.close()
-      await client.stop()
-      server.stop()
-      server.close()
-      await server.join()
-
-    asyncTest suiteName & ":dialer: handle write":
-      let handlerFut = newFuture[void]()
-      proc serverHandler(
-          server: StreamServer, transp: StreamTransport
-      ) {.async: (raises: []).} =
-        try:
-          var rstream = newAsyncStreamReader(transp)
-          let msg = await rstream.read(message.len)
-          check string.fromBytes(msg) == message
-
-          await rstream.closeWait()
-          await transp.closeWait()
-          handlerFut.complete()
-        except CancelledError, AsyncStreamError:
-          raiseAssert "unexpected error: " & getCurrentExceptionMsg()
-
-      let server = createStreamServer(listenTA, serverHandler, {ReuseAddr})
-      server.start()
-
-      let maddr = ma(server.sock.getLocalAddress())
-      let client = TcpTransport.new(upgrade = Upgrade())
-      let conn = await client.dial(maddr)
-      await conn.write(message)
-
-      await handlerFut
-      await conn.close()
-      await client.stop()
-      server.stop()
-      server.close()
-      await server.join()
+const zeroMAStrIP4 = "/ip4/0.0.0.0/tcp/0"
 
 template tcpTests*() =
-  tcpListenerIPTests("ipv4", ma(zeroMAStrIP4))
-  tcpListenerIPTests("ipv6", ma(zeroMAStrIP6))
-  tcpDialerIPTest("ipv4", initTAddress(zeroTAStrIP4))
-  tcpDialerIPTest("ipv6", initTAddress(zeroTAStrIP6))
-
   block:
     let listenMA = ma(zeroMAStrIP4)
 

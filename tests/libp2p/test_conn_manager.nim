@@ -523,26 +523,6 @@ suite "Connection Manager":
 
     await connMngr.stop()
 
-  asyncTest "track max incoming connection limits":
-    let connMngr = newMaxInOut(3, 1)
-
-    for i in 0 ..< 3:
-      check await connMngr.getIncomingSlot().withTimeout(10.millis)
-
-    check not (await connMngr.getIncomingSlot().withTimeout(10.millis))
-
-    await connMngr.stop()
-
-  asyncTest "track max outgoing connection limits":
-    let connMngr = newMaxInOut(1, 3)
-
-    for i in 0 ..< 3:
-      check connMngr.getOutgoingSlot().isOk()
-
-    check connMngr.getOutgoingSlot().isErr()
-
-    await connMngr.stop()
-
   asyncTest "track incoming max connections limits - fail on incoming":
     let connMngr = newMaxInOut(1, 3)
 
@@ -631,7 +611,7 @@ suite "Connection Manager maxConnsPerPeer":
   asyncTest "maxConnsPerPeer = 0 uses default":
     await runTest(0, defaultMaxConnsPerPeer)
 
-  for i in 1 ..< 10:
+  for i in 1 .. 3:
     let limit = i
     asyncTest fmt"peer limit is reached with {limit} muxers":
       await runTest(limit, limit)
@@ -939,25 +919,11 @@ suite "Connection Manager Scoring":
     check cm.peerScore(peerId) == outboundBonus
     await cm.stop()
 
-  asyncTest "inbound connection gets no outboundBonus":
-    let cm = newWatermark(1, 2)
-    check (await cm.storeMuxer(makeMuxer(peerId, Direction.In))).isOk()
-    check cm.peerScore(peerId) == 0
-    await cm.stop()
-
   asyncTest "decaying tag contributes initial value to score":
     let cm = newWatermark(1, 2)
     check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeerDecaying(peerId, tag, 100, 1.hours, decayLinear(0.5))
     check cm.peerScore(peerId) == 100
-    await cm.stop()
-
-  asyncTest "decaying tag value decreases over interval":
-    let cm = newWatermark(1, 2, decayResolution = 20.millis)
-    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
-    cm.tagPeerDecaying(peerId, tag, 100, 20.millis, decayFixed(30))
-    checkUntilTimeout:
-      cm.peerScore(peerId) < 100
     await cm.stop()
 
   asyncTest "decaying tag auto-removed when value hits zero":

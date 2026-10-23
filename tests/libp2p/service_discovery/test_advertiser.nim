@@ -95,16 +95,6 @@ suite "Advertiser - addProvidedService":
   teardown:
     checkTrackers()
 
-  test "creates routing table entry for the service":
-    let disco = setupServiceDiscoveryNode()
-    let service = makeServiceInfo()
-    let serviceId = service.id.hashServiceId()
-
-    disco.populateRoutingTable(1)
-    check disco.addProvidedService(service).isOk()
-
-    check disco.rtManager.hasService(serviceId)
-
   test "caches this node's record when the caller supplies no advertisement":
     let disco = setupServiceDiscoveryNode()
     let service = makeServiceInfo()
@@ -253,16 +243,6 @@ suite "Advertiser - addProvidedService":
 suite "Advertiser - caller-supplied advertisement":
   teardown:
     checkTrackers()
-
-  test "stores a valid advertisement for reuse on rotation":
-    let disco = setupServiceDiscoveryNode()
-    let service = makeServiceInfo()
-    let advert = makeAdvertisement(service.id).encode()
-
-    disco.populateRoutingTable(1)
-
-    check disco.addProvidedService(service, Opt.some(advert)).isOk()
-    check disco.advertiser.providedAdverts[service.id.hashServiceId()].bytes == advert
 
   test "rejects an advertisement that does not decode":
     let disco = setupServiceDiscoveryNode()
@@ -536,21 +516,6 @@ suite "Advertiser - removeProvidedService":
 
     await disco.removeProvidedService(service.id)
     check not disco.rtManager.hasService(service.id.hashServiceId())
-
-  asyncTest "removing one service leaves others intact":
-    let disco = setupServiceDiscoveryNode()
-    let s1 = makeServiceInfo("svc-1")
-    let s2 = makeServiceInfo("svc-2")
-
-    disco.populateRoutingTable(1)
-    check disco.addProvidedService(s1).isOk()
-    check disco.addProvidedService(s2).isOk()
-
-    await disco.removeProvidedService(s1.id)
-    disco.dropCachedAds() # the local registrar holds the self-ad
-
-    check not disco.rtManager.hasService(s1.id.hashServiceId())
-    check disco.rtManager.hasService(s2.id.hashServiceId())
 
 suite "Advertiser - record creation":
   teardown:

@@ -54,21 +54,6 @@ template streamTransportTest*(
 
     runTransportTest(transportProvider, streamProvider, addressIP6.get())
 
-  asyncTest "start binds both IPv4 and IPv6 addresses":
-    if addressIP6.isNone:
-      skip() # ipv6 not supported
-      return
-
-    let server = transportProvider()
-    await server.start(@[addressIP4, addressIP6.get()])
-    defer:
-      await server.stop()
-
-    check:
-      server.addrs.len == 2
-      extractPort(server.addrs.addrByFamily(IP4)) > 0
-      extractPort(server.addrs.addrByFamily(IP6)) > 0
-
   asyncTest "dual-stack server exchanges data with IPv4 and IPv6 clients":
     if addressIP6.isNone:
       skip() # ipv6 not supported

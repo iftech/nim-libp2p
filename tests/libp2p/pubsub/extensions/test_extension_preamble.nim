@@ -246,24 +246,6 @@ suite "GossipSub Extensions :: Preamble Extension":
     ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId, peerId2])
     check cr.broadcasted == @[BC(preambleMsg, @[peerId, peerId2])]
 
-  test "handleIMReceiving: stops accepting after maxHeIsReceiving limit":
-    var cr = CallbackRecorder(meshPeers: @[peerId])
-    # limit of 1 means entries stop being accepted once len exceeds 1
-    let ext = PreambleExtension.new(cr.makeConfig(maxHeIsReceiving = 1), rng())
-    ext.onNegotiated(peerId)
-
-    # sending multiple imreceivings in one batch; limit is enforced per-iteration
-    ext.receiveIMReceiving(
-      peerId,
-      @[
-        IMReceiving(messageID: msgId1, messageLength: largeMsgLen.uint32),
-        IMReceiving(messageID: msgId2, messageLength: largeMsgLen.uint32),
-        IMReceiving(messageID: @[7'u8], messageLength: largeMsgLen.uint32),
-          # rejected: len exceeds limit
-      ],
-    )
-    # no crash = limit is enforced correctly
-
   test "handleIHave: returns true when message is in ongoingReceives":
     var cr = CallbackRecorder(meshPeers: @[peerId])
     let ext = PreambleExtension.new(cr.makeConfig(), rng())

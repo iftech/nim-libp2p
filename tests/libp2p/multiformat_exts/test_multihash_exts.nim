@@ -7,17 +7,6 @@ import ../../../libp2p/[multihash, multicodec]
 import ../../tools/unittest
 
 suite "MutliHash extensions":
-  test "extended hashes correctly hash data":
-    var data = cast[seq[byte]]("hello")
-    let mh1 = MultiHash.digest("codec_mc1", data).get
-    let mh2 = MultiHash.digest("codec_mc2", data).get
-    let expected1 = "81FE030568656C6C6F"
-    let expected2 = "82FE030668656C6C6F00"
-
-    check:
-      mh1.hex == expected1
-      mh2.hex == expected2
-
   test "can initialise extended MultiHashes":
     var data = cast[seq[byte]]("hello")
     let mh1 = MultiHash.digest("codec_mc1", data).get

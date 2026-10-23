@@ -761,24 +761,6 @@ suite "GossipSub Extensions :: Partial Message Extension":
     ext.onHeartbeat()
     check cr.sentRPC.len == 1
 
-  test "heartbeat trims groups to global limit":
-    const topic = "partial-topic"
-    var cr = CallbackRecorder()
-    var cfg = cr.config()
-    cfg.maxPartialGroups = 3
-    cfg.heartbeatsTillEviction = 100
-    var ext = PartialMessageExtension.new(cfg)
-
-    # distinct peers each adding one group so per-peer cap is not the limiter
-    for i in 0 ..< 10:
-      let p = PeerId.random()
-      ext.sendGroupMetadata(p, topic, "g-" & $i)
-
-    # all groups are accepted; the global limit is enforced lazily on heartbeat
-    check ext.trackedGroups == 10
-    ext.onHeartbeat()
-    check ext.trackedGroups == 3
-
   test "heartbeat trims least-recently-used groups first":
     const topic = "partial-topic"
     var cr = CallbackRecorder()

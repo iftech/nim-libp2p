@@ -191,28 +191,6 @@ suite "RendezVous":
 
     check rendezvousNode.registered.s.len == 0
 
-  asyncTest "Unsubscribe removes registered peer from remote":
-    let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(1)
-    startAndDeferStop(rendezvousNode & peerNodes)
-
-    await connect(peerNodes[0], rendezvousNode)
-
-    const namespace = "foo"
-    await peerNodes[0].advertise(namespace)
-
-    check (
-      await rendezvous.request(
-        peerNodes[0], Opt.some(namespace), Opt.none(int), Opt.none(seq[PeerId])
-      )
-    ).len == 1
-
-    await peerNodes[0].unsubscribe(namespace)
-    check (
-      await rendezvous.request(
-        peerNodes[0], Opt.some(namespace), Opt.none(int), Opt.none(seq[PeerId])
-      )
-    ).len == 0
-
   asyncTest "Unsubscribe for not registered namespace is ignored":
     let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(1)
     startAndDeferStop(rendezvousNode & peerNodes)

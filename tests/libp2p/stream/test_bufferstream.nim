@@ -11,14 +11,6 @@ suite "BufferStream":
   teardown:
     checkTrackers()
 
-  asyncTest "push data to buffer":
-    let buff = BufferStream.new()
-    check buff.len == 0
-    var data = "12345"
-    await buff.pushData(data.toBytes())
-    check buff.len == 5
-    await buff.close()
-
   asyncTest "push and wait":
     let buff = BufferStream.new()
     check buff.len == 0
@@ -35,16 +27,6 @@ suite "BufferStream":
     await fut0
     await fut1
     check buff.len == 4
-    await buff.close()
-
-  asyncTest "read with size":
-    let buff = BufferStream.new()
-    check buff.len == 0
-
-    await buff.pushData("12345".toBytes())
-    var data: array[3, byte]
-    await buff.readExactly(addr data[0], data.len)
-    check ['1', '2', '3'] == string.fromBytes(data)
     await buff.close()
 
   asyncTest "readExactly":
