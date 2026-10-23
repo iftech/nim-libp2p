@@ -957,6 +957,37 @@ suite "AddressManager address mapper":
     await peerInfo.update()
     check notified == @[NetworkReachability.Reachable, NetworkReachability.Unknown]
 
+  asyncTest "a replaced reachability handler hears the current summary":
+    let
+      listenAddr = ma("/ip4/192.168.0.2/tcp/1")
+      mappedAddr = ma("/ip4/1.2.3.4/tcp/1")
+      peerInfo = makePeerInfo(@[listenAddr])
+      manager = makeManager()
+      mapper = constantMapper(@[mappedAddr])
+
+    startAndDeferStop(manager, peerInfo)
+    var first, second: seq[NetworkReachability]
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      first.add(reachability)
+
+    manager.addMapper(mapper, AddrSource.Upnp)
+    await peerInfo.update()
+    manager.update(mappedAddr, AddrState.Confirmed)
+    await peerInfo.update()
+    check first == @[NetworkReachability.Reachable]
+
+    manager.onReachabilityChange = proc(
+        reachability: NetworkReachability
+    ) {.async: (raises: [CancelledError]).} =
+      second.add(reachability)
+
+    await peerInfo.update()
+    checkUntilTimeout:
+      second == @[NetworkReachability.Reachable]
+    check first == @[NetworkReachability.Reachable]
+
   asyncTest "a reachability handler may update PeerInfo without deadlocking":
     let
       listenAddr = ma("/ip4/192.168.0.2/tcp/1")

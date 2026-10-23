@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, metrics, std/sequtils
+import chronos, metrics, std/[deques, importutils, sequtils]
 import
   ../../../libp2p/[
     builders,
@@ -14,6 +14,8 @@ import
     nameresolving/mockresolver,
   ]
 import ../../../libp2p/utils/future
+from ../../../libp2p/protocols/connectivity/autonat/types import
+  AutonatError, AutonatUnreachableError
 import ../../stubs/autonatclientstub
 import ../../tools/[unittest, futures, crypto, reachability, multiaddress]
 
@@ -41,6 +43,26 @@ proc createSwitch(
     switch.add(s)
 
   return switch
+
+type BlockingAutonatClient = ref object of AutonatClient
+  dialStarted: AsyncEvent
+  dialCancelled: AsyncEvent
+
+method dialMe*(
+    self: BlockingAutonatClient,
+    switch: Switch,
+    pid: PeerId,
+    addrs: seq[MultiAddress] = newSeq[MultiAddress](),
+): Future[MultiAddress] {.
+    async: (raises: [AutonatError, AutonatUnreachableError, CancelledError])
+.} =
+  self.dialStarted.fire()
+  try:
+    await newAsyncEvent().wait()
+  except CancelledError as exc:
+    self.dialCancelled.fire()
+    raise exc
+  return TcpWildcardAddress
 
 const AutonatReachabilityConfidenceMetric = "libp2p_autonat_reachability_confidence"
 
@@ -340,6 +362,88 @@ suite "Autonat Service":
     await allFuturesRaising(
       switch1.stop(), switch2.stop(), switch3.stop(), switch4.stop()
     )
+
+  asyncTest "Restart clears the answers, so the first verdict notifies again":
+    const maxQueueSize = 10
+    let autonatClientStub = AutonatClientStub.new(expectedDials = 3)
+    autonatClientStub.answer = Reachable
+
+    let autonatService =
+      AutonatService.new(autonatClientStub, rng(), maxQueueSize = maxQueueSize)
+
+    let switch1 = createSwitch(Opt.some(autonatService))
+    let switch2 = createSwitch()
+    let switch3 = createSwitch()
+    let switch4 = createSwitch()
+
+    let awaiter = newFuture[void]()
+    var reachableNotifies = 0
+
+    proc reachabilityHandler(
+        networkReachability: NetworkReachability,
+        confidence: Opt[float],
+        dialBackAddr: Opt[MultiAddress],
+    ) {.async: (raises: [CancelledError]).} =
+      if networkReachability == NetworkReachability.Reachable:
+        reachableNotifies.inc()
+        awaiter.completeOnce()
+
+    check autonatService.reachabilityObservers.add(reachabilityHandler)
+
+    await switch1.start()
+    await switch2.start()
+    await switch3.start()
+    await switch4.start()
+
+    privateAccess(AutonatService)
+    for _ in 0 ..< maxQueueSize:
+      autonatService.answers.addLast(Reachable)
+    autonatService.networkReachability = Reachable
+    autonatService.confidence = Opt.some(1.0)
+
+    await autonatService.stop(switch1)
+    check:
+      autonatService.answers.len == 0
+      autonatService.networkReachability == NetworkReachability.Unknown
+      autonatService.confidence.isNone()
+    await autonatService.start(switch1)
+
+    await switch1.connect(switch2)
+    await switch1.connect(switch3)
+    await switch1.connect(switch4)
+
+    await awaiter
+
+    check:
+      reachableNotifies == 1
+      autonatService.networkReachability == NetworkReachability.Reachable
+
+    await allFuturesRaising(
+      switch1.stop(), switch2.stop(), switch3.stop(), switch4.stop()
+    )
+
+  asyncTest "Stop cancels an in-flight dial-back":
+    let client = BlockingAutonatClient(
+      dialStarted: newAsyncEvent(), dialCancelled: newAsyncEvent()
+    )
+    let autonatService = AutonatService.new(client, rng())
+
+    let switch1 = createSwitch(Opt.some(autonatService))
+    let switch2 = createSwitch()
+    await switch1.start()
+    await switch2.start()
+
+    await switch1.connect(switch2)
+    await client.dialStarted.wait()
+
+    await autonatService.stop(switch1)
+    check:
+      client.dialCancelled.isSet()
+      autonatService.networkReachability == NetworkReachability.Unknown
+      autonatService.reachabilityObservers.lastReachability() ==
+        NetworkReachability.Unknown
+
+    await allFuturesRaising(switch1.stop(), switch2.stop())
 
   asyncTest "Must bypass maxConnectionsPerPeer limit":
     let autonatService = AutonatService.new(
