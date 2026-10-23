@@ -33,6 +33,7 @@ type
     askPeerFuts: seq[Future[NetworkReachability].Raising([CancelledError])]
     networkReachability*: NetworkReachability
     confidence: Opt[float]
+    notifyPending: bool
     answers: Deque[NetworkReachability]
     autonatClient: AutonatClient
     rng: Rng
@@ -159,8 +160,11 @@ proc askPeer(
       trace "dialMe unexpected error", err = error.msg
       Unknown
   let hasReachabilityOrConfidenceChanged = await self.handleAnswer(ans)
-  if hasReachabilityOrConfidenceChanged:
+  # A probe cancelled mid-notify leaves the flag set, so the next answer re-notifies.
+  if hasReachabilityOrConfidenceChanged or self.notifyPending:
+    self.notifyPending = true
     await self.reachabilityObservers.notify(self.networkReachability, self.confidence)
+    self.notifyPending = false
   await switch.peerInfo.update()
   return ans
 
@@ -265,18 +269,17 @@ method stop*(
     self: AutonatService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
   info "Stopping AutonatService"
-  if not isNil(self.scheduleHandle):
-    self.scheduleHandle.cancelSoon()
-    self.scheduleHandle = nil
   if not isNil(self.newConnectedPeerHandler):
     switch.connManager.removePeerEventHandler(
       self.newConnectedPeerHandler, PeerEventKind.Joined
     )
+  if not isNil(self.scheduleHandle):
+    await noCancel (move self.scheduleHandle).cancelAndWait()
   if self.enableAddressMapper:
     switch.addressManager.removeMapper(self.addressMapper)
   # an in-flight dial-back would refill the state reset below
-  await self.askPeerFuts.cancelAndWait()
-  self.askPeerFuts.setLen(0)
+  let askPeerFuts = move self.askPeerFuts
+  await noCancel askPeerFuts.cancelAndWait()
   self.answers.clear()
   self.networkReachability = Unknown
   self.confidence = Opt.none(float)
