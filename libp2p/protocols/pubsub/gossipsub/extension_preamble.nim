@@ -249,7 +249,7 @@ proc preambleBroadcastIfNotReceiving*(
       return false
     return false
 
-  let broadcastToPeers = peers.filterIt(isMsgInIMReceiving(it))
+  let broadcastToPeers = peers.filterIt(not isMsgInIMReceiving(it))
   ext.preambleBroadcast(msg, broadcastToPeers)
 
 proc preambleMsgReceived*(
