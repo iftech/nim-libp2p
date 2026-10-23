@@ -10,10 +10,8 @@ proc main() {.async.} =
   let switch = SwitchBuilder
     .new()
     .withRng(rng)
-    .withAddresses(@[MultiAddress.init("/ip4/127.0.0.1/tcp/0").get()])
-    .withTcpTransport()
-    .withYamux()
-    .withNoise()
+    .withAddresses(@[MultiAddress.init("/ip4/127.0.0.1/udp/0/quic-v1").get()])
+    .withQuicTransport()
     .build()
   var params = GossipSubParams.init()
   params.topicStreamsConfig = Opt.some(TopicStreamsConfig())
