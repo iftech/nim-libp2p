@@ -337,6 +337,17 @@ suite "Mplex":
       check await allFutures(push).withTimeout(100.millis)
       await conn.close()
 
+    asyncTest "reset should complete both read and push":
+      let
+        conn = TestBufferStream.new(noopWriteHandler)
+        chann = LPChannel.init(1, conn, true)
+
+      var data = newSeq[byte](1)
+      let futs = [chann.readExactly(addr data[0], 1), chann.pushData(@[0'u8])]
+      await chann.reset()
+      check await allFutures(futs).withTimeout(100.millis)
+      await conn.close()
+
     asyncTest "reset should complete both read and pushes":
       let
         conn = TestBufferStream.new(noopWriteHandler)
@@ -389,6 +400,28 @@ suite "Mplex":
       let wfut2 = chann.pushData(@[0'u8])
       await chann.reset()
       check await allFutures(rfut, rfut2, wfut, wfut2).withTimeout(100.millis)
+      await conn.close()
+
+    asyncTest "reset should complete ongoing push without reader":
+      let
+        conn = TestBufferStream.new(noopWriteHandler)
+        chann = LPChannel.init(1, conn, true)
+
+      await chann.pushData(@[0'u8])
+      let push1 = chann.pushData(@[0'u8])
+      await chann.reset()
+      check await allFutures(push1).withTimeout(100.millis)
+      await conn.close()
+
+    asyncTest "reset should complete ongoing read without a push":
+      let
+        conn = TestBufferStream.new(noopWriteHandler)
+        chann = LPChannel.init(1, conn, true)
+
+      var data = newSeq[byte](1)
+      let rfut = chann.readExactly(addr data[0], 1)
+      await chann.reset()
+      check await allFutures(rfut).withTimeout(100.millis)
       await conn.close()
 
     asyncTest "reset should allow all reads and pushes to complete":
@@ -688,6 +721,52 @@ suite "Mplex":
       await conn.close()
       await allFuturesRaising(transport1.stop(), transport2.stop())
       await acceptFut
+      await mplexDialFut
+      await listenFut
+
+    asyncTest "multiple streams":
+      let transport1 = TcpTransport.new(upgrade = Upgrade())
+      let listenFut = transport1.start(@[TcpWildcardAddress])
+
+      let done = newFuture[void]()
+      proc acceptHandler() {.async.} =
+        var count = 1
+        let conn = await transport1.accept()
+        let mplexListen = Mplex.new(conn)
+        mplexListen.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
+          try:
+            let msg = await stream.readLp(1024)
+            try:
+              check string.fromBytes(msg) == &"stream {count}!"
+            except ValueError as exc:
+              raiseAssert(exc.msg)
+            count.inc
+            if count == 11:
+              done.complete()
+          except CancelledError, LPStreamError:
+            return
+          finally:
+            await stream.close()
+
+        await mplexListen.handle()
+        await mplexListen.close()
+
+      let transport2: TcpTransport = TcpTransport.new(upgrade = Upgrade())
+      let conn = await transport2.dial(transport1.addrs[0])
+
+      let acceptFut = acceptHandler()
+      let mplexDial = Mplex.new(conn)
+      # TODO: Reenable once half-closed is working properly
+      let mplexDialFut = mplexDial.handle()
+      for i in 1 .. 10:
+        let stream = await mplexDial.newStream()
+        await stream.writeLp(&"stream {i}!")
+        await stream.close()
+
+      await done
+      await conn.close()
+      await acceptFut
+      await allFuturesRaising(transport1.stop(), transport2.stop())
       await mplexDialFut
       await listenFut
 

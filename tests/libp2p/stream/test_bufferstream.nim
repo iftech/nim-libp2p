@@ -11,6 +11,14 @@ suite "BufferStream":
   teardown:
     checkTrackers()
 
+  asyncTest "push data to buffer":
+    let buff = BufferStream.new()
+    check buff.len == 0
+    var data = "12345"
+    await buff.pushData(data.toBytes())
+    check buff.len == 5
+    await buff.close()
+
   asyncTest "push and wait":
     let buff = BufferStream.new()
     check buff.len == 0

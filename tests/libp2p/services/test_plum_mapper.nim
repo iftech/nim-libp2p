@@ -12,6 +12,10 @@ suite "PlumMapper":
   teardown:
     checkTrackers()
 
+  asyncTest "create + close is clean (no mapping in between)":
+    let m = PlumMapper.new().get()
+    await m.close()
+
   asyncTest "double close is a no-op":
     let m = PlumMapper.new().get()
     await m.close()

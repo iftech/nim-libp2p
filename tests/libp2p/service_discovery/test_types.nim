@@ -18,6 +18,20 @@ suite "Service Discovery types":
     let ads = @[makeAdvertisement("svc")]
     check ads.encode(0).len == 0
 
+  test "encode: single advertisement encodes and round-trips":
+    let ad = makeAdvertisement("svc")
+    let encoded = @[ad].encode(10)
+    check encoded.len == 1
+    let decoded = SignedExtendedPeerRecord.decode(encoded[0])
+    check:
+      decoded.isOk()
+      decoded.get() == ad
+
+  test "encode: all advertisements encoded when count is within fReturn":
+    let ads = @[makeAdvertisement("a"), makeAdvertisement("b"), makeAdvertisement("c")]
+    let encoded = ads.encode(10)
+    check encoded.len == 3
+
   test "encode: fReturn cap limits output count":
     let ads = @[
       makeAdvertisement("a"),

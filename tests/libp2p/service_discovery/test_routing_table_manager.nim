@@ -33,6 +33,18 @@ proc makeMainTable(selfId: Key, peers: seq[Key]): RoutingTable =
   rt
 
 suite "ServiceRoutingTableManager":
+  test "addService returns true and adds table":
+    let manager = ServiceRoutingTableManager.new()
+    let serviceId = makeServiceId(1)
+    let mainRt = RoutingTable.new(makeKey(0))
+
+    check:
+      manager.addService(
+        serviceId, mainRt, DefaultReplication, DefaultMaxBuckets, Interest
+      )
+      manager.count() == 1
+      manager.hasService(serviceId)
+
   test "addService with same service and same status returns false":
     let manager = ServiceRoutingTableManager.new()
     let serviceId = makeServiceId(1)
@@ -117,6 +129,16 @@ suite "ServiceRoutingTableManager":
 
     await disco.serviceBootstrapFuts[serviceId]
 
+  test "addService with no callback set does not crash":
+    let manager = ServiceRoutingTableManager.new()
+    let serviceId = makeServiceId(1)
+    let mainRt = RoutingTable.new(makeKey(0))
+
+    check manager.addService(
+      serviceId, mainRt, DefaultReplication, DefaultMaxBuckets, Interest
+    )
+    check manager.hasService(serviceId)
+
   test "addService pre-populates table from main routing table":
     let selfId = makeKey(0)
     let peer1 = makeKey(1)
@@ -194,6 +216,20 @@ suite "ServiceRoutingTableManager":
       peer1 in mainRt.registry
       mainRt.registry.tableIds(peer1).len == 1
 
+  test "removeService removes entry when status matches":
+    let manager = ServiceRoutingTableManager.new()
+    let serviceId = makeServiceId(1)
+    let mainRt = RoutingTable.new(makeKey(0))
+
+    check manager.addService(
+      serviceId, mainRt, DefaultReplication, DefaultMaxBuckets, Interest
+    )
+    manager.removeService(serviceId, Interest)
+
+    check:
+      not manager.hasService(serviceId)
+      manager.count() == 0
+
   test "removeService of Interest leaves Provided":
     let manager = ServiceRoutingTableManager.new()
     let serviceId = makeServiceId(1)
@@ -264,6 +300,17 @@ suite "ServiceRoutingTableManager":
 
     manager.removeService(serviceId, Interest)
     check manager.count() == 0
+
+  test "getTable returns Some for existing service":
+    let manager = ServiceRoutingTableManager.new()
+    let serviceId = makeServiceId(1)
+    let mainRt = RoutingTable.new(makeKey(0))
+
+    check manager.addService(
+      serviceId, mainRt, DefaultReplication, DefaultMaxBuckets, Provided
+    )
+
+    check manager.getTable(serviceId).isSome()
 
   test "getTable returns None for non-existing service":
     let manager = ServiceRoutingTableManager.new()
@@ -386,6 +433,18 @@ suite "ServiceRoutingTableManager":
       manager.count() == 0
       not manager.hasService(makeKey(1))
       not manager.hasService(makeKey(2))
+
+  test "manager has selfIdPreHashed set to true":
+    let manager = ServiceRoutingTableManager.new()
+    let serviceId = makeServiceId(1)
+    let mainRt = RoutingTable.new(makeKey(0))
+
+    check manager.addService(
+      serviceId, mainRt, DefaultReplication, DefaultMaxBuckets, Interest
+    )
+
+    check:
+      manager.getTable(serviceId).get().config.selfIdPreHashed
 
 suite "ServiceRoutingTableManager - refreshAllTables":
   teardown:

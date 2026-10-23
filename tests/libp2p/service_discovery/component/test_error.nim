@@ -283,6 +283,46 @@ suite "Service Discovery Component - Error Handling":
       response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
       registrarNode.countAdsInCache(serviceId) == 0
 
+  asyncTest "REGISTER with ticket that has invalid signature returns Rejected":
+    # A ticket that fails signature verification (wrong key or tampered) must
+    # produce Rejected; its time values must never be trusted or copied.
+    let registrarNode = setupServiceDiscoveryNode()
+    let clientNode = setupServiceDiscoveryNode()
+    startAndDeferStop(@[registrarNode, clientNode])
+    await connect(registrarNode, clientNode)
+
+    let serviceId = "service".hashServiceId()
+    let adBytes =
+      makeAdvertisement("service", clientNode.switch.peerInfo.privateKey).encode().get()
+
+    # Sign with a different node's key
+    let otherNode = setupServiceDiscoveryNode()
+    var badTicket = kad_protobuf.Ticket(
+      advertisement: adBytes,
+      tInit: getTime().toUnix() - 1000,
+      tMod: getTime().toUnix() - 500,
+      tWaitFor: 10.secs,
+      signature: Opt.none(seq[byte]),
+    )
+    check badTicket.sign(otherNode.switch.peerInfo.privateKey).isOk()
+
+    let msg = kad_protobuf.Message(
+      msgType: kad_protobuf.MessageType.register,
+      key: serviceId,
+      register: Opt.some(
+        kad_protobuf.RegisterMessage(
+          advertisement: adBytes,
+          status: Opt.none(kad_protobuf.RegistrationStatus),
+          ticket: Opt.some(badTicket),
+        )
+      ),
+    )
+
+    let response = await clientNode.sendMessage(registrarNode, msg)
+    check:
+      response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
+      registrarNode.countAdsInCache(serviceId) == 0
+
   asyncTest "GET_ADS with non-32-byte key returns empty response":
     # Spec calls for rejection on bad key length.
     # The handler returns an empty response before the cache lookup.

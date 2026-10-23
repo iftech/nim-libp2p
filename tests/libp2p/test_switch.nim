@@ -999,6 +999,27 @@ suite "Switch":
       check not switch1.isConnected(switch2)
       check not switch2.isConnected(switch1)
 
+  asyncTest "e2e dial dns4 address":
+    let resolver = MockResolver.new()
+    resolver.ipResponses[("localhost", false)] = @["127.0.0.1"]
+    resolver.ipResponses[("localhost", true)] = @["::1"]
+
+    let
+      srcSwitch =
+        makeStandardSwitchBuilder(TcpAutoAddress).withNameResolver(resolver).build()
+      destSwitch = makeStandardSwitch(TcpAutoAddress)
+
+    await destSwitch.start()
+    await srcSwitch.start()
+
+    let testAddr = ma("/dns4/localhost/") & destSwitch.peerInfo.addrs[0][1].tryGet()
+
+    await srcSwitch.connect(destSwitch.peerInfo.peerId, @[testAddr])
+    check srcSwitch.isConnected(destSwitch)
+
+    await destSwitch.stop()
+    await srcSwitch.stop()
+
   asyncTest "e2e dial dnsaddr with multiple transports":
     let resolver = MockResolver.new()
 
@@ -1030,6 +1051,20 @@ suite "Switch":
     await destSwitch.stop()
     await srcWsSwitch.stop()
     await srcTcpSwitch.stop()
+
+  asyncTest "e2e quic transport":
+    let
+      srcSwitch = makeStandardSwitch(QuicAutoAddress)
+      destSwitch = makeStandardSwitch(QuicAutoAddress)
+
+    await destSwitch.start()
+    await srcSwitch.start()
+
+    await srcSwitch.connect(destSwitch)
+    check srcSwitch.isConnected(destSwitch)
+
+    await destSwitch.stop()
+    await srcSwitch.stop()
 
   asyncTest "e2e multiple transports coexistence":
     let
