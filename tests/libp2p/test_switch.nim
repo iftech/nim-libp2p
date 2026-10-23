@@ -770,7 +770,7 @@ suite "Switch":
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
-  asyncTest "e2e total connection limits on incoming connections":
+  asyncTest "e2e total connection limits on outgoing connections":
     var switches: seq[Switch]
     for i in 0 ..< 3:
       switches.add(makeStandardSwitch(TcpAutoAddress))
