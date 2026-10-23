@@ -42,3 +42,28 @@ suite "ReachabilityObservers":
     check:
       seen == @[NetworkReachability.Reachable]
       observers.lastReachability() == NetworkReachability.NotReachable
+
+  asyncTest "reset clears lastReachability without a notify":
+    let observers = ReachabilityObservers.new()
+
+    var seen: seq[NetworkReachability]
+    let handler: ReachabilityHandler = proc(
+        reachability: NetworkReachability,
+        confidence: Opt[float],
+        dialBackAddr: Opt[MultiAddress],
+    ) {.async: (raises: [CancelledError]).} =
+      seen.add(reachability)
+
+    check observers.add(handler)
+    await observers.notify(NetworkReachability.Reachable, Opt.some(1.0))
+    check observers.lastReachability() == NetworkReachability.Reachable
+
+    observers.reset()
+    check:
+      observers.lastReachability() == NetworkReachability.Unknown
+      seen == @[NetworkReachability.Reachable]
+
+    await observers.notify(NetworkReachability.NotReachable, Opt.some(1.0))
+    check:
+      seen == @[NetworkReachability.Reachable, NetworkReachability.NotReachable]
+      observers.lastReachability() == NetworkReachability.NotReachable
