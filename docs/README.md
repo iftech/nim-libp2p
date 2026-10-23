@@ -10,7 +10,7 @@ Welcome to the nim-libp2p documentation. Use the links below to navigate:
 - [Contributing](contributing.md)
 - [Compile Time Flags](compile_time_flags.md)
 - [Hole Punching Interop](interop_hole_punching.md)
-- [Experimental Waggle Topic Streams](waggle.md)
+- [Experimental Waggle Dissemination](waggle.md)
 
 ---
 

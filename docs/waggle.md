@@ -1,9 +1,9 @@
-# Experimental Waggle topic streams
+# Experimental Waggle dissemination
 
-`libp2p/protocols/waggle` implements the wire messages and topic stream
-lifecycle from [specs#732](https://github.com/libp2p/specs/pull/732), pinned to
-revision `9328b68`. This is an experimental foundation for application-driven
-piece dissemination, not a complete dissemination algorithm or a stable API.
+`libp2p/protocols/waggle` implements topic streams and incremental object
+dissemination from [specs#732](https://github.com/libp2p/specs/pull/732), pinned to
+revision `9328b68`. The experimental implementation follows the pinned Rust behaviour,
+with application-defined object semantics and an API that may still change.
 
 ## Wire contract
 
@@ -26,42 +26,60 @@ This stream direction follows the current
 The draft does not yet settle directionality or framing. Two peers wanting
 mutual delivery each open their own subscription stream. The subscriber sends
 no further bytes after its handshake. Closing or cancelling that subscription
-removes it; reopening requires a new stream and handshake. Multiple connections
-to a peer share one subscription per topic and direction in this implementation.
+removes it; reopening requires a new stream and handshake. Each registered connection has independent subscriptions and peer views;
+multiple connections to the same peer are supported.
 The [Nim/Rust interop harness](../interop/waggle/README.md) verifies this
 contract against a pinned Rust implementation.
 
-## Usage
+## Managed usage
 
-Mount a `Waggle` instance on each switch before starting it:
+Implement `WaggleShard.objectId`, `metadata`, and `actionFromMetadata`, plus
+`WaggleMetadata.clone`, `bytes`, and `update`. Metadata snapshots and clones must
+be independent of mutable application state. `update` merges peer metadata and
+returns whether it changed, or rejects invalid input. The action selects missing
+pieces and the peer metadata expected after sending them; `need` controls whether
+an incoming message is surfaced to the application.
+
+The [bit-set fixture](../tests/libp2p/protocols/waggle_utils.nim) is a small example.
+A shard passed to `publish` must describe the entire current object snapshot,
+including pieces the application has already integrated. Do not mutate published
+snapshots. Publish a replacement when the object's state changes.
+
+For a Switch, create the protocol with `Waggle.new(onEvent = handler, rng = rng)`,
+call `protocol.attach(switch.connManager)`, and mount it before starting the switch.
+`attach` discovers existing and future connections; it does not dial new peers.
+For a manually upgraded stack, register each running muxer with
+`protocol.addConnection(muxer)`, as the interop peer does. Its stream handler must
+route incoming streams through a multistream selector containing the protocol.
 
 ```nim
-import chronos
-import libp2p/[switch, protocols/waggle]
+# Subscribe on all registered connections, including connections added later.
+discard protocol.subscribe(topic).get()
 
-proc receive(peer: PeerId, topic: seq[byte], msg: ObjectPieces) {.
-    async: (raises: [CancelledError])
-.} =
-  # Validate pieces and interpret metadata before choosing what to forward.
+# Queue selective transmissions to a random subset of subscribers.
+let sent = protocol.publish(topic, currentObjectSnapshot)
+if sent.isErr:
+  # Handle absent subscribers, invalid local state, or saturated queues.
   discard
 
-proc exchange(a, b: Switch, sender, receiver: Waggle) {.async.} =
-  # a.mount(sender) and b.mount(receiver) must happen before starting the switches.
-  await b.connect(a.peerInfo.peerId, a.peerInfo.addrs)
-  let topic = @[byte 1]
-  let stream = await b.dial(a.peerInfo.peerId, WaggleCodec)
-  let receiving = receiver.subscribe(stream, topic, receive)
-  try:
-    # A real application schedules sends when its peer subscription is available.
-    while b.peerInfo.peerId notin sender.subscribers(topic):
-      await sleepAsync(10.milliseconds)
-    discard await sender.send(
-      b.peerInfo.peerId, topic,
-      ObjectPieces(objectId: @[byte 42], pieces: Opt.some(@[byte 99])),
-    )
-  finally:
-    await receiving.cancelAndWait()
+# Close our receive streams and discard cached state for this topic.
+discard await protocol.unsubscribe(topic)
 ```
+
+The synchronous `onEvent` callback receives `Received`, `Subscribed`,
+`Unsubscribed`, `InvalidData`, `FullQueue`, and `StreamFailed` events, with the peer,
+connection ID, and topic. `Received` includes the opaque wire message. Validate
+and integrate its payload in the application, then publish a new snapshot. A
+metadata-only event carries knowledge about the peer, not pieces to integrate.
+Callbacks must not block; synchronous calls to `publish` from the callback are
+supported. Peer scoring and penalties remain application decisions.
+
+## Direct stream API
+
+The original `subscribe(stream, topic, handler)`, `subscribers(topic)`, and
+`send(peer, topic, message)` operations are still available for wire-level users.
+They bypass the managed receive path and reconciliation policy. Use managed
+publishing for cached objects, rather than mixing direct sends with tracked state.
 
 `subscribe` takes ownership of an already-negotiated stream and runs until EOF,
 cancellation, or error. The caller owns its future and must cancel and await it
@@ -77,25 +95,61 @@ own write deadlines. Failed or cancelled writes reset the stream, since the
 remote might have received a partial frame. Cancellation while waiting for a
 write lock does not reset a stream another caller is using.
 
-Defaults bound protobuf payloads to 1 MiB, topic IDs to 1024 bytes, active streams
-to 128, and streams per peer to 16. The stream counts include both directions
-and incomplete incoming handshakes. The `Waggle.new` arguments override these
-local resource limits. Stream failures do not trigger automatic retries.
-`stop` resets owned streams; callers must also finish their subscription tasks,
-including cancelling any application handlers that are still running. Call
-`start` before opening fresh subscriptions after a stop.
+## Dissemination and resource limits
 
-## Application responsibilities and open decisions
+`publish` stores an object snapshot in a per-topic LRU cache and selects subscribed
+connections in random order, up to the topic's publish fanout. It compares local
+state with each connection's metadata to send only missing pieces and changed
+metadata. Repeating an unchanged snapshot returns zero when nothing is needed;
+a new connection can still receive it. If a queue rejected the previous attempt,
+republishing the unchanged snapshot retries the unsent transmission.
 
-The application owns validation, metadata encoding and merging, object storage
-and eviction, peer scoring, and recipient selection. It can send metadata-only
-messages and use received metadata to choose missing pieces and recipients.
-There is no automatic cache, duplicate suppression, forwarding, periodic gossip,
-peer discovery, or subscription propagation to newly connected peers.
+Receiving data updates the connection's partial view, emits needed data, and
+queues any selective reply. It also advertises cached object metadata to other
+subscribers, up to the gossip fanout. Gossip is triggered by received messages;
+there is no periodic heartbeat in the pinned Rust implementation. Applications
+must integrate newly received pieces and publish the resulting snapshot before
+those pieces can be served to other peers.
 
-Before adding an automatic dissemination algorithm, agree on metadata meaning,
-advertisement response rules, retry scheduling, and eviction recovery. A
-three-peer synchronization test with a peer initially unaware of the object
-should demonstrate those rules. The present tests cover protobuf wire vectors,
-negotiated TCP delivery, topic isolation, concurrent sends, subscription limits,
-malformed input, cancellation, and stream cleanup.
+Peer views advance only after a message enters its bounded queue. Metadata-only
+gossip does not mark omitted pieces as delivered. Unsubscribe/resubscribe and
+connection closure clear the relevant views, allowing a renewed subscription
+to synchronize again. Local unsubscribe also removes that topic's cache.
+
+Defaults are 64 KiB protobuf payloads, 1024-byte topic IDs, 128 streams and
+registered connections, 16 streams per peer, 64 local topics/configurations, and
+100 cached objects per topic. Remote object views are separately bounded to 100
+per topic and connection. Pending stream opens and incoming handshakes count
+against stream limits. Each connection has a shared budget of 5000 queued
+messages, with a separate writer for each topic stream. Set constructor arguments
+to tune these limits. `setTopicConfig` sets positive publish/gossip fanouts per
+topic; both default to 50. An optional topic whitelist rejects disallowed local
+and remote subscriptions.
+
+The object cache is an LRU, without a protocol-owned TTL. The application owns
+object validity and lifetime, as in the pinned Rust cache. The limits bound entry
+and queue counts, not the size of application-owned shard objects; applications
+must also bound their snapshots and handler work.
+
+`stop` unregisters connection handlers, closes protocol streams, drains owned
+tasks, and clears caches/views without closing shared muxers. Local topic choices
+are retained. `start` discovers existing connections again when attached to a
+connection manager. A remote whose receive stream was closed must renew its
+subscription. Direct-stream callers must still cancel and await their own
+subscription tasks. Failed protocol stream opens are surfaced through
+`StreamFailed`; there is no automatic retry loop.
+
+## Verification and remaining scope
+
+The unit tests cover selective replies, duplicate suppression, queue-full retry,
+LRU eviction, remote view bounds, fanout, topic isolation, three-peer convergence,
+multiple connections to one peer, reconnect, unsubscribe/resubscribe, and stopping
+without disrupting shared connections. The interop harness exercises both wire
+exchange and managed reconciliation against the pinned Rust implementation.
+
+The draft's framing and stream-direction choices remain provisional. Discovery,
+application validation/reconstruction, signing, peer scoring, and retries after
+failed stream opens are outside the engine. Standalone Switch compilation
+encounters baseline `UseBase` diagnostics in `switch.nim`; connection-manager
+attachment is tested directly, and interop uses
+the TCP/Noise/Yamux upgrade stack.

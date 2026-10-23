@@ -29,10 +29,18 @@ The runner requires both peers to exit successfully. Unknown messages, duplicate
 wrong contents, timeouts, and premature exits fail the test. A success on only
 one peer is insufficient.
 
-The test exercises TCP, Noise, Yamux, multistream negotiation, subscription
-handshakes, and piece exchange. Nim uses the library's existing `MuxedUpgrade`
-stack directly. It does not test Switch integration, automatic dissemination,
-cache reconciliation, reconnection, or unsubscribe interoperability.
+The tests exercise TCP, Noise, Yamux, multistream negotiation, subscription
+handshakes, piece exchange, selective reconciliation, and duplicate suppression. Nim uses the library's existing `MuxedUpgrade`
+stack directly. Switch integration, three-peer gossip, reconnect, and unsubscribe are not covered
+by the cross-language scenarios. Separate Nim network tests cover three-peer
+dissemination, connection-manager attachment, reconnect, and unsubscribe.
+
+A second scenario uses the managed Nim API and Rust's `Shard`/`Metadata`
+interfaces. Nim starts with one piece and Rust with a complementary piece of the
+same object. Both reconstruct the complete object, check that only the missing
+piece reached the application, and exchange final acknowledgements. Nim opens
+subscriptions through connection registration and publishes updated snapshots;
+the wire-only APIs are used just for the final acknowledgement.
 
 ## Run locally
 
@@ -45,7 +53,8 @@ nim c --threads:on -d:chronicles_log_level=WARN interop/waggle/nim-peer/src/peer
 python3 interop/waggle/run.py
 ```
 
-The runner waits at most 20 seconds for Rust readiness. Each peer has a 60-second
+The runner executes both scenarios with separate fresh peer processes. It waits
+at most 20 seconds for Rust readiness in each scenario. Each peer has a 60-second
 exchange deadline; the runner also bounds the subprocess waits. Temporary files
 and any surviving Rust process are cleaned up on success and failure. The Rust
 log is printed before cleanup. No fixed ports, persistent identities, or startup

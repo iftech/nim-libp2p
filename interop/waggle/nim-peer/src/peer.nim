@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Status Research & Development GmbH
 
 import std/[os, strutils, sets]
+import ./managed
 import chronos
 import
   ../../../../libp2p/[
@@ -112,6 +113,10 @@ proc run(address: string) {.async.} =
   echo "Nim verified 6 Rust messages across 2 topics and Rust's acknowledgement"
 
 when isMainModule:
-  if paramCount() != 1 or "/p2p/" notin paramStr(1):
-    quit("usage: peer <multiaddress/p2p/peer-id>", 1)
-  waitFor run(paramStr(1)).wait(60.seconds)
+  if paramCount() notin [1, 2] or "/p2p/" notin paramStr(1):
+    quit("usage: peer <multiaddress/p2p/peer-id> [reconcile]", 1)
+  if paramCount() == 2:
+    doAssert paramStr(2) == "reconcile"
+    waitFor managedInterop(paramStr(1)).wait(60.seconds)
+  else:
+    waitFor run(paramStr(1)).wait(60.seconds)

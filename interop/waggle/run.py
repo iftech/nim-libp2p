@@ -10,7 +10,7 @@ import tempfile
 import time
 
 
-def main():
+def run(scenario):
     root = pathlib.Path(__file__).resolve().parent
     rust = root / "rust-peer/target/debug/waggle-interop-peer"
     nim = root / "nim-peer/src/peer"
@@ -18,7 +18,8 @@ def main():
         address = pathlib.Path(temp) / "peer.addr"
         log_path = pathlib.Path(temp) / "rust.log"
         with log_path.open("w+") as log:
-            peer = subprocess.Popen([str(rust), str(address)], stdout=log, stderr=log)
+            args = [scenario] if scenario else []
+            peer = subprocess.Popen([str(rust), str(address), *args], stdout=log, stderr=log)
             try:
                 deadline = time.monotonic() + 20
                 while not address.exists() or not address.read_text():
@@ -27,10 +28,10 @@ def main():
                     if time.monotonic() >= deadline:
                         raise TimeoutError("Rust peer did not start within 20 seconds")
                     time.sleep(0.05)
-                subprocess.run([str(nim), address.read_text().strip()], check=True, timeout=65)
+                subprocess.run([str(nim), address.read_text().strip(), *args], check=True, timeout=65)
                 if peer.wait(timeout=10) != 0:
                     raise RuntimeError("Rust peer failed its assertions")
-                print("Waggle Nim/Rust interoperability passed", flush=True)
+                print(f"Waggle Nim/Rust {scenario or 'wire'} interoperability passed", flush=True)
             finally:
                 if peer.poll() is None:
                     peer.terminate()
@@ -44,4 +45,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run(None)
+    run("reconcile")
