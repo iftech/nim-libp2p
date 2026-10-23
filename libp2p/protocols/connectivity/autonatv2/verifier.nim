@@ -41,7 +41,8 @@ proc selectPeer(self: AutonatV2Verifier): Opt[PeerId] =
   ## A peer which dialed us proves nothing. It has a path to us already.
   self.rng.pickOne(
     self.switch.connectedPeers(Direction.Out).filterIt(
-      not self.switch.hasIncomingConn(it)
+      $AutonatV2Codec.DialRequest in self.switch.peerStore[ProtoBook][it] and
+        not self.switch.hasIncomingConn(it)
     )
   )
 

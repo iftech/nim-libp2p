@@ -31,6 +31,7 @@ proc createSwitch(
     .withAddressManager(
       AddressManagerConfig(verifyInterval: VerifyInterval, minCount: minCount)
     )
+    .withAutonatV2Server()
     .build()
 
   if not service.isNil():
