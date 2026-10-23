@@ -1,20 +1,18 @@
 # Topic streams interoperability
 
-Tests the local Nim implementation against go-libp2p-pubsub
-[PR #725](https://github.com/libp2p/go-libp2p-pubsub/pull/725), pinned to
-`eb94b22f78a2db2626c60dcd86bc9bf7fc849f2a` in `go-peer/go.mod`.
+Checks that Nim and Go can exchange GossipSub messages using topic streams
+over QUIC v1. The Go peer uses the topic-streams implementation from
+[go-libp2p-pubsub PR #725](https://github.com/libp2p/go-libp2p-pubsub/pull/725),
+pinned in [go.mod](go-peer/go.mod).
 
-The Go peer connects to a Nim echo peer over loopback TCP, Noise, and Yamux.
-It sends two rounds of signed messages on two topics (32 bytes and 256 KiB)
-after Go's router reports a mesh peer ready for publishing, and checks each
-echo's sender, topic, and exact payload. Both peers retain
-signature verification, exercising reconstruction of the topic omitted on
-topic streams. The Go peer also requires exactly two `/gsts/v0beta` streams
-in each direction after both rounds, checking topic separation and reuse
-and preventing an ordinary GossipSub fallback from passing.
+The Go peer sends signed messages to a local Nim echo peer on two topics:
+one with 32-byte payloads and one with 256 KiB payloads. Each topic makes two
+round trips. The test verifies the sender, topic, payload, and signatures,
+and checks that each topic reuses its own stream in both directions.
+TCP and ordinary GossipSub fallback cannot satisfy the test.
 
-From the repository root, with Go 1.25+, Nim 2.2.10, and the repository's
-Nim dependencies installed (`nimble setup`):
+To run it, install Go 1.25+, Nim 2.2.10, and the repository's Nim dependencies
+(`nimble setup`). Then run these commands from the repository root:
 
 ```sh
 mkdir -p build
@@ -26,10 +24,12 @@ nim c --nimcache:build/topic-streams-nimcache \
 bash interop/topic-streams/run.sh
 ```
 
-The compiler flags leave existing `UseBase`, `UnusedImport`, and `XCannotRaiseY`
-diagnostics in imported repository modules visible without treating them as
-errors for this standalone peer. They do not change protocol behavior.
+On success, the runner prints:
 
-The runner uses an ephemeral port and a temporary address file, bounds startup
-and test time, prints Nim logs, and cleans up the background peer on failure
-or success. A nonzero exit means the test failed.
+```text
+Topic streams interop passed over QUIC v1: two signed round trips per topic, two streams per direction
+```
+
+A nonzero exit means the test failed. The runner prints Nim logs for diagnosis,
+stops the background peer, and removes its temporary files automatically.
+No port configuration is needed.

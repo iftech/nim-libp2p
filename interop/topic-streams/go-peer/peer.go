@@ -12,12 +12,17 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	quic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 )
 
 func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	host, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	host, err := libp2p.New(
+		libp2p.NoTransports,
+		libp2p.Transport(quic.NewTransport),
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/udp/0/quic-v1"),
+	)
 	if err != nil {
 		return err
 	}
@@ -84,6 +89,9 @@ func run() error {
 
 	counts := map[network.Direction]int{}
 	for _, conn := range host.Network().ConnsToPeer(remote.ID) {
+		if conn.ConnState().Transport != "quic-v1" {
+			return fmt.Errorf("expected QUIC v1 connection, got %s", conn.ConnState().Transport)
+		}
 		for _, stream := range conn.GetStreams() {
 			if stream.Protocol() == "/gsts/v0beta" {
 				counts[stream.Stat().Direction]++
@@ -93,7 +101,7 @@ func run() error {
 	if counts[network.DirInbound] != 2 || counts[network.DirOutbound] != 2 {
 		return fmt.Errorf("expected two topic streams per direction, got %v", counts)
 	}
-	fmt.Println("Topic streams interop passed: two signed round trips per topic, two streams per direction")
+	fmt.Println("Topic streams interop passed over QUIC v1: two signed round trips per topic, two streams per direction")
 	return nil
 }
 
