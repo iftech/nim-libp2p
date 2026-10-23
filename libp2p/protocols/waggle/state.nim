@@ -4,6 +4,7 @@
 {.push raises: [], gcsafe.}
 
 import std/tables
+import chronos
 import ./[shard, messages]
 import ../../peerid
 
@@ -13,18 +14,25 @@ type
     raw: Opt[seq[byte]]
     tracked: WaggleMetadata
     advertised: WaggleMetadata
+    expires: Moment
 
   ObjectViews = ref object
     entries: OrderedTable[seq[byte], RemoteView]
 
+  CachedObject = object
+    shard: WaggleShard
+    expires: Moment
+
   TopicState = ref object
-    local: OrderedTable[seq[byte], WaggleShard]
+    local: OrderedTable[seq[byte], CachedObject]
     remote: Table[uint64, ObjectViews]
+    nextExpiry: Moment
 
   WaggleState* = ref object
     topics: Table[seq[byte], TopicState]
     capacity: int
     maxTopics: int
+    lifetime: Duration
 
   Transmission* = object
     message*: ObjectPieces
@@ -37,8 +45,31 @@ type
     emit*: bool
     reply*: Opt[Transmission]
 
-proc new*(T: type WaggleState, capacity, maxTopics: int): T =
-  T(capacity: capacity, maxTopics: maxTopics)
+proc new*(T: type WaggleState, capacity, maxTopics: int, lifetime = 5.minutes): T =
+  doAssert lifetime > ZeroDuration
+  T(capacity: capacity, maxTopics: maxTopics, lifetime: lifetime)
+
+proc expire(topic: TopicState, now: Moment, lifetime: Duration) =
+  if now < topic.nextExpiry:
+    return
+  topic.nextExpiry = now + lifetime
+  var expired: seq[seq[byte]]
+  for id, entry in topic.local:
+    if entry.expires <= now:
+      expired.add(id)
+    else:
+      topic.nextExpiry = min(topic.nextExpiry, entry.expires)
+  for id in expired:
+    topic.local.del(id)
+  for views in topic.remote.values:
+    expired.setLen(0)
+    for id, view in views.entries:
+      if view.expires <= now:
+        expired.add(id)
+      else:
+        topic.nextExpiry = min(topic.nextExpiry, view.expires)
+    for id in expired:
+      views.entries.del(id)
 
 proc firstKey[K, V](table: OrderedTable[K, V]): K =
   for key in table.keys:
@@ -49,17 +80,21 @@ proc touch[K, V](table: var OrderedTable[K, V], key: K, value: V) =
   table.del(key)
   table[key] = value
 
-proc topicState(state: WaggleState, topic: seq[byte]): Result[TopicState, string] =
+proc topicState(
+    state: WaggleState, topic: seq[byte], now: Moment
+): Result[TopicState, string] =
   if state.topics.hasKey(topic):
-    return ok(state.topics.getOrDefault(topic))
+    let cache = state.topics.getOrDefault(topic)
+    cache.expire(now, state.lifetime)
+    return ok(cache)
   if state.topics.len >= state.maxTopics:
     return err("Waggle topic state limit reached")
-  let value = TopicState()
+  let value = TopicState(nextExpiry: now + state.lifetime)
   state.topics[topic] = value
   ok(value)
 
 proc view(
-    state: WaggleState, topic: TopicState, id: uint64, objectId: seq[byte]
+    state: WaggleState, topic: TopicState, id: uint64, objectId: seq[byte], now: Moment
 ): RemoteView =
   var views = topic.remote.getOrDefault(id)
   if views == nil:
@@ -67,29 +102,30 @@ proc view(
     topic.remote[id] = views
   result = views.entries.getOrDefault(objectId)
   if result == nil:
-    result = RemoteView()
+    result = RemoteView(expires: now + state.lifetime)
     if views.entries.len >= state.capacity:
       views.entries.del(views.entries.firstKey())
   views.entries.touch(objectId, result)
 
 proc local(topic: TopicState, objectId: seq[byte]): WaggleShard =
-  result = topic.local.getOrDefault(objectId)
+  let entry = topic.local.getOrDefault(objectId)
+  result = entry.shard
   if result != nil:
-    topic.local.touch(objectId, result)
+    topic.local.touch(objectId, entry)
 
 proc store*(
-    state: WaggleState, topic: seq[byte], shard: WaggleShard
+    state: WaggleState, topic: seq[byte], shard: WaggleShard, now = Moment.now()
 ): Result[bool, string] =
-  let cache = ?state.topicState(topic)
+  let cache = ?state.topicState(topic, now)
   let id = shard.objectId()
-  let previous = cache.local.getOrDefault(id)
+  let previous = cache.local.getOrDefault(id).shard
   var changed = true
   if previous != nil:
     changed = ?previous.metadata().update(shard.metadata().bytes())
   elif cache.local.len >= state.capacity:
     let evicted = cache.local.firstKey()
     cache.local.del(evicted)
-  cache.local.touch(id, shard)
+  cache.local.touch(id, CachedObject(shard: shard, expires: now + state.lifetime))
   ok(changed)
 
 proc peerBytes(view: RemoteView): Opt[seq[byte]] =
@@ -105,14 +141,16 @@ proc prepare*(
     peer: PeerId,
     objectId: seq[byte],
     metadataOnly: bool = false,
+    now = Moment.now(),
 ): Result[Opt[Transmission], string] =
   let cache = state.topics.getOrDefault(topic)
   if cache == nil:
     return ok(Opt.none(Transmission))
+  cache.expire(now, state.lifetime)
   let shard = cache.local(objectId)
   if shard == nil:
     return ok(Opt.none(Transmission))
-  let view = state.view(cache, id, objectId)
+  let view = state.view(cache, id, objectId, now)
   let action = ?shard.actionFromMetadata(peer, id, view.peerBytes())
   var tx = Transmission(view: view, message: ObjectPieces(objectId: objectId))
   if action.send.isSome and not metadataOnly:
@@ -145,10 +183,16 @@ proc commit*(tx: Transmission) =
     tx.view.advertised = tx.advertised
 
 proc received*(
-    state: WaggleState, topic: seq[byte], id: uint64, peer: PeerId, msg: ObjectPieces
+    state: WaggleState,
+    topic: seq[byte],
+    id: uint64,
+    peer: PeerId,
+    msg: ObjectPieces,
+    now = Moment.now(),
 ): Result[ReceiveAction, string] =
-  let cache = ?state.topicState(topic)
-  let view = state.view(cache, id, msg.objectId)
+  let cache = ?state.topicState(topic, now)
+  let view = state.view(cache, id, msg.objectId, now)
+  view.expires = now + state.lifetime
   var changed = false
   if msg.piecesMetadata.isSome:
     let data = msg.piecesMetadata.get()
@@ -170,14 +214,16 @@ proc received*(
     let sending = action.send.get()
     if sending.peerMetadata == nil:
       return err("missing peer metadata for outgoing pieces")
+    let current = shard.metadata()
     outcome.reply = Opt.some(
       Transmission(
         view: view,
         tracked: sending.peerMetadata.clone(),
+        advertised: current,
         message: ObjectPieces(
           objectId: msg.objectId,
           pieces: Opt.some(sending.pieces),
-          piecesMetadata: Opt.some(shard.metadata().bytes()),
+          piecesMetadata: Opt.some(current.bytes()),
         ),
       )
     )
@@ -194,6 +240,40 @@ proc removeConnection*(state: WaggleState, id: uint64) =
 
 proc removeTopic*(state: WaggleState, topic: seq[byte]) =
   state.topics.del(topic)
+
+proc removeObject*(state: WaggleState, topic, objectId: seq[byte]): bool =
+  ## Forget the cached snapshot and all peer views for this object.
+  let cache = state.topics.getOrDefault(topic)
+  if cache != nil:
+    result = cache.local.hasKey(objectId)
+    cache.local.del(objectId)
+    for views in cache.remote.values:
+      result = views.entries.hasKey(objectId) or result
+      views.entries.del(objectId)
+
+proc hasLocal*(
+    state: WaggleState, topic, objectId: seq[byte], now = Moment.now()
+): bool =
+  let cache = state.topics.getOrDefault(topic)
+  if cache != nil:
+    cache.expire(now, state.lifetime)
+    return cache.local.hasKey(objectId)
+
+proc peerView*(
+    state: WaggleState,
+    topic: seq[byte],
+    id: uint64,
+    objectId: seq[byte],
+    now = Moment.now(),
+): tuple[known, advertised: bool] =
+  let cache = state.topics.getOrDefault(topic)
+  if cache != nil:
+    cache.expire(now, state.lifetime)
+    let views = cache.remote.getOrDefault(id)
+    if views != nil:
+      let view = views.entries.getOrDefault(objectId)
+      if view != nil:
+        return (view.raw.isSome or view.tracked != nil, view.advertised != nil)
 
 proc cachedObjects*(state: WaggleState, topic: seq[byte]): int =
   let cache = state.topics.getOrDefault(topic)

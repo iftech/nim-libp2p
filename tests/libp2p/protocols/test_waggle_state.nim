@@ -3,6 +3,7 @@
 
 {.used.}
 
+import chronos
 import ./waggle_utils
 import ../../../libp2p/protocols/waggle/state
 import ../../tools/[unittest, crypto]
@@ -58,7 +59,9 @@ suite "Waggle reconciliation state":
     let action = state.received(topic, 1, peer, incoming).get()
     check action.emit
     check action.reply.get().message.pieces == Opt.some(@[byte 2])
+    check not state.peerView(topic, 1, @[byte 1]).advertised
     action.reply.get().commit()
+    check state.peerView(topic, 1, @[byte 1]).advertised
     check not state
       .received(
         topic,
@@ -115,3 +118,47 @@ suite "Waggle reconciliation state":
       ObjectPieces(objectId: @[byte 1], piecesMetadata: Opt.some(@[byte 255])),
     ).isErr
     check state.prepare(topic, 1, peer, @[byte 1]).get().isNone
+
+  test "expiry stops serving objects and forgets stale peer views":
+    let state = WaggleState.new(2, 1, 10.seconds)
+    let peer = PeerId.random()
+    let now = Moment.now()
+    discard state.store(topic, BitShard(id: @[byte 1], have: 1), now).get()
+    state.prepare(topic, 1, peer, @[byte 1], now = now).get().get().commit()
+    check state.peerView(topic, 1, @[byte 1], now).known
+    check state.hasLocal(topic, @[byte 1], now + 9.seconds)
+    check not state.hasLocal(topic, @[byte 1], now + 10.seconds)
+    check state.prepare(topic, 1, peer, @[byte 1], now = now + 10.seconds).get().isNone
+    check not state.peerView(topic, 1, @[byte 1], now + 10.seconds).known
+    discard state.store(topic, BitShard(id: @[byte 1], have: 1), now + 10.seconds).get()
+    check state.prepare(topic, 1, peer, @[byte 1], now = now + 10.seconds).get().isSome
+
+  test "removal clears one object's snapshot and views without disturbing another":
+    let state = WaggleState.new(2, 1)
+    let peer = PeerId.random()
+    for id in [1.byte, 2.byte]:
+      discard state.store(topic, BitShard(id: @[id], have: 1)).get()
+      state.prepare(topic, 1, peer, @[id]).get().get().commit()
+    check state.removeObject(topic, @[byte 1])
+    check not state.removeObject(topic, @[byte 1])
+    check not state.hasLocal(topic, @[byte 1])
+    check not state.peerView(topic, 1, @[byte 1]).known
+    check state.hasLocal(topic, @[byte 2])
+    check state.peerView(topic, 1, @[byte 2]).known
+
+  test "metadata discovery creates an observer without claiming to know its pieces":
+    let state = WaggleState.new(2, 1)
+    let peer = PeerId.random()
+    discard state.store(topic, BitShard(id: @[byte 1], have: 1)).get()
+    check state.peerView(topic, 1, @[byte 1]) == (false, false)
+    state.prepare(topic, 1, peer, @[byte 1], metadataOnly = true).get().get().commit()
+    check state.peerView(topic, 1, @[byte 1]) == (false, true)
+    discard state
+      .received(
+        topic,
+        1,
+        peer,
+        ObjectPieces(objectId: @[byte 1], piecesMetadata: Opt.some(@[byte 0])),
+      )
+      .get()
+    check state.peerView(topic, 1, @[byte 1]) == (true, true)

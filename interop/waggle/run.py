@@ -20,6 +20,7 @@ def run(scenario):
         with log_path.open("w+") as log:
             args = [scenario] if scenario else []
             peer = subprocess.Popen([str(rust), str(address), *args], stdout=log, stderr=log)
+            clients = []
             try:
                 deadline = time.monotonic() + 20
                 while not address.exists() or not address.read_text():
@@ -28,11 +29,25 @@ def run(scenario):
                     if time.monotonic() >= deadline:
                         raise TimeoutError("Rust peer did not start within 20 seconds")
                     time.sleep(0.05)
-                subprocess.run([str(nim), address.read_text().strip(), *args], check=True, timeout=65)
+                roles = [["1"], ["4"]] if scenario == "topology" else [[]]
+                for role in roles:
+                    clients.append(subprocess.Popen([str(nim), address.read_text().strip(), *args, *role]))
+                deadline = time.monotonic() + 65
+                for client in clients:
+                    if client.wait(timeout=max(0.1, deadline - time.monotonic())) != 0:
+                        raise RuntimeError("Nim peer failed its assertions")
                 if peer.wait(timeout=10) != 0:
                     raise RuntimeError("Rust peer failed its assertions")
                 print(f"Waggle Nim/Rust {scenario or 'wire'} interoperability passed", flush=True)
             finally:
+                for client in clients:
+                    if client.poll() is None:
+                        client.terminate()
+                        try:
+                            client.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            client.kill()
+                            client.wait()
                 if peer.poll() is None:
                     peer.terminate()
                     try:
@@ -47,3 +62,6 @@ def run(scenario):
 if __name__ == "__main__":
     run(None)
     run("reconcile")
+    run("topology")
+    run("lifecycle")
+    run("pressure")

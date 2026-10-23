@@ -7,7 +7,7 @@ Rust dependencies, including the upstream protobuf framing codec. The pinned
 Rust implementation requires the atomic API available in Rust 1.98.1; its
 `rust-toolchain.toml` selects that compiler.
 
-Like `interop/partial-message`, the peers are built before either is started.
+Like `interop/partial-message`, the peers are built before they are started.
 The Rust peer listens on a dynamically allocated IPv4 loopback TCP port and
 writes its address and peer ID to a temporary file. The runner starts Nim once
 that file is ready. Nim authenticates the Rust peer with Noise, negotiates
@@ -30,10 +30,9 @@ wrong contents, timeouts, and premature exits fail the test. A success on only
 one peer is insufficient.
 
 The tests exercise TCP, Noise, Yamux, multistream negotiation, subscription
-handshakes, piece exchange, selective reconciliation, and duplicate suppression. Nim uses the library's existing `MuxedUpgrade`
-stack directly. Switch integration, three-peer gossip, reconnect, and unsubscribe are not covered
-by the cross-language scenarios. Separate Nim network tests cover three-peer
-dissemination, connection-manager attachment, reconnect, and unsubscribe.
+handshakes, piece exchange, selective reconciliation, and duplicate suppression.
+Nim uses the library's existing `MuxedUpgrade` stack directly. Switch integration remains outside the cross-language scenarios;
+connection-manager attachment has separate Nim network coverage.
 
 A second scenario uses the managed Nim API and Rust's `Shard`/`Metadata`
 interfaces. Nim starts with one piece and Rust with a complementary piece of the
@@ -41,6 +40,31 @@ same object. Both reconstruct the complete object, check that only the missing
 piece reached the application, and exchange final acknowledgements. Nim opens
 subscriptions through connection registration and publishes updated snapshots;
 the wire-only APIs are used just for the final acknowledgement.
+
+A third scenario connects two independent Nim processes only through a Rust
+relay. An explicit barrier waits for both peers to subscribe to data and control
+topics before Rust seeds its object. The peers start with complementary bits
+(1, 2, and 4), integrate and republish missing pieces, and must all reconstruct 7. Each Nim peer confirms
+completion, Rust confirms both peers completed, and both Nim peers acknowledge
+that confirmation before any process reports success.
+
+A fourth scenario keeps one Nim identity across subscription and connection
+changes. Nim receives an object, unsubscribes, waits for Rust to confirm the
+stream closure over a separate control topic, resubscribes and receives the next
+update, then reconnects and receives a third update. Rust verifies the identity,
+subscription transitions, connection closure, and final acknowledgement.
+
+The readiness barrier accommodates the pinned Rust publisher's lack of retries
+for unchanged snapshots when a subscriber arrives late. Its idle writers also
+detect a remote subscription closure only on the next write, so Nim explicitly
+requests a write probe over the control topic after unsubscribing. These are
+constraints of this Rust revision, not guarantees established by the tests.
+
+A fifth scenario sets Nim's connection queue budget to one message, publishes
+two distinct objects synchronously, and requires the second publication to be
+rejected with a queue-full event. After Rust acknowledges the first payload,
+Nim republishes the unchanged second snapshot. Rust must receive both payloads
+exactly once and validate the final acknowledgement.
 
 ## Run locally
 
@@ -53,8 +77,8 @@ nim c --threads:on -d:chronicles_log_level=WARN interop/waggle/nim-peer/src/peer
 python3 interop/waggle/run.py
 ```
 
-The runner executes both scenarios with separate fresh peer processes. It waits
-at most 20 seconds for Rust readiness in each scenario. Each peer has a 60-second
+The runner executes all five scenarios with separate fresh peer processes. It
+waits at most 20 seconds for Rust readiness in each scenario. Each peer has a 60-second
 exchange deadline; the runner also bounds the subprocess waits. Temporary files
 and any surviving Rust process are cleaned up on success and failure. The Rust
 log is printed before cleanup. No fixed ports, persistent identities, or startup

@@ -2,8 +2,9 @@
 
 `libp2p/protocols/waggle` implements topic streams and incremental object
 dissemination from [specs#732](https://github.com/libp2p/specs/pull/732), pinned to
-revision `9328b68`. The experimental implementation follows the pinned Rust behaviour,
-with application-defined object semantics and an API that may still change.
+revision `9328b68`. The experimental implementation interoperates with the
+pinned Rust behaviour, with application-defined object semantics and an API
+that may still change.
 
 ## Wire contract
 
@@ -71,8 +72,10 @@ The synchronous `onEvent` callback receives `Received`, `Subscribed`,
 connection ID, and topic. `Received` includes the opaque wire message. Validate
 and integrate its payload in the application, then publish a new snapshot. A
 metadata-only event carries knowledge about the peer, not pieces to integrate.
-Callbacks must not block; synchronous calls to `publish` from the callback are
-supported. Peer scoring and penalties remain application decisions.
+Malformed subscription/object messages and unexpected subscriber writes produce
+`InvalidData`, closing the offending stream. Normal protocol negotiation
+rejection produces `StreamFailed`. Callbacks must not block; synchronous calls
+to `publish` from the callback are supported. Peer scoring and penalties remain application decisions.
 
 ## Direct stream API
 
@@ -97,19 +100,23 @@ write lock does not reset a stream another caller is using.
 
 ## Dissemination and resource limits
 
-`publish` stores an object snapshot in a per-topic LRU cache and selects subscribed
-connections in random order, up to the topic's publish fanout. It compares local
-state with each connection's metadata to send only missing pieces and changed
-metadata. Repeating an unchanged snapshot returns zero when nothing is needed;
-a new connection can still receive it. If a queue rejected the previous attempt,
-republishing the unchanged snapshot retries the unsent transmission.
+`publish` stores an object snapshot in a per-topic LRU cache. Initial publication
+seeds randomly selected subscribers up to `publishFanout`. Updating an existing
+snapshot forwards missing pieces to connections whose object state is known, up
+to `forwardFanout`. Unchanged snapshots can retry rejected transmissions and
+seed newly connected subscribers. The initial fanout bounds all initial
+transmissions; the forwarding fanout bounds payload transmissions. Existing observers may also receive changed
+metadata without a payload.
 
-Receiving data updates the connection's partial view, emits needed data, and
-queues any selective reply. It also advertises cached object metadata to other
-subscribers, up to the gossip fanout. Gossip is triggered by received messages;
-there is no periodic heartbeat in the pinned Rust implementation. Applications
-must integrate newly received pieces and publish the resulting snapshot before
-those pieces can be served to other peers.
+Changed metadata is advertised to every connection previously sent our metadata.
+Up to `gossipFanout` additional connections with unknown object state receive
+metadata-only discovery messages. A zero gossip fanout disables new discovery,
+while existing observers continue receiving updates. Receiving a message also
+triggers metadata advertisements to other subscribers. There is no periodic
+heartbeat. Applications must validate and integrate received pieces, then
+publish the resulting snapshot before those pieces can be forwarded. For an
+unknown object advertised only through metadata, the application can publish an
+empty snapshot to advertise what it needs and initiate reconciliation.
 
 Peer views advance only after a message enters its bounded queue. Metadata-only
 gossip does not mark omitted pieces as delivered. Unsubscribe/resubscribe and
@@ -122,14 +129,24 @@ registered connections, 16 streams per peer, 64 local topics/configurations, and
 per topic and connection. Pending stream opens and incoming handshakes count
 against stream limits. Each connection has a shared budget of 5000 queued
 messages, with a separate writer for each topic stream. Set constructor arguments
-to tune these limits. `setTopicConfig` sets positive publish/gossip fanouts per
-topic; both default to 50. An optional topic whitelist rejects disallowed local
-and remote subscriptions.
+to tune these limits. `setTopicConfig` sets publish, forwarding, and gossip
+fanouts per topic; all default to 50. Publish and forwarding must be positive;
+gossip may be zero. An optional topic whitelist rejects disallowed local and
+remote subscriptions.
 
-The object cache is an LRU, without a protocol-owned TTL. The application owns
-object validity and lifetime, as in the pinned Rust cache. The limits bound entry
-and queue counts, not the size of application-owned shard objects; applications
-must also bound their snapshots and handler work.
+The constructor's positive `objectLifetime` defaults to five minutes. Local
+snapshots expire from their last publication, and peer views expire from their
+creation or last received message. Expired entries are discarded lazily when
+that topic is accessed; expired snapshots are unavailable for reconciliation. Idle topics retain
+bounded expired allocations until their next access or protocol stop. Cache
+reads and outgoing advertisements do not renew lifetime.
+
+`removeObject(topic, objectId)` explicitly forgets a snapshot and its peer views;
+it returns whether any state existed. Expiry and removal retain already queued
+or in-flight transmissions; neither is a recall operation. Neither expiry nor removal prevents
+an application from publishing the object again. Applications define object
+validity and must bound snapshot sizes and handler work; the protocol's other
+limits bound entry and queue counts.
 
 `stop` unregisters connection handlers, closes protocol streams, drains owned
 tasks, and clears caches/views without closing shared muxers. Local topic choices
@@ -142,10 +159,12 @@ subscription tasks. Failed protocol stream opens are surfaced through
 ## Verification and remaining scope
 
 The unit tests cover selective replies, duplicate suppression, queue-full retry,
-LRU eviction, remote view bounds, fanout, topic isolation, three-peer convergence,
-multiple connections to one peer, reconnect, unsubscribe/resubscribe, and stopping
-without disrupting shared connections. The interop harness exercises both wire
-exchange and managed reconciliation against the pinned Rust implementation.
+LRU eviction, expiry, explicit removal, remote view bounds, forwarding/discovery
+fanouts, observer updates, protocol-violation events, topic isolation, three-peer
+convergence, multiple connections to one peer, reconnect, unsubscribe/resubscribe, and stopping
+without disrupting shared connections. The interop harness exercises wire
+exchange, managed reconciliation, three-peer convergence, subscription renewal,
+reconnect, and queue-full recovery against the pinned Rust implementation.
 
 The draft's framing and stream-direction choices remain provisional. Discovery,
 application validation/reconstruction, signing, peer scoring, and retries after
