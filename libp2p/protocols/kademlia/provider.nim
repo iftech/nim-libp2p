@@ -12,7 +12,7 @@
 import std/[math, sequtils, tables, sets, heapqueue]
 import chronos, chronicles, results
 import ../../[peerid, switch, multihash, cid]
-import ../../utils/[collections, heartbeat, future]
+import ../../utils/[collections, heartbeat, future, opt]
 import ../protocol
 import ./[protobuf, types, find, rpc, keyspace, netsize, kademlia_metrics]
 
@@ -26,18 +26,27 @@ proc `==`*(a, b: ProviderRecord): bool =
 proc `<`*(a, b: ProviderRecord): bool =
   a.expiresAt < b.expiresAt
 
-proc `<`*(a: ProviderRecord, b: chronos.Moment): bool =
+proc `<`*(a: ProviderRecord, b: UnixTimestamp): bool =
   a.expiresAt < b
 
+func ceilSeconds(d: chronos.Duration): int64 =
+  ## Rounds up, so a sub-second interval does not truncate to zero.
+  let whole = d.seconds()
+  if d > whole.seconds():
+    whole + 1
+  else:
+    whole
+
 proc deleteOldest(pk: ProvidedKeys) =
-  ## Delete oldest provided key from ProvidedKeys
-  var oldest: Key
-  var oldestMoment = chronos.Moment.now()
-  for key, moment in pk.provided:
-    if oldestMoment > moment:
-      oldest = key
-      oldestMoment = moment
-  pk.provided.del(oldest)
+  ## Delete oldest provided key; a tie goes to the earliest provided.
+  var oldest: Opt[Key]
+  var oldestAt: UnixTimestamp
+  for key, providedAt in pk.provided:
+    if oldest.isNone() or providedAt < oldestAt:
+      oldest = Opt.some(key)
+      oldestAt = providedAt
+  oldest.ifValue(key):
+    pk.provided.del(key)
 
 proc isFull*(pk: ProvidedKeys): bool =
   pk.provided.len() >= pk.capacity
@@ -381,7 +390,9 @@ proc startProviding*(kad: KadDHT, c: Cid) {.async: (raises: [CancelledError]).} 
       kad.providerManager.providedKeys.isFull():
     kad.providerManager.providedKeys.deleteOldest()
 
-  kad.providerManager.providedKeys.provided[k] = chronos.Moment.now()
+  # Re-insert so provide order breaks same-second ties in deleteOldest.
+  kad.providerManager.providedKeys.provided.del(k)
+  kad.providerManager.providedKeys.provided[k] = nowUnixSeconds()
   await kad.addProvider(k)
 
 proc stopProviding*(kad: KadDHT, c: Cid) =
@@ -462,12 +473,13 @@ proc manageRepublishProvidedKeys*(kad: KadDHT) {.async: (raises: [CancelledError
         timeout = kad.config.republishProvidedKeysInterval,
         providedKeys = kad.providerManager.providedKeys.provided.len
 
-proc anyExpired(pr: ProviderRecords): bool =
-  pr.len() > 0 and pr.records[0] < chronos.Moment.now()
+proc anyExpired(pr: ProviderRecords, now: UnixTimestamp): bool =
+  pr.len() > 0 and pr.records[0] < now
 
 proc manageExpiredProviders*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   heartbeat "cleanup expired provider records", kad.config.cleanupProvidersInterval:
-    while kad.providerManager.providerRecords.anyExpired():
+    let now = nowUnixSeconds()
+    while kad.providerManager.providerRecords.anyExpired(now):
       kad.providerManager.dropOldestProviderRecord()
 
 proc sendAddProviderResponse(
@@ -540,7 +552,8 @@ method handleAddProvider*(
       kad.providerManager.addProviderRecord(
         ProviderRecord(
           provider: peer,
-          expiresAt: chronos.Moment.now() + kad.config.providerExpirationInterval,
+          expiresAt:
+            nowUnixSeconds() + kad.config.providerExpirationInterval.ceilSeconds(),
           key: msgKey,
         )
       )
