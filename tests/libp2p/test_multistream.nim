@@ -316,6 +316,7 @@ suite "Multistream select":
 
   asyncTest "e2e - streams limit":
     let blocker = newWaitGroup(1)
+    let handlersEntered = newWaitGroup(5)
 
     # Start 5 streams which are blocked by `blocker`
     # Try to start a new one, which should fail
@@ -324,6 +325,7 @@ suite "Multistream select":
         stream: Stream, proto: string
     ): Future[void] {.async: (raises: [CancelledError]).} =
       try:
+        handlersEntered.done()
         await blocker.wait()
         await stream.writeLp("Hello!")
       except LPStreamError:
@@ -366,6 +368,8 @@ suite "Multistream select":
     var dialers: seq[Future[void]]
     for _ in 0 ..< 5:
       dialers.add(connector())
+    # accept order need not match dial order, so the 6th dial must wait
+    await handlersEntered.wait()
 
     # This one will fail during negotiation
     expect LPStreamEOFError:
