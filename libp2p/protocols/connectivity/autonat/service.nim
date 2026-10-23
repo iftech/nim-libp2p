@@ -9,7 +9,7 @@ import ../../../switch
 import ../../../wire
 import client
 from types import NetworkReachability, AutonatUnreachableError
-import ../../../utils/heartbeat
+import ../../../utils/[future, heartbeat]
 import ../../../services/reachabilityobservers
 import ../../../crypto/crypto
 
@@ -30,8 +30,10 @@ type
     newConnectedPeerHandler: PeerEventHandler
     addressMapper: AddressMapper
     scheduleHandle: Future[void]
+    probeFuts: seq[Future[NetworkReachability].Raising([CancelledError])]
     networkReachability*: NetworkReachability
     confidence: Opt[float]
+    notifyPending: bool
     answers: Deque[NetworkReachability]
     autonatClient: AutonatClient
     rng: Rng
@@ -158,8 +160,11 @@ proc askPeer(
       trace "dialMe unexpected error", err = error.msg
       Unknown
   let hasReachabilityOrConfidenceChanged = await self.handleAnswer(ans)
-  if hasReachabilityOrConfidenceChanged:
+  # A probe cancelled mid-notify leaves the flag set, so the next answer re-notifies.
+  if hasReachabilityOrConfidenceChanged or self.notifyPending:
+    self.notifyPending = true
     await self.reachabilityObservers.notify(self.networkReachability, self.confidence)
+    self.notifyPending = false
   await switch.peerInfo.update()
   return ans
 
@@ -237,7 +242,7 @@ proc configure(self: AutonatService, switch: Switch) =
     self.newConnectedPeerHandler = proc(
         peerId: PeerId, event: PeerEvent
     ): Future[void] {.async: (raises: [CancelledError]).} =
-      discard askPeer(self, switch, peerId)
+      self.probeFuts.trackFut(askPeer(self, switch, peerId))
 
 method start*(
     self: AutonatService, switch: Switch
@@ -264,13 +269,16 @@ method stop*(
     self: AutonatService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
   info "Stopping AutonatService"
-  if not isNil(self.scheduleHandle):
-    self.scheduleHandle.cancelSoon()
-    self.scheduleHandle = nil
   if not isNil(self.newConnectedPeerHandler):
     switch.connManager.removePeerEventHandler(
       self.newConnectedPeerHandler, PeerEventKind.Joined
     )
+  if not isNil(self.scheduleHandle):
+    let scheduleHandle = self.scheduleHandle
+    self.scheduleHandle = nil
+    await noCancel scheduleHandle.cancelAndWait()
+  let probeFuts = move self.probeFuts
+  await noCancel probeFuts.cancelAndWait()
   if self.enableAddressMapper:
     switch.addressManager.removeMapper(self.addressMapper)
   await switch.peerInfo.update()
