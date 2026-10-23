@@ -457,29 +457,34 @@ suite "Waggle managed dissemination":
       it.peerId == b.peer and it.connectionId > 0 and it.reason.len > 0
     )
 
-  asyncTest "malformed object frames emit invalid data with peer context":
-    let a = newNode()
-    let b = newNode()
-    proc corrupt(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-      try:
-        discard await stream.readLp(65536)
-        await stream.writeLp(@[byte 0])
-        var data: byte
-        await stream.readExactly(addr data, 1)
-      except LPStreamError:
-        discard
-      finally:
-        await stream.reset()
+  asyncTest "malformed object bodies, lengths, and oversized frames emit invalid data":
+    let frames = @[@[byte 1, 0], newSeqWith(10, 128.byte), @[byte 129, 128, 4]]
+    for rawFrame in frames:
+      let frame = rawFrame
+      let a = newNode()
+      let b = newNode()
+      proc corrupt(
+          stream: Stream, proto: string
+      ) {.async: (raises: [CancelledError]).} =
+        try:
+          discard await stream.readLp(65536)
+          await stream.write(frame)
+          var data: byte
+          await stream.readExactly(addr data, 1)
+        except LPStreamError:
+          discard
+        finally:
+          await stream.reset()
 
-    b.protocol.handler = corrupt
-    discard a.protocol.subscribe(topic).get()
-    discard await connect(a, b)
-    checkUntilTimeout:
-      a.events.anyIt(it.kind == WaggleEventKind.InvalidData)
-    let invalid = a.events.filterIt(it.kind == WaggleEventKind.InvalidData)
-    check invalid.len == 1
-    check invalid[0].peerId == b.peer and invalid[0].connectionId > 0
-    check invalid[0].topic == topic and invalid[0].reason.len > 0
+      b.protocol.handler = corrupt
+      discard a.protocol.subscribe(topic).get()
+      discard await connect(a, b)
+      checkUntilTimeout:
+        a.events.anyIt(it.kind == WaggleEventKind.InvalidData)
+      let invalid = a.events.filterIt(it.kind == WaggleEventKind.InvalidData)
+      check invalid.len == 1
+      check invalid[0].peerId == b.peer and invalid[0].connectionId > 0
+      check invalid[0].topic == topic and invalid[0].reason.len > 0
 
   asyncTest "initial metadata-only publications obey the publication fanout":
     let source = newNode(fanout = 1)

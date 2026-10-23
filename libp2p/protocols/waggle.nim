@@ -581,6 +581,10 @@ proc beginReceiver(p: Waggle, link: WaggleConnection, topic: seq[byte]) =
       dec link.opening
       opening = false
       await p.subscribe(stream, topic, onPieces)
+    except InvalidVarintError, MaxSizeError:
+      let kind =
+        if opening: WaggleEventKind.StreamFailed else: WaggleEventKind.InvalidData
+      p.notify(kind, link, topic, reason = getCurrentExceptionMsg())
     except WaggleDecodeError as exc:
       p.notify(WaggleEventKind.InvalidData, link, topic, reason = exc.msg)
     except LPError as exc:
