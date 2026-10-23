@@ -177,3 +177,37 @@ jobs:
         run: |
           ./go-peer/peer &
           ./nim-peer/src/peer
+
+  run-waggle-interop:
+    name: Run Waggle interoperability tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+
+      - name: Set up Nim
+        uses: "./.github/actions/install_nim"
+        with:
+          os: linux
+          cpu: amd64
+          shell: bash
+          nim_ref: v2.2.10
+
+      - name: Build the Rust peer
+        working-directory: interop/waggle/rust-peer
+        run: cargo build --locked
+
+      - name: Build the Nim peer
+        run: |
+          NIM_VERSION=$(nim --version | sed -n 's/^Nim Compiler Version \([^ ]*\).*/\1/p')
+          nimble --noLockfile --requires:"nim == $NIM_VERSION" --resolver:minver -l setup -y
+          nim c --threads:on -d:chronicles_log_level=WARN interop/waggle/nim-peer/src/peer.nim
+
+      - name: Run Rust and Nim together
+        run: python3 interop/waggle/run.py
