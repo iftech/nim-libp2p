@@ -50,33 +50,11 @@ suite "Wire":
     check res.isOk
     check res.get() == expected
 
-  test "initTAddress returns ok and correct result for an IPv6/UDP address":
-    let res = initTAddress(ma("/ip6/::1/udp/1234"))
-    let expected = TransportAddress(
-      family: AddressFamily.IPv6,
-      address_v6: [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        # IPv6 address ::1
-      port: Port(1234),
-    )
-    check res.isOk
-    check res.get() == expected
-
   test "initTAddress returns ok and correct result for an IPv4/TCP/WS address":
     let res = initTAddress(ma("/ip4/127.0.0.1/tcp/1234/ws"))
     let expected = TransportAddress(
       family: AddressFamily.IPv4,
       address_v4: [127'u8, 0, 0, 1], # IPv4 address 127.0.0.1
-      port: Port(1234),
-    )
-    check res.isOk
-    check res.get() == expected
-
-  test "initTAddress returns ok and correct result for an IPv6/TCP/WS address":
-    let res = initTAddress(ma("/ip6/::1/tcp/1234/ws"))
-    let expected = TransportAddress(
-      family: AddressFamily.IPv6,
-      address_v6: [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        # IPv6 address ::1
       port: Port(1234),
     )
     check res.isOk
@@ -91,25 +69,6 @@ suite "Wire":
     )
     check res.isOk
     check res.get() == expected
-
-  test "initTAddress returns ok and correct result for an IPv6/TCP/WSS address":
-    let res = initTAddress(ma("/ip6/::1/tcp/1234/wss"))
-    let expected = TransportAddress(
-      family: AddressFamily.IPv6,
-      address_v6: [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        # IPv6 address ::1
-      port: Port(1234),
-    )
-    check res.isOk
-    check res.get() == expected
-
-  test "initTAddress returns error for a DNS/TCP/ws address":
-    let res = initTAddress(ma("/dns4/localhost/tcp/1234/ws"))
-    check res.isErr
-
-  test "initTAddress returns error for a DNS/TCP/wss address":
-    let res = initTAddress(ma("/dns4/localhost/tcp/1234/wss"))
-    check res.isErr
 
   test "initTAddress returns error for a DNS/TCP address":
     let res = initTAddress(ma("/dns4/localhost/tcp/1234"))

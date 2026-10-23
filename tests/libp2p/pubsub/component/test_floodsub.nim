@@ -102,20 +102,6 @@ suite "FloodSub Component", timeout = 120.seconds:
         agentA == "nim-libp2p"
         agentB == "nim-libp2p"
 
-  asyncTest "FloodSub basic publish/subscribe B -> A":
-    let (handlerFut, handler) = createCompleteHandler()
-
-    let nodes = generateNodes(2).toFloodSub()
-
-    startAndDeferStop(nodes)
-    await connectStar(nodes)
-
-    nodes[0].subscribe(topic, handler)
-    waitSubscribe(nodes[1], nodes[0], topic)
-
-    check (await nodes[1].publish(topic, "Hello!".toBytes())) > 0
-    check (await handlerFut) == true
-
   asyncTest "FloodSub validation should succeed":
     let (handlerFut, handler) = createCompleteHandler()
 

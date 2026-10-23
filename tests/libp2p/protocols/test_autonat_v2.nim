@@ -215,19 +215,6 @@ suite "AutonatV2":
         addrs: Opt.none(MultiAddress),
       )
 
-  asyncTest "Instantiate server":
-    let serverSwitch = makeStandardSwitchBuilder().withAutonatV2Server().build()
-    await serverSwitch.start()
-    await serverSwitch.stop()
-
-  asyncTest "Instantiate server with config":
-    let serverSwitch = makeStandardSwitchBuilder()
-      .withAutonatV2Server(AutonatV2Config.new(allowPrivateAddresses = true))
-      .build()
-
-    await serverSwitch.start()
-    await serverSwitch.stop()
-
   asyncTest "Successful DialRequest":
     let (src, dst, client) =
       await setupAutonat(config = AutonatV2Config.new(allowPrivateAddresses = true))

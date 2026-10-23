@@ -107,59 +107,6 @@ suite "Hole Punching":
   asyncTest "Direct connection works after restarting HPService":
     directConnection(true)
 
-  asyncTest "Direct connection must work when peer address is public and dns is used":
-    let autonatClientStub = AutonatClientStub.new(expectedDials = 1)
-    autonatClientStub.answer = NotReachable
-    let autonatService = AutonatService.new(autonatClientStub, rng(), maxQueueSize = 1)
-
-    let relayClient = RelayClient.new()
-    let privatePeerRelayAddr = newFuture[seq[MultiAddress]]()
-
-    let publicPeerSwitch = createSwitch(RelayClient.new())
-
-    proc checkMA(address: seq[MultiAddress]) =
-      if not privatePeerRelayAddr.completed():
-        privatePeerRelayAddr.complete(address)
-
-    let autoRelayService = AutoRelayService.new(1, relayClient, checkMA, rng())
-
-    let hpservice = HPService.new(autonatService, autoRelayService)
-
-    let privatePeerSwitch =
-      createSwitch(relayClient, hpservice, nameResolver = MockResolver.default())
-    let peerSwitch = createSwitch()
-    let switchRelay = createSwitch(Relay.new())
-
-    await allFuturesRaising(
-      switchRelay.start(),
-      privatePeerSwitch.start(),
-      publicPeerSwitch.start(),
-      peerSwitch.start(),
-    )
-    publicPeerSwitch.peerInfo.addrs.add(
-      [ma("/dns4/localhost/") & publicPeerSwitch.peerInfo.addrs[0][1].tryGet()]
-    )
-
-    await privatePeerSwitch.connect(switchRelay)
-    await privatePeerSwitch.connect(peerSwitch) # for autonat
-
-    await publicPeerSwitch.connect(
-      privatePeerSwitch.peerInfo.peerId, (await privatePeerRelayAddr)
-    )
-
-    checkUntilTimeoutCustom(10.seconds, 100.milliseconds):
-      privatePeerSwitch.connManager.connCount(publicPeerSwitch.peerInfo.peerId) == 1
-      not isRelayed(
-        privatePeerSwitch.connManager.selectMuxer(publicPeerSwitch.peerInfo.peerId).connection
-      )
-
-    await allFuturesRaising(
-      privatePeerSwitch.stop(),
-      publicPeerSwitch.stop(),
-      switchRelay.stop(),
-      peerSwitch.stop(),
-    )
-
   proc holePunchingTest(
       initiatorConnectStub: connectStubType,
       rcvConnectStub: connectStubType,

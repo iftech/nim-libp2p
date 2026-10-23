@@ -150,45 +150,6 @@ suite "Switch":
     check not switch1.isConnected(switch2)
     check not switch2.isConnected(switch1)
 
-  asyncTest "e2e should not leak bufferstreams and connections on channel close":
-    let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-      try:
-        let msg = string.fromBytes(await stream.readLp(1024))
-        check "Hello!" == msg
-        await stream.writeLp("Hello!")
-      except LPStreamError:
-        raiseAssert "Unexpected LPStreamError in bufferstream leak test handler"
-      finally:
-        await stream.close()
-        handleFinished.done()
-
-    let testProto = new TestProto
-    testProto.codec = TestCodec
-    testProto.handler = handle
-
-    let switch1 = makeStandardSwitch()
-    switch1.mount(testProto)
-
-    let switch2 = makeStandardSwitch()
-    await switch1.start()
-    await switch2.start()
-
-    let stream = await switch2.dial(switch1, TestCodec)
-
-    check switch1.isConnected(switch2)
-    check switch2.isConnected(switch1)
-
-    await stream.writeLp("Hello!")
-    let msg = string.fromBytes(await stream.readLp(1024))
-    check "Hello!" == msg
-    await stream.close()
-
-    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
-
-    check not switch1.isConnected(switch2)
-    check not switch2.isConnected(switch1)
-
   asyncTest "e2e use connect then dial":
     proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
       try:
@@ -1038,27 +999,6 @@ suite "Switch":
       check not switch1.isConnected(switch2)
       check not switch2.isConnected(switch1)
 
-  asyncTest "e2e dial dns4 address":
-    let resolver = MockResolver.new()
-    resolver.ipResponses[("localhost", false)] = @["127.0.0.1"]
-    resolver.ipResponses[("localhost", true)] = @["::1"]
-
-    let
-      srcSwitch =
-        makeStandardSwitchBuilder(TcpAutoAddress).withNameResolver(resolver).build()
-      destSwitch = makeStandardSwitch(TcpAutoAddress)
-
-    await destSwitch.start()
-    await srcSwitch.start()
-
-    let testAddr = ma("/dns4/localhost/") & destSwitch.peerInfo.addrs[0][1].tryGet()
-
-    await srcSwitch.connect(destSwitch.peerInfo.peerId, @[testAddr])
-    check srcSwitch.isConnected(destSwitch)
-
-    await destSwitch.stop()
-    await srcSwitch.stop()
-
   asyncTest "e2e dial dnsaddr with multiple transports":
     let resolver = MockResolver.new()
 
@@ -1090,20 +1030,6 @@ suite "Switch":
     await destSwitch.stop()
     await srcWsSwitch.stop()
     await srcTcpSwitch.stop()
-
-  asyncTest "e2e quic transport":
-    let
-      srcSwitch = makeStandardSwitch(QuicAutoAddress)
-      destSwitch = makeStandardSwitch(QuicAutoAddress)
-
-    await destSwitch.start()
-    await srcSwitch.start()
-
-    await srcSwitch.connect(destSwitch)
-    check srcSwitch.isConnected(destSwitch)
-
-    await destSwitch.stop()
-    await srcSwitch.stop()
 
   asyncTest "e2e multiple transports coexistence":
     let

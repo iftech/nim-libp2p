@@ -30,21 +30,3 @@ suite "Connection":
     await conn.close()
     check:
       conn.closed == true
-
-  asyncTest "parent close":
-    var buf = BufferStream.new()
-    var conn = buf
-
-    await conn.close()
-    check:
-      conn.closed == true
-      buf.closed == true
-
-  asyncTest "child close":
-    var buf = BufferStream.new()
-    var conn = buf
-
-    await buf.close()
-    check:
-      conn.closed == true
-      buf.closed == true

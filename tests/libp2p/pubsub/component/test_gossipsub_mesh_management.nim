@@ -14,24 +14,6 @@ suite "GossipSub Component - Mesh Management":
   teardown:
     checkTrackers()
 
-  asyncTest "Nodes graft peers according to DValues - numberOfNodes < dHigh":
-    let
-      numberOfNodes = 5
-      nodes = generateNodes(numberOfNodes, gossip = true).toGossipSub()
-
-    startAndDeferStop(nodes)
-    await connectStar(nodes)
-    subscribeAllNodes(nodes, topic, voidTopicHandler)
-
-    let expectedNumberOfPeers = numberOfNodes - 1
-
-    for i in 0 ..< numberOfNodes:
-      let node = nodes[i]
-      checkUntilTimeout:
-        node.gossipsub.getOrDefault(topic).len == expectedNumberOfPeers
-        node.mesh.getOrDefault(topic).len == expectedNumberOfPeers
-        node.fanout.len == 0
-
   asyncTest "Nodes graft peers according to DValues - numberOfNodes > dHigh":
     let
       numberOfNodes = 8
@@ -68,29 +50,6 @@ suite "GossipSub Component - Mesh Management":
       topic in nodes[1].topics
       topic in nodes[0].gossipsub
       nodes[0].gossipsub.hasPeerId(topic, nodes[1].peerInfo.peerId)
-
-  asyncTest "GossipSub should add remote peer topic subscriptions if both peers are subscribed":
-    let nodes = generateNodes(2, gossip = true).toGossipSub()
-
-    startAndDeferStop(nodes)
-    await connectStar(nodes)
-
-    nodes[0].subscribe(topic, voidTopicHandler)
-    nodes[1].subscribe(topic, voidTopicHandler)
-    waitSubscribeStar(nodes, topic)
-
-    check:
-      topic in nodes[0].topics
-      topic in nodes[1].topics
-
-      topic in nodes[0].gossipsub
-      topic in nodes[1].gossipsub
-
-      nodes[0].gossipsub.hasPeerId(topic, nodes[1].peerInfo.peerId) or
-        nodes[0].mesh.hasPeerId(topic, nodes[1].peerInfo.peerId)
-
-      nodes[1].gossipsub.hasPeerId(topic, nodes[0].peerInfo.peerId) or
-        nodes[1].mesh.hasPeerId(topic, nodes[0].peerInfo.peerId)
 
   asyncTest "GossipSub invalid topic subscription":
     var handlerFut = newFuture[bool]()

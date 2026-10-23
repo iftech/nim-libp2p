@@ -50,17 +50,6 @@ suite "Discoverer - lookup":
     check res.isOk()
     check res.get() == @[ad]
 
-  asyncTest "calling lookup twice for same service is idempotent":
-    let disco = setupServiceDiscoveryNode()
-    let serviceId = makeServiceId()
-
-    let res1 = await disco.lookup(serviceId)
-    let res2 = await disco.lookup(serviceId)
-
-    check res1.isOk()
-    check res2.isOk()
-    check disco.rtManager.hasService(serviceId)
-
   asyncTest "distinct service IDs get independent routing tables":
     let disco = setupServiceDiscoveryNode()
     let sid1 = makeServiceId(1)

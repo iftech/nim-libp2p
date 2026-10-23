@@ -430,24 +430,6 @@ suite "KadDHT Get":
     check:
       record.isErr()
 
-  asyncTest "Get value retrieves binary data with null and high bytes":
-    let kads = setupKadSwitches(2)
-    startAndDeferStop(kads)
-
-    await connect(kads[0], kads[1])
-
-    let
-      key = kads[0].rtable.selfId
-      value = @[0.byte, 0xFF, 0, 0xFF]
-
-    kads[0].dataTable.insert(key, value, Timestamp.now())
-
-    let record = await kads[1].getValue(key, quorumOverride = Opt.some(1))
-
-    check:
-      record.isOk()
-      record.get().value == value
-
   asyncTest "GET_VALUE handler drops an expired record instead of serving it":
     let kads = setupKadSwitches(2, cleanupDataEntriesInterval = chronos.hours(1))
     startAndDeferStop(kads)

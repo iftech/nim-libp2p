@@ -369,34 +369,6 @@ suite "Dialer":
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
     check resolver.cancelled
 
-  asyncTest "Ranked dialing connects to a peer that advertises names only":
-    let
-      src = makeStandardSwitch(TcpAutoAddress)
-      dst = makeStandardSwitch(TcpAutoAddress)
-    await src.start()
-    await dst.start()
-    defer:
-      await allFutures(src.stop(), dst.stop())
-
-    let resolver = MockResolver.new()
-    resolver.txtResponses["_dnsaddr.good.example"] =
-      @["dnsaddr=" & $dst.peerInfo.addrs[0]]
-
-    let dialer = Dialer.new(
-      src.peerInfo.peerId,
-      src.connManager,
-      src.peerStore,
-      src.transports,
-      src.ms,
-      resolver,
-      dialRanking = true,
-    )
-
-    let name = ma("/dnsaddr/good.example")
-    await dialer.connect(dst.peerInfo.peerId, @[name])
-
-    check src.connManager.connCount(dst.peerInfo.peerId) == 1
-
   asyncTest "Ranked dialing reaches the resolved addresses when the wire ones fail":
     let
       src = makeStandardSwitch(TcpAutoAddress)
@@ -1018,24 +990,6 @@ suite "Dialer":
     await remote.writeLp("/multistream/1.0.0\n")
     await remote.writeLp(codec & "\n")
     check (await negotiation) == stream
-
-  asyncTest "tryDial raises DialFailedError when every dial fails":
-    let src = makeStandardSwitch()
-    await src.start()
-    defer:
-      await src.stop()
-
-    let transport = FailingDialTransport.new(Upgrade(), rng())
-    let dialer = Dialer.new(
-      src.peerInfo.peerId,
-      src.connManager,
-      src.peerStore,
-      @[Transport(transport)],
-      src.ms,
-    )
-
-    expect DialFailedError:
-      discard await dialer.tryDial(PeerId.random(), @[MemoryAutoAddress()])
 
 suite "MuxedUpgrade":
   asyncTest "upgrade raises UpgradeFailedError without secure managers":

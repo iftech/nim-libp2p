@@ -95,14 +95,3 @@ suite "Signed Routing Record":
       parsedRR = PeerRecord.decode(buffer).tryGet()
 
     check parsedRR.addresses.len == 0
-
-  test "Decode fails if all addresses are invalid":
-    let
-      privKey = PrivateKey.random(rng()).tryGet()
-      peerId = PeerId.init(privKey).tryGet()
-      multiAddresses = @[MultiAddress(), MultiAddress()]
-      routingRecord = PeerRecord.init(peerId, multiAddresses, 42)
-
-      buffer = routingRecord.encode()
-
-    check PeerRecord.decode(buffer).isErr

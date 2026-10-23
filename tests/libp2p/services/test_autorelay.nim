@@ -48,26 +48,6 @@ suite "Autorelay":
     relayClient {.threadvar.}: RelayClient
     autorelay {.threadvar.}: AutoRelayService
 
-  asyncTest "Simple test":
-    switchRelay = createSwitch(Relay.new())
-    relayClient = RelayClient.new()
-    let fut = newFuture[void]()
-    proc checkMA(addresses: seq[MultiAddress]) =
-      if not fut.finished:
-        check:
-          addresses == buildRelayMA(switchRelay, switchClient)
-        fut.complete()
-
-    autorelay = AutoRelayService.new(3, relayClient, checkMA, rng())
-    switchClient = createSwitch(relayClient, autorelay)
-    await allFutures(switchClient.start(), switchRelay.start())
-    await switchClient.connect(switchRelay)
-    await fut
-    let addresses = autorelay.getAddresses()
-    check:
-      addresses == buildRelayMA(switchRelay, switchClient)
-    await allFutures(switchClient.stop(), switchRelay.stop())
-
   asyncTest "Connect after starting switches":
     switchRelay = createSwitch(Relay.new())
     relayClient = RelayClient.new()

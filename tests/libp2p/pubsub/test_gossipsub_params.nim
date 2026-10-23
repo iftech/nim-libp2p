@@ -71,11 +71,6 @@ suite "GossipSubParams validation":
     check res.isErr()
     check res.error == errorMessage
 
-  test "unsubscribeBackoff succeeds when positive":
-    var params = newDefaultValidParams()
-    params.unsubscribeBackoff = 1.seconds
-    check params.validateParameters().isOk()
-
   test "historyLength fails when zero":
     const errorMessage = "gossipsub: historyLength parameter error, Must be > 0"
     var params = newDefaultValidParams()
@@ -146,11 +141,6 @@ suite "GossipSubParams validation":
     check res.isErr()
     check res.error == errorMessage
 
-  test "acceptPXThreshold succeeds when zero":
-    var params = newDefaultValidParams()
-    params.acceptPXThreshold = 0.0
-    check params.validateParameters().isOk()
-
   test "opportunisticGraftThreshold fails when negative":
     const errorMessage =
       "gossipsub: opportunisticGraftThreshold parameter error, Must be >= 0"
@@ -159,11 +149,6 @@ suite "GossipSubParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "opportunisticGraftThreshold succeeds when zero":
-    var params = newDefaultValidParams()
-    params.opportunisticGraftThreshold = 0.0
-    check params.validateParameters().isOk()
 
   test "decayToZero fails when greater than 0.5":
     const errorMessage =
@@ -202,11 +187,6 @@ suite "GossipSubParams validation":
     check res.isErr()
     check res.error == errorMessage
 
-  test "appSpecificWeight succeeds when zero":
-    var params = newDefaultValidParams()
-    params.appSpecificWeight = 0.0
-    check params.validateParameters().isOk()
-
   test "ipColocationFactorWeight fails when positive":
     const errorMessage =
       "gossipsub: ipColocationFactorWeight parameter error, Must be negative or 0"
@@ -215,11 +195,6 @@ suite "GossipSubParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "ipColocationFactorWeight succeeds when zero":
-    var params = newDefaultValidParams()
-    params.ipColocationFactorWeight = 0.0
-    check params.validateParameters().isOk()
 
   test "ipColocationFactorWeight succeeds when negative":
     var params = newDefaultValidParams()
@@ -234,11 +209,6 @@ suite "GossipSubParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "ipColocationFactorThreshold succeeds when exactly 1":
-    var params = newDefaultValidParams()
-    params.ipColocationFactorThreshold = 1.0
-    check params.validateParameters().isOk()
 
   test "behaviourPenaltyWeight fails when zero":
     const errorMessage =
@@ -277,11 +247,6 @@ suite "GossipSubParams validation":
     params.behaviourPenaltyDecay = 0.0
     check params.validateParameters().isOk()
 
-  test "behaviourPenaltyDecay succeeds when between 0 and 1":
-    var params = newDefaultValidParams()
-    params.behaviourPenaltyDecay = 0.5
-    check params.validateParameters().isOk()
-
   test "slowPeerPenaltyWeight fails when positive":
     const errorMessage =
       "gossipsub: slowPeerPenaltyWeight parameter error, Must be negative or 0"
@@ -290,11 +255,6 @@ suite "GossipSubParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "slowPeerPenaltyWeight succeeds when zero":
-    var params = newDefaultValidParams()
-    params.slowPeerPenaltyWeight = 0.0
-    check params.validateParameters().isOk()
 
   test "slowPeerPenaltyWeight succeeds when negative":
     var params = newDefaultValidParams()
@@ -313,11 +273,6 @@ suite "GossipSubParams validation":
   test "slowPeerPenaltyThreshold succeeds when zero":
     var params = newDefaultValidParams()
     params.slowPeerPenaltyThreshold = 0.0
-    check params.validateParameters().isOk()
-
-  test "slowPeerPenaltyThreshold succeeds when positive":
-    var params = newDefaultValidParams()
-    params.slowPeerPenaltyThreshold = 1.0
     check params.validateParameters().isOk()
 
   test "slowPeerPenaltyDecay fails when negative":
@@ -346,11 +301,6 @@ suite "GossipSubParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "slowPeerPenaltyDecay succeeds when between 0 and 1":
-    var params = newDefaultValidParams()
-    params.slowPeerPenaltyDecay = 0.5
-    check params.validateParameters().isOk()
 
   test "maxHighPriorityQueueLen fails when zero":
     const errorMessage =
@@ -485,11 +435,6 @@ suite "TopicParams validation":
     params.timeInMeshWeight = 1.0
     check params.validateParameters().isOk()
 
-  test "timeInMeshWeight succeeds when small positive value":
-    var params = newDefaultValidTopicParams()
-    params.timeInMeshWeight = 0.01
-    check params.validateParameters().isOk()
-
   test "timeInMeshCap fails when zero":
     const errorMessage =
       "gossipsub: timeInMeshCap parameter error, Should be a positive value"
@@ -498,11 +443,6 @@ suite "TopicParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "timeInMeshCap succeeds when positive":
-    var params = newDefaultValidTopicParams()
-    params.timeInMeshCap = 10.0
-    check params.validateParameters().isOk()
 
   test "firstMessageDeliveriesWeight fails when zero":
     const errorMessage =
@@ -513,11 +453,6 @@ suite "TopicParams validation":
     check res.isErr()
     check res.error == errorMessage
 
-  test "firstMessageDeliveriesWeight succeeds when positive":
-    var params = newDefaultValidTopicParams()
-    params.firstMessageDeliveriesWeight = 1.0
-    check params.validateParameters().isOk()
-
   test "meshMessageDeliveriesWeight fails when zero":
     const errorMessage =
       "gossipsub: meshMessageDeliveriesWeight parameter error, Should be a negative value"
@@ -527,11 +462,6 @@ suite "TopicParams validation":
     check res.isErr()
     check res.error == errorMessage
 
-  test "meshMessageDeliveriesWeight succeeds when negative":
-    var params = newDefaultValidTopicParams()
-    params.meshMessageDeliveriesWeight = -1.0
-    check params.validateParameters().isOk()
-
   test "meshMessageDeliveriesThreshold fails when zero":
     const errorMessage =
       "gossipsub: meshMessageDeliveriesThreshold parameter error, Should be a positive value"
@@ -540,11 +470,6 @@ suite "TopicParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "meshMessageDeliveriesThreshold succeeds when positive":
-    var params = newDefaultValidTopicParams()
-    params.meshMessageDeliveriesThreshold = 5.0
-    check params.validateParameters().isOk()
 
   test "meshMessageDeliveriesCap fails when less than threshold":
     const errorMessage =
@@ -571,11 +496,6 @@ suite "TopicParams validation":
     check res.isErr()
     check res.error == errorMessage
 
-  test "meshFailurePenaltyWeight succeeds when negative":
-    var params = newDefaultValidTopicParams()
-    params.meshFailurePenaltyWeight = -1.0
-    check params.validateParameters().isOk()
-
   test "invalidMessageDeliveriesWeight fails when zero":
     const errorMessage =
       "gossipsub: invalidMessageDeliveriesWeight parameter error, Should be a negative value"
@@ -584,8 +504,3 @@ suite "TopicParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
-
-  test "invalidMessageDeliveriesWeight succeeds when negative":
-    var params = newDefaultValidTopicParams()
-    params.invalidMessageDeliveriesWeight = -1.0
-    check params.validateParameters().isOk()

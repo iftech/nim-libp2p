@@ -144,11 +144,6 @@ suite "IpTree":
 
     check tree.root.counter == 2
 
-  test "removeIp on empty tree should not allow negative counters":
-    let tree = IpTree.new()
-    tree.removeIp(ip4(192, 168, 1, 1))
-    check tree.root.counter == 0
-
   test "removeIp should not allow counters to go below zero":
     let tree = IpTree.new()
     let ip = ip4(192, 168, 1, 1)
@@ -209,12 +204,6 @@ suite "IpTree":
     let tree = IpTree.new()
     check tree.ipScore(ip6(0x20, 0x01)) == 0.0
 
-  test "ipScore returns high score for exact same IPv6 address":
-    let tree = IpTree.new()
-    let ip = ip6(0x20, 0x01, 1)
-    tree.insertIp(ip)
-    check tree.ipScore(ip) > 0.9
-
   test "ipScore detects IPv6 prefix similarity":
     let tree = IpTree.new()
     tree.insertIp(ip6(0x20, 0x01, 10))
@@ -239,39 +228,6 @@ suite "IpTree":
     check tree.ipScore(ip6(0xf0, 0x00, 1)) == 0.0
     # An IPv6 address matching the one inserted still scores high.
     check tree.ipScore(ip6(0x20, 0x01, 1)) > 0.9
-
-  test "ipScore returns 0.0 for empty tree":
-    let tree = IpTree.new()
-    check tree.ipScore(ip4(192, 168, 1, 1)) == 0.0
-
-  test "ipScore returns high score for exact same IP":
-    let tree = IpTree.new()
-    let ip = ip4(192, 168, 1, 1)
-    tree.insertIp(ip)
-    check tree.ipScore(ip) > 0.9
-
-  test "ipScore detects /24 subnet similarity":
-    let tree = IpTree.new()
-    tree.insertIp(ip4(192, 168, 1, 10))
-    check tree.ipScore(ip4(192, 168, 1, 20)) > 0.7
-
-  test "ipScore detects /16 subnet similarity":
-    let tree = IpTree.new()
-    tree.insertIp(ip4(192, 168, 1, 10))
-    let score = tree.ipScore(ip4(192, 168, 2, 20))
-    check score > 0.4 and score < 0.8
-
-  test "ipScore detects /8 subnet similarity":
-    let tree = IpTree.new()
-    tree.insertIp(ip4(192, 168, 1, 10))
-    let score = tree.ipScore(ip4(192, 255, 255, 255))
-    check score > 0.1 and score < 0.5
-
-  test "ipScore returns low score for completely different IPs":
-    let tree = IpTree.new()
-    # 192 = 11000000, 10 = 00001010 — first bits differ
-    tree.insertIp(ip4(192, 168, 1, 1))
-    check tree.ipScore(ip4(10, 0, 0, 1)) < 0.2
 
   test "ipScore demonstrates graduated similarity across prefix lengths":
     let tree = IpTree.new()

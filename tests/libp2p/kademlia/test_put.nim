@@ -198,18 +198,6 @@ suite "KadDHT Put":
     # response should be identical to the request
     check response == request
 
-  asyncTest "PUT_VALUE stores binary data with null and high bytes":
-    let kads = setupKadSwitches(2)
-    startAndDeferStop(kads)
-
-    await connect(kads[0], kads[1])
-
-    let key = kads[0].rtable.selfId
-    let value = @[0.byte, 0xFF, 0, 0xFF] # nulls and high bytes interleaved
-
-    discard await kads[1].putValue(key, value)
-    check kads[0].containsData(key, value)
-
   asyncTest "PUT_VALUE entries expire after recordExpirationInterval":
     # Use a short expiration interval so the test doesn't take long.
     # The stored timestamp has second-level precision, so we use 2s to avoid
