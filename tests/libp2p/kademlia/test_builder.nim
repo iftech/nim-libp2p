@@ -57,6 +57,21 @@ suite "KadDHT Switch Builder":
     checkUntilTimeout:
       kad.isServer
 
+  asyncTest "Build switch with withKademlia":
+    var switch1 = makeStandardSwitchBuilder(TcpAutoAddress).withKademlia().build()
+
+    var switch2 = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withKademlia(
+        bootstrapNodes = @[(switch1.peerInfo.peerId, switch1.peerInfo.addrs)]
+      )
+      .build()
+
+    await allFutures(switch1.start(), switch2.start())
+    defer:
+      await allFutures(switch1.stop(), switch2.stop())
+    check:
+      switch1.ms.handlers.anyIt(KadCodec in it.protos)
+
   asyncTest "Use Kad as a client only":
     var switch1 = makeStandardSwitchBuilder(TcpAutoAddress).withKademlia().build()
     var switch2 = makeStandardSwitch(TcpAutoAddress)

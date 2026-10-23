@@ -14,6 +14,35 @@ suite "GossipSub Component - Gossip Protocol":
   teardown:
     checkTrackers()
 
+  asyncTest "messages sent to peers not in the mesh are propagated via gossip":
+    let
+      numberOfNodes = 5
+      dValues = DValues(
+        dLow: Opt.some(2), dHigh: Opt.some(3), d: Opt.some(2), dOut: Opt.some(1)
+      )
+      nodes = generateNodes(numberOfNodes, gossip = true, dValues = Opt.some(dValues))
+        .toGossipSub()
+
+    startAndDeferStop(nodes)
+
+    # All nodes are checking for iHave messages
+    var messages = addIHaveObservers(nodes)
+
+    # And are interconnected
+    await connectStar(nodes)
+
+    # And subscribed to the same topic
+    subscribeAllNodes(nodes, topic, voidTopicHandler)
+    waitSubscribeStar(nodes, topic)
+
+    # When node 0 sends a message
+    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
+
+    # At least one of the nodes should have received an iHave message
+    # The check is made this way because the mesh structure changes from run to run
+    checkUntilTimeout:
+      messages[].mapIt(it[].len).anyIt(it > 0)
+
   asyncTest "adaptive gossip dissemination, dLazy and gossipFactor to 0":
     let
       numberOfNodes = 20

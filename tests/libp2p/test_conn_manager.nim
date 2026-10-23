@@ -523,6 +523,26 @@ suite "Connection Manager":
 
     await connMngr.stop()
 
+  asyncTest "track max incoming connection limits":
+    let connMngr = newMaxInOut(3, 1)
+
+    for i in 0 ..< 3:
+      check await connMngr.getIncomingSlot().withTimeout(10.millis)
+
+    check not (await connMngr.getIncomingSlot().withTimeout(10.millis))
+
+    await connMngr.stop()
+
+  asyncTest "track max outgoing connection limits":
+    let connMngr = newMaxInOut(1, 3)
+
+    for i in 0 ..< 3:
+      check connMngr.getOutgoingSlot().isOk()
+
+    check connMngr.getOutgoingSlot().isErr()
+
+    await connMngr.stop()
+
   asyncTest "track incoming max connections limits - fail on incoming":
     let connMngr = newMaxInOut(1, 3)
 
@@ -924,6 +944,14 @@ suite "Connection Manager Scoring":
     check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
     cm.tagPeerDecaying(peerId, tag, 100, 1.hours, decayLinear(0.5))
     check cm.peerScore(peerId) == 100
+    await cm.stop()
+
+  asyncTest "decaying tag value decreases over interval":
+    let cm = newWatermark(1, 2, decayResolution = 20.millis)
+    check (await cm.storeMuxer(makeMuxer(peerId))).isOk()
+    cm.tagPeerDecaying(peerId, tag, 100, 20.millis, decayFixed(30))
+    checkUntilTimeout:
+      cm.peerScore(peerId) < 100
     await cm.stop()
 
   asyncTest "decaying tag auto-removed when value hits zero":

@@ -246,6 +246,36 @@ suite "GossipSub Extensions :: Preamble Extension":
     ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId, peerId2])
     check cr.broadcasted == @[BC(preambleMsg, @[peerId, peerId2])]
 
+  test "handleIMReceiving: stops accepting after maxHeIsReceiving limit":
+    var cr = CallbackRecorder(meshPeers: @[peerId])
+    # limit of 1 means entries stop being accepted once len exceeds 1
+    let ext = PreambleExtension.new(cr.makeConfig(maxHeIsReceiving = 1), rng())
+    ext.onNegotiated(peerId)
+
+    # sending multiple imreceivings in one batch; limit is enforced per-iteration
+    ext.receiveIMReceiving(
+      peerId,
+      @[
+        IMReceiving(messageID: msgId1, messageLength: largeMsgLen.uint32),
+        IMReceiving(messageID: msgId2, messageLength: largeMsgLen.uint32),
+        IMReceiving(messageID: @[7'u8], messageLength: largeMsgLen.uint32),
+          # rejected: len exceeds limit
+      ],
+    )
+
+    # accepted entries make the peer skip the preamble, the rejected one does not
+    for msgId in [msgId1, msgId2]:
+      cr.broadcasted = @[]
+      ext.preambleBroadcastIfNotReceiving(
+        RPCMsg.withPreamble(@[makePreamble(msgId)]), @[peerId]
+      )
+      check cr.broadcasted.len == 0
+
+    let rejectedMsg = RPCMsg.withPreamble(@[makePreamble(@[7'u8])])
+    cr.broadcasted = @[]
+    ext.preambleBroadcastIfNotReceiving(rejectedMsg, @[peerId])
+    check cr.broadcasted == @[BC(rejectedMsg, @[peerId])]
+
   test "handleIHave: returns true when message is in ongoingReceives":
     var cr = CallbackRecorder(meshPeers: @[peerId])
     let ext = PreambleExtension.new(cr.makeConfig(), rng())

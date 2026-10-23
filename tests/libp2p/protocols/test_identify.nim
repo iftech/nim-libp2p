@@ -117,6 +117,25 @@ suite "Identify":
       await serverFut
       await transport2.stop()
 
+    asyncTest "default agent version":
+      msListen.addHandler(identifyProto1)
+      proc acceptHandler(): Future[void] {.async.} =
+        let c = await transport1.accept()
+        await msListen.handle(c)
+
+      acceptFut = acceptHandler()
+      conn = await transport2.dial(transport1.addrs[0])
+
+      discard await msDial.select(conn, IdentifyCodec)
+      let id = await identifyProto2.identify(conn, remotePeerInfo.peerId)
+
+      check id.pubkey == remoteSecKey.getPublicKey().get()
+      check id.addrs == maddr
+      check id.protoVersion == ProtoVersion
+      check id.agentVersion == AgentVersion
+      check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
+      check id.signedPeerRecord.isNone()
+
     asyncTest "custom agent and proto version":
       const customAgentVersion = "MY CUSTOM AGENT STRING"
       const customProtoVersion = "my-proto/1.0.0"

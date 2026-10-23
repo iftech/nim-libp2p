@@ -626,6 +626,15 @@ suite "GossipSub":
         peerId, topic & $gossipSub.topicsHigh
       )
 
+  asyncTest "rpcHandler - invalid message bytes":
+    let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
+
+    let peerId = PeerId.random()
+    let peer = gossipSub.getPubSubPeer(peerId)
+
+    expect PeerMessageDecodeError:
+      await gossipSub.rpcHandler(peer, @[byte 1, 2, 3])
+
   asyncTest "rateLimit - records lightweight overhead metrics without a limiter":
     let
       (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)

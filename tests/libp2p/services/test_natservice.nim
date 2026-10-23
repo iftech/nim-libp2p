@@ -85,6 +85,9 @@ proc unmapCalls(m: MockPortMapper): seq[MockCall] =
 proc unmappedPorts(m: MockPortMapper): seq[Port] =
   m.unmapCalls.mapIt(it.externalPort)
 
+proc closed(m: MockPortMapper): bool =
+  m.countCalls(mckClose) > 0
+
 proc standardBuilder(listenAddrs: seq[MultiAddress]): SwitchBuilder =
   makeStandardSwitchBuilder(listenAddrs).withWildcardResolver(false)
 
@@ -648,3 +651,23 @@ suite "NATService (setupMappings)":
     let announced = await svc.setupMappings(@[privateAddr(9000)])
     check announced.len == 0
     check svc.externalIp.isNone
+
+  asyncTest "NatPmp stop unmaps all created mappings":
+    let
+      externalIp = parseIpAddress("203.0.113.40")
+      mapper = newMock(extIp = externalIp)
+      factory = mapperFactory(mapper)
+      cfg = natPmpConfig()
+      switch = makeSwitch(cfg, @[TcpAutoAddress], factory)
+      svc = findNatService(switch)
+
+    await switch.start()
+
+    discard await svc.setupMappings(@[privateAddr(9000)])
+    let mapsBefore = mapper.mapCalls.len
+
+    await switch.stop()
+
+    check mapsBefore >= 1
+    check mapper.unmapCalls.len == mapsBefore
+    check mapper.closed

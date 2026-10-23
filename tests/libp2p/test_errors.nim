@@ -19,6 +19,10 @@ suite "Errors":
       e of ref DemoError
       e.msg == "Malformed"
 
+  test "valueOrRaise returns the value":
+    let r = LPResult[int].ok(7)
+    check r.valueOrRaise(DemoError) == 7
+
   test "valueOrRaise raises the requested exception with the message":
     let r = LPResult[int].err("bad address")
     expectMsg DemoError, "bad address":
@@ -33,6 +37,9 @@ suite "Errors":
 
     discard make().valueOrRaise(DemoError)
     check calls == 1
+
+  test "onErrorRaise passes an ok result":
+    Result[void, cstring].ok().onErrorRaise(DemoError)
 
   test "onErrorRaise raises the requested exception with the message":
     let r = Result[void, cstring].err("invalid parameters")

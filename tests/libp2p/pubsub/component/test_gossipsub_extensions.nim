@@ -12,6 +12,7 @@ import
     pubsubpeer,
     rpc/message,
   ]
+import ../../../../libp2p/utils/future
 import ../../../tools/[lifecycle, unittest]
 import ../extensions/my_partial_message
 import ../utils
@@ -56,6 +57,69 @@ suite "GossipSub Component - Extensions":
       block:
         let negotiatedPeersSorted = negotiatedPeers.sorted()
         negotiatedPeersSorted == nodesPeerIdSorted
+
+  asyncTest "Extensions control is sent before subscriptions on stream open":
+    # If node has pre-existing subscriptions on a dial,
+    # then it sends the subscriptions control message before extensions control message on a newly opened stream,
+    # which violates the protocol contract.
+    const topic = "foobar"
+    let
+      dialerFirstMsgFut = newFuture[RPCMsg]("dialerFirstMsg")
+      receiverFirstMsgFut = newFuture[RPCMsg]("receiverFirstMsg")
+
+    proc onNegotiated(_: PeerId) {.gcsafe, raises: [].} =
+      discard
+
+    let
+      numberOfNodes = 2
+      nodes = generateNodes(
+          numberOfNodes,
+          gossip = true,
+          testExtensionConfig =
+            Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
+        )
+        .toGossipSub()
+
+    # Observe the first outgoing message from each node to the other.
+    let receiverPeerId = nodes[0].peerInfo.peerId
+    let dialerPeerId = nodes[1].peerInfo.peerId
+
+    nodes[1].addObserver(
+      PubSubObserver(
+        onSend: proc(peer: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
+          if peer.peerId == receiverPeerId:
+            dialerFirstMsgFut.completeOnce(msg)
+      )
+    )
+    nodes[0].addObserver(
+      PubSubObserver(
+        onSend: proc(peer: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
+          if peer.peerId == dialerPeerId:
+            receiverFirstMsgFut.completeOnce(msg)
+      )
+    )
+
+    startAndDeferStop(nodes)
+
+    # Subscribe before connect
+    nodes.subscribeAllNodes(topic, voidTopicHandler)
+
+    await connect(nodes[1], nodes[0])
+
+    let
+      dialerFirstMsg = await dialerFirstMsgFut
+      receiverFirstMsg = await receiverFirstMsgFut
+
+    # First message must be extensions control, no subscriptions.
+    check:
+      # Dialer side
+      dialerFirstMsg.control.isSome()
+      dialerFirstMsg.control.get().extensions.isSome()
+      dialerFirstMsg.subscriptions.len == 0
+      # Receiver side
+      receiverFirstMsg.control.isSome()
+      receiverFirstMsg.control.get().extensions.isSome()
+      receiverFirstMsg.subscriptions.len == 0
 
   asyncTest "Extensions re-negotiated after disconnect/reconnect with correct ordering":
     const topic = "foobar"
