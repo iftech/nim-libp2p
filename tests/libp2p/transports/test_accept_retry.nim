@@ -23,7 +23,9 @@ suite "Transport accept retries":
   teardown:
     checkTrackers()
 
-  for failure in ["descriptor exhaustion", "connection abort"]:
+  for failureName in ["descriptor exhaustion", "connection abort"]:
+    # nim devel yields lent string here, which the async test closure cannot capture
+    let failure = failureName
     asyncTest "TCP retries " & failure & " within one accept call with backoff":
       let server = TcpTransport.new(upgrade = Upgrade())
       let client = TcpTransport.new(upgrade = Upgrade())

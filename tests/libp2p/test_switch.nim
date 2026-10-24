@@ -1308,10 +1308,21 @@ suite "Switch :: IdentifyPusher Service":
     switch2 = makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
     await switch1.start()
     await switch2.start()
+
+    # the listener pusher tracks the dialer on Identified, after ProtoBook is set
+    let identified = newAsyncEvent()
+    proc onIdentified(
+        peerId: PeerId, event: PeerEvent
+    ) {.async: (raises: [CancelledError]).} =
+      identified.fire()
+
+    switch2.addPeerEventHandler(onIdentified, PeerEventKind.Identified)
+    defer:
+      switch2.removePeerEventHandler(onIdentified, PeerEventKind.Identified)
+
     await switch1.connect(switch2)
-    checkUntilTimeout:
-      IdentifyPushCodec in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
-      IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
+    check await identified.wait().withTimeout(5.seconds)
+    check IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
 
   asyncTeardown:
     await switch1.stop()
