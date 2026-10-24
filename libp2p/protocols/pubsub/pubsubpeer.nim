@@ -361,6 +361,13 @@ proc runHandleLoop*(
     var data =
       try:
         await stream.readLp(p.maxMessageSize)
+      except MaxSizeError as e:
+        # Reset rather than half-close: the sender then re-opens the stream
+        # and re-sends its subscriptions.
+        trace "Oversized pubsub frame, resetting stream",
+          peerId = p, stream, frameLen = e.msgLen, maxLen = e.maxLen
+        await stream.reset()
+        return
       except LPStreamEOFError:
         return
       except LPStreamError as e:

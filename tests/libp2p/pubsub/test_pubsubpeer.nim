@@ -240,3 +240,32 @@ suite "PubSubPeer receive streams":
     let stream = TestBufferStream.new(noop)
     await peer.handleRecvStream(stream)
     check stream.closed
+
+  asyncTest "oversized frames reset the stream, peer keeps serving":
+    var received: seq[seq[byte]]
+    proc handler(
+        peer: PubSubPeer, data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
+      received.add(data)
+
+    let peer = PubSubPeer.new(PeerId.random(), nil, nil, GossipSubCodec_12, 16, handler)
+    let stream = TestBufferStream.new(noop)
+    let reader = peer.handleRecvStream(stream)
+
+    # Declare 1024 bytes, over the 16-byte limit; the body never has to arrive.
+    await stream.pushData(@[byte 0x80, 0x08])
+    await reader
+    check:
+      stream.closed
+      received.len == 0
+
+    # The peer is still live: a re-opened stream delivers.
+    let reopened = TestBufferStream.new(noop)
+    let reopenedReader = peer.handleRecvStream(reopened)
+    await reopened.pushData(@[byte 1, 42])
+    await reopened.pushEof()
+    await reopenedReader
+    check received == @[@[byte 42]]
+
+    await peer.stopTasks()
+    await reopened.close()
