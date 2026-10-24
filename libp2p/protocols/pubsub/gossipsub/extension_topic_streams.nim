@@ -4,7 +4,7 @@
 {.push raises: [].}
 
 import std/[tables, deques, sequtils]
-import chronos, results
+import chronos, chronicles, results
 import ../../../stream/connection
 import ../../../peerid
 import ./extensions_types
@@ -16,6 +16,9 @@ const
   TopicStreamsCodec* = "/gsts/v0beta"
   TopicStreamDialTimeout = 5.seconds
   TopicStreamHeaderTimeout = 1.seconds
+
+logScope:
+  topics = "libp2p pubsub topic-streams"
 
 type
   TopicStreamsConfig* = object
@@ -58,7 +61,7 @@ type
     dial: TopicStreamDial
     receive: TopicStreamReceive
     violation: proc() {.gcsafe, raises: [].}
-    penalize: proc() {.gcsafe, raises: [].}
+    penalizePeer: proc() {.gcsafe, raises: [].}
 
   TopicStreamsExtension* = ref object
     config: Opt[TopicStreamsConfig]
@@ -85,19 +88,25 @@ proc new*(
     dial: dial,
     receive: receive,
     violation: violation,
-    penalize: penalize,
+    penalizePeer: penalize,
   )
 
 func isActive*(s: TopicStreams): bool =
   not s.isNil and not s.stopped and s.active
 
-proc fail(s: TopicStreams) =
+proc fail(s: sink TopicStreams, reason: string) =
+  # Keep the transport alive while the violation callback disconnects the peer.
+  trace "topic stream protocol violation", reason
   if not s.stopped:
     s.stopped = true
     for w in s.writers.values:
       w.closing = true
       w.wake.fire()
     s.violation()
+
+proc penalize(s: TopicStreams, reason: string, topic = "") =
+  trace "topic stream limit exceeded", reason, topic
+  s.penalizePeer()
 
 proc negotiate*(s: TopicStreams, rpc: RPCMsg): bool =
   ## Called only for control-stream RPCs, before application processing.
@@ -107,15 +116,15 @@ proc negotiate*(s: TopicStreams, rpc: RPCMsg): bool =
   if not s.receivedControl:
     let supported = ext.get(ControlExtensions()).topicStreams.get(false)
     if s.active and not supported:
-      s.fail()
+      s.fail("peer denied support after opening a topic stream")
       return false
     s.active = supported
     s.receivedControl = true
   elif ext.isSome and ext.get().topicStreams.get(false) != s.active:
-    s.fail()
+    s.fail("peer changed advertised topic stream support")
     return false
   if s.active and (rpc.messages.len > 0 or rpc.partialMessageExtension.isSome):
-    s.fail()
+    s.fail("application payload received on control stream")
     return false
   true
 
@@ -133,7 +142,7 @@ proc monitorWriter(s: TopicStreams, w: TopicWriter) {.async: (raises: []).} =
   try:
     var data: byte
     if (await w.stream.readOnce(addr data, 1)) > 0:
-      s.fail() # The responder must never write application bytes.
+      s.fail("topic stream responder wrote application bytes")
   except CancelledError:
     return
   except LPStreamError:
@@ -174,6 +183,9 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
     discard
   finally:
     w.closing = true
+    if w.medium.len + w.low.len > 0:
+      trace "discarding queued topic frames as writer closes",
+        topic, messages = w.medium.len + w.low.len
     s.discardQueued(w)
     w.header = @[]
     if w.monitor != nil:
@@ -186,23 +198,30 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
       s.writers.del(topic)
 
 proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bool) =
-  if s.stopped or not s.active or data.len == 0 or data.len > s.maxMessageSize:
+  if s.stopped or not s.active:
+    return
+  if data.len == 0 or data.len > s.maxMessageSize:
+    trace "dropping invalid outgoing topic frame", topic, size = data.len
     return
   if data.len > s.config.maxQueuedBytes - s.queuedBytes or
       s.queuedMessages >= s.config.maxQueuedMessages:
+    trace "dropping outgoing topic frame because queue is full", topic
     return
   var w = s.writers.getOrDefault(topic)
   if w == nil:
     if s.writers.len + s.readers.len >= s.config.maxStreams:
+      trace "dropping outgoing topic frame because stream limit is reached", topic
       return
     let header = TopicRPCHeader(topic: Opt.some(topic)).encode()
     if header.len > s.maxMessageSize or
         header.len > s.config.maxQueuedBytes - s.queuedBytes - data.len:
+      trace "dropping outgoing topic frame because header exceeds queue budget", topic
       return
     w = TopicWriter(wake: newAsyncEvent(), header: header, headerBytes: header.len)
     s.queuedBytes += header.len
     s.writers[topic] = w
   elif w.closing:
+    trace "dropping outgoing topic frame while writer closes", topic
     return
   s.queuedBytes += data.len
   inc s.queuedMessages
@@ -253,13 +272,12 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
     await stream.reset()
     return
   if s.writers.len + s.readers.len >= s.config.maxStreams:
-    # Only blame the peer when its incoming streams alone exhausted the limit.
     if s.readers.len >= s.config.maxStreams:
-      s.penalize()
+      s.penalize("incoming stream limit reached")
     await stream.reset()
     return
   if s.receivedControl and not s.active:
-    s.fail()
+    s.fail("topic stream opened without negotiated support")
     await stream.reset()
     return
   s.active = true
@@ -274,19 +292,19 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
   try:
     headerBytes = await s.readHeader(reader).wait(TopicStreamHeaderTimeout)
   except MaxSizeError:
-    s.penalize()
+    s.penalize("topic stream header exceeds byte limit")
     return
   except LPStreamError, AsyncTimeoutError:
     return
   let header = TopicRPCHeader.decode(move(headerBytes)).valueOr:
-    s.fail()
+    s.fail("invalid topic stream header")
     return
   if header.topic.isNone or header.topic.get().len == 0:
-    s.fail()
+    s.fail("topic stream header omitted topic")
     return
   reader.topic = header.topic.get()
   if s.readers.countIt(it.topic == reader.topic) > 3:
-    s.penalize()
+    s.penalize("too many streams for topic", reader.topic)
     return
   while not s.stopped:
     let length =
@@ -295,11 +313,11 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
       except LPStreamError:
         return
     if length == 0:
-      s.fail()
+      s.fail("empty topic RPC frame")
       return
     if length > uint64(s.maxMessageSize) or
         length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
-      s.penalize()
+      s.penalize("incoming frame exceeds byte limit", reader.topic)
       return
     let size = int(length)
     s.incomingBytes += size
@@ -310,10 +328,10 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
       except LPStreamError:
         return
       var decoded = TopicRPC.decode(move(data)).valueOr:
-        s.fail()
+        s.fail("invalid topic RPC frame")
         return
       var rpc = move(decoded).toRPC(reader.topic).valueOr:
-          s.fail()
+          s.fail("invalid topic RPC payload")
           return
       await s.receive(move(rpc), size)
     finally:
@@ -339,6 +357,8 @@ proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
   for m in msg.messages:
     if m.data.len > 0:
       result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
+    else:
+      trace "empty application message cannot use topic stream", topic = m.topic
   msg.partialMessageExtension.ifValue(partial):
     if partial.topicID.isSome:
       result.payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
