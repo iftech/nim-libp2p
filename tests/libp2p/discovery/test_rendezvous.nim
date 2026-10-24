@@ -14,7 +14,7 @@ import
     crypto/crypto,
     multicodec,
     builders,
-    utils/offsettedseq,
+    utils/idseq,
   ]
 import ../../tools/[lifecycle, topology, unittest, crypto]
 import ./utils
@@ -66,7 +66,6 @@ proc new*(
     rng: rng(),
     config: config,
     salt: string.fromBytes(generateBytes(rng(), 8)),
-    registered: initOffsettedSeq[RegisteredData](),
     expiredDT: Moment.now() - 1.days,
     sema: newAsyncSemaphore(SemaphoreDefaultSize),
     peerRecordValidator: peerRecordValidator,
@@ -437,7 +436,7 @@ suite "RendezVous":
 
     # Wait for the deletion
     checkUntilTimeout:
-      rendezvousNode.registered.offset == 10
+      rendezvousNode.registered.low() == 10
       rendezvousNode.registered.s.len == 0
 
       (
@@ -457,7 +456,7 @@ suite "RendezVous":
     await allFutures(peerNodes[15 ..< 20].mapIt(it.advertise(namespaceBar)))
 
     check:
-      rendezvousNode.registered.offset == 10
+      rendezvousNode.registered.low() == 10
       rendezvousNode.registered.s.len == 10
 
       (
@@ -492,9 +491,9 @@ suite "RendezVous":
     rendezvousNode.registered[1].expiration = Moment.now()
 
     checkUntilTimeout:
-      # The live entry at index 0 blocks the flush, so index 1 stays in place.
-      rendezvousNode.registered.s.len == 2
-      rendezvousNode.registered[1].data.signedPeerRecord.len == 0
+      # The live entry at id 0 does not keep the expired id 1.
+      rendezvousNode.registered.s.len == 1
+      1 notin rendezvousNode.registered
       rendezvousNode.countRegister(peerNodes[1].switch.peerInfo.peerId) == 0
       rendezvousNode.namespaces.len == 1
 
@@ -549,7 +548,7 @@ suite "RendezVous":
 
     checkUntilTimeout:
       rendezvousNode.registered.s.len == 0
-      rendezvousNode.registered.offset == 4
+      rendezvousNode.registered.low() == 4
 
     # Advertise 4 new peers
     await allFutures(peerNodes[4 ..< 8].mapIt(it.advertise(namespace)))
@@ -655,15 +654,15 @@ suite "RendezVous":
 
     await peerNodes[0].advertise(namespace, Opt.some(5.hours))
     check:
-      # Added 2nd registration
-      # Updated expiration of the 1st one to the past
-      # Will be deleted on deletion heartbeat
+      # The refresh expires the old entry and adds a new one at the end
       # Peer Node side
       peerNodes[0].registered.s.len == 2
       peerNodes[0].registered.s[0].expiration < now
+      peerNodes[0].registered.s[1].expiration > now + 4.hours
       # Rendezvous Node side
       rendezvousNode.registered.s.len == 2
       rendezvousNode.registered.s[0].expiration < now
+      rendezvousNode.registered.s[1].expiration > now + 4.hours
 
     # Returns only one record
     check (
@@ -687,11 +686,11 @@ suite "RendezVous":
     )
 
     # 1000th registration allowed
-    await peerRdv.advertise(namespace)
+    await peerRdv.advertise("bar")
     check rendezvousNode.registered.s.len == RegistrationLimitPerPeer
 
     # 1001st registration ignored, limit reached
-    await peerRdv.advertise(namespace)
+    await peerRdv.advertise("baz")
     check rendezvousNode.registered.s.len == RegistrationLimitPerPeer
 
   asyncTest "Registration in a new namespace is ignored if the namespace limit is reached":
@@ -714,10 +713,12 @@ suite "RendezVous":
       rendezvousNode.registered.s.len == 2
 
     # A namespace already in the table still accepts registrations
+    let before = rendezvousNode.registered.s[0].expiration
     await peerNode.advertise("foo0")
     check:
       rendezvousNode.namespaces.len == 2
       rendezvousNode.registered.s.len == 3
+      rendezvousNode.registered.s[2].expiration > before
 
   test "A config built with an object literal keeps the default namespace limit":
     check RendezVousConfig(minTTL: 60, maxTTL: 3600).namespaceLimit() ==
@@ -764,12 +765,12 @@ suite "RendezVous":
     # Overwrite register timeout loop interval
     discard rendezvousNode.deletesRegister(100.milliseconds)
 
-    # Only the second entry expires, so the leading flush cannot reach it
+    # Only the entry behind the live one expires
     rendezvousNode.registered[1].expiration = Moment.now()
 
     checkUntilTimeout:
       rendezvousNode.namespaces.len == 1
-    check rendezvousNode.registered.s.len == 2
+    check rendezvousNode.registered.s.len == 1
   asyncTest "Registration count follows the registrations held for a peer":
     let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(1)
     startAndDeferStop(rendezvousNode & peerNodes)
@@ -798,6 +799,68 @@ suite "RendezVous":
     checkUntilTimeout:
       rendezvousNode.registered.s.len == 0
       rendezvousNode.countRegister(peerId) == 0
+
+  test "Refreshes behind a live entry are removed on the next heartbeat":
+    const refreshes = 5 * RegistrationLimitPerPeer
+    let
+      rdv = RendezVous.new(rng())
+      peerId = PeerId.random(rng()).tryGet()
+      anchor = Register(ns: "anchor", ttl: Opt.some(MaximumDuration.seconds.uint64))
+      refresh = Register(ns: "refresh", ttl: Opt.some(MinimumDuration.seconds.uint64))
+
+    rdv.save(anchor.ns, peerId, anchor).tryGet()
+    for _ in 0 ..< refreshes:
+      rdv.save(refresh.ns, peerId, refresh).tryGet()
+
+    check:
+      rdv.registered.s.len == refreshes + 1
+      rdv.countRegister(peerId) == refreshes + 1
+      rdv.namespaces[refresh.ns & rdv.salt] == @[refreshes]
+
+    # The first heartbeat tick runs before the first sleep.
+    waitFor rdv.deletesRegister(1.hours).cancelAndWait()
+
+    check:
+      rdv.registered.ids == @[0, refreshes]
+      rdv.registered[refreshes].data.ns == refresh.ns
+      rdv.countRegister(peerId) == 2
+      rdv.namespaces[anchor.ns & rdv.salt] == @[0]
+      rdv.namespaces[refresh.ns & rdv.salt] == @[refreshes]
+
+  test "Saving with update false keeps the existing entry untouched":
+    let
+      rdv = RendezVous.new(rng())
+      peerId = PeerId.random(rng()).tryGet()
+      first = Register(ns: "ns", ttl: Opt.some(MinimumDuration.seconds.uint64))
+      second = Register(ns: "ns", ttl: Opt.some(MaximumDuration.seconds.uint64))
+
+    rdv.save(first.ns, peerId, first).tryGet()
+    let expiration = rdv.registered[0].expiration
+    rdv.save(second.ns, peerId, second, update = false).tryGet()
+
+    check:
+      rdv.registered.s.len == 1
+      rdv.countRegister(peerId) == 1
+      rdv.registered[0].expiration == expiration
+      rdv.registered[0].data.ttl == first.ttl
+
+  test "Re-registering after expiry adds a new id with the new TTL":
+    let
+      rdv = RendezVous.new(rng())
+      peerId = PeerId.random(rng()).tryGet()
+      first = Register(ns: "ns", ttl: Opt.some(MinimumDuration.seconds.uint64))
+      second = Register(ns: "ns", ttl: Opt.some(MaximumDuration.seconds.uint64))
+
+    rdv.save(first.ns, peerId, first).tryGet()
+    rdv.registered[0].expiration = rdv.expiredDT
+    rdv.save(second.ns, peerId, second).tryGet()
+
+    check:
+      rdv.registered.s.len == 2
+      rdv.countRegister(peerId) == 2
+      rdv.namespaces[second.ns & rdv.salt] == @[1]
+      rdv.registered[1].data.ttl == second.ttl
+      rdv.registered[1].expiration > Moment.now()
 
   asyncTest "Peer can register to and unsubscribe multiple namespaces":
     let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(3)
