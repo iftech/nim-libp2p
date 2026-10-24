@@ -25,7 +25,9 @@ proc init*(T: type[BandwidthTracking], alpha: float = DefaultAlpha): T =
 
 proc update*(e: var ExponentialMovingAverage, startAt: Moment, bytes: int) =
   let elapsedTime = Moment.now() - startAt
-  let curSample = float(bytes * 1000) / elapsedTime.milliseconds.float
+  # at least 1ms, so a sample received within the same millisecond stays finite
+  let elapsedMs = max(elapsedTime.milliseconds, 1)
+  let curSample = float(bytes * 1000) / elapsedMs.float
   let oldSample = e.value.load()
   let ema = e.alpha * curSample + (1.0 - e.alpha) * oldSample
   e.value.store(ema)
@@ -34,7 +36,8 @@ proc value*(e: var ExponentialMovingAverage): float =
   e.value.load()
 
 proc calculateReceiveTimeMs*(msgLen: int64, dataRate: int64 = InitialRate): int64 =
-  let txTime = ((msgLen * 1000) div dataRate)
+  # an estimate below 1 byte/s truncates to 0; never divide by it
+  let txTime = ((msgLen * 1000) div max(dataRate, 1))
   #ideally (RTT * 2) + 5% TxTime ? Need many testruns to precisely adjust safety margin
   let margin = 250 + (txTime.float64 * 0.05)
   txTime + margin.int64
