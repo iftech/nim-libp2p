@@ -12,6 +12,7 @@ import results
 import extensions, preamblestore
 
 export results, tables, sets
+export TopicStreamsConfig
 export RateLimit # downstream code names it through this module
 
 const
@@ -184,6 +185,7 @@ type
     maxConcurrentValidations*: int
 
     # Extensions configuration
+    topicStreamsConfig*: Opt[TopicStreamsConfig]
     testExtensionConfig*: Opt[TestExtensionConfig]
     partialMessageExtensionConfig*: Opt[PartialMessageExtensionConfig]
     pingpongExtensionConfig*: Opt[PingPongExtensionConfig]

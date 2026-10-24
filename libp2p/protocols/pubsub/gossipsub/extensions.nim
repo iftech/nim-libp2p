@@ -2,14 +2,18 @@
 # Copyright (c) Status Research & Development GmbH
 
 import std/[sets, tables]
+import chronos
 import ../../../[peerid]
+import ../../../stream/connection
 import ../../../crypto/crypto
 import ../rpc/messages
 import
   ./[
     extensions_types, extension_test, extension_partial_message, partial_message,
-    extension_pingpong, extension_preamble,
+    extension_pingpong, extension_preamble, extension_topic_streams,
   ]
+
+export extension_topic_streams
 
 export
   TestExtensionConfig, PartialMessageExtensionConfig, TopicOpts,
@@ -19,6 +23,7 @@ proc noopBehaviorPenaltyProc*(_: PeerId, _: float64) {.gcsafe, raises: [].} =
   discard
 
 type ExtensionsState* = ref object
+  topicStreamsExtension: TopicStreamsExtension
   sentExtensions: HashSet[PeerId] # tells to which peers has node sent ControlExtensions.
   peerExtensions: Table[PeerId, PeerExtensions]
     # tells what peer capabilities are (what extensions are supported by them).
@@ -46,6 +51,7 @@ proc new*(
     externalExtensions: seq[Extension] = @[],
       # external extensions are created outside of state and they are added to 
       # state's extensions list.
+    topicStreamsConfig: Opt[TopicStreamsConfig] = Opt.none(TopicStreamsConfig),
 ): T =
   var state: T
 
@@ -78,9 +84,14 @@ proc new*(
     extensions.add(preambleExtension.get())
     nodeExtensions.preambleExtension = Opt.some(true)
 
+  if topicStreamsConfig.isSome:
+    nodeExtensions.topicStreams = Opt.some(true)
+
   extensions.add(externalExtensions)
 
   state = T(
+    topicStreamsExtension:
+      TopicStreamsExtension.new(topicStreamsConfig, updatePeerBehaviorPenalty),
     updatePeerBehaviorPenalty: updatePeerBehaviorPenalty,
     sentExtensions: initHashSet[PeerId](),
     nodeExtensions: nodeExtensions,
@@ -112,6 +123,10 @@ proc onHandleRPC(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
 
   for _, e in state.extensions:
     e.onHandleRPC(peerId, rpc)
+
+proc handleTopicRPC*(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
+  # Topic streams may arrive before the control stream's extension advertisement.
+  state.onHandleRPC(peerId, rpc)
 
 proc onNegotiated(state: ExtensionsState, peerId: PeerId) =
   # extension event called when both sides have negotiated (exchanged) extensions.
@@ -233,3 +248,45 @@ proc preambleHandleIHave*(
   state.preambleExtension.ifValue(e):
     return e.handleIHave(peerId, msgId)
   return false
+
+proc initTopicStreams*(
+    state: ExtensionsState,
+    peerId: PeerId,
+    maxMessageSize: int,
+    dial: TopicStreamDial,
+    receive: TopicStreamReceive,
+    violation: proc() {.gcsafe, raises: [].},
+) =
+  state.topicStreamsExtension.initTopicStreams(
+    peerId, maxMessageSize, dial, receive, violation
+  )
+
+proc peerHasTopicStreams*(state: ExtensionsState, peerId: PeerId): bool =
+  not state.isNil and state.topicStreamsExtension.peerHasTopicStreams(peerId)
+
+proc negotiateTopicStreams*(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg): bool =
+  state.topicStreamsExtension.negotiateTopicStreams(peerId, rpc)
+
+proc readTopicStream*(
+    state: ExtensionsState, peerId: PeerId, stream: Stream
+): Future[void] {.async: (raises: [CancelledError], raw: true).} =
+  state.topicStreamsExtension.readTopicStream(peerId, stream)
+
+proc sendTopicRPC*(
+    state: ExtensionsState, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
+): seq[byte] =
+  state.topicStreamsExtension.sendTopicRPC(peerId, msg, medium)
+
+proc closeTopicStreams*(
+    state: ExtensionsState, topic: string, incoming = false
+): seq[Future[void]] =
+  state.topicStreamsExtension.closeTopicStreams(topic, incoming)
+
+proc closeTopicStreams*(
+    state: ExtensionsState, peerId: PeerId, topic: string
+): Future[void] {.async: (raises: [], raw: true).} =
+  state.topicStreamsExtension.closeTopicStreams(peerId, topic)
+
+proc stopTopicStreams*(state: ExtensionsState, peerId: PeerId) {.async: (raises: []).} =
+  if not state.isNil:
+    await state.topicStreamsExtension.stopTopicStreams(peerId)

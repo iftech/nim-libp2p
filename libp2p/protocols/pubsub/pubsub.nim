@@ -315,16 +315,25 @@ proc broadcast*(
     for peer in sendPeers:
       p.send(peer, msg, priority, useCustomStream)
   else:
-    # Fast path that only encodes message once
-    let encoded = msg.encode(p.anonymize)
-    if encoded.len > p.maxMessageSize:
-      warn "message exceeds maximum message size; message will not be broadcasted",
-        encodedSize = encoded.len, maxMessageSize = p.maxMessageSize
-      return
-
+    # Lazily encode each wire format and reuse it across recipients.
+    var encoded: seq[byte]
+    var topicRPC: PreparedTopicRPC
     for peer in sendPeers:
-      var peerEncoded = encoded
-      peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
+      if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
+          peer.extensionsState.peerHasTopicStreams(peer.peerId):
+        if topicRPC.isZero():
+          topicRPC = makePreparedTopicRPC(msg, p.anonymize)
+        peer.sendTopicRPC(topicRPC, priority)
+      else:
+        if encoded.len == 0:
+          encoded = msg.encode(p.anonymize)
+          if encoded.len > p.maxMessageSize:
+            warn "legacy RPC exceeds maximum message size; skipping legacy recipients",
+              encodedSize = encoded.len, maxMessageSize = p.maxMessageSize
+        if encoded.len > p.maxMessageSize:
+          continue
+        var peerEncoded = encoded
+        peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
 
 proc sendSubs*(
     p: PubSub, peer: PubSubPeer, subTopics: openArray[string], subscribe: bool

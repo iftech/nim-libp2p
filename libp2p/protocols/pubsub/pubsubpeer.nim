@@ -9,6 +9,7 @@ import chronos, chronicles, nimcrypto/sha2, metrics
 import chronos/ratelimit
 import
   rpc/[messages, message, protobuf],
+  gossipsub/extensions,
   ../../peerid,
   ../../peerinfo,
   ../../stream/connection,
@@ -17,7 +18,7 @@ import
   ../../utils/shortlog,
   ../../utils/future
 
-export peerid, connection, deques
+export peerid, connection, deques, extensions
 
 logScope:
   topics = "libp2p pubsub"
@@ -170,6 +171,7 @@ type
     loop: Future[void].Raising([CancelledError])
 
   PubSubPeer* = ref object of RootObj
+    extensionsState*: ExtensionsState
     getStream*: GetStream # callback to establish a new send stream
     onEvent*: OnEvent # Connectivity updates for peer
     codec*: string # the protocol that this peer joined from
@@ -756,6 +758,29 @@ proc sendEncoded*(
       else:
         p.dropNonHighPriorityMessage(action.slowPeerPenaltyDelta, action.priority)
 
+proc sendTopicRPC*(p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority) =
+  if p.stopped:
+    return
+  let control =
+    p.extensionsState.sendTopicRPC(p.peerId, msg, priority == MessagePriority.Medium)
+  if control.len > 0:
+    p.trackSend(p.sendEncoded(control, MessagePriority.High))
+
+proc routeTopicRPC(
+    p: PubSubPeer, msg: RPCMsg, anonymize: bool, priority: MessagePriority
+): bool =
+  if msg.messages.len == 0 and msg.partialMessageExtension.isNone and
+      not p.hasObservers():
+    return false
+  if not p.extensionsState.peerHasTopicStreams(p.peerId):
+    return false
+  var msgCopy = msg
+  if p.hasObservers():
+    p.sendObservers(msgCopy)
+  sendMetrics(msgCopy)
+  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority)
+  true
+
 proc encodeRpcMsg(
     p: PubSubPeer, msg: RPCMsg, anonymize: bool
 ): seq[byte] {.raises: [].} =
@@ -790,6 +815,9 @@ proc send*(
   ##   High priority messages are sent immediately, medium and low priority messages are queued
   ##   and sent only after all high priority messages have been sent.
 
+  if p.routeTopicRPC(msg, anonymize, priority):
+    return
+
   var encoded = encodeRpcMsg(p, msg, anonymize)
 
   if encoded.len > p.maxMessageSize:
@@ -817,6 +845,9 @@ proc sendResponse*(
   ## batch so they are not lost. RPCs without messages that still exceed
   ## `maxMessageSize`, and individual messages that still exceed
   ## `maxMessageSize`, are dropped with a warning.
+
+  if p.routeTopicRPC(msg, anonymize, priority):
+    return
 
   proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =
     var encoded = encodeRpcMsg(p, toSendMsg, anonymize)
@@ -936,6 +967,8 @@ proc startSendNonHighPriorityTask(p: PubSubPeer) =
 proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
   ## Prevents further work, cancels peer tasks, and waits for cleanup to finish.
   p.stopped = true
+  let extensions = move p.extensionsState
+  await extensions.stopTopicStreams(p.peerId)
   var pending = p.sendFuts
   let receiving = p.recvStreams
   var stopping: seq[Future[void]]

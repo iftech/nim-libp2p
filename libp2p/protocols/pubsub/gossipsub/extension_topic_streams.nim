@@ -6,7 +6,9 @@
 import std/[tables, deques, sequtils]
 import chronos, results
 import ../../../stream/connection
-import ../rpc/[messages, topicrpc]
+import ../../../peerid
+import ./extensions_types
+import ../rpc/[messages, message, protobuf, topicrpc]
 
 export topicrpc
 
@@ -57,6 +59,17 @@ type
     receive: TopicStreamReceive
     violation: proc() {.gcsafe, raises: [].}
     penalize: proc() {.gcsafe, raises: [].}
+
+  TopicStreamsExtension* = ref object
+    config: Opt[TopicStreamsConfig]
+    peers: Table[PeerId, TopicStreams]
+    updatePeerBehaviorPenalty: UpdatePeerBehaviorPenaltyProc
+
+func validate*(config: TopicStreamsConfig): Result[void, cstring] =
+  if config.maxStreams < 3 or config.maxQueuedBytes <= 0 or config.maxIncomingBytes <= 0 or
+      config.maxQueuedMessages <= 0:
+    return err("gossipsub: invalid topic stream limits")
+  ok()
 
 proc new*(
     T: type TopicStreams,
@@ -314,3 +327,98 @@ proc stop*(s: TopicStreams) {.async: (raises: []).} =
   await noCancel allFutures(writers.mapIt(it.close()))
   let readers = move s.readers
   await noCancel allFutures(readers.mapIt(it.stream.close()))
+
+type PreparedTopicRPC* = object
+  control: seq[byte]
+  payloads: seq[tuple[topic: string, data: seq[byte]]]
+
+func isZero*(msg: PreparedTopicRPC): bool =
+  msg.control.len == 0 and msg.payloads.len == 0
+
+proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
+  for m in msg.messages:
+    if m.data.len > 0:
+      result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
+  msg.partialMessageExtension.ifValue(partial):
+    if partial.topicID.isSome:
+      result.payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
+  var control = msg
+  control.messages = @[]
+  control.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
+  result.control = control.encode(anonymize)
+
+proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): seq[byte] =
+  for payload in msg.payloads:
+    s.sendTopic(payload.topic, payload.data, medium)
+  msg.control
+
+proc new*(
+    T: type TopicStreamsExtension,
+    config: Opt[TopicStreamsConfig],
+    updatePeerBehaviorPenalty: UpdatePeerBehaviorPenaltyProc,
+): T =
+  T(config: config, updatePeerBehaviorPenalty: updatePeerBehaviorPenalty)
+
+proc initTopicStreams*(
+    ext: TopicStreamsExtension,
+    peerId: PeerId,
+    maxMessageSize: int,
+    dial: TopicStreamDial,
+    receive: TopicStreamReceive,
+    violation: proc() {.gcsafe, raises: [].},
+) =
+  const TopicStreamBehaviorPenalty = 0.1
+  ext.config.ifValue(config):
+    proc penalize() {.gcsafe, raises: [].} =
+      ext.updatePeerBehaviorPenalty(peerId, TopicStreamBehaviorPenalty)
+
+    ext.peers[peerId] =
+      TopicStreams.new(config, maxMessageSize, dial, receive, violation, penalize)
+
+proc peerHasTopicStreams*(ext: TopicStreamsExtension, peerId: PeerId): bool =
+  ext.peers.getOrDefault(peerId).isActive()
+
+proc negotiateTopicStreams*(
+    ext: TopicStreamsExtension, peerId: PeerId, rpc: RPCMsg
+): bool =
+  ## Return whether the GossipSub RPC may be processed.
+  ## Disabled topic streams create no transport state, so RPCs are allowed.
+  ext.peers.withValue(peerId, streams):
+    return streams[].negotiate(rpc)
+  true
+
+proc readTopicStream*(
+    ext: TopicStreamsExtension, peerId: PeerId, stream: Stream
+) {.async: (raises: [CancelledError]).} =
+  let streams = ext.peers.getOrDefault(peerId)
+  if streams.isNil:
+    await stream.reset()
+    return
+  await streams.readTopic(stream)
+
+proc sendTopicRPC*(
+    ext: TopicStreamsExtension, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
+): seq[byte] =
+  ext.peers.withValue(peerId, streams):
+    return streams[].sendTopicRPC(msg, medium)
+
+proc closeTopicStreams*(
+    ext: TopicStreamsExtension, topic: string, incoming = false
+): seq[Future[void]] =
+  var futures = newSeqOfCap[Future[void]](ext.peers.len)
+  for streams in ext.peers.values:
+    futures.add(streams.closeTopic(topic, incoming))
+  return futures
+
+proc closeTopicStreams*(
+    ext: TopicStreamsExtension, peerId: PeerId, topic: string
+): Future[void] {.async: (raises: []).} =
+  await ext.peers.getOrDefault(peerId).closeTopic(topic)
+
+proc stopTopicStreams*(
+    ext: TopicStreamsExtension, peerId: PeerId
+) {.async: (raises: []).} =
+  var streams: TopicStreams
+  # Remove before awaiting so a reconnect cannot inherit this peer's transport.
+  if ext.peers.pop(peerId, streams):
+    await streams.stop()
