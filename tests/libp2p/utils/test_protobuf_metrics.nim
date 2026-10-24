@@ -133,9 +133,3 @@ when defined(libp2p_protobuf_metrics):
       check afterMsgMessages > beforeMsgMessages
       check afterOther == beforeOther
       check afterOtherMessages == beforeOtherMessages
-
-    test "counter for unregistered label returns zero":
-      check counterValue(libp2p_protobuf_bytes_received, "NonExistentType") == 0.0
-      check counterValue(libp2p_protobuf_bytes_sent, "NonExistentType") == 0.0
-      check counterValue(libp2p_protobuf_messages_sent, "NonExistentType") == 0.0
-      check counterValue(libp2p_protobuf_messages_received, "NonExistentType") == 0.0

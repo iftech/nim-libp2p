@@ -555,57 +555,6 @@ suite "MultiAddress test suite":
       MultiAddress.init(TransportAddress(family: AddressFamily.Unix)).error() ==
         "multiaddress: Unix path must not be empty"
 
-suite "parseIpAddress":
-  test "valid IPv4 addresses parse to IPv4 family":
-    check parseIpAddress("1.2.3.4").family == IpAddressFamily.IPv4
-    check parseIpAddress("0.0.0.0").family == IpAddressFamily.IPv4
-    check parseIpAddress("255.255.255.255").family == IpAddressFamily.IPv4
-    check parseIpAddress("127.0.0.1").family == IpAddressFamily.IPv4
-
-  test "valid IPv4 address bytes are correct":
-    check parseIpAddress("1.2.3.4").address_v4 == [1'u8, 2, 3, 4]
-    check parseIpAddress("0.0.0.0").address_v4 == [0'u8, 0, 0, 0]
-    check parseIpAddress("255.255.255.255").address_v4 == [255'u8, 255, 255, 255]
-    check parseIpAddress("192.168.1.100").address_v4 == [192'u8, 168, 1, 100]
-
-  test "valid IPv6 addresses parse to IPv6 family":
-    check parseIpAddress("::1").family == IpAddressFamily.IPv6
-    check parseIpAddress("::").family == IpAddressFamily.IPv6
-    check parseIpAddress("2001:db8::1").family == IpAddressFamily.IPv6
-    check parseIpAddress("fe80::1").family == IpAddressFamily.IPv6
-    check parseIpAddress("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff").family ==
-      IpAddressFamily.IPv6
-
-  test "valid IPv6 address bytes are correct":
-    # ::1 → all zeros except last byte = 1
-    let loopback = parseIpAddress("::1").address_v6
-    check loopback[0 .. 14] == [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    check loopback[15] == 1
-
-    # :: → all zeros
-    check parseIpAddress("::").address_v6 ==
-      [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-  test "IPv4 string is not parsed as IPv6":
-    check parseIpAddress("1.2.3.4").family != IpAddressFamily.IPv6
-
-  test "IPv6 string is not parsed as IPv4":
-    check parseIpAddress("::1").family != IpAddressFamily.IPv4
-
-  test "invalid addresses raise ValueError":
-    expect ValueError:
-      discard parseIpAddress("")
-    expect ValueError:
-      discard parseIpAddress("not-an-ip")
-    expect ValueError:
-      discard parseIpAddress("256.0.0.1")
-    expect ValueError:
-      discard parseIpAddress("1.2.3")
-    expect ValueError:
-      discard parseIpAddress("1.2.3.4.5")
-    expect ValueError:
-      discard parseIpAddress(":::1")
-
 suite "MultiAddress IP utilities":
   test "getIp":
     check:

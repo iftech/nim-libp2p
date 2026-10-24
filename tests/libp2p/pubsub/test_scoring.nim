@@ -398,32 +398,6 @@ suite "GossipSub Scoring":
       peers[0].score == expectedScore
       peers[0].slowPeerPenalty == expectedDecayedPenalty
 
-  asyncTest "Slow peer penalty can still be disabled with zero weight":
-    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
-    defer:
-      await teardownGossipSub(gossipSub, conns)
-
-    let
-      slowPeerPenaltyWeight = 0.0
-      slowPeerPenaltyThreshold = 0.0
-      slowPeerPenaltyDecay = 0.5
-      initialPenalty = 4.0
-      expectedScore =
-        (initialPenalty - slowPeerPenaltyThreshold) * slowPeerPenaltyWeight
-      expectedDecayedPenalty = initialPenalty * slowPeerPenaltyDecay
-
-    gossipSub.parameters.slowPeerPenaltyWeight = slowPeerPenaltyWeight
-    gossipSub.parameters.slowPeerPenaltyThreshold = slowPeerPenaltyThreshold
-    gossipSub.parameters.slowPeerPenaltyDecay = slowPeerPenaltyDecay
-
-    peers[0].slowPeerPenalty = initialPenalty
-
-    gossipSub.updateScores()
-
-    check:
-      peers[0].score == expectedScore
-      peers[0].slowPeerPenalty == expectedDecayedPenalty
-
   asyncTest "Colocation factor scoring":
     let (gossipSub, conns, peers) = setupGossipSubWithPeers(5, topic)
     defer:

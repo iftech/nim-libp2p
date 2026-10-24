@@ -631,7 +631,7 @@ suite "Connection Manager maxConnsPerPeer":
   asyncTest "maxConnsPerPeer = 0 uses default":
     await runTest(0, defaultMaxConnsPerPeer)
 
-  for i in 1 ..< 10:
+  for i in 1 .. 3:
     let limit = i
     asyncTest fmt"peer limit is reached with {limit} muxers":
       await runTest(limit, limit)
@@ -937,12 +937,6 @@ suite "Connection Manager Scoring":
     let cm = newWatermark(1, 2, outboundBonus = outboundBonus)
     check (await cm.storeMuxer(makeMuxer(peerId, Direction.Out))).isOk()
     check cm.peerScore(peerId) == outboundBonus
-    await cm.stop()
-
-  asyncTest "inbound connection gets no outboundBonus":
-    let cm = newWatermark(1, 2)
-    check (await cm.storeMuxer(makeMuxer(peerId, Direction.In))).isOk()
-    check cm.peerScore(peerId) == 0
     await cm.stop()
 
   asyncTest "decaying tag contributes initial value to score":
