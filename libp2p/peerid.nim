@@ -259,11 +259,11 @@ proc random*(t: typedesc[PeerId], count: uint, rng: Rng): Result[seq[PeerId], cs
 
 func match*(pid: PeerId, pubkey: PublicKey): bool =
   ## Returns ``true`` if ``pid`` matches public key ``pubkey``.
-  PeerId.init(pubkey) == Result[PeerId, cstring].ok(pid)
+  PeerId.init(pubkey).containsValue(pid)
 
 func match*(pid: PeerId, seckey: PrivateKey): bool =
   ## Returns ``true`` if ``pid`` matches private key ``seckey``.
-  PeerId.init(seckey) == Result[PeerId, cstring].ok(pid)
+  PeerId.init(seckey).containsValue(pid)
 
 func write*(vb: var VBuffer, pid: PeerId) =
   ## Write PeerId value ``peerid`` to buffer ``vb``.

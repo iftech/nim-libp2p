@@ -248,8 +248,8 @@ proc new*(
 proc getDirectory(
     self: ACMEApi
 ): Future[Result[ACMEDirectory, LPResultError]] {.async: (raises: [CancelledError]).} =
-  if self.directory.isSome():
-    return ok(self.directory.get())
+  self.directory.ifValue(directory):
+    return ok(directory)
 
   let acmeResponse = ?(await self.get(self.directoryURL))
   let directory = ?acmeResponse.body.tryTo(ACMEDirectory)

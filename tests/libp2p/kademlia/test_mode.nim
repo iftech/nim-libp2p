@@ -29,7 +29,7 @@ proc dialFindNode(
       return Opt.none(Message)
     # A served query yields a well-formed FIND_NODE reply; anything else is a
     # broken server masquerading as one, so do not count it as served.
-    if reply.msgType != Opt.some(MessageType.findNode):
+    if reply.msgType != MessageType.findNode:
       return Opt.none(Message)
     return Opt.some(reply)
   except CatchableError:
@@ -143,4 +143,4 @@ suite "KadDHT dynamic mode":
     )
 
     let reply = Message.decode(await stream.readLp(MaxMsgSize))
-    check reply.get().msgType == Opt.some(MessageType.findNode)
+    check reply.get().msgType == MessageType.findNode

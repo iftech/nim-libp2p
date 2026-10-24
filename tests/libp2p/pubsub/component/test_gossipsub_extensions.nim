@@ -515,4 +515,4 @@ suite "GossipSub Component - Extensions":
     # nodes[1] should receive IMReceiving right after it broadcasted preamble.
     checkUntilTimeout:
       receivedImReceiving.len == 1
-      receivedImReceiving[0].messageLength.get() == msgLength.uint32
+      receivedImReceiving[0].messageLength == msgLength.uint32

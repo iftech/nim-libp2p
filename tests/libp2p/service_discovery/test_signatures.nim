@@ -125,6 +125,6 @@ suite "Ticket - timestamp encoding":
     check:
       absent.tInit.isNone()
       absent.tMod.isNone()
-      epoch.tInit == Opt.some(0'i64)
-      epoch.tMod == Opt.some(0'i64)
+      epoch.tInit == 0'i64
+      epoch.tMod == 0'i64
       Protobuf.encode(epoch) == @[0x10'u8, 0, 0x18, 0]

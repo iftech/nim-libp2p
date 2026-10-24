@@ -211,7 +211,7 @@ proc expandDnsAddr(
   var addrs: seq[(MultiAddress, Opt[PeerId])]
   for resolvedAddress in resolved:
     let lastPart = ?resolvedAddress[^1]
-    if lastPart.protoCode == LPResult[MultiCodec].ok(multiCodec("p2p")):
+    if lastPart.protoCode.containsValue(multiCodec("p2p")):
       let addrPeerId = PeerId.init(?lastPart.protoArgument()).valueOr:
         return err(error)
       # Keep the requested peer constraint after recursive DNSADDR resolution.
@@ -581,7 +581,7 @@ proc internalConnect(
     reuseConnection = true,
     dir = Direction.Out,
 ): Future[LPResult[Muxer]] {.async: (raises: [CancelledError]).} =
-  if Opt.some(self.localPeerId) == peerId:
+  if peerId == self.localPeerId:
     return err("internalConnect can't dial self!")
 
   # A dial without a peer id has no connection to reuse and no identity to

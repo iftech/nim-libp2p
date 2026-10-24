@@ -265,7 +265,7 @@ suite "KadDHT Find":
     check:
       response.msgType == MessageType.findNode
       response.closerPeers.len == 1
-      response.closerPeers[0].id.get() == kads[2].rtable.selfId
+      response.closerPeers[0].id == kads[2].rtable.selfId.toBytes()
 
   asyncTest "Find node for own PeerID excludes the requester":
     let kads = setupKadSwitches(3)
@@ -300,7 +300,7 @@ suite "KadDHT Find":
 
     check:
       response.closerPeers.len == 1
-      response.closerPeers[0].id.get() == kads[2].rtable.selfId
+      response.closerPeers[0].id == kads[2].rtable.selfId.toBytes()
 
   asyncTest "Find node for an unknown target omits it":
     let kads = setupKadSwitches(3)
@@ -334,7 +334,7 @@ suite "KadDHT Find":
 
     check:
       not kads[0].hasKey(client.toKey())
-      response.closerPeers[0].id.get() == client.toKey()
+      response.closerPeers[0].id == client.toKey().toBytes()
 
   asyncTest "Find node excludes the requester for an unrelated target":
     let kads = setupKadSwitches(3)
@@ -457,6 +457,5 @@ suite "KadDHT Find":
 
     await c.switch.connect(a.switch)
     let reply = (await c.dispatchFindNode(a.switch.peerInfo.peerId, bKey)).value()
-    let bCloser =
-      reply.closerPeers.filterIt(it.id.isSome and it.id.get() == bId.getBytes())
+    let bCloser = reply.closerPeers.filterIt(it.id == bId.getBytes())
     check bCloser.mapIt(it.addrs).concat().allIt(it in bListenAddrs)

@@ -407,6 +407,15 @@ suite "GossipSubParams validation":
     params.maxIWantsPerMessage = 1
     check params.validateParameters().isOk()
 
+  test "maxConcurrentValidations fails when zero":
+    const errorMessage =
+      "gossipsub: maxConcurrentValidations parameter error, Must be > 0"
+    var params = newDefaultValidParams()
+    params.maxConcurrentValidations = 0
+    let res = params.validateParameters()
+    check res.isErr()
+    check res.error == errorMessage
+
   test "overheadRateLimit.bytes fails when zero":
     const errorMessage =
       "gossipsub: overheadRateLimit.bytes parameter error, Must be > 0"

@@ -603,11 +603,11 @@ suite "RendezVous":
     # expiration within [timeBefore + 2hours, timeAfter + 2hours]
     check:
       # Peer Node side
-      peerNodes[0].registered.s[0].data.ttl.get == MinimumDuration.seconds.uint64
+      peerNodes[0].registered.s[0].data.ttl == MinimumDuration.seconds.uint64
       peerNodes[0].registered.s[0].expiration >= timeBefore + MinimumDuration
       peerNodes[0].registered.s[0].expiration <= timeAfter + MinimumDuration
       # Rendezvous Node side
-      rendezvousNode.registered.s[0].data.ttl.get == MinimumDuration.seconds.uint64
+      rendezvousNode.registered.s[0].data.ttl == MinimumDuration.seconds.uint64
       rendezvousNode.registered.s[0].expiration >= timeBefore + MinimumDuration
       rendezvousNode.registered.s[0].expiration <= timeAfter + MinimumDuration
 
@@ -627,11 +627,11 @@ suite "RendezVous":
     # expiration within [timeBefore + ttl, timeAfter + ttl]
     check:
       # Peer Node side
-      peerNodes[0].registered.s[0].data.ttl.get == ttl.seconds.uint64
+      peerNodes[0].registered.s[0].data.ttl == ttl.seconds.uint64
       peerNodes[0].registered.s[0].expiration >= timeBefore + ttl
       peerNodes[0].registered.s[0].expiration <= timeAfter + ttl
       # Rendezvous Node side
-      rendezvousNode.registered.s[0].data.ttl.get == ttl.seconds.uint64
+      rendezvousNode.registered.s[0].data.ttl == ttl.seconds.uint64
       rendezvousNode.registered.s[0].expiration >= timeBefore + ttl
       rendezvousNode.registered.s[0].expiration <= timeAfter + ttl
 

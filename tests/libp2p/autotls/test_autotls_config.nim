@@ -83,7 +83,7 @@ suite "AutoTLS Configuration Tests":
     )
 
     check:
-      config.ipAddress == Opt.some(customIpAddress)
+      config.ipAddress == customIpAddress
       # nameServers reaches the config as the DnsResolver built out of it.
       DnsResolver(config.nameResolver).nameServers == customNameServers
       config.acmeDirectoryURL == customAcmeDirectoryURL

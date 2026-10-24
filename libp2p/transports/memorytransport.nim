@@ -64,9 +64,8 @@ method stop*(self: MemoryTransport) {.async: (raises: []).} =
   self.onStop.fire()
 
   # closing listener will throw interruption error to caller of accept()
-  let listener = self.listener
-  if listener.isSome:
-    listener.get().close()
+  self.listener.ifValue(listener):
+    listener.close()
 
   # end all connections
   await noCancel allFutures(self.connections.mapIt(it.close()))

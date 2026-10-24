@@ -73,8 +73,8 @@ suite "IpAddr Utils":
       linkLocalV6 = parseIpAddress("fe80::1")
     check firstGlobalIP(newSeq[IpAddress]()) == Opt.none(IpAddress)
     check firstGlobalIP([privateV4, linkLocalV6]) == Opt.none(IpAddress)
-    check firstGlobalIP([privateV4, publicV6]) == Opt.some(publicV6)
-    check firstGlobalIP([publicV4, publicV6]) == Opt.some(publicV4)
+    check firstGlobalIP([privateV4, publicV6]) == publicV6
+    check firstGlobalIP([publicV4, publicV6]) == publicV4
 
   test "isIPv4, isIPv6":
     let ipv4 = parseIpAddress("1.2.3.4")

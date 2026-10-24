@@ -17,7 +17,7 @@ proc kadPeer(answer: Answer): Switch =
     try:
       let request = Message.decode(await stream.readLp(MaxMsgSize)).valueOr:
         raiseAssert "kad test peer got an undecodable request: " & $error
-      if request.msgType != Opt.some(MessageType.ping):
+      if request.msgType != MessageType.ping:
         raiseAssert "kad test peer expected a ping"
       await answer(stream)
     except LPStreamError as e:

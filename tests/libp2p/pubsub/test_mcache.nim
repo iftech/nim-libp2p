@@ -16,7 +16,7 @@ suite "MCache":
     var msg = Message(fromPeer: PeerId.random(), seqno: "12345".toBytes())
     let msgId = defaultMsgIdProvider(msg).expect(MsgIdGenSuccess)
     mCache.put(msgId, msg)
-    check mCache.get(msgId).isSome and mCache.get(msgId).get() == msg
+    check mCache.get(msgId) == msg
 
   test "window":
     var mCache = MCache.init(3, 5)

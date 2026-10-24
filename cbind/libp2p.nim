@@ -36,6 +36,7 @@ type StreamRegistry = ref object
   streams: Table[uint64, Stream]
   nextStreamId: uint64
   releaseWaiters: Table[uint64, Future[void].Raising([CancelledError])]
+  closed: bool
 
 type LibP2P* = ref object
   ## Main library state. The FFI context owns one instance; its tables mutate
@@ -250,6 +251,21 @@ proc release(reg: StreamRegistry, id: uint64) =
       releaseWaiter.complete()
   reg.streams.del(id)
 
+proc releaseAll(reg: StreamRegistry) {.async: (raises: []).} =
+  # Muxer close awaits every channel handler, so a parked handler blocks stop.
+  # Reset first: it fails host reads in flight, so closeWithEOF starts no second read.
+  reg.closed = true
+  var resets: seq[Future[void].Raising([])]
+  for stream in reg.streams.values():
+    resets.add(stream.reset())
+  await noCancel allFutures(resets)
+
+  for releaseWaiter in reg.releaseWaiters.values():
+    if not releaseWaiter.finished():
+      releaseWaiter.complete()
+  reg.releaseWaiters.clear()
+  reg.streams.clear()
+
 const MaxReadBytes {.ffiConst.} = 64 * 1024 * 1024
   ## Caps the buffer an untrusted peer can make us pre-allocate before any byte
   ## arrives; well above libp2p's largest framed messages.
@@ -425,6 +441,7 @@ proc shutdownSwitch(lib: LibP2P) {.async.} =
   ## both an explicit `libp2pStop` and `libp2pDestroy`'s teardown.
   if not lib.running:
     return
+  await lib.streams.releaseAll()
   await lib.switch.stop()
   lib.running = false
 
@@ -438,6 +455,7 @@ proc libp2pStart*(lib: LibP2P): Future[Result[bool, string]] {.ffi.} =
     await lib.switch.start()
   except LPError as e:
     return err(e)
+  lib.streams.closed = false
   lib.running = true
   ok(true)
 
@@ -739,6 +757,8 @@ proc libp2pMountProtocol*(
   proc handle(
       stream: Stream, selectedProto: string
   ) {.async: (raises: [CancelledError]).} =
+    if streams.closed:
+      return
     let streamId = streams.register(stream)
     defer:
       streams.release(streamId)

@@ -61,6 +61,10 @@ declareCounter(
 declareCounter(libp2p_gossipsub_duplicate, "number of duplicates received")
 declareCounter(libp2p_gossipsub_received, "number of messages received (deduplicated)")
 declarePublicGauge(
+  libp2p_gossipsub_pending_validations,
+  "number of messages in validation or waiting for a validation slot",
+)
+declarePublicGauge(
   libp2p_gossipsub_rpc_overhead_bytes_max,
   "maximum RPC overhead bytes observed in the current one-minute window",
 )
@@ -135,6 +139,7 @@ proc init*(
     maxLowPriorityQueueLen = DefaultMaxLowPriorityQueueLen,
     maxIWantsPerMessage = DefaultMaxIWantsPerMessage,
     sendIDontWantOnPublish = false,
+    maxConcurrentValidations = GossipSubMaxConcurrentValidations,
     testExtensionConfig = Opt.none(TestExtensionConfig),
     partialMessageExtensionConfig = Opt.none(PartialMessageExtensionConfig),
     pingpongExtensionConfig = Opt.none(PingPongExtensionConfig),
@@ -185,6 +190,7 @@ proc init*(
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
     maxIWantsPerMessage: maxIWantsPerMessage,
     sendIDontWantOnPublish: sendIDontWantOnPublish,
+    maxConcurrentValidations: maxConcurrentValidations,
     testExtensionConfig: testExtensionConfig,
     partialMessageExtensionConfig: partialMessageExtensionConfig,
     pingpongExtensionConfig: pingpongExtensionConfig,
@@ -254,6 +260,8 @@ proc validateParameters*(parameters: GossipSubParams): Result[void, cstring] =
     err("gossipsub: maxLowPriorityQueueLen parameter error, Must be > 0")
   elif parameters.maxIWantsPerMessage <= 0:
     err("gossipsub: maxIWantsPerMessage parameter error, Must be > 0")
+  elif parameters.maxConcurrentValidations <= 0:
+    err("gossipsub: maxConcurrentValidations parameter error, Must be > 0")
   else:
     validateOverheadRateLimit(parameters)
 
@@ -347,6 +355,7 @@ method onNewPeer*(g: GossipSub, peer: PubSubPeer) =
     g.disconnectIfBadScorePeer(peer, stats.score)
 
   peer.iHaveBudget = IHavePeerBudget
+  peer.validationSlots = newAsyncSemaphore(g.parameters.maxConcurrentValidations)
 
 method onPubSubPeerEvent*(
     p: GossipSub, peer: PubSubPeer, event: PubSubPeerEvent
@@ -537,11 +546,30 @@ const iDontWantMessageSizeThreshold* = 512
 proc isLargeMessage(dataLen: int, msgId: MessageId): bool =
   dataLen > max(iDontWantMessageSizeThreshold, msgId.len * 10)
 
+proc acquireValidationSlot(
+    g: GossipSub, peer: PubSubPeer, saltedId: SaltedId
+) {.async: (raises: [CancelledError]).} =
+  libp2p_gossipsub_pending_validations.inc()
+  try:
+    await peer.validationSlots.acquire()
+  except CancelledError as e:
+    g.validationSeen.del(saltedId)
+    libp2p_gossipsub_pending_validations.dec()
+    raise e
+
+proc releaseValidationSlot(g: GossipSub, peer: PubSubPeer, saltedId: SaltedId) =
+  g.validationSeen.del(saltedId)
+  libp2p_gossipsub_pending_validations.dec()
+  try:
+    peer.validationSlots.release()
+  except AsyncSemaphoreError:
+    raiseAssert "validation slot released without acquire"
+
 proc validateAndRelay(
     g: GossipSub, msg: Message, msgId: MessageId, saltedId: SaltedId, peer: PubSubPeer
 ) {.async: (raises: []).} =
   defer:
-    g.validationSeen.del(saltedId) # drop bookkeeping even if cancelled mid-task
+    g.releaseValidationSlot(peer, saltedId)
   try:
     let topic = msg.topic
 
@@ -831,13 +859,14 @@ method rpcHandler*(
     # (eg, pop everything you put in it)
     g.validationSeen[msgIdSalted] = initHashSet[PubSubPeer]()
 
+    # wait, not drop: msgId is already seen, so a drop loses the message
+    await g.acquireValidationSlot(peer, msgIdSalted)
     g.pendingTasks.trackFut(g.validateAndRelay(msg, msgId, msgIdSalted, peer))
 
-  let sawIDontWant =
-    rpcMsg.control.isSome() and rpcMsg.control.unsafeGet().idontwant.len > 0
-
-  if rpcMsg.control.isSome():
-    g.handleControl(peer, rpcMsg.control.unsafeGet())
+  var sawIDontWant = false
+  rpcMsg.control.ifValue(control):
+    sawIDontWant = control.idontwant.len > 0
+    g.handleControl(peer, control)
 
   # Runs after handleControl, so the scan sees the IDONTWANTs of this RPC.
   if duplicates.len > 0 or sawIDontWant:

@@ -141,7 +141,7 @@ method accept*(
   of BlockingClose:
     if self.acceptLimit > 0 and self.acceptCalls > self.acceptLimit:
       await sleepAsync(1.hours)
-    await sleepAsync(0.milliseconds)
+    await stepsAsync(1)
     let conn = BlockingCloseConnection(transport: self)
     conn.initStream()
     return conn

@@ -604,7 +604,7 @@ suite "KadDHT Routing Table":
     var rt = RoutingTable.new(selfId, RoutingTableConfig.new())
     discard rt.insert(testKey(1))
 
-    check rt.refreshSelfTarget() == Opt.some(selfId)
+    check rt.refreshSelfTarget() == selfId
 
   test "refreshSelfTarget stands in for a pre-hashed selfId with the nearest key":
     let serviceId = testKey(0)
@@ -648,8 +648,7 @@ suite "KadDHT Routing Table":
 
     let picked = randomKey(rt.buckets[TargetBucket], rng())
     check:
-      picked.isSome()
-      picked.get() == key
+      picked == key
 
   test "randomKey returns a peer from the bucket":
     let selfId = testKey(0)

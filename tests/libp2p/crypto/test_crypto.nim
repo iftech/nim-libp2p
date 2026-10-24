@@ -7,7 +7,7 @@ import std/[sequtils, algorithm]
 import bearssl/[hash, rand], nimcrypto/utils
 import chronicles, json_serialization
 import ../../../libp2p/crypto/[crypto, chacha20poly1305, curve25519, hkdf]
-import ../../../libp2p/utils/redact
+import ../../../libp2p/utils/[redact, opt]
 import ../../tools/[unittest, crypto]
 
 ## Test vectors was made using Go implementation
@@ -727,7 +727,7 @@ suite "Key interface test suite":
     check rng().pickOne(x).isNone()
 
   test "pickOne returns the only element of a singleton":
-    check rng().pickOne(@[42]).get() == 42
+    check rng().pickOne(@[42]) == 42
 
   test "pick returns none for empty sequence":
     check rng().pick(newSeq[int](), 3).isNone()

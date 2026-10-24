@@ -115,8 +115,8 @@ suite "Autonat":
     await stream.writeLp(buffer)
     let response = AutonatMsg.decode(await stream.readLp(1024)).get().response.get()
     check:
-      response.status == Opt.some(DialError)
-      response.text.get() == "Dial timeout"
+      response.status == DialError
+      response.text == "Dial timeout"
       response.ma.isNone()
     await allFutures(doesNothingListener.stop(), src.stop(), dst.stop())
 
@@ -148,7 +148,7 @@ suite "Autonat":
     await stream.writeLp(buffer)
     # the server replies instead of erroring out on the absent type
     let response = AutonatMsg.decode(await stream.readLp(1024)).get().response.get()
-    check response.status == Opt.some(DialError)
+    check response.status == DialError
     await allFutures(doesNothingListener.stop(), src.stop(), dst.stop())
 
   asyncTest "dialMe dials dns and returns public address":

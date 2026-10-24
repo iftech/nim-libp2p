@@ -834,7 +834,10 @@ suite "Dialer":
       let dialFut =
         src.dialer.dialAndUpgrade(Opt.some(dst.peerInfo.peerId), dst.peerInfo.addrs)
 
-      await sleepAsync((step * 2).milliseconds)
+      if step == 0:
+        discard # step 0 is cancelling right away
+      else:
+        await stepsAsync(step)
       step.inc()
 
       await dialFut.cancelAndWait()
@@ -845,7 +848,7 @@ suite "Dialer":
           await muxed.close()
           break # this dial completed before cancellation, so stop probing later delays
 
-    check step > 0 # there should be at least one cancelled dial
+    check step > 1 # there should be at least one cancelled dial
 
   asyncTest "A remote that never answers identify gives up at the dial timeout":
     let

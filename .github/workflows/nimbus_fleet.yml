@@ -10,6 +10,7 @@ permissions:
   contents: read
   actions: read
   pull-requests: read
+  statuses: write
 
 defaults:
   run:
@@ -87,6 +88,16 @@ jobs:
           nimbus-sha: ${{ steps.pin.outputs.nimbus_sha }}
           libp2p-sha: ${{ steps.pin.outputs.libp2p_sha }}
 
+      - name: Read the libp2p commit on the fleet branch
+        id: previous
+        if: steps.pin.outputs.push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(python3 libp2p-ci/tools/nimbus_soak.py previous) || true
+          [[ -n $sha ]] || echo "::warning::no nim-libp2p commit read from the $FLEET_BRANCH head; a pending nimbus-soak status on it stays pending"
+          echo "libp2p_sha=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Force-push the test commit to the fleet branch
         if: steps.pin.outputs.push
         env:
@@ -104,3 +115,11 @@ jobs:
           echo "::add-mask::$auth"
           git -c http.extraheader="AUTHORIZATION: basic $auth" push --quiet --force origin "HEAD:refs/heads/$FLEET_BRANCH"
           echo "nimbus-eth2 \`$FLEET_BRANCH\` now at $(git rev-parse HEAD); the hoodi libp2p nodes build it on their next update timer" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start the nimbus-soak status
+        if: steps.pin.outputs.push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIBP2P_SHA: ${{ steps.pin.outputs.libp2p_sha }}
+          PREVIOUS_SHA: ${{ steps.previous.outputs.libp2p_sha }}
+        run: python3 libp2p-ci/tools/nimbus_soak.py start "$LIBP2P_SHA" ${PREVIOUS_SHA:+"$PREVIOUS_SHA"}

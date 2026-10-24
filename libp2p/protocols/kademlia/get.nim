@@ -72,7 +72,7 @@ proc getValue*(
       trace "Get-value reply has no record", messageType = "getValue"
       return
 
-    if record.key.isNone or record.key.get() != key.toKey():
+    if record.key != key.toKey():
       trace "GetValue returned record with mismatched key",
         expected = key, got = record.key
       return

@@ -523,7 +523,7 @@ suite "AutonatV2":
       ).encode()
     )
     let response = AutonatV2Msg.decode(await stream.readLp(AutonatV2MsgLpSize)).get()
-    check response.oneof.dialResponse.dialStatus == Opt.some(DialStatus.EDialError)
+    check response.oneof.dialResponse.dialStatus == DialStatus.EDialError
     checkUntilTimeout:
       src.connManager.connCount(dst.peerInfo.peerId) == 1
 

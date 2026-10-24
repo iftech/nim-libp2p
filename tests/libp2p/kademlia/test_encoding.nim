@@ -98,7 +98,7 @@ suite "KadDHT Protobuffers":
 
     check:
       noKey.key.isNone()
-      noValue.key == Opt.some(Key.fromBytes(@[7'u8]))
+      noValue.key == Key.fromBytes(@[7'u8])
       noValue.value.isNone()
 
 suite "KadDHT Protobuffers - AddProviderStatus":
@@ -123,6 +123,6 @@ suite "KadDHT Protobuffers - AddProviderStatus":
       raiseAssert("decode of noStatus failed")
 
     check:
-      decodedAccepted.providerStatus == Opt.some(AddProviderStatus.accepted)
-      decodedRejected.providerStatus == Opt.some(AddProviderStatus.rejected)
+      decodedAccepted.providerStatus == AddProviderStatus.accepted
+      decodedRejected.providerStatus == AddProviderStatus.rejected
       decodedNoStatus.providerStatus.isNone()

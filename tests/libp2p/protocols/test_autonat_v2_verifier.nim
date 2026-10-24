@@ -39,7 +39,8 @@ proc makePair(
     )
   VerifierPair(
     switch: switch,
-    peer: makeStandardSwitch(ma("/memorytransport/*")),
+    peer:
+      makeStandardSwitchBuilder(ma("/memorytransport/*")).withAutonatV2Server().build(),
     client: client,
     verifier: AutonatV2Verifier.new(switch, client, rng()),
   )
@@ -68,8 +69,8 @@ suite "AutonatV2 verifier":
     await pair.dialPeer()
 
     check:
-      (await pair.verifier.verify(addresses[0])) == Opt.some(AddrState.Confirmed)
-      (await pair.verifier.verify(addresses[1])) == Opt.some(AddrState.Confirmed)
+      (await pair.verifier.verify(addresses[0])) == AddrState.Confirmed
+      (await pair.verifier.verify(addresses[1])) == AddrState.Confirmed
 
       # one request per address, each carrying that address alone
       pair.client.allTestAddrs == @[@[addresses[0]], @[addresses[1]]]
@@ -84,7 +85,7 @@ suite "AutonatV2 verifier":
       await pair.stop()
     await pair.dialPeer()
 
-    check (await pair.verifier.verify(address)) == Opt.some(AddrState.Unreachable)
+    check (await pair.verifier.verify(address)) == AddrState.Unreachable
 
   asyncTest "a peer without a verdict leaves the state alone":
     let pair = makePair(Unknown)
@@ -103,6 +104,20 @@ suite "AutonatV2 verifier":
     defer:
       await pair.stop()
     await pair.peer.connect(pair.switch)
+
+    check:
+      (await pair.verifier.verify(ma("/ip4/1.2.3.4/tcp/1"))).isNone()
+      pair.client.dials == 0
+
+  asyncTest "a peer without the AutoNAT server is not asked":
+    let
+      pair = makePair(Reachable)
+      peerWithoutServer = makeStandardSwitch(ma("/memorytransport/*"))
+
+    await allFutures(pair.start(), peerWithoutServer.start())
+    defer:
+      await allFutures(pair.stop(), peerWithoutServer.stop())
+    await pair.switch.connect(peerWithoutServer)
 
     check:
       (await pair.verifier.verify(ma("/ip4/1.2.3.4/tcp/1"))).isNone()

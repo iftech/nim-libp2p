@@ -125,7 +125,7 @@ suite "Service Discovery Component - Error Handling":
 
     let response = await clientNode.sendMessage(registrarNode, msg)
     check:
-      response.register.get().status.get() == kad_protobuf.RegistrationStatus.Rejected
+      response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
       registrarNode.countAdsInCache(serviceId) == 0
 
   asyncTest "REGISTER with empty advertisement returns Rejected":
@@ -149,7 +149,7 @@ suite "Service Discovery Component - Error Handling":
 
     let response = await clientNode.sendMessage(registrarNode, msg)
     check:
-      response.register.get().status.get() == kad_protobuf.RegistrationStatus.Rejected
+      response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
       registrarNode.countAdsInCache(serviceId) == 0
 
   asyncTest "REGISTER with malformed advertisement bytes returns Rejected":
@@ -195,7 +195,7 @@ suite "Service Discovery Component - Error Handling":
 
     let response = await clientNode.sendMessage(registrarNode, msg)
     check:
-      response.register.get().status.get() == kad_protobuf.RegistrationStatus.Rejected
+      response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
       registrarNode.countAdsInCache(serviceId) == 0
 
   asyncTest "oversized message is rejected without a reply":
@@ -240,7 +240,7 @@ suite "Service Discovery Component - Error Handling":
 
       let response = await clientNode.sendMessage(registrarNode, msg)
       check:
-        response.register.get().status.get() == kad_protobuf.RegistrationStatus.Rejected
+        response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
         registrarNode.countAdsInCache(Key.fromBytes(key)) == 0
 
   asyncTest "REGISTER with ticket that has mismatched advertisement returns Rejected":
@@ -280,7 +280,7 @@ suite "Service Discovery Component - Error Handling":
 
     let response = await clientNode.sendMessage(registrarNode, msg)
     check:
-      response.register.get().status.get() == kad_protobuf.RegistrationStatus.Rejected
+      response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
       registrarNode.countAdsInCache(serviceId) == 0
 
   asyncTest "REGISTER with ticket that has invalid signature returns Rejected":
@@ -320,7 +320,7 @@ suite "Service Discovery Component - Error Handling":
 
     let response = await clientNode.sendMessage(registrarNode, msg)
     check:
-      response.register.get().status.get() == kad_protobuf.RegistrationStatus.Rejected
+      response.register.get().status == kad_protobuf.RegistrationStatus.Rejected
       registrarNode.countAdsInCache(serviceId) == 0
 
   asyncTest "GET_ADS with non-32-byte key returns empty response":

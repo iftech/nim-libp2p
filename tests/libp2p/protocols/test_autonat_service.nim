@@ -236,13 +236,13 @@ suite "Autonat Service":
     await notReachableAwaiter
 
     # The stub now answers Reachable, so the live state can already be Reachable.
-    check notReachableConfidence == Opt.some(0.3)
+    check notReachableConfidence == 0.3
 
     await autonatClientStub.finished
     await reachableAwaiter
 
     check autonatService.networkReachability == NetworkReachability.Reachable
-    check reachableConfidence == Opt.some(0.3)
+    check reachableConfidence == 0.3
 
     await allFuturesRaising(
       switch1.stop(), switch2.stop(), switch3.stop(), switch4.stop()
@@ -265,8 +265,7 @@ suite "Autonat Service":
         confidence: Opt[float],
         dialBackAddr: Opt[MultiAddress],
     ) {.async: (raises: [CancelledError]).} =
-      if networkReachability == NetworkReachability.Reachable and confidence.isSome() and
-          confidence.get() == 1:
+      if networkReachability == NetworkReachability.Reachable and confidence == 1.0:
         awaiter.completeOnce()
 
     check autonatService.networkReachability == NetworkReachability.Unknown
@@ -359,8 +358,7 @@ suite "Autonat Service":
         confidence: Opt[float],
         dialBackAddr: Opt[MultiAddress],
     ) {.async: (raises: [CancelledError]).} =
-      if networkReachability == NetworkReachability.Reachable and confidence.isSome() and
-          confidence.get() == 1:
+      if networkReachability == NetworkReachability.Reachable and confidence == 1.0:
         awaiter.completeOnce()
 
     check autonatService.networkReachability == NetworkReachability.Unknown
@@ -406,8 +404,7 @@ suite "Autonat Service":
         confidence: Opt[float],
         dialBackAddr: Opt[MultiAddress],
     ) {.async: (raises: [CancelledError]).} =
-      if networkReachability == NetworkReachability.Reachable and confidence.isSome() and
-          confidence.get() == 1:
+      if networkReachability == NetworkReachability.Reachable and confidence == 1.0:
         awaiter1.completeOnce()
 
     proc reachabilityHandler2(
@@ -415,8 +412,7 @@ suite "Autonat Service":
         confidence: Opt[float],
         dialBackAddr: Opt[MultiAddress],
     ) {.async: (raises: [CancelledError]).} =
-      if networkReachability == NetworkReachability.Reachable and confidence.isSome() and
-          confidence.get() == 1:
+      if networkReachability == NetworkReachability.Reachable and confidence == 1.0:
         awaiter2.completeOnce()
 
     check autonatService1.networkReachability == NetworkReachability.Unknown
@@ -462,8 +458,7 @@ suite "Autonat Service":
         confidence: Opt[float],
         dialBackAddr: Opt[MultiAddress],
     ) {.async: (raises: [CancelledError]).} =
-      if networkReachability == NetworkReachability.Reachable and confidence.isSome() and
-          confidence.get() == 1:
+      if networkReachability == NetworkReachability.Reachable and confidence == 1.0:
         awaiter1.completeOnce()
 
     check autonatService1.networkReachability == NetworkReachability.Unknown
@@ -510,8 +505,7 @@ suite "Autonat Service":
         confidence: Opt[float],
         dialBackAddr: Opt[MultiAddress],
     ) {.async: (raises: [CancelledError]).} =
-      if networkReachability == NetworkReachability.Reachable and confidence.isSome() and
-          confidence.get() == 1:
+      if networkReachability == NetworkReachability.Reachable and confidence == 1.0:
         awaiter.completeOnce()
 
     check autonatService.networkReachability == NetworkReachability.Unknown

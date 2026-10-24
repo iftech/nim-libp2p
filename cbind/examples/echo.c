@@ -139,6 +139,21 @@ static bool echoRoundTrip(LibP2PCtx *client, LibP2PCtx *server,
   return matched;
 }
 
+// Parks a server handler on an unreleased stream; stop must still return.
+static bool openUnreleased(LibP2PCtx *client, const DialRequest *dialReq) {
+  DialWaiter dw;
+  memset(&dw, 0, sizeof(dw));
+  libp2p_ctx_dial(client, dialReq, on_dial, &dw);
+  wait_done(&dw.done);
+  if (dw.err_code != 0) {
+    fprintf(stderr, "dial unreleased: %s\n", dw.err[0] ? dw.err : "unknown");
+    return false;
+  }
+  wait_done(&g_have_stream);
+  atomic_store(&g_have_stream, 0);
+  return true;
+}
+
 static LibP2PCtx *createNode(const char *listenAddr, const char *label) {
   NimFfiStr addrSlot = nimffi_str(listenAddr);
   Libp2pConfig cfg;
@@ -203,6 +218,9 @@ int main(void) {
   DialRequest dialConnected = {
       nimffi_str(pw.peerId), nimffi_str(EchoProto), {NULL, 0}, false, 0};
   if (!echoRoundTrip(client, server, &dialConnected, "hello again"))
+    goto cleanup;
+
+  if (!openUnreleased(client, &dialConnected))
     goto cleanup;
 
   status = 0;

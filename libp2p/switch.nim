@@ -471,6 +471,12 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   # issues when one needs another to start first.
   var startFuts: seq[Future[void]]
 
+  # the transport loop drains listenAddrs, so a retry after a failed start needs them back
+  let listenAddrs = s.peerInfo.listenAddrs
+  defer:
+    if not s.started:
+      s.peerInfo.listenAddrs = listenAddrs
+
   for service in s.services:
     startFuts.add(service.start(s))
 

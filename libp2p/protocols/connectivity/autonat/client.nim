@@ -33,7 +33,7 @@ func new(
   newException(T, msg & ": " & parent.msg, parent)
 
 func dialedAddr(msg: AutonatMsg): Result[MultiAddress, ref LPError] =
-  if msg.msgType.get(MsgType.Dial) != MsgType.DialResponse:
+  if msg.msgType != MsgType.DialResponse:
     return err(AutonatError.new("Unexpected response"))
 
   let response = msg.response.valueOr:

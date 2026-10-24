@@ -82,14 +82,14 @@ suite "KadDHT Keyspace Regions":
     let rtable = makeEmptyTable(4)
 
     rtable.fillBucket(2, 4)
-    check rtable.regionBits() == Opt.some(3)
+    check rtable.regionBits() == 3
 
     rtable.fillBucket(5, 4)
-    check rtable.regionBits() == Opt.some(6)
+    check rtable.regionBits() == 6
 
     # A deeper bucket that is not full carries no evidence of network size.
     rtable.fillBucket(7, 3)
-    check rtable.regionBits() == Opt.some(6)
+    check rtable.regionBits() == 6
 
   test "closestFirst orders peers by distance to the key":
     let key = PeerId.random().toKey()

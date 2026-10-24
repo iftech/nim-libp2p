@@ -32,6 +32,8 @@ const
   AgentVersion* = "nim-libp2p"
   identifyAddrsLogMax = 5
   maxMsgSize = 64 * 1024
+  MaxIdentifyAddrs* = 64
+  MaxIdentifyProtos* = 128
 
 type
   IdentifyError* = object of LPError
@@ -85,6 +87,9 @@ chronicles.expandIt(IdentifyMsg):
   agent_version = it.agentVersion.get("None")
   signedPeerRecord = if it.signedPeerRecord.isSome: "Some" else: "None"
 
+func truncated[T](items: seq[T], limit: int): seq[T] =
+  items[0 ..< min(items.len, limit)]
+
 proc makeIdentifyMsg(
     pi: PeerInfo, observedAddr: Opt[MultiAddress], sign: bool
 ): IdentifyMsg =
@@ -96,8 +101,8 @@ proc makeIdentifyMsg(
 
   IdentifyMsg(
     publicKey: Opt.some(pi.publicKey),
-    listenAddrs: pi.addrs,
-    protocols: pi.protocols,
+    listenAddrs: pi.addrs.truncated(MaxIdentifyAddrs),
+    protocols: pi.protocols.truncated(MaxIdentifyProtos),
     observedAddr: observedAddr,
     protoVersion: Opt.some(pi.protoVersion),
     agentVersion: Opt.some(if pi.agentVersion == "": AgentVersion else: pi.agentVersion),
@@ -108,14 +113,20 @@ proc makeIdentifyInfo(peer: PeerId, msg: IdentifyMsg): IdentifyInfo =
   var spr = Opt.none(Envelope)
   msg.signedPeerRecord.ifValue(sprBytes):
     SignedPeerRecord.decode(sprBytes).toOpt().ifValue(signedPeerRecord):
-      if signedPeerRecord.data.peerId == peer:
+      if signedPeerRecord.data.peerId == peer and
+          signedPeerRecord.data.addresses.len <= MaxIdentifyAddrs:
         spr = Opt.some(signedPeerRecord.envelope)
+
+  let protos = msg.protocols.truncated(MaxIdentifyProtos)
+  if protos.len < msg.protocols.len:
+    trace "identify: dropping protocols over the cap",
+      peer, protos = msg.protocols.len, maxProtos = MaxIdentifyProtos
 
   IdentifyInfo(
     peerId: peer,
     pubkey: msg.publicKey,
     addrs: msg.listenAddrs,
-    protos: msg.protocols,
+    protos: protos,
     observedAddr: msg.observedAddr,
     protoVersion: msg.protoVersion,
     agentVersion: msg.agentVersion,

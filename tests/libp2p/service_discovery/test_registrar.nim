@@ -512,8 +512,8 @@ suite "Service Discovery Registrar - request handlers":
     )
     let reply = disco.registration(advertiserId, inMsg).register.get()
 
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Wait
-    check reply.ticket.get().tWaitFor.get() == advertExpiry
+    check reply.status == kadprotobuf.RegistrationStatus.Wait
+    check reply.ticket.get().tWaitFor == advertExpiry
 
   test "sustained overload keeps offering advertExpiry-length waits across retries":
     let advertExpiry = 100.secs
@@ -556,8 +556,8 @@ suite "Service Discovery Registrar - request handlers":
     )
     let reply = disco.registration(advertiserId, inMsg).register.get()
 
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Wait
-    check reply.ticket.get().tWaitFor.get() == advertExpiry
+    check reply.status == kadprotobuf.RegistrationStatus.Wait
+    check reply.ticket.get().tWaitFor == advertExpiry
 
   test "getAdvertisements replies empty to a message without a key":
     let disco = setupServiceDiscoveryNode()
@@ -629,7 +629,7 @@ suite "Service Discovery Registrar - request handlers":
     )
 
     let reply = disco.registration(ad.data.peerId, inMsg).register.get()
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Rejected
+    check reply.status == kadprotobuf.RegistrationStatus.Rejected
     check reply.ticket.isNone()
     check disco.countAdsInCache(serviceId) == 0
 
@@ -662,7 +662,7 @@ suite "Service Discovery Registrar - request handlers":
     )
 
     let reply = disco.registration(ad.data.peerId, inMsg).register.get()
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Rejected
+    check reply.status == kadprotobuf.RegistrationStatus.Rejected
     check reply.ticket.isNone()
     check disco.countAdsInCache(serviceId) == 0
 
@@ -704,7 +704,7 @@ suite "Service Discovery Registrar - request handlers":
     )
 
     let reply = disco.registration(ad2.data.peerId, inMsg).register.get()
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Confirmed
+    check reply.status == kadprotobuf.RegistrationStatus.Confirmed
     check disco.countAdsInCache(serviceId) == 1
     check disco.getAdsInCache(serviceId)[0].envelope.signature.data ==
       ad2.envelope.signature.data
@@ -735,7 +735,7 @@ suite "Service Discovery Registrar - request handlers":
     )
 
     let reply = disco.registration(PeerId.random(), inMsg).register.get()
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Rejected
+    check reply.status == kadprotobuf.RegistrationStatus.Rejected
     check reply.ticket.isNone()
     check disco.countAdsInCache(serviceId) == 1
     check disco.getAdsInCache(serviceId)[0].data.seqNo == 10
@@ -769,7 +769,7 @@ suite "Service Discovery Registrar - request handlers":
     let reply = disco.registration(advertiserId, inMsg).register.get()
 
     check:
-      reply.status.get() == kadprotobuf.RegistrationStatus.Wait
+      reply.status == kadprotobuf.RegistrationStatus.Wait
       reply.ticket.isSome()
       disco.countAdsInCache(serviceId2) == 0
       serviceId2 in disco.registrar.boundService
@@ -807,7 +807,7 @@ suite "Service Discovery Registrar - request handlers":
     let beforeRegistration = getTime().toUnix()
     let reply = disco.registration(advertiserId, inMsg).register.get()
 
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Wait
+    check reply.status == kadprotobuf.RegistrationStatus.Wait
     check reply.ticket.isSome()
 
     let ticket = reply.ticket.get()
@@ -858,7 +858,7 @@ suite "Service Discovery Registrar - request handlers":
     let reply = disco.registration(advertiserId, inMsg).register.get()
 
     check:
-      reply.status.get() == kadprotobuf.RegistrationStatus.Confirmed
+      reply.status == kadprotobuf.RegistrationStatus.Confirmed
       disco.countAdsInCache(serviceId) == 1
       disco.getAdsInCache(serviceId)[0].data.peerId == advertiserId
 
@@ -886,7 +886,7 @@ suite "Service Discovery Registrar - request handlers":
 
     let reply = disco.registration(senderId, inMsg).register.get()
 
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Confirmed
+    check reply.status == kadprotobuf.RegistrationStatus.Confirmed
     check not disco.hasPeerInMainTable(senderId)
 
   test "registration does not return the sender among its own closerPeers":
@@ -1856,7 +1856,7 @@ suite "Service Discovery Registrar - connection IPs":
     )
 
     let reply = disco.registration(advertiserId, inMsg, connectionIps).register.get()
-    check reply.status.get() == kadprotobuf.RegistrationStatus.Confirmed
+    check reply.status == kadprotobuf.RegistrationStatus.Confirmed
 
     let slot = disco.registrar.ads.getCachedAd(serviceId, advertiserId).get()
     check slot.ips == connectionIps

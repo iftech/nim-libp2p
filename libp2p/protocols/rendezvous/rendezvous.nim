@@ -139,8 +139,8 @@ func checkTtl(config: RendezVousConfig, ttl: Duration): LPResult[void] =
 func checkRequest(ns: Opt[string], limit: int): LPResult[void] =
   if limit <= 0 or limit > DiscoverLimit.int:
     return err("Invalid limit")
-  if ns.isSome():
-    ?ns.get().checkNamespace()
+  ns.ifValue(namespace):
+    ?namespace.checkNamespace()
   ok()
 
 proc checkPeerRecord*(_: PeerRecord, spr: seq[byte], peerId: PeerId): LPResult[void] =

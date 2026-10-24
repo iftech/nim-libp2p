@@ -296,7 +296,7 @@ proc lookupCheck*(
   let reply = probe.value().valueOr:
     trace "Kademlia probe failed", peerId, err = error
     return false
-  reply.msgType == Opt.some(MessageType.findNode)
+  reply.msgType == MessageType.findNode
 
 proc admitPeer(
     kad: KadDHT,
