@@ -15,7 +15,8 @@ import
   ]
 import ../../../libp2p/utils/future
 import ../../stubs/autonatclientstub
-import ../../tools/[unittest, futures, crypto, reachability, multiaddress]
+import
+  ../../tools/[unittest, futures, crypto, reachability, multiaddress, metrics_utils]
 
 proc createSwitch(
     withAutonat = true,
@@ -50,8 +51,10 @@ proc stopAutonatSwitch(switch: Switch, service: AutonatService) {.async.} =
 const AutonatReachabilityConfidenceMetric = "libp2p_autonat_reachability_confidence"
 
 proc reachabilityConfidence(reachability: NetworkReachability): float64 =
-  libp2p_autonat_reachability_confidence.valueByName(
-    AutonatReachabilityConfidenceMetric, [$reachability]
+  metricValueByName(
+    libp2p_autonat_reachability_confidence,
+    AutonatReachabilityConfidenceMetric,
+    [$reachability],
   )
 
 suite "Autonat Service":

@@ -20,8 +20,10 @@ import
   ]
 import ../stubs/transportstub
 import
-  ../tools/
-    [unittest, futures, switch_builder, crypto, multiaddress, resolver, stall_server]
+  ../tools/[
+    unittest, futures, switch_builder, crypto, multiaddress, resolver, stall_server,
+    metrics_utils,
+  ]
 
 proc replaceIdentifyHandler(sw: Switch, handler: LPProtoHandler) =
   for holder in sw.ms.handlers:
@@ -59,20 +61,14 @@ proc makeTcpAddrs(count: int): seq[MultiAddress] =
 type RankedDialMetrics = object
   directWins, cancelled, dials, candidates: float64
 
-template orZero(read: untyped): float64 =
-  try:
-    read
-  except ValueError:
-    0.0
-
 proc rankedDialMetrics(): RankedDialMetrics =
   {.gcsafe.}:
     RankedDialMetrics(
-      directWins: orZero(libp2p_dial_winner_rank.value([$DialRank.Direct])),
-      cancelled: orZero(libp2p_dial_cancelled_attempts.value()),
-      dials: orZero(libp2p_dial_candidates.valueByName("libp2p_dial_candidates_count")),
+      directWins: metricValue(libp2p_dial_winner_rank, [$DialRank.Direct]),
+      cancelled: metricValue(libp2p_dial_cancelled_attempts),
+      dials: metricValueByName(libp2p_dial_candidates, "libp2p_dial_candidates_count"),
       candidates:
-        orZero(libp2p_dial_candidates.valueByName("libp2p_dial_candidates_sum")),
+        metricValueByName(libp2p_dial_candidates, "libp2p_dial_candidates_sum"),
     )
 
 proc makeRankedDialer(src: Switch, transports: seq[Transport]): Dialer =

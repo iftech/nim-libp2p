@@ -5,7 +5,7 @@
 
 import chronos, metrics, results
 import ../../libp2p/[dial_backoff, multiaddress, multicodec, peerid]
-import ../tools/[unittest, crypto]
+import ../tools/[unittest, crypto, metrics_utils]
 
 proc memoryAddr(i: int): MultiAddress =
   MultiAddress.init("/memorytransport/addr-" & $i).tryGet()
@@ -192,7 +192,7 @@ suite "Dial backoff":
     let now = start + 2.seconds
     backoff.recordFailure(extra, now)
     check:
-      libp2p_dial_backoff_entries.value(["address"]) == float(MaxBackoffEntries)
+      metricValue(libp2p_dial_backoff_entries, ["address"]) == float(MaxBackoffEntries)
       backoff.blocked(extra, now)
       not backoff.blocked(memoryAddr(0), now)
       backoff.blocked(memoryAddr(1), now)
@@ -206,8 +206,8 @@ suite "Dial backoff":
       backoff.recordFailure(memoryAddr(i), start)
     backoff.recordFailure(peerId, start)
     check:
-      libp2p_dial_backoff_entries.value(["address"]) == 3
-      libp2p_dial_backoff_entries.value(["peer"]) == 1
+      metricValue(libp2p_dial_backoff_entries, ["address"]) == 3
+      metricValue(libp2p_dial_backoff_entries, ["peer"]) == 1
 
     backoff.recordSuccess(memoryAddr(0))
-    check libp2p_dial_backoff_entries.value(["address"]) == 2
+    check metricValue(libp2p_dial_backoff_entries, ["address"]) == 2
