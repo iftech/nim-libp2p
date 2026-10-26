@@ -113,6 +113,7 @@ Warnings are treated as errors. All of the following must pass cleanly:
 switch("warningAsError", "BareExcept:on")
 switch("warningAsError", "CaseTransition:on")
 switch("warningAsError", "CStringConv:on")
+switch("warningAsError", "Deprecated:on")
 switch("warningAsError", "ImplicitDefaultValue:on")
 switch("warningAsError", "LockLevel:on")
 switch("warningAsError", "ObservableStores:on")
