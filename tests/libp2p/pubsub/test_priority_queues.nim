@@ -296,6 +296,7 @@ suite "Priority queue behavior":
       conn.writes == @[highMsg]
       peer.cancelQueuedRelays([cancelledId].toHashSet()) == cancelledMsg.len
       peer.cancelQueuedRelays([cancelledId].toHashSet()) == 0
+      peer.queuedBytes(Low) == keptMsg.len
 
     conn.releaseFirstWrite()
 
@@ -331,6 +332,7 @@ suite "Priority queue behavior":
 
     let noDuplicates = initHashSet[SaltedId]()
     check peer.cancelQueuedRelays(noDuplicates) == unwantedMsg.len
+    check peer.queuedBytes(Low) == 0
 
     conn.releaseFirstWrite()
 
@@ -607,11 +609,11 @@ suite "Priority queue byte budgets":
     await sleepAsync(1.milliseconds)
     await peer.sendEncoded(newSeq[byte](4), Low)
     await peer.sendEncoded(@[8'u8], Medium)
-    await peer.sendEncoded(newSeq[byte](5), High)
+    await peer.sendEncoded(newSeq[byte](9), High)
     check:
-      peer.queuedBytes(High) == 6
+      peer.queuedBytes(High) == 10
       peer.queuedBytes(Medium) == 0
-      peer.queuedBytes(Low) == 4
+      peer.queuedBytes(Low) == 0
       peer.slowPeerPenalty == 0.0
       conn.pendingWrites.len == 2
 

@@ -884,7 +884,10 @@ proc cancelQueuedRelays*(p: PubSubPeer, duplicates: HashSet[SaltedId]): int =
       p.rpcmessagequeue.lowPriorityQueue.addLast(queued)
       continue
 
-    savedBytes += queued.data.len
+    let messageBytes = queued.data.len
+    savedBytes += messageBytes
+    p.rpcmessagequeue.evictableBytes[Low] -= messageBytes
+    p.releaseBytes(Low, messageBytes)
     when defined(pubsubpeer_queue_metrics):
       libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
 

@@ -424,6 +424,7 @@ suite "GossipSubParams validation":
     let res = params.validateParameters()
     check res.isErr()
     check res.error == errorMessage
+
   test "maxOutboundQueueBytes requires a positive budget":
     var params = newDefaultValidParams()
     check params.maxOutboundQueueBytes == DefaultMaxOutboundQueueBytes
