@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
@@ -16,6 +17,9 @@ import (
 )
 
 func run() error {
+	if len(os.Args) != 2 {
+		return fmt.Errorf("usage: %s <address-file>", os.Args[0])
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	host, err := libp2p.New(
@@ -35,7 +39,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	remote, err := peer.AddrInfoFromString(string(address))
+	remote, err := peer.AddrInfoFromString(strings.TrimSpace(string(address)))
 	if err != nil {
 		return err
 	}
@@ -64,7 +68,7 @@ func run() error {
 	for round := 0; round < 2; round++ {
 		for i, topic := range topics {
 			size := 32
-			if i == 1 {
+			if topic.String() == "interop/topic-streams/large" {
 				size = 256 * 1024
 			}
 			payload := bytes.Repeat([]byte{byte(round + 1)}, size)
@@ -80,7 +84,9 @@ func run() error {
 					continue
 				}
 				if msg.ReceivedFrom != remote.ID || msg.GetFrom() != remote.ID || msg.GetTopic() != topic.String() || !bytes.Equal(msg.Data, payload) {
-					return fmt.Errorf("unexpected echo on %s round %d", topic.String(), round)
+					return fmt.Errorf("unexpected echo on %s round %d: receivedFrom=%s expected=%s from=%s expected=%s topic=%q expected=%q payloadLen=%d expected=%d payloadEqual=%t",
+						topic.String(), round, msg.ReceivedFrom, remote.ID, msg.GetFrom(), remote.ID,
+						msg.GetTopic(), topic.String(), len(msg.Data), len(payload), bytes.Equal(msg.Data, payload))
 				}
 				break
 			}
@@ -99,7 +105,7 @@ func run() error {
 		}
 	}
 	if counts[network.DirInbound] != 2 || counts[network.DirOutbound] != 2 {
-		return fmt.Errorf("expected two topic streams per direction, got %v", counts)
+		return fmt.Errorf("expected two topic streams per direction, got inbound=%d outbound=%d", counts[network.DirInbound], counts[network.DirOutbound])
 	}
 	fmt.Println("Topic streams interop passed over QUIC v1: two signed round trips per topic, two streams per direction")
 	return nil

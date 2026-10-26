@@ -17,7 +17,7 @@ To run it, install Go 1.25+, Nim 2.2.10, and the repository's Nim dependencies
 ```sh
 mkdir -p build
 (cd interop/topic-streams/go-peer && go build -o ../../../build/topic-streams-go .)
-nim c --nimcache:build/topic-streams-nimcache \
+nim c --nimcache:build/topic-streams-nimcache -d:chronicles_log_level=TRACE \
   --warningAsError:UseBase:off --warningAsError:UnusedImport:off \
   --hintAsError:XCannotRaiseY:off --out:build/topic-streams-nim \
   interop/topic-streams/nim-peer/src/peer.nim

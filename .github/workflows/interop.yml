@@ -172,7 +172,7 @@ jobs:
           NIM_VERSION=$(nim --version | sed -n 's/^Nim Compiler Version \([^ ]*\).*/\1/p')
           nimble --noLockfile --requires:"nim == $NIM_VERSION" --resolver:minver -l setup -y
           # Existing standalone imports trigger these diagnostics; keep them visible as warnings.
-          nim c --nimcache:build/topic-streams-nimcache \
+          nim c --nimcache:build/topic-streams-nimcache -d:chronicles_log_level=TRACE \
             --warningAsError:UseBase:off --warningAsError:UnusedImport:off \
             --hintAsError:XCannotRaiseY:off --out:build/topic-streams-nim \
             interop/topic-streams/nim-peer/src/peer.nim
