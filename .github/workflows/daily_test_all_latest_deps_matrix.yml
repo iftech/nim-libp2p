@@ -111,13 +111,31 @@ jobs:
 
       - name: Build test_all
         run: |
+          set -o pipefail
           NIMFLAGS="--mm:${{ matrix.nim.memory_management }} --opt:speed --styleCheck:usages --styleCheck:error --parallelBuild:0 --threads:on --skipUserCfg"
           NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=DEBUG"
           NIMFLAGS="$NIMFLAGS --debugger:native --stacktrace:off --define:nimStackTraceOverride"
           if [[ '${{ matrix.config.cc }}' == 'clang' ]]; then
             NIMFLAGS="$NIMFLAGS --cc:clang"
           fi
-          nim c $NIMFLAGS ./tests/test_all
+          nim c $NIMFLAGS ./tests/test_all 2>&1 | tee build-test-all.log
+
+      - name: Extract deprecated warnings
+        if: ${{ always() }}
+        run: |
+          if [[ -f build-test-all.log ]]; then
+            grep -E 'Warning:.*\[Deprecated\]' build-test-all.log > deprecated-warnings.txt || true
+          else
+            : > deprecated-warnings.txt
+          fi
+
+      - name: Upload deprecated warnings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: deprecated-warnings-${{ matrix.config.os }}-${{ matrix.config.cpu }}-${{ matrix.config.cc }}-nim-${{ matrix.nim.ref }}-${{ matrix.nim.memory_management }}
+          path: deprecated-warnings.txt
+          retention-days: 1
 
       - name: Run tests
         run: |
@@ -128,3 +146,115 @@ jobs:
         run: |
           export NIMFLAGS="${NIMFLAGS} -d:chronicles_log_level=DEBUG"
           make test_integration
+
+  report-deprecated-warnings:
+    name: Report deprecated warnings
+    needs: [test]
+    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Download deprecated warnings
+        uses: actions/download-artifact@v8
+        with:
+          pattern: deprecated-warnings-*
+          path: deprecated-warning-artifacts
+
+      - name: Open or update deprecated warnings issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import requests
+
+          TOKEN = os.environ["GITHUB_TOKEN"]
+          REPO = os.environ["REPO"]
+          RUN_ID = os.environ["RUN_ID"]
+
+          warnings = sorted(
+              {
+                  line.strip()
+                  for path in Path("deprecated-warning-artifacts").rglob(
+                      "deprecated-warnings.txt"
+                  )
+                  for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+                  if line.strip()
+              }
+          )
+
+          if not warnings:
+              print("No deprecated warnings found. Nothing to report.")
+              sys.exit(0)
+
+          headers = {
+              "Authorization": f"Bearer {TOKEN}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          base = f"https://api.github.com/repos/{REPO}"
+          issue_title = "Deprecated warnings"
+
+          existing_issue = None
+          page = 1
+          while True:
+              response = requests.get(
+                  f"{base}/issues",
+                  headers=headers,
+                  params={"state": "open", "per_page": 100, "page": page},
+              )
+              response.raise_for_status()
+              issues = response.json()
+              for issue in issues:
+                  if not issue.get("pull_request") and issue["title"] == issue_title:
+                      existing_issue = issue
+                      break
+              if existing_issue or len(issues) < 100:
+                  break
+              page += 1
+
+          now = datetime.now(timezone.utc)
+          run_url = f"https://github.com/{REPO}/actions/runs/{RUN_ID}"
+          content = (
+              f"### Deprecated warnings detected on {now:%Y-%m-%d}\n\n"
+              f"[View workflow run]({run_url})\n\n"
+              "```text\n"
+              + "\n".join(warnings)
+              + "\n```"
+          )
+
+          if existing_issue:
+              response = requests.post(
+                  f"{base}/issues/{existing_issue['number']}/comments",
+                  headers=headers,
+                  json={"body": content},
+              )
+              response.raise_for_status()
+              print(
+                  f"Added comment to issue #{existing_issue['number']}: "
+                  f"{existing_issue['html_url']}"
+              )
+          else:
+              _, week, _ = now.isocalendar()
+              assignees = ["gmelodie", "richard-ramos", "vladopajic"]
+              assignee = assignees[(week - 1) % len(assignees)]
+              response = requests.post(
+                  f"{base}/issues",
+                  headers=headers,
+                  json={
+                      "title": issue_title,
+                      "body": content,
+                      "assignees": [assignee],
+                  },
+              )
+              response.raise_for_status()
+              new_issue = response.json()
+              print(f"Created issue #{new_issue['number']}: {new_issue['html_url']}")
+          PYEOF
