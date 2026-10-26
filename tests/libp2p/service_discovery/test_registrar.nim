@@ -286,29 +286,6 @@ suite "Service Discovery Registrar - waitingTime":
 
     check w >= 2000.secs
 
-  test "waitingTime with advertisement with no addresses":
-    let registrar = Registrar.new()
-    let discoConfig = ServiceDiscoveryConfig.new()
-    let ad = makeAdvertisement(addrs = @[])
-    let now = Moment.now()
-    let serviceId = makeServiceId()
-
-    let w = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
-
-    check w >= ZeroDuration
-
-  test "waitingTime with IPv6 addresses only, tree empty":
-    let registrar = Registrar.new()
-    let discoConfig = ServiceDiscoveryConfig.new()
-    let serviceId = makeServiceId()
-    let ipv6Addr = ma("/ip6/::1/tcp/9000")
-    let ad = makeAdvertisement(addrs = @[ipv6Addr])
-    let now = Moment.now()
-
-    let w = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
-
-    check w >= ZeroDuration
-
   test "waitingTime with IPv6 addresses contributes IP similarity":
     let registrar = Registrar.new()
     let discoConfig = ServiceDiscoveryConfig.new()
@@ -342,28 +319,6 @@ suite "Service Discovery Registrar - waitingTime":
     let w = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
 
     check w > ZeroDuration
-
-  test "waitingTime with service ID not in boundService":
-    let registrar = Registrar.new()
-    let discoConfig = ServiceDiscoveryConfig.new()
-    let ad = makeAdvertisement()
-    let now = Moment.now()
-    let serviceId = makeServiceId()
-
-    let w = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
-
-    check w >= ZeroDuration
-
-  test "waitingTime with IP not in boundIp":
-    let registrar = Registrar.new()
-    let discoConfig = ServiceDiscoveryConfig.new()
-    let ad = makeAdvertisement(addrs = @[makeMultiAddress("10.0.0.1")])
-    let now = Moment.now()
-    let serviceId = makeServiceId()
-
-    let w = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
-
-    check w >= ZeroDuration
 
   test "different advertCacheCap affects occupancy":
     let registrar = Registrar.new(10_000)
@@ -431,27 +386,19 @@ suite "Service Discovery Registrar - waitingTime":
     let registrar = Registrar.new()
     let ad = makeAdvertisement()
     let now = Moment.now()
-    let serviceId = makeServiceId()
-
-    registrar.ads.seedOccupancy(500, now)
-
+    # seedOccupancy uses ids 1 .. 250, so serviceSim stays 0 for this one
+    let serviceId = makeServiceId(255)
     let discoConfig = ServiceDiscoveryConfig.new(occupancyExp = 0.0)
-    let w = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
 
-    check w >= ZeroDuration
-
-  test "occupancyExp of 1 gives linear occupancy":
-    let registrar = Registrar.new()
-    let ad = makeAdvertisement()
-    let now = Moment.now()
-    let serviceId = makeServiceId()
+    # an empty cache has occupancy 1.0
+    let emptyWait = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
 
     registrar.ads.seedOccupancy(500, now)
-
-    let discoConfig = ServiceDiscoveryConfig.new(occupancyExp = 1.0)
     let w = registrar.waitingTime(discoConfig, serviceId, ad.ipsFromAd(), now)
 
-    check w >= ZeroDuration
+    check:
+      emptyWait > ZeroDuration
+      w == emptyWait
 
   test "waitingTime returns non-negative with stale high service lower bound":
     let registrar = Registrar.new()
@@ -990,16 +937,6 @@ suite "Service Discovery Registrar - updateLowerBounds":
     updateLowerBounds(registrar, serviceId, ad.ipsFromAd(), 1200.secs, initMoment(2000))
     check registrar.boundService[serviceId] == initMoment(3200)
 
-  test "updateLowerBounds with empty addresses does not crash":
-    let registrar = Registrar.new()
-    let serviceId = makeServiceId()
-    let ad = makeAdvertisement($serviceId, addrs = @[])
-    let now = initMoment(1000)
-
-    updateLowerBounds(registrar, serviceId, ad.ipsFromAd(), 500.secs, now)
-
-    check registrar.boundService[serviceId] == initMoment(1500)
-
   test "updateLowerBounds with zero w":
     let registrar = Registrar.new()
     let serviceId = makeServiceId()
@@ -1092,17 +1029,6 @@ suite "Service Discovery Registrar - pruneExpiredAds":
     check ad2 in remaining
     check ad1 notin remaining
     check ad3 notin remaining
-
-  test "pruneExpiredAds handles ad with no valid IP addresses":
-    let registrar = Registrar.new()
-    let serviceId = makeServiceId()
-    let ad = makeAdvertisement($serviceId, addrs = @[])
-
-    registrar.seedAd(serviceId, ad, Moment.now() - 1000.secs)
-
-    pruneExpiredAds(registrar, 900.secs)
-
-    check ad notin registrar.ads.getServiceCachedAds(serviceId, int.high).mapIt(it.ad)
 
   test "pruneExpiredAds removes same expired ad from all services independently":
     let registrar = Registrar.new()

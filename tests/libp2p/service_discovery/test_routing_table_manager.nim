@@ -33,12 +33,6 @@ proc makeMainTable(selfId: Key, peers: seq[Key]): RoutingTable =
   rt
 
 suite "ServiceRoutingTableManager":
-  test "new creates empty manager":
-    let manager = ServiceRoutingTableManager.new()
-    check:
-      manager.count() == 0
-      manager.serviceIds().len == 0
-
   test "addService returns true and adds table":
     let manager = ServiceRoutingTableManager.new()
     let serviceId = makeServiceId(1)

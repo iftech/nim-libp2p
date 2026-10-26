@@ -192,10 +192,10 @@ suite "RendezVous":
     check rendezvousNode.registered.s.len == 0
 
   asyncTest "Unsubscribe removes registered peer from remote":
-    let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(1)
+    let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(2)
     startAndDeferStop(rendezvousNode & peerNodes)
 
-    await connect(peerNodes[0], rendezvousNode)
+    await connectHub(rendezvousNode, peerNodes)
 
     const namespace = "foo"
     await peerNodes[0].advertise(namespace)
@@ -207,9 +207,10 @@ suite "RendezVous":
     ).len == 1
 
     await peerNodes[0].unsubscribe(namespace)
+    # A requester without a cookie, so an empty reply comes from the unsubscribe
     check (
       await rendezvous.request(
-        peerNodes[0], Opt.some(namespace), Opt.none(int), Opt.none(seq[PeerId])
+        peerNodes[1], Opt.some(namespace), Opt.none(int), Opt.none(seq[PeerId])
       )
     ).len == 0
 

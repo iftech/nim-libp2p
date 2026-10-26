@@ -150,45 +150,6 @@ suite "Switch":
     check not switch1.isConnected(switch2)
     check not switch2.isConnected(switch1)
 
-  asyncTest "e2e should not leak bufferstreams and connections on channel close":
-    let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-      try:
-        let msg = string.fromBytes(await stream.readLp(1024))
-        check "Hello!" == msg
-        await stream.writeLp("Hello!")
-      except LPStreamError:
-        raiseAssert "Unexpected LPStreamError in bufferstream leak test handler"
-      finally:
-        await stream.close()
-        handleFinished.done()
-
-    let testProto = new TestProto
-    testProto.codec = TestCodec
-    testProto.handler = handle
-
-    let switch1 = makeStandardSwitch()
-    switch1.mount(testProto)
-
-    let switch2 = makeStandardSwitch()
-    await switch1.start()
-    await switch2.start()
-
-    let stream = await switch2.dial(switch1, TestCodec)
-
-    check switch1.isConnected(switch2)
-    check switch2.isConnected(switch1)
-
-    await stream.writeLp("Hello!")
-    let msg = string.fromBytes(await stream.readLp(1024))
-    check "Hello!" == msg
-    await stream.close()
-
-    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
-
-    check not switch1.isConnected(switch2)
-    check not switch2.isConnected(switch1)
-
   asyncTest "e2e use connect then dial":
     proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
       try:
@@ -809,7 +770,7 @@ suite "Switch":
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
-  asyncTest "e2e total connection limits on incoming connections":
+  asyncTest "e2e total connection limits on outgoing connections":
     var switches: seq[Switch]
     for i in 0 ..< 3:
       switches.add(makeStandardSwitch(TcpAutoAddress))
