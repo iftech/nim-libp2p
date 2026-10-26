@@ -91,48 +91,6 @@ nim c -r -d:path=mix tests/test_all.nim
 nim c -r tests/tools/test_multiaddress.nim
 ```
 
-### GossipSub queue pressure
-
-GossipSub limits both message counts and encoded RPC bytes. The default
-`maxOutboundQueueBytes` is a shared 16 MiB per-peer budget across all
-priorities, including pending writes. One sixteenth of the configured budget is
-reserved for high-priority traffic.
-
-High-priority admission evicts queued low and then medium traffic from the same
-peer before disconnecting it. Medium admission may evict queued low traffic;
-low admission never evicts higher-priority traffic. A single protocol-valid
-frame may exceed its normal backlog limit when the queue is otherwise empty.
-The effective per-peer bound is therefore
-`max(maxOutboundQueueBytes, maxMessageSize)`.
-
-Bytes remain charged while a message waits for a stream or a transport write to
-finish, including a medium/low message already removed from its deque by the
-worker. `peer.queuedBytes(priority)` exposes this accounting. The budget excludes
-transport framing, allocator overhead, and additional transport-owned copies;
-shared encoded buffers are charged once per destination peer, so it is not a
-bound on physical process memory.
-
-Queue-drop metrics are available with
-`-d:libp2p_expensive_metrics`; they are omitted from normal builds to keep the
-send path lean. Existing message-count limits remain active in every build.
-
-Run the queue pressure benchmark with:
-
-```sh
-make bench_pubsub_queues BENCH_LOG_LEVEL=ERROR
-make bench_pubsub_queues BENCH_LOG_LEVEL=ERROR QUEUE_BENCH_BYTES=2147483647
-```
-
-The benchmark measures 100,000 synchronous 256-byte sends and a burst cycling
-through 256-byte, 4-KiB, and 64-KiB messages behind a stalled write. It reports CPU
-time per send, occupied-heap growth after collection, dropped messages, accounted
-bytes, and heap growth after cleanup. The default benchmark byte budget is 1 MiB
-to make the difference from count-only limiting visible in the mixed-size
-burst; the 512-message count limit binds first in the 256-byte run. Override
-`QUEUE_BENCH_MESSAGES` to change the default 100,000 sends. Heap measurements
-omit reserved GC pages and transport buffering; timing is a local
-microbenchmark, not a network throughput measurement.
-
 ## Formatting code
 
 nim-libp2p uses [nph](https://github.com/arnetheduck/nph) to format code.
