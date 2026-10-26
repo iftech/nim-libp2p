@@ -23,8 +23,7 @@ suite "Transport accept retries":
   teardown:
     checkTrackers()
 
-  for failure in ["descriptor exhaustion", "connection abort"]:
-    let failure = failure # the asyncTest closure cannot capture the lent loop variable
+  template retryTest(failure: static string, E: typedesc[CatchableError]) =
     asyncTest "TCP retries " & failure & " within one accept call with backoff":
       let server = TcpTransport.new(upgrade = Upgrade())
       let client = TcpTransport.new(upgrade = Upgrade())
@@ -32,10 +31,7 @@ suite "Transport accept retries":
       defer:
         await allFutures(client.stop(), server.stop())
 
-      if failure == "descriptor exhaustion":
-        server.failNextAccept(TransportTooManyError)
-      else:
-        server.failNextAccept(TransportAbortedError)
+      server.failNextAccept(E)
       let started = Moment.now()
       let accepting = server.accept()
       let outgoing = await client.dial(server.addrs[0])
@@ -46,6 +42,9 @@ suite "Transport accept retries":
         await incoming.close()
       check not incoming.isNil
       check Moment.now() - started >= AcceptRetryDelay
+
+  retryTest("descriptor exhaustion", TransportTooManyError)
+  retryTest("connection abort", TransportAbortedError)
 
   asyncTest "TCP terminal failures preserve their exception and cause":
     let server = TcpTransport.new(upgrade = Upgrade())
