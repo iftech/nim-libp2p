@@ -136,9 +136,10 @@ method start*(
     self: HPService, switch: Switch
 ) {.async: (raises: [CancelledError, LPError]).} =
   if self.dcutr.isNil:
-    self.dcutr = Dcutr.new(switch)
-    await self.dcutr.start()
-    switch.tryMount(self.dcutr).onErrorRaise(LPError)
+    let dcutr = Dcutr.new(switch)
+    await dcutr.start()
+    switch.tryMount(dcutr).onErrorRaise(LPError)
+    self.dcutr = dcutr
 
   self.configure(switch)
   switch.connManager.addPeerEventHandler(

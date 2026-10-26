@@ -145,7 +145,7 @@ gen_multicodec:
 	nimble gen_multicodec
 
 format:
-	find . \( -name '*.nim' -o -name '*.nimble' \) -not -path '*/nimbledeps/*' | xargs nph
+	find . -path '*/nimbledeps' -prune -o -type f \( -name '*.nim' -o -name '*.nimble' \) -print0 | xargs -0 nph
 
 clean-nim:
 	[ ! -d nimbledeps ] || rm -rf nimbledeps

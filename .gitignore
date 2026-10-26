@@ -43,7 +43,6 @@ tests/**/test*[^.]*
 /tests/nimcache/
 /tests/nimble.lock
 /tests/nimble.paths
-/tests/nimble.develop
 
 # nix builds
 result

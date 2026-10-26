@@ -20,7 +20,7 @@ import ./unified_testing
 type HolePunchSwitches* = object
   sw*: Switch
   aux*: Switch
-  hpService*: HPService
+  hpService: HPService
   autonatService*: AutonatService
 
 proc createSwitch(config: BaseConfig, relayClient: Relay = nil): Switch =
@@ -33,7 +33,7 @@ proc createSwitch(config: BaseConfig, relayClient: Relay = nil): Switch =
   sw.mount(Ping.new(rng = rng()))
   sw
 
-proc makeHolePunchSwitches*(config: BaseConfig): HolePunchSwitches =
+proc makeHolePunchSwitches*(config: BaseConfig): HolePunchSwitches {.raises: [LPError].} =
   let relayClient = RelayClient.new()
   let autoRelayService = AutoRelayService.new(1, relayClient, nil, rng())
 
