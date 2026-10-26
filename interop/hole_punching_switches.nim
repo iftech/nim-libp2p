@@ -33,7 +33,9 @@ proc createSwitch(config: BaseConfig, relayClient: Relay = nil): Switch =
   sw.mount(Ping.new(rng = rng()))
   sw
 
-proc makeHolePunchSwitches*(config: BaseConfig): HolePunchSwitches {.raises: [LPError].} =
+proc makeHolePunchSwitches*(
+    config: BaseConfig
+): HolePunchSwitches {.raises: [LPError].} =
   let relayClient = RelayClient.new()
   let autoRelayService = AutoRelayService.new(1, relayClient, nil, rng())
 
