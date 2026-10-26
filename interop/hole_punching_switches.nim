@@ -23,7 +23,9 @@ type HolePunchSwitches* = object
   hpService: HPService
   autonatService*: AutonatService
 
-proc createSwitch(config: BaseConfig, relayClient: Relay = nil): Switch =
+proc createSwitch(
+    config: BaseConfig, relayClient: Relay = nil
+): Switch {.raises: [LPError].} =
   var sw = buildBaseSwitch(config, tcpFlags = {ServerFlags.TcpNoDelay})
     .withAddressManager(AddressManagerConfig(maxSize: 1, minCount: 1))
     .withAutonat()
