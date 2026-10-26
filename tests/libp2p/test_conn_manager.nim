@@ -3,7 +3,7 @@
 
 {.used.}
 
-import results, chronos, std/[sequtils, tables, strformat]
+import results, chronos, std/[sequtils, tables]
 import
   ../../libp2p/[connmanager, stream/connection, crypto/crypto, muxers/muxer, peerinfo]
 import ../tools/[unittest, compare, futures, crypto]
@@ -631,9 +631,8 @@ suite "Connection Manager maxConnsPerPeer":
   asyncTest "maxConnsPerPeer = 0 uses default":
     await runTest(0, defaultMaxConnsPerPeer)
 
-  for i in 1 .. 3:
-    let limit = i
-    asyncTest fmt"peer limit is reached with {limit} muxers":
+  asyncTest "peer limit is reached":
+    for limit in 1 ..< 10:
       await runTest(limit, limit)
 
 suite "Connection Manager Watermark":
