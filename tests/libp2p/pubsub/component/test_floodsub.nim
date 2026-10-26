@@ -322,6 +322,49 @@ suite "FloodSub Component", timeout = 120.seconds:
     check:
       messageReceived == 2
 
+  asyncTest "oversized message from a larger-limit peer does not break the connection":
+    # A peer with a larger maxMessageSize may send a frame we refuse. The
+    # stream is reset, the sender re-opens it, and later messages still arrive.
+    let received = newAsyncQueue[seq[byte]]()
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      await received.put(data)
+
+    let
+      bigNode = generateNodes(1).toFloodSub()[0]
+      smallNode = generateNodes(1, maxMessageSize = 1024).toFloodSub()[0]
+      nodes = @[bigNode, smallNode]
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    subscribeAllNodes(nodes, topic, handler)
+    waitSubscribeStar(nodes, topic)
+
+    # Fires when bigNode re-opens its send stream to smallNode.
+    let smallPeer = bigNode.peers[smallNode.peerInfo.peerId]
+    let reopened = newAsyncEvent()
+    let onEvent = smallPeer.onEvent
+    smallPeer.onEvent = proc(
+        peer: PubSubPeer, event: PubSubPeerEvent
+    ) {.gcsafe, raises: [].} =
+      onEvent(peer, event)
+      if event.kind == PubSubPeerEventKind.StreamOpened:
+        reopened.fire()
+
+    let
+      oversized = newSeq[byte](2048) # over smallNode's limit
+      small1 = @[1.byte]
+      small2 = @[2.byte]
+
+    check (await bigNode.publish(topic, small1)) > 0
+    check (await received.popFirst()) == small1
+
+    check (await bigNode.publish(topic, oversized)) > 0
+    await reopened.wait()
+
+    check (await bigNode.publish(topic, small2)) > 0
+    check (await received.popFirst()) == small2
+
   asyncTest "FloodSub message size validation 2":
     var messageReceived = 0
     proc handler(topic: string, data: seq[byte]) {.async.} =
