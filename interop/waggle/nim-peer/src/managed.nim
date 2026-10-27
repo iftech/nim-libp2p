@@ -61,6 +61,17 @@ proc managedInterop*(address: string) {.async.} =
     parts = address.rsplit("/p2p/", maxsplit = 1)
     peer = PeerId.init(parts[1]).get()
 
+  let disconnected = Future[void].Raising([CancelledError]).init()
+  proc onPeerLeft(
+      remote: PeerId, event: PeerEvent
+  ) {.async: (raises: [CancelledError]).} =
+    if remote == peer and not disconnected.finished:
+      disconnected.complete()
+
+  switch.addPeerEventHandler(onPeerLeft, PeerEventKind.Left)
+  defer:
+    switch.removePeerEventHandler(onPeerLeft, PeerEventKind.Left)
+
   await switch.start()
   await switch.connect(peer, @[MultiAddress.init(parts[0]).get()])
 
@@ -83,7 +94,6 @@ proc managedInterop*(address: string) {.async.} =
     ),
   )
 
-  while switch.isConnected(peer):
-    await sleepAsync(10.milliseconds)
+  await disconnected
 
   echo "Nim reconciled complementary pieces with Rust; duplicate payload suppressed"
