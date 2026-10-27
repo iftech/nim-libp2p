@@ -18,3 +18,22 @@ Messages carry opaque bytes for the object ID and optional metadata and pieces.
 Absent fields differ from present empty fields. The subscriber sends one topic
 handshake; object messages travel back from the remote publisher on that stream.
 Two peers wanting mutual delivery each open a subscription stream.
+
+## Stream safety
+
+Message and topic sizes, total streams, and per-peer streams are bounded. Pending
+handshakes count against stream limits. Sends are serialized per stream; failed
+or cancelled active writes reset the stream, while cancellation waiting for a
+write lock leaves the active writer intact. Stop closes owned streams.
+
+## Connection events
+
+Call `addConnection(muxer)` for each running muxer to receive `Subscribed`,
+`Unsubscribed`, and `InvalidData` through `onEvent`. Events identify a registered
+connection with a nonzero connection ID. Direct streams without registration
+use their message handler and returned Results; malformed subscriptions are
+also logged at trace level.
+
+Register new muxers as they connect. After stopping and restarting Waggle,
+re-register live muxers. `maxStreams` caps both streams and registered
+connections separately.
