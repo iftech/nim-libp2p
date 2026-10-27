@@ -46,6 +46,18 @@ proc run(address: string) {.async.} =
     for task in receiving:
       await task.cancelAndWait()
     await switch.stop()
+
+  let disconnected = Future[void].Raising([CancelledError]).init()
+  proc onPeerLeft(
+      remote: PeerId, event: PeerEvent
+  ) {.async: (raises: [CancelledError]).} =
+    if remote == peer and not disconnected.finished:
+      disconnected.complete()
+
+  switch.addPeerEventHandler(onPeerLeft, PeerEventKind.Left)
+  defer:
+    switch.removePeerEventHandler(onPeerLeft, PeerEventKind.Left)
+
   await switch.start()
   await switch.connect(peer, @[remoteAddr])
 
@@ -87,8 +99,7 @@ proc run(address: string) {.async.} =
     ObjectPieces(objectId: @[NimObjectPrefix, 255], pieces: Opt.some(@[byte 1])),
   )
   # The Rust peer exits only after validating our final acknowledgement.
-  while switch.isConnected(peer):
-    await sleepAsync(10.milliseconds)
+  await disconnected
   echo "Nim verified 6 Rust messages across 2 topics and Rust's acknowledgement"
 
 when isMainModule:
