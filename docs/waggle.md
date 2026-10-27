@@ -40,3 +40,13 @@ also logged at trace level.
 Register new muxers as they connect. After stopping and restarting Waggle,
 re-register live muxers. `maxStreams` caps both streams and registered
 connections separately.
+
+## Object model contract
+
+`WaggleShard.metadata` and `WaggleMetadata.clone` must return independent,
+non-nil snapshots, even when no pieces are available. `PieceSend.peerMetadata`
+must be non-nil and describe the peer's state after sending.
+
+Leave `WaggleAction.send` unset when there is no payload to send. A present empty
+`pieces` payload remains present on the wire; its meaning belongs to the
+application.
