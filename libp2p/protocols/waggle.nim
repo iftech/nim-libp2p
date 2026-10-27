@@ -7,7 +7,7 @@
 
 import std/[sequtils, sets]
 import chronos, chronicles
-import ./protocol, ./waggle/messages
+import ./protocol, ./waggle/[messages, shard]
 import ../muxers/muxer
 import ../stream/connection
 import ../peerid
@@ -16,7 +16,7 @@ import ../results as lpresults
 
 export lpresults
 
-export protocol, messages, connection, chronicles
+export protocol, messages, shard, connection, chronicles
 
 logScope:
   topics = "libp2p waggle"
