@@ -11,16 +11,16 @@ proc topic(index: byte): seq[byte] =
 
 proc fixture(index, kind: byte, fromRust: bool): ObjectPieces =
   result.objectId = @[if fromRust: RustObjectPrefix else: NimObjectPrefix, index, kind]
-  if kind != 1 or fromRust:
+  if kind != PayloadKind or fromRust:
     result.piecesMetadata = Opt.some(
-      if kind == 2:
+      if kind == EmptyFieldsKind:
         newSeq[byte]()
       else:
         @[byte 0, 255, 1]
     )
-  if kind != 0:
+  if kind != MetadataOnlyKind:
     var payload: seq[byte]
-    if kind == 1:
+    if kind == PayloadKind:
       for i in 0 .. 255:
         payload.add(byte i)
     result.pieces = Opt.some(payload)
@@ -65,7 +65,7 @@ proc run(address: string) {.async.} =
     else:
       doAssert msg.objectId.len == 3 and msg.objectId[0] == RustObjectPrefix
       let (index, kind) = (msg.objectId[1], msg.objectId[2])
-      doAssert index < 2 and kind < 3 and t == topic(index)
+      doAssert index < 2 and kind in FixtureKinds and t == topic(index)
       doAssert msg == fixture(index, kind, fromRust = true)
       doAssert (index, kind) notin received
       received.incl((index, kind))
@@ -76,7 +76,7 @@ proc run(address: string) {.async.} =
   while waggle.subscribers(topic(0)).len != 1 or waggle.subscribers(topic(1)).len != 1:
     await sleepAsync(10.milliseconds)
   for index in 0.byte .. 1.byte:
-    for kind in 0.byte .. 2.byte:
+    for kind in FixtureKinds:
       doAssert await waggle.send(
         peer, topic(index), fixture(index, kind, fromRust = false)
       )
