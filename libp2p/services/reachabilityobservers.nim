@@ -49,6 +49,10 @@ func lastReachability*(self: ReachabilityObservers): NetworkReachability =
   ## next change.
   self.reachability
 
+proc reset*(self: ReachabilityObservers) =
+  ## Sets the last reachability to `Unknown` without a notify.
+  self.reachability = NetworkReachability.Unknown
+
 proc notify*(
     self: ReachabilityObservers,
     reachability: NetworkReachability,
