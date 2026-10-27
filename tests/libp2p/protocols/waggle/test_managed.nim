@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/sequtils
+import std/[sequtils, sets]
 import chronos
 import ./utils
 import
@@ -26,6 +26,8 @@ type Node = ref object
   ms: MultistreamSelect
   events: seq[WaggleEvent]
   onEvent: WaggleEventHandler
+  have: byte
+  integrate: bool
 
 suite "Waggle managed dissemination":
   var
@@ -35,13 +37,36 @@ suite "Waggle managed dissemination":
     muxers: seq[Muxer]
 
   proc newNode(
-      managed = false, start = true, maxStreamsPerPeer = 16
+      have: byte = 0,
+      integrate = false,
+      fanout = 50,
+      maxQueued = 5000,
+      managed = false,
+      forwardFanout = 50,
+      gossipFanout = 50,
+      start = true,
+      maxStreamsPerPeer = 16,
   ): Future[Node] {.async.} =
-    let node = Node(peer: PeerId.random(), ms: MultistreamSelect.new())
+    let node = Node(
+      peer: PeerId.random(),
+      have: have,
+      integrate: integrate,
+      ms: MultistreamSelect.new(),
+    )
     proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
       node.events.add(event)
       if node.onEvent != nil:
         node.onEvent(event)
+      if node.integrate and event.kind == WaggleEventKind.Received and
+          event.message.pieces.isSome:
+        let pieces = event.message.pieces.get()
+        doAssert pieces.len == 1 and pieces[0] <= 7
+        let have = node.have or pieces[0]
+        if have != node.have:
+          node.have = have
+          discard node.protocol.publish(
+            event.topicId, BitShard(id: event.message.objectId, have: have)
+          )
 
     if managed:
       node.manager = ConnManager.new(maxConnsPerPeer = 4)
@@ -49,6 +74,11 @@ suite "Waggle managed dissemination":
       switch = (if managed: Switch(connManager: node.manager) else: nil),
       onEvent = onEvent,
       maxStreamsPerPeer = maxStreamsPerPeer,
+      rng = rng(),
+      maxQueued = maxQueued,
+      defaultTopicConfig = TopicConfig(
+        publishFanout: fanout, forwardFanout: forwardFanout, gossipFanout: gossipFanout
+      ),
     )
     node.ms.addHandler(node.protocol)
     nodes.add(node)
@@ -121,24 +151,75 @@ suite "Waggle managed dissemination":
     await dialer.stop()
     checkTrackers()
 
+  asyncTest "three peers reconcile complementary pieces along a chain":
+    let a = await newNode(1, integrate = true)
+    let b = await newNode(2, integrate = true)
+    let c = await newNode(4, integrate = true)
+    for node in nodes:
+      check node.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    discard await connect(b, c)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1 and b.protocol.subscribers(topic).len == 2 and
+        c.protocol.subscribers(topic).len == 1
+    for node in nodes:
+      check node.protocol.publish(topic, BitShard(id: @[byte 1], have: node.have)).isOk
+    checkUntilTimeout:
+      a.have == 7 and b.have == 7 and c.have == 7
+    for node in nodes:
+      check node.protocol.publish(topic, BitShard(id: @[byte 1], have: 7)).get() == 0
+      check node.events.allIt(it.kind != WaggleEventKind.InvalidData)
+
+  asyncTest "publish fanout limits initial recipients":
+    let source = await newNode(7, fanout = 1)
+    let b = await newNode()
+    let c = await newNode()
+    for node in nodes:
+      discard node.protocol.subscribe(topic).get()
+    discard await connect(source, b)
+    discard await connect(source, c)
+    checkUntilTimeout:
+      source.protocol.subscribers(topic).len == 2
+    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 7)).get() == 1
+    checkUntilTimeout:
+      b.events.countIt(it.kind == WaggleEventKind.Received) +
+        c.events.countIt(it.kind == WaggleEventKind.Received) == 1
+
+  asyncTest "queue saturation reports an event and unchanged snapshots can retry":
+    let a = await newNode(1, maxQueued = 1)
+    let b = await newNode()
+    discard a.protocol.subscribe(topic).get()
+    discard b.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).isOk
+    check a.protocol.publish(topic, BitShard(id: @[byte 2], have: 1)).isErr
+    check a.events.anyIt(it.kind == WaggleEventKind.FullQueue)
+    checkUntilTimeout:
+      b.events.anyIt(it.kind == WaggleEventKind.Received)
+    check a.protocol.publish(topic, BitShard(id: @[byte 2], have: 1)).get() == 1
+    checkUntilTimeout:
+      b.events.anyIt(
+        it.kind == WaggleEventKind.Received and it.message.objectId == @[byte 2] and
+          it.message.pieces == Opt.some(@[byte 1]) and
+          it.message.piecesMetadata == Opt.some(@[byte 1])
+      )
+
   asyncTest "start discovers existing switch connections":
     let a = await newNode(managed = true)
     let b = await newNode(managed = true)
     discard await connect(a, b)
     await a.protocol.stop()
     check a.ms.removeHandler(a.protocol)
-    a.protocol = Waggle.new(switch = Switch(connManager: a.manager))
+    a.protocol = Waggle.new(switch = Switch(connManager: a.manager), rng = rng())
     a.ms.addHandler(a.protocol)
     discard a.protocol.subscribe(topic).get()
     discard b.protocol.subscribe(topic).get()
     await a.protocol.start()
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 1 and b.protocol.subscribers(topic).len == 1
-    check (
-      await a.protocol.send(
-        b.peer, topic, ObjectPieces(objectId: @[byte 1], pieces: Opt.some(@[byte 1]))
-      )
-    ).get()
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
     checkUntilTimeout:
       b.events.countIt(it.kind == WaggleEventKind.Received) == 1
 
@@ -150,11 +231,7 @@ suite "Waggle managed dissemination":
     discard await connect(a, b)
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 1 and b.protocol.subscribers(topic).len == 1
-    check (
-      await a.protocol.send(
-        b.peer, topic, ObjectPieces(objectId: @[byte 1], pieces: Opt.some(@[byte 1]))
-      )
-    ).get()
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
     checkUntilTimeout:
       b.events.countIt(it.kind == WaggleEventKind.Received) == 1
     check await b.protocol.unsubscribe(topic)
@@ -164,11 +241,7 @@ suite "Waggle managed dissemination":
     check b.protocol.subscribe(topic).get().added
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 1
-    check (
-      await a.protocol.send(
-        b.peer, topic, ObjectPieces(objectId: @[byte 1], pieces: Opt.some(@[byte 1]))
-      )
-    ).get()
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
     checkUntilTimeout:
       b.events.countIt(it.kind == WaggleEventKind.Received) == 2
     let c = await newNode(managed = true)
@@ -176,6 +249,77 @@ suite "Waggle managed dissemination":
     discard await connect(a, c)
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 2 and c.protocol.subscribers(topic).len == 1
+
+  asyncTest "connection views are independent and reconnect clears old state":
+    let a = await newNode(1)
+    let b = await newNode()
+    discard a.protocol.subscribe(topic).get()
+    discard b.protocol.subscribe(topic).get()
+    let (first, _) = await connect(a, b)
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.events.countIt(it.kind == WaggleEventKind.Subscribed) == 2
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 2
+    checkUntilTimeout:
+      b.events.countIt(it.kind == WaggleEventKind.Received) == 2
+    await first.close()
+    checkUntilTimeout:
+      a.events.countIt(it.kind == WaggleEventKind.Unsubscribed) == 1
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.events.countIt(it.kind == WaggleEventKind.Subscribed) == 3
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
+    checkUntilTimeout:
+      b.events.countIt(it.kind == WaggleEventKind.Received) == 3
+
+  asyncTest "invalid metadata is surfaced without disconnecting healthy peers":
+    let a = await newNode(1)
+    let b = await newNode(2)
+    discard a.protocol.subscribe(topic).get()
+    discard b.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1 and b.protocol.subscribers(topic).len == 1
+    discard a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get()
+    check (
+      await b.protocol.send(
+        a.peer,
+        topic,
+        ObjectPieces(objectId: @[byte 1], piecesMetadata: Opt.some(@[byte 255])),
+      )
+    ).get()
+    checkUntilTimeout:
+      a.events.anyIt(it.kind == WaggleEventKind.InvalidData)
+    check a.protocol.subscribers(topic).len == 1
+
+  asyncTest "topic whitelist and configuration limits apply locally and remotely":
+    let a = await newNode()
+    let b = await newNode()
+    await a.protocol.stop()
+    a.protocol = Waggle.new(
+      topicWhitelist = Opt.some([topic].toHashSet()),
+      maxTopics = 1,
+      onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+        a.events.add(event),
+    )
+    a.ms = MultistreamSelect.new()
+    a.ms.addHandler(a.protocol)
+    check a.protocol.subscribe(@[byte 2]).isErr
+    check a.protocol.subscribe(topic).get()
+    check a.protocol.setTopicConfig(
+      topic, TopicConfig(publishFanout: 0, forwardFanout: 1, gossipFanout: 1)
+    ).isErr
+    check a.protocol.setTopicConfig(
+      topic, TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: 1)
+    ).isOk
+    check a.protocol.setTopicConfig(
+      @[byte 2], TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: 1)
+    ).isErr
+    discard b.protocol.subscribe(@[byte 2]).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      b.protocol.subscribers(topic).len == 1
+    check a.protocol.subscribers(@[byte 2]).len == 0
 
   asyncTest "stopping Waggle preserves the shared connection":
     let a = await newNode(managed = true)

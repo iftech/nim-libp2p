@@ -216,6 +216,11 @@ proc removeConnection*(state: WaggleState, connectionId: uint64) =
 proc removeTopic*(state: WaggleState, topic: seq[byte]) =
   state.topics.del(topic)
 
+proc hasLocal*(state: WaggleState, topic, objectId: seq[byte]): bool =
+  let cache = state.topics.lookup(topic).valueOr:
+    return false
+  return cache.local.hasKey(objectId)
+
 proc peerView*(
     state: WaggleState, topic: seq[byte], connectionId: uint64, objectId: seq[byte]
 ): tuple[known, advertised: bool] =
