@@ -9,7 +9,7 @@ import ../../../switch
 import ../../../wire
 import client
 from types import NetworkReachability, AutonatUnreachableError
-import ../../../utils/heartbeat
+import ../../../utils/[future, heartbeat]
 import ../../../services/reachabilityobservers
 import ../../../crypto/crypto
 
@@ -30,6 +30,7 @@ type
     newConnectedPeerHandler: PeerEventHandler
     addressMapper: AddressMapper
     scheduleHandle: Future[void]
+    askPeerFuts: seq[Future[NetworkReachability].Raising([CancelledError])]
     networkReachability*: NetworkReachability
     confidence: Opt[float]
     answers: Deque[NetworkReachability]
@@ -237,7 +238,7 @@ proc configure(self: AutonatService, switch: Switch) =
     self.newConnectedPeerHandler = proc(
         peerId: PeerId, event: PeerEvent
     ): Future[void] {.async: (raises: [CancelledError]).} =
-      discard askPeer(self, switch, peerId)
+      self.askPeerFuts.trackFut(askPeer(self, switch, peerId))
 
 method start*(
     self: AutonatService, switch: Switch
@@ -273,6 +274,13 @@ method stop*(
     )
   if self.enableAddressMapper:
     switch.addressManager.removeMapper(self.addressMapper)
+  # an in-flight dial-back would refill the state reset below
+  await self.askPeerFuts.cancelAndWait()
+  self.askPeerFuts.setLen(0)
+  self.answers.clear()
+  self.networkReachability = Unknown
+  self.confidence = Opt.none(float)
+  self.reachabilityObservers.reset()
   await switch.peerInfo.update()
 
 proc statusAndConfidenceHandler*(
