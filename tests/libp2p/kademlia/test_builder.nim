@@ -4,8 +4,9 @@
 {.used.}
 
 import chronos, std/sequtils
-import ../../../libp2p/[switch, builders]
+import ../../../libp2p/[switch, builders, address_manager]
 import ../../../libp2p/protocols/kademlia
+import ../../../libp2p/services/[natservice, reachabilityobservers]
 import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 import ./utils.nim
 
@@ -24,11 +25,55 @@ proc buildAutonatPeer(): Switch {.raises: [LPError].} =
   ## Answers the dial-back probes of `buildAutoKadSwitch`.
   makeStandardSwitchBuilder(TcpAutoAddress).withAutonat().build()
 
+proc buildV2KadSwitch(mode: KadMode): Switch {.raises: [LPError].} =
+  makeStandardSwitchBuilder(TcpAutoAddress)
+    .withNAT(autonatConfig(AutonatV2))
+    .withKademlia(mode = mode)
+    .build()
+
+type FixedVerdictVerifier = ref object of Verifier
+  state: AddrState
+
+method verify(
+    self: FixedVerdictVerifier, address: MultiAddress
+): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
+  Opt.some(self.state)
+
 proc mountedKad(switch: Switch): Opt[KadDHT] =
   for handler in switch.ms.handlers:
     if KadCodec in handler.protos:
       return Opt.some(KadDHT(handler.protocol))
   Opt.none(KadDHT)
+
+const reachabilitySteps = [
+  (AddrState.Confirmed, NetworkReachability.Reachable),
+  (AddrState.Unverified, NetworkReachability.Unknown),
+  (AddrState.Unreachable, NetworkReachability.NotReachable),
+  (AddrState.Confirmed, NetworkReachability.Reachable),
+]
+
+proc checkModeFollowsSteps(
+    mode: KadMode, subscribers: int, serverAfterStep: array[4, bool]
+) {.async.} =
+  ## Walks `reachabilitySteps` and checks `isServer` after each one.
+  let node = buildV2KadSwitch(mode)
+  let kad = node.mountedKad().get()
+  let nat = node.natService().get()
+  let verifier = FixedVerdictVerifier()
+
+  await node.start()
+  defer:
+    await node.stop()
+
+  check nat.autonatV2Service().get().reachabilityObservers.len() == subscribers
+
+  for i, (state, reachability) in reachabilitySteps:
+    verifier.state = state
+    # Replaces the AutoNAT v2 verifier and restarts the verification heartbeat.
+    node.addressManager.verifier = verifier
+    checkUntilTimeout:
+      nat.networkReachability() == reachability
+      kad.isServer == serverAfterStep[i]
 
 suite "KadDHT Switch Builder":
   teardown:
@@ -56,6 +101,11 @@ suite "KadDHT Switch Builder":
 
     checkUntilTimeout:
       kad.isServer
+
+  asyncTest "Kad mode follows reachability changes only in Auto":
+    await checkModeFollowsSteps(KadMode.Client, 0, [false, false, false, false])
+    await checkModeFollowsSteps(KadMode.Server, 0, [true, true, true, true])
+    await checkModeFollowsSteps(KadMode.Auto, 1, [true, true, false, true])
 
   asyncTest "Build switch with withKademlia":
     var switch1 = makeStandardSwitchBuilder(TcpAutoAddress).withKademlia().build()

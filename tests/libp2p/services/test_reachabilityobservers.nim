@@ -21,7 +21,9 @@ suite "ReachabilityObservers":
       seen.add(reachability)
 
     check:
+      observers.len() == 0
       observers.add(handler)
+      observers.len() == 1
       observers.lastReachability() == NetworkReachability.Unknown
       # A nil handler would crash the next dispatch, so it never reaches the seq.
       not observers.add(nil)
@@ -35,6 +37,7 @@ suite "ReachabilityObservers":
 
     check:
       observers.remove(handler)
+      observers.len() == 0
       # The handler is gone, so a second remove reports that it removed nothing.
       not observers.remove(handler)
 

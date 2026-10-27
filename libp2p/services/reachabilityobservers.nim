@@ -43,6 +43,9 @@ proc remove*(self: ReachabilityObservers, handler: ReachabilityHandler): bool =
   ## Removes `handler`. False means it was not subscribed.
   self.handlers.removeFirstIfIt(it == handler)
 
+func len*(self: ReachabilityObservers): int =
+  self.handlers.len()
+
 func lastReachability*(self: ReachabilityObservers): NetworkReachability =
   ## The reachability of the last `notify`, `Unknown` before the first one. It
   ## lets a late subscriber read the current value instead of waiting for the
