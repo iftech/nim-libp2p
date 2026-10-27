@@ -4,20 +4,7 @@
 import std/[os, strutils, sets]
 import ./[managed, network]
 import chronos
-import
-  ../../../../libp2p/[
-    crypto/crypto,
-    multiaddress,
-    peerid,
-    multistream,
-    muxers/muxer,
-    muxers/yamux/yamux,
-    protocols/secure/noise,
-    protocols/secure/secure,
-    protocols/waggle,
-    transports/tcptransport,
-    upgrademngrs/muxedupgrade,
-  ]
+import ../../../../libp2p/[builders, protocols/waggle]
 
 const
   Rust = byte 'R'
@@ -48,29 +35,23 @@ proc run(address: string) {.async.} =
     peer = PeerId.init(split[1]).get()
     remoteAddr = MultiAddress.init(split[0]).get()
     random = newRng()
-    key = PrivateKey.random(Ed25519, random).get()
-    waggle = Waggle.new()
-    ms = MultistreamSelect.new()
-  ms.addHandler(waggle)
-  proc newMuxer(conn: Connection): Muxer =
-    Yamux.new(conn)
-
-  let
-    upgrade = MuxedUpgrade.new(
-      @[MuxerProvider.new(newMuxer, YamuxCodec)], [Secure(Noise.new(random, key))], ms
-    )
-    transport = TcpTransport.new(upgrade = upgrade)
-    raw = await transport.dial(remoteAddr)
-  defer:
-    await raw.close()
-  let mux = await upgrade.upgrade(raw, Opt.some(peer))
+    switch = SwitchBuilder
+      .new()
+      .withRng(random)
+      .withAddress(MultiAddress.init("/ip4/127.0.0.1/tcp/0").get())
+      .withTcpTransport()
+      .withYamux()
+      .withNoise()
+      .build()
+    waggle = Waggle.new(switch = switch, rng = random)
+  switch.mount(waggle)
   var receiving: seq[Future[void]]
   defer:
-    await waggle.stop()
     for task in receiving:
       await task.cancelAndWait()
-    await mux.close()
-    await mux.handler
+    await switch.stop()
+  await switch.start()
+  await switch.connect(peer, @[remoteAddr])
 
   var received: HashSet[(byte, byte)]
   let confirmed = Future[void].Raising([CancelledError]).init()
@@ -94,8 +75,7 @@ proc run(address: string) {.async.} =
       received.incl((index, kind))
 
   for index in 0.byte .. 1.byte:
-    let stream = await mux.newStream()
-    doAssert await ms.select(stream, WaggleCodec)
+    let stream = await switch.dial(peer, WaggleCodec)
     receiving.add(waggle.subscribe(stream, topic(index), onPieces))
   while waggle.subscribers(topic(0)).len != 1 or waggle.subscribers(topic(1)).len != 1:
     await sleepAsync(10.milliseconds)
@@ -109,7 +89,8 @@ proc run(address: string) {.async.} =
     peer, topic(0), ObjectPieces(objectId: @[Nim, 255], pieces: Opt.some(@[byte 1]))
   )
   # The Rust peer exits only after validating our final acknowledgement.
-  await mux.handler
+  while switch.isConnected(peer):
+    await sleepAsync(10.milliseconds)
   echo "Nim verified 6 Rust messages across 2 topics and Rust's acknowledgement"
 
 when isMainModule:

@@ -4,21 +4,18 @@
 import std/strutils
 import chronos
 import ../../../../tests/libp2p/protocols/waggle_utils
-import
-  ../../../../libp2p/[
-    crypto/crypto,
-    multiaddress,
-    multistream,
-    muxers/muxer,
-    muxers/yamux/yamux,
-    protocols/secure/noise,
-    protocols/secure/secure,
-    transports/tcptransport,
-    upgrademngrs/muxedupgrade,
-  ]
+import ../../../../libp2p/builders
 
 proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
   let random = newRng()
+  let switch = SwitchBuilder
+    .new()
+    .withRng(random)
+    .withAddress(MultiAddress.init("/ip4/127.0.0.1/tcp/0").get())
+    .withTcpTransport()
+    .withYamux()
+    .withNoise()
+    .build()
   var have = initial
   var phase = 0.byte
   var unsubscribed = false
@@ -76,31 +73,23 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
       phase = pieces[0]
 
   waggle = Waggle.new(
-    rng = random, onEvent = onEvent, maxQueued = (if mode == "pressure": 1 else: 5000)
+    switch = switch,
+    rng = random,
+    onEvent = onEvent,
+    maxQueued = (if mode == "pressure": 1 else: 5000),
   )
+  switch.mount(waggle)
   defer:
-    await waggle.stop()
+    await switch.stop()
   doAssert waggle.subscribe(dataTopic).get()
   doAssert waggle.subscribe(controlTopic).get()
-  let ms = MultistreamSelect.new()
-  ms.addHandler(waggle)
-  proc newMuxer(conn: Connection): Muxer =
-    Yamux.new(conn)
-
   let
     parts = address.rsplit("/p2p/", maxsplit = 1)
     peer = PeerId.init(parts[1]).get()
-    upgrade = MuxedUpgrade.new(
-      @[MuxerProvider.new(newMuxer, YamuxCodec)],
-      [Secure(Noise.new(random, PrivateKey.random(Ed25519, random).get()))],
-      ms,
-    )
-    transport = TcpTransport.new(upgrade = upgrade)
+  await switch.start()
   for epoch in 0 .. (if mode == "lifecycle": 1 else: 0):
-    let raw = await transport.dial(MultiAddress.init(parts[0]).get())
-    let mux = await upgrade.upgrade(raw, Opt.some(peer))
+    await switch.connect(peer, @[MultiAddress.init(parts[0]).get()])
     try:
-      doAssert waggle.addConnection(mux).get()
       while waggle.subscribers(dataTopic).len != 1 or
           waggle.subscribers(controlTopic).len != 1:
         await sleepAsync(10.milliseconds)
@@ -120,7 +109,8 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
           controlTopic,
           ObjectPieces(objectId: @[byte 'N', 255], pieces: Opt.some(@[byte 2])),
         )
-        await mux.handler
+        while switch.isConnected(peer):
+          await sleepAsync(10.milliseconds)
       elif mode == "topology":
         while not started:
           await sleepAsync(10.milliseconds)
@@ -139,7 +129,8 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
           controlTopic,
           ObjectPieces(objectId: @[byte 'N', initial, 255], pieces: Opt.some(@[byte 7])),
         )
-        await mux.handler
+        while switch.isConnected(peer):
+          await sleepAsync(10.milliseconds)
       elif epoch == 0:
         while phase != 1:
           await sleepAsync(10.milliseconds)
@@ -163,11 +154,10 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
           controlTopic,
           ObjectPieces(objectId: @[byte 'N', 255], pieces: Opt.some(@[byte 3])),
         )
-        await mux.handler
+        while switch.isConnected(peer):
+          await sleepAsync(10.milliseconds)
     finally:
-      await mux.close()
-      await mux.handler
-      await raw.close()
+      await switch.disconnect(peer)
     while waggle.subscribers(dataTopic).len > 0 or
         waggle.subscribers(controlTopic).len > 0:
       await sleepAsync(10.milliseconds)

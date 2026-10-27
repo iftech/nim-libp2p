@@ -192,9 +192,9 @@ For a manually upgraded transport stack, construct Waggle without `switch` and
 register each running muxer with `protocol.addConnection(muxer)`. Route incoming
 streams through a multistream selector containing the protocol.
 
-The [Nim/Rust interop peer](../interop/waggle/nim-peer/src/network.nim) uses this
-approach with TCP, Noise, and Yamux. It exercises the same managed publishing API
-without constructing a Switch.
+The [managed protocol tests](../tests/libp2p/protocols/test_waggle_managed.nim)
+include examples of registering connections directly. Most applications should
+use the Switch constructor path shown above.
 
 ## Direct stream API
 
@@ -252,4 +252,4 @@ bounds and expiry, topic isolation, malformed messages, connection changes,
 subscription renewal, and cleanup. A TCP/Noise/Mplex exchange test covers the
 Switch constructor path. Rust interop covers wire exchange, managed
 reconciliation, three-peer convergence, subscription renewal, reconnect, and
-queue-full recovery through the TCP/Noise/Yamux stack.
+queue-full recovery through switches configured with TCP, Noise, and Yamux.

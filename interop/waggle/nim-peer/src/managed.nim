@@ -4,23 +4,20 @@
 import std/strutils
 import chronos
 import ../../../../tests/libp2p/protocols/waggle_utils
-import
-  ../../../../libp2p/[
-    crypto/crypto,
-    multiaddress,
-    multistream,
-    muxers/muxer,
-    muxers/yamux/yamux,
-    protocols/secure/noise,
-    protocols/secure/secure,
-    transports/tcptransport,
-    upgrademngrs/muxedupgrade,
-  ]
+import ../../../../libp2p/builders
 
 const Topic = @[byte 0, 255, 1]
 
 proc managedInterop*(address: string) {.async.} =
   let random = newRng()
+  let switch = SwitchBuilder
+    .new()
+    .withRng(random)
+    .withAddress(MultiAddress.init("/ip4/127.0.0.1/tcp/0").get())
+    .withTcpTransport()
+    .withYamux()
+    .withNoise()
+    .build()
   var have = 1.byte
   var deliveries = 0
   var waggle: Waggle
@@ -46,31 +43,16 @@ proc managedInterop*(address: string) {.async.} =
         have = have or pieces[0]
         discard waggle.publish(Topic, BitShard(id: @[byte 1], have: have))
 
-  waggle = Waggle.new(rng = random, onEvent = onEvent)
+  waggle = Waggle.new(switch = switch, rng = random, onEvent = onEvent)
+  switch.mount(waggle)
+  defer:
+    await switch.stop()
   doAssert waggle.subscribe(Topic).get()
-  let ms = MultistreamSelect.new()
-  ms.addHandler(waggle)
-  proc newMuxer(conn: Connection): Muxer =
-    Yamux.new(conn)
-
   let
     parts = address.rsplit("/p2p/", maxsplit = 1)
     peer = PeerId.init(parts[1]).get()
-    upgrade = MuxedUpgrade.new(
-      @[MuxerProvider.new(newMuxer, YamuxCodec)],
-      [Secure(Noise.new(random, PrivateKey.random(Ed25519, random).get()))],
-      ms,
-    )
-    transport = TcpTransport.new(upgrade = upgrade)
-    raw = await transport.dial(MultiAddress.init(parts[0]).get())
-  defer:
-    await raw.close()
-  let mux = await upgrade.upgrade(raw, Opt.some(peer))
-  defer:
-    await waggle.stop()
-    await mux.close()
-    await mux.handler
-  doAssert waggle.addConnection(mux).get()
+  await switch.start()
+  await switch.connect(peer, @[MultiAddress.init(parts[0]).get()])
   while waggle.subscribers(Topic).len != 1:
     await sleepAsync(10.milliseconds)
   doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: have)).isOk
@@ -86,5 +68,6 @@ proc managedInterop*(address: string) {.async.} =
       pieces: Opt.some(@[byte 3]),
     ),
   )
-  await mux.handler
+  while switch.isConnected(peer):
+    await sleepAsync(10.milliseconds)
   echo "Nim reconciled complementary pieces with Rust; duplicate payload suppressed"

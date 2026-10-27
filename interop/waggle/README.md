@@ -31,15 +31,18 @@ one peer is insufficient.
 
 The tests exercise TCP, Noise, Yamux, multistream negotiation, subscription
 handshakes, piece exchange, selective reconciliation, and duplicate suppression.
-Nim uses the library's existing `MuxedUpgrade` stack directly. Switch integration remains outside the cross-language scenarios;
-connection-manager attachment has separate Nim network coverage.
+Every Nim scenario builds a Switch with TCP, Noise, and Yamux, passes it to
+`Waggle.new(switch = switch, ...)`, mounts the protocol, and starts the switch.
+Connections, stream negotiation, reconnects, and shutdown use the Switch APIs.
+The wire scenario opens its direct subscription streams with `switch.dial`; the
+other scenarios use managed subscriptions and publishing.
 
 A second scenario uses the managed Nim API and Rust's `Shard`/`Metadata`
 interfaces. Nim starts with one piece and Rust with a complementary piece of the
 same object. Both reconstruct the complete object, check that only the missing
 piece reached the application, and exchange final acknowledgements. Nim opens
-subscriptions through connection registration and publishes updated snapshots;
-the wire-only APIs are used just for the final acknowledgement.
+subscriptions through the switch connection manager and publishes updated
+snapshots; the wire-only APIs are used just for the final acknowledgement.
 
 A third scenario connects two independent Nim processes only through a Rust
 relay. An explicit barrier waits for both peers to subscribe to data and control
