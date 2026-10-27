@@ -206,7 +206,8 @@ suite "Waggle managed dissemination":
     checkUntilTimeout:
       b.events.anyIt(
         it.kind == WaggleEventKind.Received and it.message.objectId == @[byte 2] and
-          it.message.pieces == Opt.some(@[byte 1])
+          it.message.pieces == Opt.some(@[byte 1]) and
+          it.message.piecesMetadata == Opt.some(@[byte 1])
       )
 
   asyncTest "constructor discovers existing switch connections":

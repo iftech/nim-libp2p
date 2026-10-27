@@ -339,15 +339,11 @@ proc send*(
   ## or failed write resets the stream because its frame may be incomplete.
   if msg.encodedSize() > p.maxMessageSize:
     raise newException(WaggleError, "Waggle message exceeds maximum length")
-  var target: TopicStream
   for session in p.streams:
     if session.ready and not session.receiving and session.stream.peerId == peer and
         session.topic == topic:
-      target = session
-      break
-  if target == nil:
-    return false
-  return await p.writeSession(target, msg)
+      return await p.writeSession(session, msg)
+  return false
 
 proc writeSession(
     p: Waggle, target: TopicStream, msg: ObjectPieces
@@ -395,19 +391,19 @@ proc beginWriter(p: Waggle, session: TopicStream) =
   session.writer = writeLoop()
   p.track(session.writer)
 
-proc target(p: Waggle, link: WaggleConnection, topic: seq[byte]): TopicStream =
+proc target(p: Waggle, link: WaggleConnection, topic: seq[byte]): Opt[TopicStream] =
   for session in p.streams:
     if session.link == link and not session.receiving and session.ready and
         session.topic == topic and not session.stream.closed:
-      return session
+      return Opt.some(session)
+  return Opt.none(TopicStream)
 
 proc enqueue(
     p: Waggle, link: WaggleConnection, topic: seq[byte], msg: ObjectPieces
 ): bool =
   if p.stopping:
     return false
-  let session = p.target(link, topic)
-  if session == nil:
+  let session = p.target(link, topic).valueOr:
     return false
   if msg.encodedSize() > p.maxMessageSize:
     p.notify(
@@ -455,7 +451,7 @@ proc eligible(
 ): seq[WaggleConnection] =
   var connections: seq[WaggleConnection]
   for link in p.links:
-    if link != exceptLink and p.target(link, topic) != nil:
+    if link != exceptLink and p.target(link, topic).isSome:
       connections.add(link)
   p.random.shuffle(connections)
   return connections
@@ -635,10 +631,9 @@ proc unsubscribe*(p: Waggle, topic: seq[byte]): Future[bool] {.async: (raises: [
   p.state.removeTopic(topic)
   var readers: seq[Future[void]]
   for link in p.links:
-    let task = link.readers.getOrDefault(topic)
+    link.readers.withValue(topic, task):
+      readers.add(task[])
     link.readers.del(topic)
-    if task != nil:
-      readers.add(task)
   for task in readers:
     await task.cancelAndWait()
   return true

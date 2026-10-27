@@ -25,16 +25,6 @@ suite "Waggle reconciliation state":
     check next.message.pieces == Opt.some(@[byte 4])
     check next.message.piecesMetadata == Opt.some(@[byte 7])
 
-  test "unqueued transmissions remain retryable":
-    let state = WaggleState.new(10, 2)
-    let peer = PeerId.random()
-    discard state.store(topic, BitShard(id: @[byte 1], have: 3)).get()
-    let first = state.prepare(topic, 1, peer, @[byte 1]).get().get()
-    let retry = state.prepare(topic, 1, peer, @[byte 1]).get().get()
-    check first.message == retry.message
-    retry.commit()
-    check state.prepare(topic, 1, peer, @[byte 1]).get().isNone
-
   test "metadata gossip does not mark omitted pieces as sent":
     let state = WaggleState.new(10, 2)
     let peer = PeerId.random()

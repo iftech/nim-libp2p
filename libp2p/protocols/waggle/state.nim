@@ -80,11 +80,21 @@ proc touch[K, V](table: var OrderedTable[K, V], key: K, value: V) =
   table.del(key)
   table[key] = value
 
+proc lookup[K, V](table: Table[K, V], key: K): Opt[V] =
+  table.withValue(key, found):
+    return Opt.some(found)
+  return Opt.none(V)
+
+proc lookup[K, V](table: OrderedTable[K, V], key: K): Opt[V] =
+  if table.hasKey(key):
+    return Opt.some(table.getOrDefault(key))
+  return Opt.none(V)
+
 proc topicState(
     state: WaggleState, topic: seq[byte], now: Moment
 ): Result[TopicState, string] =
-  if state.topics.hasKey(topic):
-    let cache = state.topics.getOrDefault(topic)
+  state.topics.withValue(topic, entry):
+    let cache = entry[]
     cache.expire(now, state.lifetime)
     return ok(cache)
   if state.topics.len >= state.maxTopics:
@@ -96,34 +106,32 @@ proc topicState(
 proc view(
     state: WaggleState, topic: TopicState, id: uint64, objectId: seq[byte], now: Moment
 ): RemoteView =
-  var views = topic.remote.getOrDefault(id)
-  if views == nil:
-    views = ObjectViews()
-    topic.remote[id] = views
-  var remote = views.entries.getOrDefault(objectId)
-  if remote == nil:
-    remote = RemoteView(expires: now + state.lifetime)
+  let views = topic.remote.lookup(id).valueOr:
+    let created = ObjectViews()
+    topic.remote[id] = created
+    created
+  let remote = views.entries.lookup(objectId).valueOr:
     if views.entries.len >= state.capacity:
       views.entries.del(views.entries.firstKey())
+    RemoteView(expires: now + state.lifetime)
   views.entries.touch(objectId, remote)
   return remote
 
-proc local(topic: TopicState, objectId: seq[byte]): WaggleShard =
-  let entry = topic.local.getOrDefault(objectId)
-  let snapshot = entry.shard
-  if snapshot != nil:
-    topic.local.touch(objectId, entry)
-  return snapshot
+proc local(topic: TopicState, objectId: seq[byte]): Opt[WaggleShard] =
+  let entry = topic.local.lookup(objectId).valueOr:
+    return Opt.none(WaggleShard)
+  topic.local.touch(objectId, entry)
+  return Opt.some(entry.shard)
 
 proc store*(
     state: WaggleState, topic: seq[byte], shard: WaggleShard, now = Moment.now()
 ): Result[bool, string] =
   let cache = ?state.topicState(topic, now)
   let id = shard.objectId()
-  let previous = cache.local.getOrDefault(id).shard
+  let previous = cache.local.lookup(id)
   var changed = true
-  if previous != nil:
-    changed = ?previous.metadata().update(shard.metadata().bytes())
+  if previous.isSome:
+    changed = ?previous.get().shard.metadata().update(shard.metadata().bytes())
   elif cache.local.len >= state.capacity:
     let evicted = cache.local.firstKey()
     cache.local.del(evicted)
@@ -145,12 +153,10 @@ proc prepare*(
     metadataOnly: bool = false,
     now = Moment.now(),
 ): Result[Opt[Transmission], string] =
-  let cache = state.topics.getOrDefault(topic)
-  if cache == nil:
+  let cache = state.topics.lookup(topic).valueOr:
     return ok(Opt.none(Transmission))
   cache.expire(now, state.lifetime)
-  let shard = cache.local(objectId)
-  if shard == nil:
+  let shard = cache.local(objectId).valueOr:
     return ok(Opt.none(Transmission))
   let view = state.view(cache, id, objectId, now)
   let action = ?shard.actionFromMetadata(peer, id, view.peerBytes())
@@ -207,8 +213,7 @@ proc received*(
       view.raw = Opt.some(data)
   if not changed and msg.pieces.isNone:
     return ok(ReceiveAction())
-  let shard = cache.local(msg.objectId)
-  if shard == nil:
+  let shard = cache.local(msg.objectId).valueOr:
     return ok(ReceiveAction(active: true, emit: true))
   let action = ?shard.actionFromMetadata(peer, id, view.peerBytes())
   var outcome = ReceiveAction(active: true, emit: action.need)
@@ -232,9 +237,8 @@ proc received*(
   ok(outcome)
 
 proc removeSubscription*(state: WaggleState, topic: seq[byte], id: uint64) =
-  let cache = state.topics.getOrDefault(topic)
-  if cache != nil:
-    cache.remote.del(id)
+  state.topics.withValue(topic, cache):
+    cache[].remote.del(id)
 
 proc removeConnection*(state: WaggleState, id: uint64) =
   for topic in state.topics.values:
@@ -245,23 +249,22 @@ proc removeTopic*(state: WaggleState, topic: seq[byte]) =
 
 proc removeObject*(state: WaggleState, topic, objectId: seq[byte]): bool =
   ## Forget the cached snapshot and all peer views for this object.
-  let cache = state.topics.getOrDefault(topic)
-  var removed = false
-  if cache != nil:
-    removed = cache.local.hasKey(objectId)
-    cache.local.del(objectId)
-    for views in cache.remote.values:
-      removed = views.entries.hasKey(objectId) or removed
-      views.entries.del(objectId)
+  let cache = state.topics.lookup(topic).valueOr:
+    return false
+  var removed = cache.local.hasKey(objectId)
+  cache.local.del(objectId)
+  for views in cache.remote.values:
+    removed = views.entries.hasKey(objectId) or removed
+    views.entries.del(objectId)
   return removed
 
 proc hasLocal*(
     state: WaggleState, topic, objectId: seq[byte], now = Moment.now()
 ): bool =
-  let cache = state.topics.getOrDefault(topic)
-  if cache != nil:
-    cache.expire(now, state.lifetime)
-    return cache.local.hasKey(objectId)
+  let cache = state.topics.lookup(topic).valueOr:
+    return false
+  cache.expire(now, state.lifetime)
+  return cache.local.hasKey(objectId)
 
 proc peerView*(
     state: WaggleState,
@@ -270,23 +273,23 @@ proc peerView*(
     objectId: seq[byte],
     now = Moment.now(),
 ): tuple[known, advertised: bool] =
-  let cache = state.topics.getOrDefault(topic)
-  if cache != nil:
-    cache.expire(now, state.lifetime)
-    let views = cache.remote.getOrDefault(id)
-    if views != nil:
-      let view = views.entries.getOrDefault(objectId)
-      if view != nil:
-        return (view.raw.isSome or view.tracked != nil, view.advertised != nil)
+  let cache = state.topics.lookup(topic).valueOr:
+    return (false, false)
+  cache.expire(now, state.lifetime)
+  let views = cache.remote.lookup(id).valueOr:
+    return (false, false)
+  let view = views.entries.lookup(objectId).valueOr:
+    return (false, false)
+  return (view.raw.isSome or view.tracked != nil, view.advertised != nil)
 
 proc cachedObjects*(state: WaggleState, topic: seq[byte]): int =
-  let cache = state.topics.getOrDefault(topic)
-  if cache != nil: cache.local.len else: 0
+  let cache = state.topics.lookup(topic).valueOr:
+    return 0
+  return cache.local.len
 
 proc trackedObjects*(state: WaggleState, topic: seq[byte], id: uint64): int =
-  let cache = state.topics.getOrDefault(topic)
-  if cache != nil:
-    let views = cache.remote.getOrDefault(id)
-    if views != nil:
-      return views.entries.len
-  0
+  let cache = state.topics.lookup(topic).valueOr:
+    return 0
+  let views = cache.remote.lookup(id).valueOr:
+    return 0
+  return views.entries.len
