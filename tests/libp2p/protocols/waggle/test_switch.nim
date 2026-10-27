@@ -33,13 +33,7 @@ suite "Waggle switch integration":
       await a.connect(b.peerInfo)
       checkUntilTimeout:
         wa.subscribers(topic).len == 1 and wb.subscribers(topic).len == 1
-      check (
-        await wa.send(
-          b.peerInfo.peerId,
-          topic,
-          ObjectPieces(objectId: @[byte 2], pieces: Opt.some(@[byte 1])),
-        )
-      ).get()
+      check wa.publish(topic, BitShard(id: @[byte 2], have: 1)).get() == 1
       checkUntilTimeout:
         received.len == 1
       check received[0].message.objectId == @[byte 2]
