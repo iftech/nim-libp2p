@@ -158,6 +158,21 @@ proc toPeerIds*(peers: seq[Peer]): seq[PeerId] =
 
   return peerIds
 
+proc nowUnixSeconds*(): UnixTimestamp {.gcsafe, raises: [].} =
+  getTime().toUnix()
+
+func ceilSeconds(d: chronos.Duration): int64 =
+  ## Rounds up, so a sub-second interval does not truncate to zero.
+  let whole = d.seconds()
+  if d > whole.seconds():
+    whole + 1
+  else:
+    whole
+
+proc after*(T: typedesc[UnixTimestamp], d: chronos.Duration): UnixTimestamp =
+  ## The timestamp `d` after now.
+  nowUnixSeconds() + d.ceilSeconds()
+
 type XorDistance* = array[IdLength, byte]
 type XorDHasher* = proc(input: seq[byte]): array[IdLength, byte] {.
   raises: [], nimcall, noSideEffect, gcsafe
@@ -279,7 +294,7 @@ type
 
   ProviderRecord* = object
     provider*: Provider
-    expiresAt*: chronos.Moment
+    expiresAt*: UnixTimestamp
     key*: Key
 
   ProviderRecords* = ref object
@@ -287,7 +302,7 @@ type
     capacity*: int
 
   ProvidedKeys* = ref object
-    provided*: Table[Key, chronos.Moment]
+    provided*: OrderedTable[Key, UnixTimestamp] ## in provide order
     capacity*: int
 
   ProviderManager* = ref object
@@ -365,9 +380,6 @@ proc toUnixSeconds*(
 ): Result[int64, ref CatchableError] {.gcsafe, raises: [].} =
   catch:
     parse(time, TimestampFormat, utc()).toTime().toUnix()
-
-proc nowUnixSeconds*(): int64 {.gcsafe, raises: [].} =
-  getTime().toUnix()
 
 type EntryRecord* = object
   value*: Value
