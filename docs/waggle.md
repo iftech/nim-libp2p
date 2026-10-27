@@ -1,174 +1,255 @@
 # Experimental Waggle dissemination
 
-`libp2p/protocols/waggle` implements topic streams and incremental object
-dissemination from [specs#732](https://github.com/libp2p/specs/pull/732), pinned to
-revision `9328b68`. The experimental implementation interoperates with the
-pinned Rust behaviour, with application-defined object semantics and an API
-that may still change.
+Waggle exchanges pieces of an object between peers subscribed to a topic. Each
+peer advertises which pieces it has or needs, so other peers can send useful
+pieces instead of repeatedly sending the whole object.
 
-## Wire contract
+Applications define what an object and its pieces mean. Waggle manages topic
+streams, tracks peer state, and queues pieces for transmission. Your application
+validates received pieces, combines them, and publishes its updated state.
+Erasure coding, signing, peer discovery, and peer scoring are application
+responsibilities.
 
-The protocol negotiates `/waggle/1.0`. Each frame has an unsigned varint byte
-length followed by a protobuf message. The subscriber opens the stream and
-writes exactly one `TopicSubscription` (required bytes field 1). The remote
-then sends `ObjectPieces` messages on the reverse direction of that stream:
+Waggle is optional: import and mount it to enable it on a switch. The protocol
+and API are experimental and may change. This implementation follows
+[specs#732](https://github.com/libp2p/specs/pull/732) at revision `9328b68` and is
+tested against a [pinned Rust implementation](../interop/waggle/README.md).
 
-- Required object ID: bytes field 2.
-- Optional piece metadata: bytes field 3.
-- Optional pieces: bytes field 4.
+## Get started
 
-Absent optional fields and present empty byte strings remain distinct. Topic
-and object IDs are opaque bytes; empty IDs are permitted. Unknown protobuf
-fields are ignored, and missing required fields or malformed messages are
-rejected.
+### Create and mount the protocol
 
-This stream direction follows the current
-[sigp/waggle Rust implementation](https://github.com/sigp/waggle/blob/master/src/handler.rs).
-The draft does not yet settle directionality or framing. Two peers wanting
-mutual delivery each open their own subscription stream. The subscriber sends
-no further bytes after its handshake. Closing or cancelling that subscription
-removes it; reopening requires a new stream and handshake. Each registered connection has independent subscriptions and peer views;
-multiple connections to the same peer are supported.
-The [Nim/Rust interop harness](../interop/waggle/README.md) verifies this
-contract against a pinned Rust implementation.
-
-## Managed usage
-
-Implement `WaggleShard.objectId`, `metadata`, and `actionFromMetadata`, plus
-`WaggleMetadata.clone`, `bytes`, and `update`. Metadata snapshots and clones must
-be independent of mutable application state. `update` merges peer metadata and
-returns whether it changed, or rejects invalid input. The action selects missing
-pieces and the peer metadata expected after sending them; `need` controls whether
-an incoming message is surfaced to the application.
-
-The [bit-set fixture](../tests/libp2p/protocols/waggle_utils.nim) is a small example.
-A shard passed to `publish` must describe the entire current object snapshot,
-including pieces the application has already integrated. Do not mutate published
-snapshots. Publish a replacement when the object's state changes.
-
-For a Switch, create the protocol with
-`Waggle.new(switch = switch, onEvent = handler, rng = rng)` and mount it before
-starting the switch. The constructor attaches to the switch's connection manager
-to discover existing and future connections; it does not dial new peers.
-For a manually upgraded stack, register each running muxer with
-`protocol.addConnection(muxer)`, as the interop peer does. Its stream handler must
-route incoming streams through a multistream selector containing the protocol.
+Given an existing `switch`, random number generator `rng`, and event handler
+`handleEvent`, create Waggle before starting the switch:
 
 ```nim
-# Subscribe on all registered connections, including connections added later.
+import libp2p/protocols/waggle
+
+let protocol = Waggle.new(switch = switch, onEvent = handleEvent, rng = rng)
+switch.mount(protocol)
+await switch.start()
+```
+
+The constructor tracks existing and future connections through the switch's
+connection manager. Connect to peers through your switch as usual; Waggle does
+not discover or dial peers for you.
+
+### Subscribe and publish
+
+Topics are opaque byte sequences chosen by the application. Subscribing opens
+receive streams on registered connections, including connections added later:
+
+```nim
+let topic = @[byte 1]
 discard protocol.subscribe(topic).get()
+```
 
-# Queue selective transmissions to a random subset of subscribers.
+To send an object, publish a `WaggleShard` describing its current state:
+
+```nim
 let sent = protocol.publish(topic, currentObjectSnapshot)
-if sent.isErr:
-  # Handle absent subscribers, invalid local state, or saturated queues.
-  discard
+```
 
-# Close our receive streams and discard cached state for this topic.
+Handle the returned result: publication can fail when there are no subscribers,
+the local state is invalid, or queues are full. A successful publication queues
+transmissions; it does not confirm delivery to remote applications.
+
+A published snapshot must include all pieces your application currently holds,
+including pieces received from other peers. Keep that snapshot immutable. When
+your state changes, publish a replacement.
+
+To stop receiving a topic and discard its cached state:
+
+```nim
 discard await protocol.unsubscribe(topic)
 ```
 
-The synchronous `onEvent` callback receives `Received`, `Subscribed`,
-`Unsubscribed`, `InvalidData`, `FullQueue`, and `StreamFailed` events, with the peer,
-connection ID, and topic. `Received` includes the opaque wire message. Validate
-and integrate its payload in the application, then publish a new snapshot. A
-metadata-only event carries knowledge about the peer, not pieces to integrate.
-Malformed subscription/object messages and unexpected subscriber writes produce
-`InvalidData`, closing the offending stream. Normal protocol negotiation
-rejection produces `StreamFailed`. Callbacks must not block; synchronous calls
-to `publish` from the callback are supported. Peer scoring and penalties remain application decisions.
+### Define your object format
+
+Waggle needs an application-defined `WaggleShard` and `WaggleMetadata` to decide
+what to exchange. The [bit-set example](../tests/libp2p/protocols/waggle_utils.nim)
+is a small implementation of both interfaces.
+
+Implement these methods:
+
+| Type | Method | Purpose |
+| --- | --- | --- |
+| `WaggleShard` | `objectId` | Identify the object the pieces belong to. |
+| `WaggleShard` | `metadata` | Describe the object's available or wanted pieces. |
+| `WaggleShard` | `actionFromMetadata` | Decide which pieces to send based on a peer's metadata. |
+| `WaggleMetadata` | `clone` | Make an independent copy of the metadata. |
+| `WaggleMetadata` | `bytes` | Encode metadata for transmission. |
+| `WaggleMetadata` | `update` | Merge peer metadata, reporting whether it changed or rejecting invalid input. |
+
+Metadata snapshots and clones must be independent of mutable application state.
+The action returned by `actionFromMetadata` includes the pieces to send and the
+peer metadata expected after sending them. Its `need` flag controls whether an
+incoming message is passed to your application.
+
+### Handle received pieces
+
+The `onEvent` handler has this signature:
+
+```nim
+proc handleEvent(event: WaggleEvent) {.gcsafe, raises: [].}
+```
+
+For a `Received` event, validate the payload, integrate any useful pieces, then
+publish a new snapshot. Waggle can only forward newly received pieces after your
+application has integrated and republished them. A metadata-only event describes
+the peer's state; it has no pieces to integrate. If it advertises an unknown
+object, you can publish an empty snapshot to express what you need and begin
+reconciliation.
+
+The callback is synchronous and must not block. Calling `publish` from within
+it is supported. Events identify the peer, connection, and topic:
+
+| Event | Meaning |
+| --- | --- |
+| `Received` | A message is available for the application to process. |
+| `Subscribed` / `Unsubscribed` | A remote subscription opened or ended. |
+| `InvalidData` | A malformed message or unexpected subscriber write closed the offending stream. |
+| `FullQueue` | A transmission could not enter a bounded queue. |
+| `StreamFailed` | A stream operation failed, including protocol negotiation rejection. |
+
+Failed stream opens are reported, but are not retried automatically. Peer
+penalties and retry policy belong to the application.
+
+## How objects spread
+
+`publish` keeps a snapshot in a per-topic LRU cache. For a new object, it sends to
+a random subset of subscribers. For an updated object, it forwards missing pieces
+to connections whose object state is already known.
+
+Three settings control this work. Set them per topic with `setTopicConfig`:
+
+| Setting | Default | Controls |
+| --- | --- | --- |
+| `publishFanout` | 50 | Initial transmissions to subscribers. Must be positive. |
+| `forwardFanout` | 50 | Payload transmissions when forwarding updates to known peers. Must be positive. |
+| `gossipFanout` | 50 | Additional metadata-only advertisements to connections with unknown object state. May be zero. |
+
+Connections previously sent our metadata also receive changed metadata. These
+observer updates continue even when `gossipFanout` is zero, and may carry no
+payload. Receiving a message also triggers metadata advertisements to other
+subscribers. There is no periodic heartbeat.
+
+Publishing an unchanged snapshot can retry rejected transmissions or seed newly
+connected subscribers. Peer state advances only after a message enters its
+queue; advertising metadata alone does not mark omitted pieces as delivered.
+Each connection has its own subscriptions and peer state, including when several
+connections belong to the same peer.
+
+## Cache lifetime and cleanup
+
+The `objectLifetime` constructor argument defaults to five minutes and must be
+positive. Local snapshots expire from their last publication. Peer views expire
+from their creation or last received message. Reading a cache entry or sending
+an advertisement does not renew its lifetime.
+
+Expiry is lazy: entries are removed when their topic is accessed. An idle topic
+may retain bounded expired allocations until its next access or protocol stop,
+but expired snapshots are unavailable for reconciliation.
+
+Use `removeObject(topic, objectId)` to forget a snapshot and its peer views
+explicitly. It returns whether any state existed. Expiry and removal leave
+already queued or in-flight transmissions alone and allow later republication.
+
+Unsubscribe/resubscribe and connection closure clear the relevant peer views,
+allowing a renewed subscription to synchronize again. Local unsubscribe also
+removes the topic's cache.
+
+Stopping Waggle unregisters its connection handlers, closes protocol streams,
+waits for its tasks, and clears caches and peer views. Shared muxers stay open.
+Local topic choices are retained; on restart, an attached protocol discovers
+existing connections again. Remote peers must renew receive subscriptions that
+were closed by the stop.
+
+## Resource limits
+
+Constructor arguments configure the following defaults:
+
+| Resource | Default limit |
+| --- | --- |
+| Protobuf payload | 64 KiB |
+| Topic ID | 1024 bytes |
+| Streams and registered connections | 128 each |
+| Streams per peer | 16 |
+| Local topics and topic configurations | 64 each |
+| Cached objects per topic | 100 |
+| Remote object views per topic and connection | 100 |
+| Queued messages per connection, shared by its topic writers | 5000 |
+
+Pending stream opens and incoming handshakes count against stream limits. An
+optional topic whitelist rejects disallowed local and remote subscriptions.
+
+These limits bound entry and queue counts. Your application must also bound
+snapshot sizes and the work done by callbacks.
+
+## Using Waggle without a Switch
+
+For a manually upgraded transport stack, construct Waggle without `switch` and
+register each running muxer with `protocol.addConnection(muxer)`. Route incoming
+streams through a multistream selector containing the protocol.
+
+The [Nim/Rust interop peer](../interop/waggle/nim-peer/src/network.nim) uses this
+approach with TCP, Noise, and Yamux. It exercises the same managed publishing API
+without constructing a Switch.
 
 ## Direct stream API
 
-The original `subscribe(stream, topic, handler)`, `subscribers(topic)`, and
-`send(peer, topic, message)` operations are still available for wire-level users.
-They bypass the managed receive path and reconciliation policy. Use managed
-publishing for cached objects, rather than mixing direct sends with tracked state.
+Use the direct API when your application needs to manage negotiated streams and
+wire messages itself:
 
-`subscribe` takes ownership of an already-negotiated stream and runs until EOF,
-cancellation, or error. The caller owns its future and must cancel and await it
-when unsubscribing. Incoming subscriptions are handled by the mounted protocol.
-`subscribers(topic)` lists peers eligible to receive messages. `send` returns
-false when the target peer has no subscription; stream errors and cancellation
-propagate to the caller. Receiving messages calls the supplied handler in wire
-order, applying backpressure while it runs.
+| Operation | Behavior |
+| --- | --- |
+| `subscribe(stream, topic, handler)` | Owns an already-negotiated receive stream and runs until EOF, cancellation, or error. |
+| `subscribers(topic)` | Lists peers eligible to receive messages. |
+| `send(peer, topic, message)` | Sends a wire message; returns false if the peer has no subscription. Stream errors and cancellation propagate. |
 
-Concurrent sends are serialized per stream without an internal message queue.
-Applications must bound the number of outstanding send calls and apply their
-own write deadlines. Failed or cancelled writes reset the stream, since the
-remote might have received a partial frame. Cancellation while waiting for a
-write lock does not reset a stream another caller is using.
+The mounted protocol handles incoming subscriptions. Your application owns each
+direct subscription's future and must cancel and await it when unsubscribing,
+even when the protocol is stopped.
 
-## Dissemination and resource limits
+Direct subscriptions call their handler in wire order, applying backpressure
+while it runs. Concurrent sends are serialized per stream without an internal
+message queue. Bound outstanding send calls and apply your own write deadlines.
+Failed or cancelled writes reset the stream because a partial frame may have
+reached the peer. Cancellation while waiting for a write lock leaves another
+caller's active write alone.
 
-`publish` stores an object snapshot in a per-topic LRU cache. Initial publication
-seeds randomly selected subscribers up to `publishFanout`. Updating an existing
-snapshot forwards missing pieces to connections whose object state is known, up
-to `forwardFanout`. Unchanged snapshots can retry rejected transmissions and
-seed newly connected subscribers. The initial fanout bounds all initial
-transmissions; the forwarding fanout bounds payload transmissions. Existing observers may also receive changed
-metadata without a payload.
+Direct sends bypass managed reconciliation. Use managed publishing for cached
+objects rather than mixing direct sends with tracked state.
 
-Changed metadata is advertised to every connection previously sent our metadata.
-Up to `gossipFanout` additional connections with unknown object state receive
-metadata-only discovery messages. A zero gossip fanout disables new discovery,
-while existing observers continue receiving updates. Receiving a message also
-triggers metadata advertisements to other subscribers. There is no periodic
-heartbeat. Applications must validate and integrate received pieces, then
-publish the resulting snapshot before those pieces can be forwarded. For an
-unknown object advertised only through metadata, the application can publish an
-empty snapshot to advertise what it needs and initiate reconciliation.
+## Wire format and interoperability
 
-Peer views advance only after a message enters its bounded queue. Metadata-only
-gossip does not mark omitted pieces as delivered. Unsubscribe/resubscribe and
-connection closure clear the relevant views, allowing a renewed subscription
-to synchronize again. Local unsubscribe also removes that topic's cache.
+The protocol negotiates `/waggle/1.0`. Each frame contains an unsigned varint
+length followed by a protobuf message. The subscriber opens a stream and sends
+one `TopicSubscription` with the topic in required bytes field 1. The remote
+then sends `ObjectPieces` messages back on that stream:
 
-Defaults are 64 KiB protobuf payloads, 1024-byte topic IDs, 128 streams and
-registered connections, 16 streams per peer, 64 local topics/configurations, and
-100 cached objects per topic. Remote object views are separately bounded to 100
-per topic and connection. Pending stream opens and incoming handshakes count
-against stream limits. Each connection has a shared budget of 5000 queued
-messages, with a separate writer for each topic stream. Set constructor arguments
-to tune these limits. `setTopicConfig` sets publish, forwarding, and gossip
-fanouts per topic; all default to 50. Publish and forwarding must be positive;
-gossip may be zero. An optional topic whitelist rejects disallowed local and
-remote subscriptions.
+| Field | Contents | Required? |
+| --- | --- | --- |
+| 2 | Object ID bytes | Yes |
+| 3 | Piece metadata bytes | No |
+| 4 | Piece payload bytes | No |
 
-The constructor's positive `objectLifetime` defaults to five minutes. Local
-snapshots expire from their last publication, and peer views expire from their
-creation or last received message. Expired entries are discarded lazily when
-that topic is accessed; expired snapshots are unavailable for reconciliation. Idle topics retain
-bounded expired allocations until their next access or protocol stop. Cache
-reads and outgoing advertisements do not renew lifetime.
+Absent optional fields differ from present, empty byte strings. Topic and object
+IDs are opaque bytes and may be empty. Unknown protobuf fields are ignored;
+missing required fields and malformed messages are rejected.
 
-`removeObject(topic, objectId)` explicitly forgets a snapshot and its peer views;
-it returns whether any state existed. Expiry and removal retain already queued
-or in-flight transmissions; neither is a recall operation. Neither expiry nor removal prevents
-an application from publishing the object again. Applications define object
-validity and must bound snapshot sizes and handler work; the protocol's other
-limits bound entry and queue counts.
+The subscriber sends no more bytes after the handshake. Closing or cancelling
+its subscription ends it; reopening requires a new stream and handshake. Two
+peers wanting mutual delivery each open their own subscription stream.
 
-`stop` unregisters connection handlers, closes protocol streams, drains owned
-tasks, and clears caches/views without closing shared muxers. Local topic choices
-are retained. `start` discovers existing connections again when attached to a
-connection manager. A remote whose receive stream was closed must renew its
-subscription. Direct-stream callers must still cancel and await their own
-subscription tasks. Failed protocol stream opens are surfaced through
-`StreamFailed`; there is no automatic retry loop.
+Framing and stream direction remain provisional in the draft. This
+implementation follows the pinned Rust implementation described in the
+[interop guide](../interop/waggle/README.md), which also explains how to run the
+five cross-language scenarios.
 
-## Verification and remaining scope
-
-The unit tests cover selective replies, duplicate suppression, queue-full retry,
-LRU eviction, expiry, explicit removal, remote view bounds, forwarding/discovery
-fanouts, observer updates, protocol-violation events, topic isolation, three-peer
-convergence, multiple connections to one peer, reconnect, unsubscribe/resubscribe, and stopping
-without disrupting shared connections. The interop harness exercises wire
-exchange, managed reconciliation, three-peer convergence, subscription renewal,
-reconnect, and queue-full recovery against the pinned Rust implementation.
-
-The draft's framing and stream-direction choices remain provisional. Discovery,
-application validation/reconstruction, signing, peer scoring, and retries after
-failed stream opens are outside the engine. Switch integration is covered by a
-TCP/Noise/Mplex exchange test, alongside direct connection-manager coverage.
-Interop uses the TCP/Noise/Yamux upgrade stack.
+Nim tests cover reconciliation, duplicate suppression, queue pressure, cache
+bounds and expiry, topic isolation, malformed messages, connection changes,
+subscription renewal, and cleanup. A TCP/Noise/Mplex exchange test covers the
+Switch constructor path. Rust interop covers wire exchange, managed
+reconciliation, three-peer convergence, subscription renewal, reconnect, and
+queue-full recovery through the TCP/Noise/Yamux stack.
