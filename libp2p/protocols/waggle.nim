@@ -135,10 +135,12 @@ proc writeSession(
 ): Future[bool] {.async: (raises: [CancelledError, LPStreamError, WaggleError]).}
 
 proc pendingSlots(p: Waggle, peer: PeerId): tuple[total, perPeer: int] =
+  var slots = (total: 0, perPeer: 0)
   for link in p.links:
-    result.total += link.opening
+    slots.total += link.opening
     if link.muxer.connection.peerId == peer:
-      result.perPeer += link.opening
+      slots.perPeer += link.opening
+  return slots
 
 proc admit(
     p: Waggle, stream: Stream, receiving: bool
@@ -150,13 +152,14 @@ proc admit(
       p.streams.countIt(it.stream.peerId == stream.peerId) + pending.perPeer >=
       p.maxStreamsPerPeer:
     raise newException(WaggleError, "Waggle stream limit reached")
-  result = TopicStream(
+  let session = TopicStream(
     stream: stream,
     receiving: receiving,
     lock: newAsyncLock(),
     link: p.findConnection(stream),
   )
-  p.streams.add(result)
+  p.streams.add(session)
+  return session
 
 proc setTopic(
     p: Waggle, session: TopicStream, topic: seq[byte]
@@ -321,10 +324,12 @@ proc subscribe*(
 
 proc subscribers*(p: Waggle, topic: seq[byte]): seq[PeerId] =
   ## Peers with an active inbound subscription for this topic.
+  var peers: seq[PeerId]
   for session in p.streams:
     if session.ready and not session.receiving and not session.stream.closed and
         session.topic == topic:
-      result.add(session.stream.peerId)
+      peers.add(session.stream.peerId)
+  return peers
 
 proc send*(
     p: Waggle, peer: PeerId, topic: seq[byte], msg: ObjectPieces
@@ -448,14 +453,17 @@ proc setTopicConfig*(
 proc eligible(
     p: Waggle, topic: seq[byte], exceptLink: WaggleConnection = nil
 ): seq[WaggleConnection] =
+  var connections: seq[WaggleConnection]
   for link in p.links:
     if link != exceptLink and p.target(link, topic) != nil:
-      result.add(link)
-  p.random.shuffle(result)
+      connections.add(link)
+  p.random.shuffle(connections)
+  return connections
 
 proc advertise(
     p: Waggle, topic, objectId: seq[byte], exceptLink: WaggleConnection = nil
 ): int =
+  var sent = 0
   var discovered = 0
   for link in p.eligible(topic, exceptLink):
     let view = p.state.peerView(topic, link.id, objectId)
@@ -476,9 +484,10 @@ proc advertise(
         prepared.error,
       )
     elif prepared.get().isSome and p.dispatch(link, topic, prepared.get().get()):
-      inc result
+      inc sent
       if not view.advertised:
         inc discovered
+  return sent
 
 proc removeObject*(p: Waggle, topic, objectId: seq[byte]): bool =
   ## Forget the snapshot and peer views. Already queued transmissions are retained.

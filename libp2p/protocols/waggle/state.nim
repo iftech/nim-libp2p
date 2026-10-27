@@ -100,18 +100,20 @@ proc view(
   if views == nil:
     views = ObjectViews()
     topic.remote[id] = views
-  result = views.entries.getOrDefault(objectId)
-  if result == nil:
-    result = RemoteView(expires: now + state.lifetime)
+  var remote = views.entries.getOrDefault(objectId)
+  if remote == nil:
+    remote = RemoteView(expires: now + state.lifetime)
     if views.entries.len >= state.capacity:
       views.entries.del(views.entries.firstKey())
-  views.entries.touch(objectId, result)
+  views.entries.touch(objectId, remote)
+  return remote
 
 proc local(topic: TopicState, objectId: seq[byte]): WaggleShard =
   let entry = topic.local.getOrDefault(objectId)
-  result = entry.shard
-  if result != nil:
+  let snapshot = entry.shard
+  if snapshot != nil:
     topic.local.touch(objectId, entry)
+  return snapshot
 
 proc store*(
     state: WaggleState, topic: seq[byte], shard: WaggleShard, now = Moment.now()
@@ -244,12 +246,14 @@ proc removeTopic*(state: WaggleState, topic: seq[byte]) =
 proc removeObject*(state: WaggleState, topic, objectId: seq[byte]): bool =
   ## Forget the cached snapshot and all peer views for this object.
   let cache = state.topics.getOrDefault(topic)
+  var removed = false
   if cache != nil:
-    result = cache.local.hasKey(objectId)
+    removed = cache.local.hasKey(objectId)
     cache.local.del(objectId)
     for views in cache.remote.values:
-      result = views.entries.hasKey(objectId) or result
+      removed = views.entries.hasKey(objectId) or removed
       views.entries.del(objectId)
+  return removed
 
 proc hasLocal*(
     state: WaggleState, topic, objectId: seq[byte], now = Moment.now()

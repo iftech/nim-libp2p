@@ -10,9 +10,11 @@ proc topic(index: byte): seq[byte] =
   @[byte 0, 255, index]
 
 proc fixture(index, kind: byte, fromRust: bool): ObjectPieces =
-  result.objectId = @[if fromRust: RustObjectPrefix else: NimObjectPrefix, index, kind]
+  var message = ObjectPieces(
+    objectId: @[if fromRust: RustObjectPrefix else: NimObjectPrefix, index, kind]
+  )
   if kind != PayloadKind or fromRust:
-    result.piecesMetadata = Opt.some(
+    message.piecesMetadata = Opt.some(
       if kind == EmptyFieldsKind:
         newSeq[byte]()
       else:
@@ -23,7 +25,8 @@ proc fixture(index, kind: byte, fromRust: bool): ObjectPieces =
     if kind == PayloadKind:
       for i in 0 .. 255:
         payload.add(byte i)
-    result.pieces = Opt.some(payload)
+    message.pieces = Opt.some(payload)
+  return message
 
 proc run(address: string) {.async.} =
   let
