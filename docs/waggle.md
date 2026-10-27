@@ -12,8 +12,8 @@ responsibilities.
 
 Waggle is optional: import and mount it to enable it on a switch. The protocol
 and API are experimental and may change. This implementation follows
-[specs#732](https://github.com/libp2p/specs/pull/732) at revision `9328b68` and follows the wire format of a
-[pinned Rust implementation](https://github.com/sigp/waggle/tree/4a42568b77e703e15c954160d229af4bce98a6eb).
+[specs#732](https://github.com/libp2p/specs/pull/732) at revision `9328b68` and is
+tested against a [pinned Rust implementation](../interop/waggle/README.md).
 
 ## Get started
 
@@ -252,7 +252,7 @@ caller's active write alone.
 Direct sends bypass managed reconciliation. Use managed publishing for cached
 objects rather than mixing direct sends with tracked state.
 
-## Wire format
+## Wire format and interoperability
 
 The protocol negotiates `/waggle/1.0`. Each frame contains an unsigned varint
 length followed by a protobuf message. The subscriber opens a stream and sends
@@ -274,9 +274,12 @@ its subscription ends it; reopening requires a new stream and handshake. Two
 peers wanting mutual delivery each open their own subscription stream.
 
 Framing and stream direction remain provisional in the draft. This
-implementation follows the pinned Rust implementation linked above.
+implementation follows the pinned Rust implementation described in the
+[interop guide](../interop/waggle/README.md), which also explains how to run the
+wire compatibility scenario.
 
 Nim tests cover reconciliation, duplicate suppression, queue pressure, cache
 bounds and expiry, topic isolation, malformed messages, connection changes,
 subscription renewal, and cleanup. A TCP/Noise/Mplex exchange test covers the
-Switch constructor path.
+Switch constructor path. Rust interop covers binary wire exchange through a
+Switch configured with TCP, Noise, and Yamux.
