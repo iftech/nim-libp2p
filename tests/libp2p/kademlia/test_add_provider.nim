@@ -7,7 +7,7 @@ import
   algorithm, chronos, metrics, results, sets, sequtils, strutils, tables, stew/byteutils
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
-import ../../tools/[lifecycle, topology, unittest, multiaddress]
+import ../../tools/[lifecycle, topology, unittest, multiaddress, metrics_utils]
 import ./[mock_kademlia, utils]
 
 proc isAtMaxCapacity(providerRecords: ProviderRecords): bool =
@@ -941,12 +941,12 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     check (await peerA.advertiseStatus(receiverKad, k0)) == AddProviderStatus.accepted
 
     let keysB = (0 .. perPeerCap).mapIt(randomServiceId())
-    let rejectionsBefore = kad_provider_rejections_sent.value()
+    let rejectionsBefore = metricValue(kad_provider_rejections_sent)
     for key in keysB[0 ..< perPeerCap]:
       check (await peerB.advertiseStatus(receiverKad, key)) == AddProviderStatus.accepted
     check (await peerB.advertiseStatus(receiverKad, keysB[perPeerCap])) ==
       AddProviderStatus.rejected
-    check kad_provider_rejections_sent.value() == rejectionsBefore + 1
+    check metricValue(kad_provider_rejections_sent) == rejectionsBefore + 1
 
     check:
       receiverKad.providerManager.knownKeys.hasKey(k0)
