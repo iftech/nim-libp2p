@@ -22,6 +22,12 @@ IDs:
   metadata on this message; Rust's publishing API includes its current metadata.
 - Present-but-empty metadata and pieces, preserving protobuf field presence.
 
+Wire fixtures and control messages use ASCII `R` and `N` prefixes in their object
+IDs to distinguish messages from the Rust and Nim peers. These prefixes are test
+conventions; Waggle treats object IDs as opaque bytes. The Nim scenario names and
+prefixes are defined in
+[nim-peer/src/constants.nim](nim-peer/src/constants.nim), matching the Rust harness.
+
 Both peers check topic isolation, object IDs, field presence, and payload bytes.
 Rust confirms that it received all six Nim messages; Nim sends a final
 acknowledgement only after checking all six Rust messages and that confirmation.

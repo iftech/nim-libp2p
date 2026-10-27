@@ -2,19 +2,15 @@
 # Copyright (c) Status Research & Development GmbH
 
 import std/[os, strutils, sets]
-import ./[managed, network]
+import ./[constants, managed, network]
 import chronos
 import ../../../../libp2p/[builders, protocols/waggle]
-
-const
-  Rust = byte 'R'
-  Nim = byte 'N'
 
 proc topic(index: byte): seq[byte] =
   @[byte 0, 255, index]
 
 proc fixture(index, kind: byte, fromRust: bool): ObjectPieces =
-  result.objectId = @[if fromRust: Rust else: Nim, index, kind]
+  result.objectId = @[if fromRust: RustObjectPrefix else: NimObjectPrefix, index, kind]
   if kind != 1 or fromRust:
     result.piecesMetadata = Opt.some(
       if kind == 2:
@@ -59,7 +55,7 @@ proc run(address: string) {.async.} =
       source: PeerId, t: seq[byte], msg: ObjectPieces
   ) {.async: (raises: [CancelledError]).} =
     doAssert source == peer
-    if msg.objectId == @[Rust, 255]:
+    if msg.objectId == @[RustObjectPrefix, 255]:
       doAssert received.len == 6
       doAssert t == topic(0)
       doAssert msg.piecesMetadata == Opt.some(newSeq[byte]())
@@ -67,7 +63,7 @@ proc run(address: string) {.async.} =
       doAssert not confirmed.finished
       confirmed.complete()
     else:
-      doAssert msg.objectId.len == 3 and msg.objectId[0] == Rust
+      doAssert msg.objectId.len == 3 and msg.objectId[0] == RustObjectPrefix
       let (index, kind) = (msg.objectId[1], msg.objectId[2])
       doAssert index < 2 and kind < 3 and t == topic(index)
       doAssert msg == fixture(index, kind, fromRust = true)
@@ -86,7 +82,9 @@ proc run(address: string) {.async.} =
       )
   await confirmed
   doAssert await waggle.send(
-    peer, topic(0), ObjectPieces(objectId: @[Nim, 255], pieces: Opt.some(@[byte 1]))
+    peer,
+    topic(0),
+    ObjectPieces(objectId: @[NimObjectPrefix, 255], pieces: Opt.some(@[byte 1])),
   )
   # The Rust peer exits only after validating our final acknowledgement.
   while switch.isConnected(peer):
@@ -100,10 +98,10 @@ when isMainModule:
       1,
     )
   if paramCount() >= 2:
-    if paramStr(2) == "reconcile":
+    if paramStr(2) == ReconcileScenario:
       waitFor managedInterop(paramStr(1)).wait(60.seconds)
     else:
-      doAssert paramStr(2) in ["topology", "lifecycle", "pressure"]
+      doAssert paramStr(2) in [TopologyScenario, LifecycleScenario, PressureScenario]
       let initial =
         if paramCount() == 3:
           byte(parseInt(paramStr(3)))

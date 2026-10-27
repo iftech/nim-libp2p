@@ -2,6 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import std/strutils
+import ./constants
 import chronos
 import ../../../../tests/libp2p/protocols/waggle_utils
 import ../../../../libp2p/builders
@@ -32,7 +33,7 @@ proc managedInterop*(address: string) {.async.} =
       return
 
     doAssert event.topic == Topic
-    if event.message.objectId == @[byte 'R', 255]:
+    if event.message.objectId == @[RustObjectPrefix, 255]:
       doAssert have == 3 and deliveries == 1
       doAssert event.message.piecesMetadata == Opt.some(@[byte 3])
       doAssert event.message.pieces == Opt.some(@[byte 3])
@@ -76,7 +77,7 @@ proc managedInterop*(address: string) {.async.} =
     peer,
     Topic,
     ObjectPieces(
-      objectId: @[byte 'N', 255],
+      objectId: @[NimObjectPrefix, 255],
       piecesMetadata: Opt.some(@[byte 3]),
       pieces: Opt.some(@[byte 3]),
     ),
