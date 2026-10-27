@@ -211,6 +211,225 @@ async fn run(address_file: &str) -> anyhow::Result<()> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct BitMetadata(u8);
+
+impl Metadata for BitMetadata {
+    fn as_slice(&self) -> &[u8] {
+        std::slice::from_ref(&self.0)
+    }
+    fn update(&mut self, data: &[u8]) -> Result<bool, Error> {
+        if data.len() != 1 || data[0] > 7 {
+            return Err(Error::InvalidFormat);
+        }
+        let next = self.0 | data[0];
+        let changed = next != self.0;
+        self.0 = next;
+        Ok(changed)
+    }
+}
+
+struct BitShard {
+    id: Vec<u8>,
+    have: u8,
+}
+
+impl Shard for BitShard {
+    fn object_id(&self) -> Vec<u8> {
+        self.id.clone()
+    }
+    fn metadata(&self) -> Box<dyn Metadata> {
+        Box::new(BitMetadata(self.have))
+    }
+    fn action_from_metadata(
+        &self,
+        _: PeerId,
+        _: ConnectionId,
+        metadata: Option<&[u8]>,
+    ) -> Result<Action, Error> {
+        let remote = match metadata {
+            None => 0,
+            Some(data) if data.len() == 1 && data[0] <= 7 => data[0],
+            _ => return Err(Error::InvalidFormat),
+        };
+        let missing = self.have & !remote;
+        Ok(Action {
+            need: remote & !self.have != 0,
+            send: (missing != 0).then(|| {
+                (
+                    vec![missing],
+                    Box::new(BitMetadata(remote | missing)) as Box<dyn Metadata>,
+                )
+            }),
+        })
+    }
+}
+
+async fn reconcile(address_file: &str) -> anyhow::Result<()> {
+    let mut swarm = listen(address_file, &[1]).await?;
+    let mut have = 2;
+    let mut deliveries = 0;
+    let mut remote = None;
+    loop {
+        match next_event(&mut swarm).await? {
+            SwarmEvent::Behaviour(Event::Subscribed { peer_id, topic_id }) => {
+                ensure!(
+                    remote.is_none() && topic_id == topic(1),
+                    "unexpected subscription"
+                );
+                remote = Some(peer_id);
+                swarm
+                    .behaviour_mut()
+                    .publish(topic(1), BitShard { id: vec![1], have })?;
+            }
+            SwarmEvent::Behaviour(Event::Received {
+                peer_id,
+                topic_id,
+                received: msg,
+            }) => {
+                ensure!(
+                    remote == Some(peer_id) && topic_id == topic(1),
+                    "unexpected sender or topic"
+                );
+                if msg.object_id == [NIM, 255] {
+                    ensure!(have == 3 && deliveries == 1, "incomplete reconstruction");
+                    ensure!(
+                        msg.metadata == Some(vec![3]) && msg.pieces == Some(vec![3]),
+                        "invalid final ack"
+                    );
+                    println!(
+                        "Rust reconciled complementary pieces with Nim; duplicate payload suppressed"
+                    );
+                    return Ok(());
+                }
+                ensure!(msg.object_id == [1], "invalid object ID");
+                if let Some(body) = msg.pieces {
+                    ensure!(body == [1], "expected only the missing piece");
+                    deliveries += 1;
+                    ensure!(deliveries == 1, "duplicate application delivery");
+                    have |= body[0];
+                    swarm
+                        .behaviour_mut()
+                        .publish(topic(1), BitShard { id: vec![1], have })?;
+                    swarm.behaviour_mut().publish(
+                        topic(1),
+                        BitShard {
+                            id: vec![RUST, 255],
+                            have,
+                        },
+                    )?;
+                }
+            }
+            SwarmEvent::ConnectionClosed { cause, .. } => bail!("early close: {cause:?}"),
+            _ => {}
+        }
+    }
+}
+
+async fn topology(address_file: &str) -> anyhow::Result<()> {
+    let mut swarm = listen(address_file, &[0, 1]).await?;
+    let mut have = 2;
+    let mut data_subscribers = HashSet::new();
+    let mut control_subscribers = HashSet::new();
+    let mut started = false;
+    let mut ready = HashSet::new();
+    let mut acknowledgements = HashSet::new();
+
+    loop {
+        match next_event(&mut swarm).await? {
+            SwarmEvent::Behaviour(Event::Subscribed { peer_id, topic_id }) => {
+                ensure!(topic_id == topic(0) || topic_id == topic(1), "wrong topic");
+                if topic_id == topic(0) {
+                    control_subscribers.insert(peer_id);
+                } else {
+                    ensure!(data_subscribers.insert(peer_id), "duplicate subscription");
+                    ensure!(data_subscribers.len() <= 2, "too many peers");
+                }
+
+                if !started && data_subscribers.len() == 2 && control_subscribers.len() == 2 {
+                    started = true;
+                    swarm
+                        .behaviour_mut()
+                        .publish(topic(1), BitShard { id: vec![1], have })?;
+                    swarm.behaviour_mut().publish(
+                        topic(0),
+                        TestShard {
+                            id: vec![RUST, 1],
+                            metadata: vec![],
+                            pieces: Some(vec![1]),
+                        },
+                    )?;
+                }
+            }
+            SwarmEvent::Behaviour(Event::Unsubscribed { peer_id, topic_id }) => {
+                if topic_id == topic(1) {
+                    data_subscribers.remove(&peer_id);
+                }
+            }
+            SwarmEvent::Behaviour(Event::Received {
+                peer_id,
+                topic_id,
+                received: msg,
+            }) => {
+                if topic_id == topic(0) {
+                    ensure!(
+                        have == 7 && msg.pieces == Some(vec![7]),
+                        "premature confirmation"
+                    );
+                    ensure!(
+                        msg.object_id.len() >= 2
+                            && msg.object_id[0] == NIM
+                            && [1, 4].contains(&msg.object_id[1]),
+                        "invalid control object"
+                    );
+                    if msg.object_id.len() == 2 {
+                        ensure!(ready.insert(peer_id), "duplicate ready");
+                        if ready.len() == 2 {
+                            swarm.behaviour_mut().publish(
+                                topic(0),
+                                TestShard {
+                                    id: vec![RUST, 255],
+                                    metadata: vec![],
+                                    pieces: Some(vec![7]),
+                                },
+                            )?;
+                        }
+                    } else {
+                        ensure!(
+                            msg.object_id.len() == 3 && msg.object_id[2] == 255 && ready.len() == 2,
+                            "invalid final ack"
+                        );
+                        ensure!(acknowledgements.insert(peer_id), "duplicate ack");
+                        if acknowledgements.len() == 2 {
+                            println!(
+                                "Rust relayed complementary pieces between two Nim peers; all three reconstructed 7"
+                            );
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    ensure!(
+                        topic_id == topic(1) && msg.object_id == [1],
+                        "unexpected data"
+                    );
+                    if let Some(body) = msg.pieces {
+                        ensure!(
+                            body.len() == 1 && body[0] <= 7 && body[0] & !have != 0,
+                            "duplicate or invalid pieces"
+                        );
+                        have |= body[0];
+                        swarm
+                            .behaviour_mut()
+                            .publish(topic(1), BitShard { id: vec![1], have })?;
+                    }
+                }
+            }
+            SwarmEvent::ConnectionClosed { .. } => bail!("unexpected disconnect"),
+            _ => {}
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -220,7 +439,8 @@ async fn main() -> anyhow::Result<()> {
     let scenario = async {
         match mode.as_deref() {
             None => run(&path).await,
-
+            Some("reconcile") => reconcile(&path).await,
+            Some("topology") => topology(&path).await,
             Some(scenario) => bail!("unknown scenario: {scenario}"),
         }
     };

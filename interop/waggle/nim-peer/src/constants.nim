@@ -2,6 +2,8 @@
 # Copyright (c) Status Research & Development GmbH
 
 const
+  ReconcileScenario* = "reconcile"
+  TopologyScenario* = "topology"
 
   # Object ID prefixes agreed with rust-peer/src/main.rs.
   RustObjectPrefix* = byte 'R'
