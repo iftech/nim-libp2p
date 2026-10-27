@@ -61,3 +61,5 @@ def run(scenario):
 
 if __name__ == "__main__":
     run(None)
+    run("reconcile")
+    run("topology")
