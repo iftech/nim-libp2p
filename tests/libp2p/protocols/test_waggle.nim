@@ -3,9 +3,9 @@
 
 {.used.}
 
-import std/sequtils
+import std/[sequtils, sets]
 import chronos
-import ../../../libp2p/[protocols/waggle, stream/bufferstream, varint]
+import ../../../libp2p/[protocols/waggle, stream/bufferstream, muxers/muxer, varint]
 import ../../tools/[unittest, crypto, bufferstream]
 
 const topic = @[byte 0, 255, 1]
@@ -53,6 +53,7 @@ type TestStream = ref object of TestBufferStream
   writes: AsyncQueue[seq[byte]]
   readFailure: ref LPStreamError
   joinStarted: AsyncEvent
+  wrapped: Stream
 
 method readOnce(
     s: TestStream, pbytes: pointer, nbytes: int
@@ -69,6 +70,9 @@ method join(
   s.joinStarted.fire()
   procCall LPStream(s).join()
 
+method getWrapped(s: TestStream): Connection =
+  s.wrapped
+
 func frame(data: seq[byte]): seq[byte] =
   let prefix = PB.toBytes(uint64(data.len))
   @(prefix.toOpenArray()) & data
@@ -84,7 +88,7 @@ suite "Waggle direct streams":
     streams: seq[TestStream]
     tasks: seq[Future[void]]
 
-  proc openStream(peer: PeerId = PeerId.random()): TestStream =
+  proc openStream(peer: PeerId = PeerId.random(), wrapped: Stream = nil): TestStream =
     let writes = newAsyncQueue[seq[byte]]()
     proc write(
         data: sink seq[byte]
@@ -93,6 +97,7 @@ suite "Waggle direct streams":
 
     let stream = TestStream.new(write)
     stream.peerId = peer
+    stream.wrapped = wrapped
     stream.readRequests = newAsyncQueue[int]()
     stream.writes = writes
     stream.joinStarted = newAsyncEvent()
@@ -544,3 +549,96 @@ suite "Waggle direct streams":
     discard handle(replacement)
     await handshake(replacement)
     check waggle.subscribers(topic) == @[replacement.peerId]
+
+  asyncTest "pending inbound handshakes count against the total stream limit":
+    waggle = Waggle.new(maxStreams = 1)
+    let first = openStream()
+    discard handle(first)
+    discard await first.readRequests.popFirst()
+    let rejected = openStream()
+    await handle(rejected)
+    check rejected.wasResetLocally
+    await handshake(first)
+    check waggle.subscribers(topic) == @[first.peerId]
+
+  asyncTest "pending inbound handshakes count against per-peer limits":
+    waggle = Waggle.new(maxStreamsPerPeer = 1)
+    let first = openStream()
+    discard handle(first)
+    discard await first.readRequests.popFirst()
+    let rejected = openStream(first.peerId)
+    await handle(rejected)
+    check rejected.wasResetLocally
+    let other = openStream()
+    discard handle(other)
+    await handshake(other)
+    check waggle.subscribers(topic) == @[other.peerId]
+
+  asyncTest "registered connections filter topics, report events and close subscriptions":
+    var events: seq[WaggleEvent]
+    waggle = Waggle.new(
+      topicWhitelist = Opt.some([topic].toHashSet()),
+      onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+        events.add(event),
+    )
+    let connection = openStream()
+    let running = Future[void].Raising([]).init(
+        "waggle-test-connection", {FutureFlag.OwnCancelSchedule}
+      )
+    defer:
+      if not running.finished():
+        running.complete()
+    let muxer = Muxer(connection: connection, handler: running)
+    let first = openStream(connection.peerId, wrapped = connection)
+    let firstHandling = handle(first)
+    await handshake(first)
+    check events.len == 0
+    check waggle.addConnection(muxer).get()
+    check not waggle.addConnection(muxer).get()
+
+    let duplicate = openStream(connection.peerId, wrapped = connection)
+    let duplicateHandling = handle(duplicate)
+    await duplicate.pushData(frame(TopicSubscription(topicId: topic).encode()))
+    await duplicateHandling
+    check waggle.subscribers(topic) == @[connection.peerId]
+    check events.len == 1
+    check events[0].kind == WaggleEventKind.InvalidData
+    check events[0].reason == "Duplicate Waggle topic stream"
+
+    let blocked = openStream(connection.peerId, wrapped = connection)
+    let blockedHandling = handle(blocked)
+    await blocked.pushData(frame(TopicSubscription(topicId: @[byte 2]).encode()))
+    await blockedHandling
+    check waggle.subscribers(@[byte 2]).len == 0
+    check events[^1].reason == "Topic is not allowed"
+
+    let truncated = openStream(connection.peerId, wrapped = connection)
+    let truncatedHandling = handle(truncated)
+    await truncated.pushData(@[byte 5])
+    await truncated.pushEof()
+    await truncatedHandling
+    check events.countIt(it.kind == WaggleEventKind.InvalidData) == 3
+    await first.reset()
+    await firstHandling
+    check waggle.subscribers(topic).len == 0
+
+    let accepted = openStream(connection.peerId, wrapped = connection)
+    let acceptedHandling = handle(accepted)
+    await handshake(accepted)
+    let opened = events.filterIt(it.kind == WaggleEventKind.Subscribed)
+    check opened.len == 1
+    check opened[0].topic == topic
+    check opened[0].connectionId != 0
+    check events.allIt(
+      it.peerId == connection.peerId and it.connectionId == opened[0].connectionId
+    )
+    await connection.close()
+    running.complete()
+    await acceptedHandling
+    check accepted.closed
+    check waggle.subscribers(topic).len == 0
+    let closed = events.filterIt(it.kind == WaggleEventKind.Unsubscribed)
+    check closed.len == 1
+    check closed[0].peerId == connection.peerId
+    check closed[0].connectionId == opened[0].connectionId
+    check closed[0].topic == topic
