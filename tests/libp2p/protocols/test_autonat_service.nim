@@ -96,10 +96,12 @@ suite "Autonat Service":
 
     check autonatService.networkReachability == NetworkReachability.Unknown
 
-    await startAutonatSwitch(switch1, autonatService)
-    await switch2.start()
-    await switch3.start()
-    await switch4.start()
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService),
+      switch2.start(),
+      switch3.start(),
+      switch4.start(),
+    )
 
     await switch1.connect(switch2)
     await switch1.connect(switch3)
@@ -199,10 +201,12 @@ suite "Autonat Service":
 
     check autonatService.reachabilityObservers.add(reachabilityHandler)
 
-    await startAutonatSwitch(switch1, autonatService)
-    await switch2.start()
-    await switch3.start()
-    await switch4.start()
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService),
+      switch2.start(),
+      switch3.start(),
+      switch4.start(),
+    )
 
     await switch1.connect(switch2)
     await switch1.connect(switch3)
@@ -260,10 +264,12 @@ suite "Autonat Service":
 
     check autonatService.reachabilityObservers.add(reachabilityHandler)
 
-    await startAutonatSwitch(switch1, autonatService)
-    await switch2.start()
-    await switch3.start()
-    await switch4.start()
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService),
+      switch2.start(),
+      switch3.start(),
+      switch4.start(),
+    )
 
     await switch1.connect(switch2)
     await switch1.connect(switch3)
@@ -311,10 +317,12 @@ suite "Autonat Service":
 
     check autonatService.reachabilityObservers.add(reachabilityHandler)
 
-    await startAutonatSwitch(switch1, autonatService)
-    await switch2.start()
-    await switch3.start()
-    await switch4.start()
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService),
+      switch2.start(),
+      switch3.start(),
+      switch4.start(),
+    )
 
     await switch1.connect(switch2)
     await switch1.connect(switch3)
@@ -360,10 +368,12 @@ suite "Autonat Service":
 
     check autonatService.reachabilityObservers.add(reachabilityHandler)
 
-    await startAutonatSwitch(switch1, autonatService)
-    await switch2.start()
-    await switch3.start()
-    await switch4.start()
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService),
+      switch2.start(),
+      switch3.start(),
+      switch4.start(),
+    )
 
     await switch1.connect(switch2)
     await switch1.connect(switch3)
@@ -394,7 +404,7 @@ suite "Autonat Service":
     let autonatService =
       AutonatService.new(autonatClientStub, rng(), maxQueueSize = maxQueueSize)
 
-    let switch1 = createSwitch(Opt.some(autonatService))
+    let switch1 = createSwitch()
     let switch2 = createSwitch()
     let switch3 = createSwitch()
     let switch4 = createSwitch()
@@ -413,10 +423,12 @@ suite "Autonat Service":
 
     check autonatService.reachabilityObservers.add(reachabilityHandler)
 
-    await switch1.start()
-    await switch2.start()
-    await switch3.start()
-    await switch4.start()
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService),
+      switch2.start(),
+      switch3.start(),
+      switch4.start(),
+    )
 
     privateAccess(AutonatService)
     for _ in 0 ..< maxQueueSize:
@@ -442,7 +454,10 @@ suite "Autonat Service":
       autonatService.networkReachability == NetworkReachability.Reachable
 
     await allFuturesRaising(
-      switch1.stop(), switch2.stop(), switch3.stop(), switch4.stop()
+      stopAutonatSwitch(switch1, autonatService),
+      switch2.stop(),
+      switch3.stop(),
+      switch4.stop(),
     )
 
   asyncTest "Stop cancels an in-flight dial-back":
@@ -451,9 +466,9 @@ suite "Autonat Service":
     )
     let autonatService = AutonatService.new(client, rng())
 
-    let switch1 = createSwitch(Opt.some(autonatService))
+    let switch1 = createSwitch()
     let switch2 = createSwitch()
-    await switch1.start()
+    await startAutonatSwitch(switch1, autonatService)
     await switch2.start()
 
     await switch1.connect(switch2)
@@ -466,7 +481,7 @@ suite "Autonat Service":
       autonatService.reachabilityObservers.lastReachability() ==
         NetworkReachability.Unknown
 
-    await allFuturesRaising(switch1.stop(), switch2.stop())
+    await allFuturesRaising(stopAutonatSwitch(switch1, autonatService), switch2.stop())
 
   asyncTest "Must bypass maxConnectionsPerPeer limit":
     let autonatService = AutonatService.new(
@@ -550,9 +565,11 @@ suite "Autonat Service":
     check autonatService2.reachabilityObservers.add(reachabilityHandler2)
     check autonatService3.reachabilityObservers.add(reachabilityHandler2)
 
-    await startAutonatSwitch(switch1, autonatService1)
-    await startAutonatSwitch(switch2, autonatService2)
-    await startAutonatSwitch(switch3, autonatService3)
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService1),
+      startAutonatSwitch(switch2, autonatService2),
+      startAutonatSwitch(switch3, autonatService3),
+    )
 
     await switch1.connect(switch2)
     await switch2.connect(switch1)
@@ -646,11 +663,13 @@ suite "Autonat Service":
 
     check autonatService.reachabilityObservers.add(reachabilityHandler)
 
-    await startAutonatSwitch(switch1, autonatService)
-    await switch2.start()
-    await switch3.start()
-    await switch4.start()
-    await switch5.start()
+    await allFuturesRaising(
+      startAutonatSwitch(switch1, autonatService),
+      switch2.start(),
+      switch3.start(),
+      switch4.start(),
+      switch5.start(),
+    )
 
     await switch1.connect(switch2)
 
