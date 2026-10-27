@@ -52,6 +52,7 @@ type
     maxTopics*: int = 64
     maxQueued*: int = 5000
     maxQueuedBytes*: int = 4 * 1024 * 1024
+    objectLifetime*: Duration = 5.minutes
     defaultTopicConfig*: TopicConfig =
       TopicConfig(publishFanout: 50, forwardFanout: 50, gossipFanout: 50)
     topicWhitelist*: Opt[HashSet[TopicId]]
@@ -114,6 +115,7 @@ type
     maxQueued: int
     maxQueuedBytes: int
     maxCachedObjects: int
+    objectLifetime: Duration
     state: WaggleState
     random: Rng
     onEvent: WaggleEventHandler
@@ -255,6 +257,8 @@ proc validate*(config: WaggleConfig): Result[void, string] =
     return err("Invalid Waggle object or topic limit")
   if config.maxQueued <= 0 or config.maxQueuedBytes <= 0:
     return err("Invalid Waggle queue limit")
+  if config.objectLifetime <= ZeroDuration:
+    return err("Waggle object lifetime must be positive")
   ?config.defaultTopicConfig.validate()
   ok()
 
@@ -278,13 +282,15 @@ proc new*(
   let p = T(
     random: random,
     maxCachedObjects: config.maxCachedObjects,
+    objectLifetime: config.objectLifetime,
     maxTopics: config.maxTopics,
     maxQueued: config.maxQueued,
     maxQueuedBytes: config.maxQueuedBytes,
     defaultTopicConfig: config.defaultTopicConfig,
     topicWhitelist: config.topicWhitelist,
     onEvent: onEvent,
-    state: WaggleState.new(config.maxCachedObjects, config.maxTopics),
+    state:
+      WaggleState.new(config.maxCachedObjects, config.maxTopics, config.objectLifetime),
     maxMessageSize: config.maxMessageSize,
     maxTopicSize: config.maxTopicSize,
     maxStreams: config.maxStreams,
@@ -555,6 +561,10 @@ proc advertise(
       if not view.advertised:
         inc discovered
   return sent
+
+proc removeObject*(p: Waggle, topicId, objectId: seq[byte]): bool =
+  ## Forget the snapshot and peer views. Already queued transmissions are retained.
+  p.state.removeObject(topicId, objectId)
 
 proc disseminate(
     p: Waggle,
@@ -835,5 +845,5 @@ method stop*(p: Waggle) {.async: (raises: []).} =
   await readers.cancelAndWait()
   let tasks = move p.tasks
   await tasks.cancelAndWait()
-  p.state = WaggleState.new(p.maxCachedObjects, p.maxTopics)
+  p.state = WaggleState.new(p.maxCachedObjects, p.maxTopics, p.objectLifetime)
   await procCall LPProtocol(p).stop()

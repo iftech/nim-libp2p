@@ -9,13 +9,14 @@ import ./utils
 import
   ../../../../libp2p/[
     switch,
+    stream/bufferstream,
     multistream,
     muxers/yamux/yamux,
     transports/transport,
     transports/tcptransport,
     upgrademngrs/upgrade,
   ]
-import ../../../tools/[unittest, crypto, multiaddress]
+import ../../../tools/[unittest, crypto, multiaddress, bufferstream]
 
 const topic = @[byte 0, 255, 1]
 
@@ -38,6 +39,17 @@ method actionFromMetadata(
   inc s.preparations
   procCall BitShard(s).actionFromMetadata(peer, connectionId, metadata)
 
+type StalledMuxer = ref object of Muxer
+  gate: AsyncEvent
+  opened: int
+
+method newStream(
+    m: StalledMuxer, name: string = "", lazy: bool = false
+): Future[Stream] {.async: (raises: [CancelledError, LPStreamError, MuxerError]).} =
+  inc m.opened
+  await m.gate.wait()
+  return nil
+
 suite "Waggle configuration":
   test "topic fanout validation accepts only valid boundaries":
     check TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: 0).validate().isOk
@@ -50,6 +62,9 @@ suite "Waggle configuration":
     check WaggleConfig().validate().isOk
     check WaggleConfig(maxTopicSize: 0).validate().isOk
     check WaggleConfig(maxTopicSize: -1).validate().isErr
+    check WaggleConfig(objectLifetime: ZeroDuration).validate().isErr
+    check WaggleConfig(objectLifetime: -1.seconds).validate().isErr
+    check WaggleConfig(objectLifetime: 1.seconds).validate().isOk
     for invalid in [0, -1]:
       check WaggleConfig(maxMessageSize: invalid).validate().isErr
       check WaggleConfig(maxStreams: invalid).validate().isErr
@@ -763,3 +778,193 @@ suite "Waggle managed dissemination":
     check attempt.added
     check attempt.blockedConnections.len == 2
     check failures == 0
+
+  asyncTest "pending outgoing opens obey stream budgets":
+    proc write(
+        data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, LPStreamError]).} =
+      discard
+
+    let stream = TestBufferStream.new(write)
+    stream.peerId = PeerId.random()
+    let alive = newAsyncEvent()
+    proc keepAlive() {.async: (raises: []).} =
+      await noCancel alive.wait()
+
+    let mux =
+      StalledMuxer(connection: stream, gate: newAsyncEvent(), handler: keepAlive())
+    var rejected = 0
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.StreamFailed:
+        inc rejected
+
+    let p = Waggle.new(
+      config = WaggleConfig(maxStreams: 2, maxStreamsPerPeer: 2), onEvent = onEvent
+    )
+    for index in 0.byte .. 9.byte:
+      discard p.subscribe(@[index]).get()
+    check p.addConnection(mux).get()
+    checkUntilTimeout:
+      mux.opened == 2
+    check rejected == 8
+    let incoming = TestBufferStream.new(write)
+    incoming.peerId = stream.peerId
+    await p.handler(incoming, WaggleCodec)
+    check incoming.closed
+    await p.stop()
+    check not stream.closed
+    alive.fire()
+    await mux.handler
+    await stream.close()
+
+  asyncTest "closing a topic releases its queued connection budget":
+    let a = await newNode(1, maxQueued = 1)
+    let b = await newNode()
+    discard a.protocol.subscribe(topic).get()
+    discard b.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1
+    for index in 1.byte .. 3.byte:
+      check a.protocol.publish(topic, BitShard(id: @[index], have: 1)).get() == 1
+      discard await b.protocol.unsubscribe(topic)
+      checkUntilTimeout:
+        a.protocol.subscribers(topic).len == 0
+      discard b.protocol.subscribe(topic).get()
+      checkUntilTimeout:
+        a.protocol.subscribers(topic).len == 1
+    check a.protocol.publish(topic, BitShard(id: @[byte 4], have: 1)).get() == 1
+
+  asyncTest "forwarding targets known peers and discovery sends only metadata":
+    let source = await newNode(1, fanout = 1, forwardFanout = 1)
+    let known = await newNode()
+    for node in nodes:
+      discard node.protocol.subscribe(topic).get()
+    discard await connect(source, known)
+    checkUntilTimeout:
+      source.protocol.subscribers(topic).len == 1
+    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
+    checkUntilTimeout:
+      known.events.anyIt(it.kind == WaggleEventKind.Received)
+    known.events.setLen(0)
+    let unknown = await newNode()
+    discard unknown.protocol.subscribe(topic).get()
+    discard await connect(source, unknown)
+    checkUntilTimeout:
+      source.protocol.subscribers(topic).len == 2
+    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 3)).get() == 2
+    checkUntilTimeout:
+      known.events.anyIt(it.kind == WaggleEventKind.Received) and
+        unknown.events.anyIt(it.kind == WaggleEventKind.Received)
+    let forwarded = known.events.filterIt(it.kind == WaggleEventKind.Received)
+    let discovered = unknown.events.filterIt(it.kind == WaggleEventKind.Received)
+    check forwarded.len == 1 and forwarded[0].message.pieces == Opt.some(@[byte 2])
+    check discovered.len == 1 and discovered[0].message.pieces.isNone
+    check discovered[0].message.piecesMetadata == Opt.some(@[byte 3])
+
+  asyncTest "observers get updates beyond forwarding budget with discovery disabled":
+    let source = await newNode(1, forwardFanout = 1, gossipFanout = 0)
+    let b = await newNode()
+    let c = await newNode()
+    for node in nodes:
+      discard node.protocol.subscribe(topic).get()
+    discard await connect(source, b)
+    discard await connect(source, c)
+    checkUntilTimeout:
+      source.protocol.subscribers(topic).len == 2
+    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 2
+    checkUntilTimeout:
+      b.events.anyIt(it.kind == WaggleEventKind.Received) and
+        c.events.anyIt(it.kind == WaggleEventKind.Received)
+    b.events.setLen(0)
+    c.events.setLen(0)
+    let unknown = await newNode()
+    discard unknown.protocol.subscribe(topic).get()
+    discard await connect(source, unknown)
+    checkUntilTimeout:
+      source.protocol.subscribers(topic).len == 3
+    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 3)).get() == 2
+    checkUntilTimeout:
+      b.events.anyIt(it.kind == WaggleEventKind.Received) and
+        c.events.anyIt(it.kind == WaggleEventKind.Received)
+    let received = (b.events & c.events).filterIt(it.kind == WaggleEventKind.Received)
+    check received.len == 2
+    check received.countIt(it.message.pieces == Opt.some(@[byte 2])) == 1
+    check received.allIt(it.message.piecesMetadata == Opt.some(@[byte 3]))
+    check unknown.events.allIt(it.kind != WaggleEventKind.Received)
+    check source.protocol.removeObject(topic, @[byte 1])
+    check not source.protocol.removeObject(topic, @[byte 1])
+
+  asyncTest "malformed subscriptions and extra subscriber bytes emit invalid data":
+    let a = await newNode()
+    let b = await newNode()
+    let (_, bm) = await connect(a, b)
+    for malformed in [true, false]:
+      let stream = await bm.newStream()
+      check await MultistreamSelect.new().select(stream, WaggleCodec)
+      if malformed:
+        await stream.writeLp(@[byte 0])
+      else:
+        await stream.writeLp(TopicSubscription(topicId: topic).encode())
+        await stream.write(@[byte 1])
+      checkUntilTimeout:
+        a.events.countIt(it.kind == WaggleEventKind.InvalidData) ==
+          (if malformed: 1 else: 2)
+      await stream.reset()
+    check a.events.filterIt(it.kind == WaggleEventKind.InvalidData).allIt(
+      it.peerId == b.peer and it.connectionId > 0 and it.reason.len > 0
+    )
+
+  asyncTest "malformed object bodies, lengths, and oversized frames emit invalid data":
+    let frames = @[@[byte 1, 0], newSeqWith(10, 128.byte), @[byte 129, 128, 4]]
+    for rawFrame in frames:
+      let frame = rawFrame
+      let a = await newNode()
+      let b = await newNode()
+      proc corrupt(
+          stream: Stream, proto: string
+      ) {.async: (raises: [CancelledError]).} =
+        try:
+          discard await stream.readLp(65536)
+          await stream.write(frame)
+          var data: byte
+          await stream.readExactly(addr data, 1)
+        except LPStreamError:
+          discard
+        finally:
+          await stream.reset()
+
+      b.protocol.handler = corrupt
+      discard a.protocol.subscribe(topic).get()
+      discard await connect(a, b)
+      checkUntilTimeout:
+        a.events.anyIt(it.kind == WaggleEventKind.InvalidData)
+      let invalid = a.events.filterIt(it.kind == WaggleEventKind.InvalidData)
+      check invalid.len == 1
+      check invalid[0].peerId == b.peer and invalid[0].connectionId > 0
+      check invalid[0].topicId == topic and invalid[0].reason.len > 0
+
+  asyncTest "initial metadata-only publications obey the publication fanout":
+    let source = await newNode(fanout = 1)
+    let b = await newNode()
+    let c = await newNode()
+    for node in nodes:
+      discard node.protocol.subscribe(topic).get()
+    discard await connect(source, b)
+    discard await connect(source, c)
+    checkUntilTimeout:
+      source.protocol.subscribers(topic).len == 2
+    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 0)).get() == 1
+    checkUntilTimeout:
+      b.events.countIt(it.kind == WaggleEventKind.Received) +
+        c.events.countIt(it.kind == WaggleEventKind.Received) == 1
+
+  asyncTest "ordinary protocol rejection is not reported as invalid data":
+    let a = await newNode()
+    let b = await newNode()
+    b.ms = MultistreamSelect.new()
+    discard a.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.events.anyIt(it.kind == WaggleEventKind.StreamFailed)
+    check a.events.allIt(it.kind != WaggleEventKind.InvalidData)
