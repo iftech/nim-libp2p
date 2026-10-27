@@ -46,9 +46,10 @@ A shard passed to `publish` must describe the entire current object snapshot,
 including pieces the application has already integrated. Do not mutate published
 snapshots. Publish a replacement when the object's state changes.
 
-For a Switch, create the protocol with `Waggle.new(onEvent = handler, rng = rng)`,
-call `protocol.attach(switch.connManager)`, and mount it before starting the switch.
-`attach` discovers existing and future connections; it does not dial new peers.
+For a Switch, create the protocol with
+`Waggle.new(switch = switch, onEvent = handler, rng = rng)` and mount it before
+starting the switch. The constructor attaches to the switch's connection manager
+to discover existing and future connections; it does not dial new peers.
 For a manually upgraded stack, register each running muxer with
 `protocol.addConnection(muxer)`, as the interop peer does. Its stream handler must
 route incoming streams through a multistream selector containing the protocol.
@@ -168,7 +169,6 @@ reconnect, and queue-full recovery against the pinned Rust implementation.
 
 The draft's framing and stream-direction choices remain provisional. Discovery,
 application validation/reconstruction, signing, peer scoring, and retries after
-failed stream opens are outside the engine. Standalone Switch compilation
-encounters baseline `UseBase` diagnostics in `switch.nim`; connection-manager
-attachment is tested directly, and interop uses
-the TCP/Noise/Yamux upgrade stack.
+failed stream opens are outside the engine. Switch integration is covered by a
+TCP/Noise/Mplex exchange test, alongside direct connection-manager coverage.
+Interop uses the TCP/Noise/Yamux upgrade stack.

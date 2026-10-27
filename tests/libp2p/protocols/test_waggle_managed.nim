@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
-# Copyright (c) 2026 Status Research & Development GmbH
+# Copyright (c) Status Research & Development GmbH
 
 {.used.}
 
@@ -8,7 +8,7 @@ import chronos
 import ./waggle_utils
 import
   ../../../libp2p/[
-    connmanager,
+    switch,
     stream/bufferstream,
     multistream,
     muxers/yamux/yamux,
@@ -75,7 +75,10 @@ suite "Waggle managed dissemination":
             event.topic, BitShard(id: event.message.objectId, have: have)
           )
 
+    if managed:
+      node.manager = ConnManager.new(maxConnsPerPeer = 4)
     node.protocol = Waggle.new(
+      switch = (if managed: Switch(connManager: node.manager) else: nil),
       onEvent = onEvent,
       rng = rng(),
       maxQueued = maxQueued,
@@ -84,9 +87,6 @@ suite "Waggle managed dissemination":
       ),
     )
     node.ms.addHandler(node.protocol)
-    if managed:
-      node.manager = ConnManager.new(maxConnsPerPeer = 4)
-      node.protocol.attach(node.manager)
     nodes.add(node)
     node
 
@@ -209,6 +209,22 @@ suite "Waggle managed dissemination":
           it.message.pieces == Opt.some(@[byte 1])
       )
 
+  asyncTest "constructor discovers existing switch connections":
+    let a = newNode(managed = true)
+    let b = newNode(managed = true)
+    discard await connect(a, b)
+    await a.protocol.stop()
+    check a.ms.removeHandler(a.protocol)
+    a.protocol = Waggle.new(switch = Switch(connManager: a.manager), rng = rng())
+    a.ms.addHandler(a.protocol)
+    discard a.protocol.subscribe(topic).get()
+    discard b.protocol.subscribe(topic).get()
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1 and b.protocol.subscribers(topic).len == 1
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
+    checkUntilTimeout:
+      b.events.countIt(it.kind == WaggleEventKind.Received) == 1
+
   asyncTest "subscriptions follow new connections and unsubscribe/resubscribe":
     let a = newNode(managed = true)
     let b = newNode(managed = true)
@@ -222,8 +238,8 @@ suite "Waggle managed dissemination":
       b.events.countIt(it.kind == WaggleEventKind.Received) == 1
     check await b.protocol.unsubscribe(topic)
     checkUntilTimeout:
-      a.protocol.subscribers(topic).len == 0
-    check a.events.anyIt(it.kind == WaggleEventKind.Unsubscribed)
+      a.protocol.subscribers(topic).len == 0 and
+        a.events.anyIt(it.kind == WaggleEventKind.Unsubscribed)
     check b.protocol.subscribe(topic).get()
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 1

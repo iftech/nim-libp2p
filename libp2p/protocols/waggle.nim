@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
-# Copyright (c) 2026 Status Research & Development GmbH
+# Copyright (c) Status Research & Development GmbH
 
 ## Experimental Waggle dissemination with application-defined object semantics.
 
@@ -8,7 +8,7 @@
 import std/[sequtils, tables, sets]
 import chronos, chronicles
 import ./protocol, ./waggle/[messages, shard, state]
-import ../connmanager, ../crypto/rng, ../muxers/muxer, ../multistream
+import ../switch, ../crypto/rng, ../muxers/muxer, ../multistream
 import ../stream/connection
 import ../peerid
 
@@ -236,6 +236,8 @@ method init*(p: Waggle) =
   p.codec = WaggleCodec
   p.handler = handle
 
+proc attach(p: Waggle, manager: ConnManager)
+
 proc new*(
     T: typedesc[Waggle],
     maxMessageSize: int = 65536,
@@ -251,6 +253,7 @@ proc new*(
     topicWhitelist = Opt.none(HashSet[seq[byte]]),
     onEvent: WaggleEventHandler = nil,
     rng: Rng = nil,
+    switch: Switch = nil,
 ): T =
   doAssert maxMessageSize > 0 and maxTopicSize >= 0
   doAssert maxStreams > 0 and maxStreamsPerPeer > 0
@@ -286,6 +289,8 @@ proc new*(
     maxOutgoingStreamsTotal = maxStreams,
     maxOutgoingStreamsPerPeer = maxStreamsPerPeer,
   )
+  if switch != nil:
+    p.attach(switch.connManager)
   p
 
 proc subscribe*(
@@ -642,7 +647,7 @@ proc removeConnection(p: Waggle, link: WaggleConnection) {.async: (raises: []).}
 
 proc addConnection*(p: Waggle, muxer: Muxer): Result[bool, string] =
   ## Register an upgraded muxer whose stream handler routes incoming protocols.
-  ## Use attach(connManager) for automatic connection discovery.
+  ## Pass a switch to Waggle.new for automatic connection discovery.
   if p.stopping or muxer == nil or muxer.handler == nil or muxer.connection.closed:
     return err("Waggle requires a live running muxer")
   for link in p.links:
@@ -669,9 +674,7 @@ proc refreshConnections(p: Waggle) =
       if added.isErr:
         trace "Waggle connection not registered", reason = added.error
 
-proc attach*(p: Waggle, manager: ConnManager) =
-  ## Attach before starting the switch; existing connections are also discovered.
-  ## Mount this protocol on the switch separately.
+proc attach(p: Waggle, manager: ConnManager) =
   doAssert manager != nil and p.manager == nil
   p.manager = manager
   proc onConnection(
