@@ -1259,29 +1259,39 @@ suite "Switch":
 
     await allFuturesRaising(clients.mapIt(it.stop()) & @[server.stop()])
 
+proc makePusherSwitch(): Switch {.raises: [LPError].} =
+  makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
+
+proc startConnectedPushers(
+    switch1, switch2: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  await switch1.start()
+  await switch2.start()
+
+  # the listener pusher tracks the dialer on Identified, after ProtoBook is set
+  let identified = newAsyncEvent()
+  proc onIdentified(
+      peerId: PeerId, event: PeerEvent
+  ) {.async: (raises: [CancelledError]).} =
+    identified.fire()
+
+  switch2.addPeerEventHandler(onIdentified, PeerEventKind.Identified)
+  defer:
+    switch2.removePeerEventHandler(onIdentified, PeerEventKind.Identified)
+
+  await switch1.connect(switch2)
+  await identified.wait()
+  check IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
+  check switch1.isConnected(switch2)
+  check switch2.isConnected(switch1)
+
 suite "Switch :: IdentifyPusher Service":
-  var
-    switch1 {.threadvar.}: Switch
-    switch2 {.threadvar.}: Switch
-
-  asyncSetup:
-    switch1 = makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
-    switch2 = makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
-    await switch1.start()
-    await switch2.start()
-    await switch1.connect(switch2)
-    checkUntilTimeout:
-      IdentifyPushCodec in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
-      IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
-
-  asyncTeardown:
-    await switch1.stop()
-    await switch2.stop()
-
   asyncTest "broadcasts on mount of new protocol":
-    checkUntilTimeout:
-      switch1.isConnected(switch2)
-      switch2.isConnected(switch1)
+    let switch1 = makePusherSwitch()
+    let switch2 = makePusherSwitch()
+    defer:
+      await allFutures(switch1.stop(), switch2.stop())
+    await startConnectedPushers(switch1, switch2)
 
     # mount new protocol to switch2
     let codecs = "/switch/protocol/1.0.0"
@@ -1299,9 +1309,11 @@ suite "Switch :: IdentifyPusher Service":
       codecs in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
 
   asyncTest "broadcasts on updateAddrs":
-    checkUntilTimeout:
-      switch1.isConnected(switch2)
-      switch2.isConnected(switch1)
+    let switch1 = makePusherSwitch()
+    let switch2 = makePusherSwitch()
+    defer:
+      await allFutures(switch1.stop(), switch2.stop())
+    await startConnectedPushers(switch1, switch2)
 
     # switch2 starts listening on new address
     let extra = ma("/ip4/127.0.0.1/tcp/999")
