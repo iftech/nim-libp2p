@@ -1,0 +1,12 @@
+[package]
+name = "waggle-interop-peer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+libp2p = { version = "=0.56.0", features = ["noise", "yamux", "tcp", "tokio"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+waggle = { git = "https://github.com/sigp/waggle", rev = "4a42568b77e703e15c954160d229af4bce98a6eb" }
