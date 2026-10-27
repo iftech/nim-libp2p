@@ -30,16 +30,12 @@ Two peers wanting mutual delivery each open a subscription stream.
 
 ## Connection events
 
-Call `addConnection(muxer)` for each running muxer to receive `Subscribed`,
-`Unsubscribed`, and `InvalidData` through `onEvent`. Events identify a registered
-connection with a nonzero `ConnectionId` and carry the topic as `topicId`
-(`TopicId`, an alias for opaque bytes). Direct streams without registration
-use their message handler and returned Results; malformed subscriptions are
-also logged at trace level.
-
-Register new muxers as they connect. After stopping and restarting Waggle,
-re-register live muxers. `maxStreams` caps both streams and registered
-connections separately.
+Events require a registered connection and carry a nonzero `ConnectionId`
+and the topic as `topicId` (`TopicId`, an alias for opaque bytes).
+Passing a switch to `Waggle.new` registers connections automatically. Direct
+streams without registration use their message handler and returned Results;
+malformed subscriptions are also logged at trace level. `maxStreams` caps both
+streams and registered connections separately.
 
 ## Object model contract
 
