@@ -7,6 +7,7 @@ import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
 import ../../utils/[opt, shortlog]
 import ../protocol
+import ../../services/reachabilityobservers
 import ./[key_value, protobuf, message_sender]
 
 export tables, sets, heapqueue, key_value, message_sender
@@ -174,6 +175,10 @@ proc after*(T: typedesc[UnixTimestamp], d: chronos.Duration): UnixTimestamp =
   nowUnixSeconds() + d.ceilSeconds()
 
 type XorDistance* = array[IdLength, byte]
+
+type CurrentReachability* = proc(): NetworkReachability {.gcsafe, raises: [].}
+  ## Reads the reachability the node has now, not only the last change.
+
 type XorDHasher* = proc(input: seq[byte]): array[IdLength, byte] {.
   raises: [], nimcall, noSideEffect, gcsafe
 .}
@@ -753,6 +758,9 @@ type KadDHT* = ref object of LPProtocol
     ## Set once ``stop`` begins so racing handlers stop launching new probes,
     ## letting the shutdown drain terminate.
   isServer*: bool ## Whether the node answers inbound queries.
+  autoModeHandler*: Opt[ReachabilityHandler]
+    ## Set in auto mode: reachability verdicts drive ``isServer``.
+  currentReachability*: CurrentReachability ## Set in auto mode; read on ``start``.
   serverStreams*: HashSet[Stream]
     ## Open inbound server streams, reset when the node stops serving.
 
