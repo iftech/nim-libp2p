@@ -505,32 +505,29 @@ proc advertise(
       continue
     let prepared = p.state.prepare(
       topicId, link.id, link.muxer.connection.peerId, objectId, metadataOnly = true
-    )
-    if prepared.isErr:
+    ).valueOr:
       p.notify(
         WaggleEventKind.InvalidData,
         link,
         topicId,
         ObjectPieces(objectId: objectId),
-        prepared.error,
+        error,
       )
-    elif prepared.get().isSome and p.dispatch(link, topicId, prepared.get().get()):
+      continue
+    let tx = prepared.valueOr:
+      continue
+    if p.dispatch(link, topicId, tx):
       inc sent
       if not view.advertised:
         inc discovered
   return sent
 
-proc publish*(p: Waggle, topicId: TopicId, shard: WaggleShard): Result[int, string] =
-  ## Cache a current snapshot and queue initial publication or selective forwarding.
-  ## Updated snapshots also advertise metadata to observers and discovery peers.
-  if p.stopping or shard == nil:
-    return err("Waggle is stopped or the shard is nil")
-  let candidates = p.eligible(topicId)
-  if candidates.len == 0:
-    return err("No peers subscribed to the topic")
-  let id = shard.objectId()
-  let existing = p.state.hasLocal(topicId, id)
-  let changed = ?p.state.store(topicId, shard)
+proc disseminate(
+    p: Waggle,
+    topicId, id: seq[byte],
+    candidates: seq[WaggleConnection],
+    existing, changed: bool,
+): tuple[sent: int, attempted: bool] =
   var sent = 0
   var seeded = 0
   var forwarded = 0
@@ -547,29 +544,39 @@ proc publish*(p: Waggle, topicId: TopicId, shard: WaggleShard): Result[int, stri
       else:
         p.config(topicId).publishFanout
     let payloads = if forwarding: forwarded else: seeded
-    let prepared = p.state.prepare(topicId, link.id, link.muxer.connection.peerId, id)
-    if prepared.isErr:
+    let prepared = p.state.prepare(topicId, link.id, link.muxer.connection.peerId, id).valueOr:
       attempted = true
       p.notify(
-        WaggleEventKind.InvalidData,
-        link,
-        topicId,
-        ObjectPieces(objectId: id),
-        prepared.error,
+        WaggleEventKind.InvalidData, link, topicId, ObjectPieces(objectId: id), error
       )
-    elif prepared.get().isSome:
-      let tx = prepared.get().get()
-      let budgeted = not forwarding or tx.message.pieces.isSome
-      if budgeted and payloads >= limit:
-        continue
-      attempted = true
-      if p.dispatch(link, topicId, tx):
-        inc sent
-        if budgeted:
-          if forwarding:
-            inc forwarded
-          else:
-            inc seeded
+      continue
+    let tx = prepared.valueOr:
+      continue
+    let budgeted = not forwarding or tx.message.pieces.isSome
+    if budgeted and payloads >= limit:
+      continue
+    attempted = true
+    if p.dispatch(link, topicId, tx):
+      inc sent
+      if budgeted:
+        if forwarding:
+          inc forwarded
+        else:
+          inc seeded
+  return (sent, attempted)
+
+proc publish*(p: Waggle, topicId: TopicId, shard: WaggleShard): Result[int, string] =
+  ## Cache a current snapshot and queue initial publication or selective forwarding.
+  ## Updated snapshots also advertise metadata to observers and discovery peers.
+  if p.stopping or shard == nil:
+    return err("Waggle is stopped or the shard is nil")
+  let candidates = p.eligible(topicId)
+  if candidates.len == 0:
+    return err("No peers subscribed to the topic")
+  let id = shard.objectId()
+  let existing = p.state.hasLocal(topicId, id)
+  let changed = ?p.state.store(topicId, shard)
+  var (sent, attempted) = p.disseminate(topicId, id, candidates, existing, changed)
   if existing:
     sent += p.advertise(topicId, id)
   if sent == 0 and (changed or attempted):

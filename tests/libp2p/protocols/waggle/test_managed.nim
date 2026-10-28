@@ -360,7 +360,11 @@ suite "Waggle managed dissemination":
       b.events.countIt(it.kind == WaggleEventKind.Subscribed) == 2
     check b.protocol.subscribers(topic) == @[a.peer]
     for peer in b.protocol.subscribers(topic):
-      check (await b.protocol.send(peer, topic, ObjectPieces(objectId: @[byte 1]))).get()
+      check (
+        await b.protocol.send(
+          peer, topic, ObjectPieces(objectId: @[byte 1], pieces: Opt.some(@[byte 1]))
+        )
+      ).get()
     checkUntilTimeout:
       a.events.countIt(it.kind == WaggleEventKind.Received) == 1
 
