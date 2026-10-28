@@ -345,6 +345,48 @@ proc processReceived(
   if topicId in p.topics and not p.stopping and link in p.links:
     p.notify(WaggleEventKind.Received, link, topicId, msg)
 
+proc receiveTopic(
+    p: Waggle, link: WaggleConnection, topicId: TopicId
+) {.async: (raises: [CancelledError]).} =
+  var stream: Stream
+  var opening = true
+  try:
+    stream = await link.muxer.newStream()
+    if not (await MultistreamSelect.new().select(stream, WaggleCodec)):
+      p.notify(
+        WaggleEventKind.StreamFailed,
+        link,
+        topicId,
+        reason = "Peer does not support Waggle",
+      )
+      return
+    proc onPieces(
+        peer: PeerId, topicId: TopicId, msg: ObjectPieces
+    ) {.async: (raises: [CancelledError]).} =
+      p.processReceived(link, topicId, msg)
+
+    dec link.opening
+    opening = false
+    let received = await p.subscribe(stream, topicId, onPieces)
+    if received.isErr:
+      let kind =
+        if received.isOfError(WaggleInvalidDataCause):
+          WaggleEventKind.InvalidData
+        else:
+          WaggleEventKind.StreamFailed
+      p.notify(kind, link, topicId, reason = $received.error)
+  except InvalidVarintError, MaxSizeError:
+    let kind =
+      if opening: WaggleEventKind.StreamFailed else: WaggleEventKind.InvalidData
+    p.notify(kind, link, topicId, reason = getCurrentExceptionMsg())
+  except LPError as exc:
+    p.notify(WaggleEventKind.StreamFailed, link, topicId, reason = exc.msg)
+  finally:
+    if opening:
+      dec link.opening
+    if stream != nil:
+      await noCancel stream.reset()
+
 proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
   if link.readers.hasKey(topicId):
     return
@@ -358,47 +400,7 @@ proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
     )
     return
   inc link.opening
-  proc receive() {.async: (raises: [CancelledError]).} =
-    var stream: Stream
-    var opening = true
-    try:
-      stream = await link.muxer.newStream()
-      if not (await MultistreamSelect.new().select(stream, WaggleCodec)):
-        p.notify(
-          WaggleEventKind.StreamFailed,
-          link,
-          topicId,
-          reason = "Peer does not support Waggle",
-        )
-        return
-      proc onPieces(
-          peer: PeerId, topicId: TopicId, msg: ObjectPieces
-      ) {.async: (raises: [CancelledError]).} =
-        p.processReceived(link, topicId, msg)
-
-      dec link.opening
-      opening = false
-      let received = await p.subscribe(stream, topicId, onPieces)
-      if received.isErr:
-        let kind =
-          if received.isOfError(WaggleInvalidDataCause):
-            WaggleEventKind.InvalidData
-          else:
-            WaggleEventKind.StreamFailed
-        p.notify(kind, link, topicId, reason = $received.error)
-    except InvalidVarintError, MaxSizeError:
-      let kind =
-        if opening: WaggleEventKind.StreamFailed else: WaggleEventKind.InvalidData
-      p.notify(kind, link, topicId, reason = getCurrentExceptionMsg())
-    except LPError as exc:
-      p.notify(WaggleEventKind.StreamFailed, link, topicId, reason = exc.msg)
-    finally:
-      if opening:
-        dec link.opening
-      if stream != nil:
-        await noCancel stream.reset()
-
-  link.readers[topicId] = receive()
+  link.readers[topicId] = p.receiveTopic(link, topicId)
 
 proc subscribe*(p: Waggle, topicId: TopicId): Result[bool, string] =
   ## Subscribe on every current and future registered connection.
