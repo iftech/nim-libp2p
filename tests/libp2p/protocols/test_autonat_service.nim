@@ -178,6 +178,51 @@ suite "Autonat Service":
     gate.fire()
     await allFuturesRaising(stopAutonatSwitch(switch1, autonatService), switch2.stop())
 
+  asyncTest "Stop cancels an in-flight probe before it notifies":
+    for scheduled in [false, true]:
+      let autonatClientStub = AutonatClientStub.new(expectedDials = 1)
+      autonatClientStub.answer = NotReachable
+      autonatClientStub.release = newAsyncEvent()
+
+      let autonatService =
+        if scheduled:
+          AutonatService.new(
+            autonatClientStub,
+            rng(),
+            Opt.some(1.seconds),
+            askNewConnectedPeers = false,
+            maxQueueSize = 1,
+          )
+        else:
+          AutonatService.new(autonatClientStub, rng(), maxQueueSize = 1)
+      var observerCalls = 0
+      check autonatService.reachabilityObservers.add(
+        proc(
+            reachability: NetworkReachability,
+            confidence: Opt[float],
+            dialBackAddr: Opt[MultiAddress],
+        ) {.async: (raises: [CancelledError]).} =
+          observerCalls.inc()
+      )
+
+      let switch1 = createSwitch()
+      let switch2 = createSwitch()
+      await switch1.start()
+      await autonatService.start(switch1)
+      await switch2.start()
+      await switch1.connect(switch2)
+      await autonatClientStub.finished
+
+      await autonatService.stop(switch1)
+      check autonatClientStub.cancelledDials == 1
+
+      autonatClientStub.release.fire()
+      await allFuturesRaising(switch1.stop(), switch2.stop())
+
+      check:
+        observerCalls == 0
+        autonatService.networkReachability == NetworkReachability.Unknown
+
   asyncTest "Peer must be reachable":
     let autonatService =
       AutonatService.new(AutonatClient.new(), rng(), Opt.some(1.seconds))
