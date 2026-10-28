@@ -21,10 +21,12 @@ Two peers wanting mutual delivery each open a subscription stream.
 
 ## Stream safety
 
-Message and topic sizes, total streams, and per-peer streams are bounded. Pending
-handshakes count against stream limits. Sends are serialized per stream; failed
-or cancelled active writes reset the stream, while cancellation waiting for a
-write lock leaves the active writer intact. Stop closes owned streams.
+- Message size, topic size, total streams, and streams per peer are bounded.
+- Pending handshakes count against stream limits.
+- Sends are serialized per stream.
+- Failed or cancelled active writes reset the stream.
+- Cancelling a send while it waits for the write lock leaves the active writer intact.
+- Stopping Waggle closes its owned streams.
 
 ## Connection events
 
