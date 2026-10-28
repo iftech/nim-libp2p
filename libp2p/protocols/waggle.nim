@@ -124,8 +124,9 @@ proc new*(
 proc subscribe*(
     p: Waggle, stream: Stream, topic: seq[byte], handler: PiecesHandler
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
-  ## Takes ownership of a negotiated stream, sends the subscription, and receives
-  ## until EOF, cancellation, or a returned error. The stream is reset on every exit.
+  ## Takes ownership of a stream opened for WaggleCodec, sends the subscription,
+  ## and receives until EOF, cancellation, or a returned error. The stream is reset
+  ## on every exit.
   doAssert handler != nil
   var session: TopicStream
   try:
@@ -166,9 +167,10 @@ proc subscribers*(p: Waggle, topic: seq[byte]): seq[PeerId] =
 proc send*(
     p: Waggle, peer: PeerId, topic: seq[byte], msg: ObjectPieces
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]).} =
-  ## Returns whether a message was written; validation and stream failures are errors.
-  ## Concurrent sends apply backpressure through a per-stream lock. A cancelled
-  ## or failed write resets the stream because its frame may be incomplete.
+  ## Concurrent sends are serialized by a per-stream lock. A cancelled or failed
+  ## write resets the stream because its frame may be incomplete.
+  ## Returns ok(true) after writing, or ok(false) if no writable subscription exists.
+  ## Validation and stream failures return errors; cancellation propagates.
   if msg.encodedSize() > p.maxMessageSize:
     return err("Waggle message exceeds maximum length")
   var selected = Opt.none(TopicStream)
