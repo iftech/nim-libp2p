@@ -29,13 +29,18 @@ import ../libp2p/protocols/connectivity/relay/client
 import ../libp2p/protocols/connectivity/autonatv2/service
 import ../libp2p/extended_peer_record
 
+type StreamEntry = ref object
+  ## A `ref` so an async proc keeps the same entry across an `await`.
+  stream: Stream
+  reading: bool
+  releaseWaiter: Future[void].Raising([CancelledError])
+    ## Keeps a custom-protocol handler alive until the host releases the stream.
+
 type StreamRegistry = ref object
-  ## Owns the live streams handed across the FFI boundary and the release-waiter
-  ## futures keeping custom-protocol handlers alive until the host is done. A `ref`
-  ## so a handler captures it alone, avoiding a `lib` cycle that leaks under `--mm:refc`.
-  streams: Table[uint64, Stream]
+  ## Owns the live streams handed across the FFI boundary. A `ref` so a handler
+  ## captures it alone, avoiding a `lib` cycle that leaks under `--mm:refc`.
+  entries: Table[uint64, StreamEntry]
   nextStreamId: uint64
-  releaseWaiters: Table[uint64, Future[void].Raising([CancelledError])]
   closed: bool
 
 type LibP2P* = ref object
@@ -94,10 +99,12 @@ type StreamWriteRequest {.ffi.} = object
 type StreamReadExactlyRequest {.ffi.} = object
   streamId: uint64
   numBytes: int64
+  timeoutMs: int64
 
 type StreamReadLpRequest {.ffi.} = object
   streamId: uint64
   maxSize: int64
+  timeoutMs: int64
 
 type PublishRequest {.ffi.} = object
   topic: string
@@ -230,41 +237,54 @@ proc onIncomingStream*(event: IncomingStreamEvent) {.ffiEvent.} =
 proc onPubsubMessage*(event: PubsubMessageEvent) {.ffiEvent.} =
   ## Fired for every message received on a subscribed gossipsub topic.
 
-proc register(reg: StreamRegistry, stream: Stream): uint64 =
+proc register(
+    reg: StreamRegistry,
+    stream: Stream,
+    releaseWaiter: Future[void].Raising([CancelledError]) = nil,
+): uint64 =
   reg.nextStreamId.inc()
   let id = reg.nextStreamId
-  reg.streams[id] = stream
+  reg.entries[id] = StreamEntry(stream: stream, releaseWaiter: releaseWaiter)
   id
 
-func get(reg: StreamRegistry, id: uint64): Result[Stream, string] =
-  let stream = reg.streams.getOrDefault(id, nil)
-  if stream.isNil():
+func get(reg: StreamRegistry, id: uint64): Result[StreamEntry, string] =
+  let entry = reg.entries.getOrDefault(id, nil)
+  if entry.isNil():
     return err("unknown stream handle")
-  ok(stream)
+  ok(entry)
 
-proc release(reg: StreamRegistry, id: uint64) =
+proc beginRead(reg: StreamRegistry, id: uint64): Result[StreamEntry, string] =
+  ## Marks the entry as being read; the caller must clear `reading` when done.
+  let entry = ?reg.get(id)
+  if entry.reading:
+    return err("read already in progress")
+  entry.reading = true
+  ok(entry)
+
+proc release(reg: StreamRegistry, id: uint64): bool =
+  ## Returns false when `id` is not registered.
+  var entry: StreamEntry
+  if not reg.entries.pop(id, entry):
+    return false
+
   # Completes the waiting protocol handler so multistream doesn't close the stream early.
-  let releaseWaiter = reg.releaseWaiters.getOrDefault(id, nil)
-  if not releaseWaiter.isNil():
-    reg.releaseWaiters.del(id)
-    if not releaseWaiter.finished():
-      releaseWaiter.complete()
-  reg.streams.del(id)
+  if not entry.releaseWaiter.isNil() and not entry.releaseWaiter.finished():
+    entry.releaseWaiter.complete()
+  true
 
 proc releaseAll(reg: StreamRegistry) {.async: (raises: []).} =
   # Muxer close awaits every channel handler, so a parked handler blocks stop.
   # Reset first: it fails host reads in flight, so closeWithEOF starts no second read.
   reg.closed = true
   var resets: seq[Future[void].Raising([])]
-  for stream in reg.streams.values():
-    resets.add(stream.reset())
+  for entry in reg.entries.values():
+    resets.add(entry.stream.reset())
   await noCancel allFutures(resets)
 
-  for releaseWaiter in reg.releaseWaiters.values():
-    if not releaseWaiter.finished():
-      releaseWaiter.complete()
-  reg.releaseWaiters.clear()
-  reg.streams.clear()
+  for entry in reg.entries.values():
+    if not entry.releaseWaiter.isNil() and not entry.releaseWaiter.finished():
+      entry.releaseWaiter.complete()
+  reg.entries.clear()
 
 const MaxReadBytes {.ffiConst.} = 64 * 1024 * 1024
   ## Caps the buffer an untrusted peer can make us pre-allocate before any byte
@@ -664,39 +684,62 @@ func validateReadLength(n: int64): Result[int, string] =
     return err("read length too large")
   ok(int(n))
 
+proc readBytes(
+    stream: Stream, n: int
+): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError]).} =
+  var buf = newSeqUninit[byte](n)
+  await stream.readExactly(addr buf[0], n)
+  buf
+
+proc readWithin(
+    stream: Stream,
+    read: Future[seq[byte]].Raising([CancelledError, LPStreamError]),
+    timeoutMs: int64,
+): Future[Result[seq[byte], string]] {.async: (raises: [CancelledError]).} =
+  try:
+    ok(await read.wait(callTimeout(timeoutMs)))
+  except AsyncTimeoutError:
+    # A cut read leaves the stream mid-frame, so no later read can resync.
+    await stream.reset()
+    err("read timeout")
+  except LPStreamError as e:
+    err(e)
+
 proc libp2pStreamReadExactly*(
     lib: LibP2P, req: StreamReadExactlyRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
   ## Reads exactly `numBytes` from the stream, capped at `MAX_READ_BYTES`.
-  let stream = ?lib.streams.get(req.streamId)
+  ## A timeout resets the stream; `timeoutMs <= 0` waits forever.
+  let entry = ?lib.streams.beginRead(req.streamId)
+  defer:
+    entry.reading = false
+
   let expected = ?validateReadLength(req.numBytes)
   if expected == 0:
     return ok(ReadResponse(data: @[]))
-  var buf = newSeqUninit[byte](expected)
-  try:
-    await stream.readExactly(addr buf[0], expected)
-  except LPStreamError as e:
-    return err(e)
-  ok(ReadResponse(data: buf))
+
+  let data =
+    ?await entry.stream.readWithin(entry.stream.readBytes(expected), req.timeoutMs)
+  ok(ReadResponse(data: data))
 
 proc libp2pStreamReadLp*(
     lib: LibP2P, req: StreamReadLpRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
   ## Reads one length-prefixed message, rejecting a prefix above `maxSize`.
-  let stream = ?lib.streams.get(req.streamId)
+  ## A timeout resets the stream; `timeoutMs <= 0` waits forever.
+  let entry = ?lib.streams.beginRead(req.streamId)
+  defer:
+    entry.reading = false
+
   let maxSize = ?validateReadLength(req.maxSize)
-  let data =
-    try:
-      await stream.readLp(maxSize)
-    except LPStreamError as e:
-      return err(e)
+  let data = ?await entry.stream.readWithin(entry.stream.readLp(maxSize), req.timeoutMs)
   ok(ReadResponse(data: data))
 
 proc libp2pStreamWrite*(
     lib: LibP2P, req: StreamWriteRequest
 ): Future[Result[bool, string]] {.ffi.} =
   ## Writes `data` to the stream as raw bytes.
-  let stream = ?lib.streams.get(req.streamId)
+  let stream = (?lib.streams.get(req.streamId)).stream
   try:
     await stream.write(req.data)
   except LPStreamError as e:
@@ -707,7 +750,7 @@ proc libp2pStreamWriteLp*(
     lib: LibP2P, req: StreamWriteRequest
 ): Future[Result[bool, string]] {.ffi.} =
   ## Writes `data` to the stream as one length-prefixed message.
-  let stream = ?lib.streams.get(req.streamId)
+  let stream = (?lib.streams.get(req.streamId)).stream
   try:
     await stream.writeLp(req.data)
   except LPStreamError as e:
@@ -718,24 +761,27 @@ proc libp2pStreamClose*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
   ## Closes the stream's write side; the handle stays valid until released.
-  let stream = ?lib.streams.get(streamId)
+  let stream = (?lib.streams.get(streamId)).stream
   await stream.close()
   ok(true)
 
 proc libp2pStreamCloseWithEof*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
-  ## Closes the stream and waits for the peer's EOF.
-  let stream = ?lib.streams.get(streamId)
-  await stream.closeWithEOF()
+  ## Closes the stream and waits for the peer's EOF; fails while a read is pending.
+  let entry = ?lib.streams.beginRead(streamId)
+  defer:
+    entry.reading = false
+
+  await entry.stream.closeWithEOF()
   ok(true)
 
 proc libp2pStreamRelease*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
   ## Drops the stream handle, letting a custom-protocol handler finish.
-  discard ?lib.streams.get(streamId)
-  lib.streams.release(streamId)
+  if not lib.streams.release(streamId):
+    return err("unknown stream handle")
   ok(true)
 
 proc libp2pMountProtocol*(
@@ -759,12 +805,11 @@ proc libp2pMountProtocol*(
   ) {.async: (raises: [CancelledError]).} =
     if streams.closed:
       return
-    let streamId = streams.register(stream)
-    defer:
-      streams.release(streamId)
     let releaseWaiter =
       Future[void].Raising([CancelledError]).init("cbind custom protocol release")
-    streams.releaseWaiters[streamId] = releaseWaiter
+    let streamId = streams.register(stream, releaseWaiter)
+    defer:
+      discard streams.release(streamId)
     onIncomingStream(
       IncomingStreamEvent(
         proto: selectedProto, streamId: streamId, peerId: $stream.peerId

@@ -62,7 +62,8 @@ set_property(TARGET tinycbor PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 find_package(Threads REQUIRED)
 
-foreach(example echo gossipsub kad service_disco relay peerstore metrics)
+foreach(example echo gossipsub kad service_disco relay peerstore metrics
+                read_timeout)
   add_executable(${example} "${example}.c")
   target_include_directories(${example} PRIVATE "${GEN_DIR}")
   target_link_libraries(${example} PRIVATE "${LIB_FILE}" tinycbor Threads::Threads)
