@@ -29,6 +29,15 @@ type Node = ref object
   have: byte
   integrate: bool
 
+type CountingShard = ref object of BitShard
+  preparations: int
+
+method actionFromMetadata(
+    s: CountingShard, peer: PeerId, connectionId: uint64, metadata: Opt[seq[byte]]
+): Result[WaggleAction, string] =
+  inc s.preparations
+  procCall BitShard(s).actionFromMetadata(peer, connectionId, metadata)
+
 suite "Waggle managed dissemination":
   var
     listener, dialer: Transport
@@ -41,6 +50,7 @@ suite "Waggle managed dissemination":
       integrate = false,
       fanout = 50,
       maxQueued = 5000,
+      maxQueuedBytes = 4 * 1024 * 1024,
       managed = false,
       forwardFanout = 50,
       gossipFanout = 50,
@@ -76,6 +86,7 @@ suite "Waggle managed dissemination":
       maxStreamsPerPeer = maxStreamsPerPeer,
       rng = rng(),
       maxQueued = maxQueued,
+      maxQueuedBytes = maxQueuedBytes,
       defaultTopicConfig = TopicConfig(
         publishFanout: fanout, forwardFanout: forwardFanout, gossipFanout: gossipFanout
       ),
@@ -180,7 +191,9 @@ suite "Waggle managed dissemination":
     discard await connect(source, c)
     checkUntilTimeout:
       source.protocol.subscribers(topic).len == 2
-    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 7)).get() == 1
+    let shard = CountingShard(id: @[byte 1], have: 7)
+    check source.protocol.publish(topic, shard).get() == 1
+    check shard.preparations == 1
     checkUntilTimeout:
       b.events.countIt(it.kind == WaggleEventKind.Received) +
         c.events.countIt(it.kind == WaggleEventKind.Received) == 1
@@ -205,6 +218,41 @@ suite "Waggle managed dissemination":
           it.message.pieces == Opt.some(@[byte 1]) and
           it.message.piecesMetadata == Opt.some(@[byte 1])
       )
+
+  asyncTest "byte budget is shared across topics and released after writing":
+    let a = await newNode(maxQueuedBytes = 9)
+    let b = await newNode()
+    let other = @[byte 2]
+    discard b.protocol.subscribe(topic).get()
+    discard b.protocol.subscribe(other).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1 and a.protocol.subscribers(other).len == 1
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
+    check a.protocol.publish(other, BitShard(id: @[byte 2], have: 1)).isErr
+    check a.events.countIt(it.kind == WaggleEventKind.FullQueue) == 1
+    checkUntilTimeout:
+      b.events.countIt(it.kind == WaggleEventKind.Received) == 1
+    check a.protocol.publish(other, BitShard(id: @[byte 2], have: 1)).get() == 1
+    checkUntilTimeout:
+      b.events.countIt(it.kind == WaggleEventKind.Received) == 2
+    # A single message larger than the byte budget must also be rejected.
+    check a.protocol.publish(topic, BitShard(id: @[byte 3, 4], have: 1)).isErr
+    check a.events.countIt(it.kind == WaggleEventKind.FullQueue) == 2
+
+  asyncTest "unsubscribing releases the topic configuration budget":
+    let p = Waggle.new(maxTopics = 1, maxTopicSize = 3, rng = rng())
+    let config = TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: 1)
+    check p.setTopicConfig(@[byte 1, 2, 3, 4], config).error ==
+      "Waggle topic exceeds maximum length"
+    check p.subscribe(topic).get()
+    check p.setTopicConfig(topic, config).isOk
+    check p.setTopicConfig(@[byte 2], config).error ==
+      "Waggle topic configuration limit reached"
+    check await p.unsubscribe(topic)
+    check p.subscribe(@[byte 2]).get()
+    check p.setTopicConfig(@[byte 2], config).isOk
+    await p.stop()
 
   asyncTest "start discovers existing switch connections":
     let a = await newNode(managed = true)
