@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos
-import ../../libp2p/[builders, switch, multiaddress, crypto/rng]
+import ../../libp2p/[switch, crypto/rng]
 import ../../libp2p/protocols/pubsub/gossipsub
 import ../tools/unittest
 import ./topic_streams
@@ -22,17 +22,8 @@ proc runEchoTest(mode: EchoMode): Future[bool] {.async.} =
     params.topicStreamsConfig = Opt.some(TopicStreamsConfig())
   let
     rng = newRng()
-    switch = SwitchBuilder
-      .new()
-      .withRng(rng)
-      .withAddresses(@[MultiAddress.init("/ip4/127.0.0.1/udp/0/quic-v1").get()])
-      .withQuicTransport()
-      .build()
-    gossip = GossipSub.init(
-      switch = switch,
-      rng = rng,
-      parameters = params,
-    )
+    switch = newTopicStreamsSwitch(rng)
+    gossip = GossipSub.init(switch = switch, rng = rng, parameters = params)
   switch.mount(gossip)
 
   var received = 0
@@ -46,8 +37,10 @@ proc runEchoTest(mode: EchoMode): Future[bool] {.async.} =
       discard await gossip.publish(topic, @[0.byte])
     of WrongTopic:
       let otherTopic =
-        if topic == topicStreamsTopics[0]: topicStreamsTopics[1]
-        else: topicStreamsTopics[0]
+        if topic == topicStreamsTopics[0]:
+          topicStreamsTopics[1]
+        else:
+          topicStreamsTopics[0]
       discard await gossip.publish(otherTopic, data)
     of Correct, WithoutTopicStreams:
       discard await gossip.publish(topic, data)
@@ -58,7 +51,8 @@ proc runEchoTest(mode: EchoMode): Future[bool] {.async.} =
   defer:
     await switch.stop()
   result = await topicStreamsInteropTest(
-    switch.peerInfo.addrs[0], switch.peerInfo.peerId,
+    switch.peerInfo.addrs[0],
+    switch.peerInfo.peerId,
     timeout = (if mode == Silent: 2.seconds else: 10.seconds),
   )
 

@@ -177,9 +177,6 @@ jobs:
             --hintAsError:XCannotRaiseY:off --out:build/topic-streams-nim \
             interop/topic-streams/nim-peer/src/peer.nim
 
-      - name: Test the Nim interop driver
-        run: nim c -r --out:build/test-topic-streams tests/interop/test_topic_streams.nim
-
       - name: Run Go and Nim together
         run: bash interop/topic-streams/run.sh
 

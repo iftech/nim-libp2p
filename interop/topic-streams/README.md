@@ -20,7 +20,7 @@ The Go peer only subscribes and echoes. It stays alive until Nim disconnects,
 so publishing the final echo cannot race shutdown or Nim's stream checks.
 
 From the repository root, with Go 1.25+, Nim 2.2.10, and the repository's
-Nim dependencies installed (`nimble setup`):
+Nim and test dependencies installed (`make setup`):
 
 ```sh
 mkdir -p build

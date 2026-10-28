@@ -5,12 +5,47 @@
 
 import std/[tables, sets, sequtils]
 import chronos, chronicles
-import ../../libp2p/[builders, switch, peerid, multiaddress, crypto/rng]
+import
+  ../../libp2p/[
+    switch,
+    peerid,
+    peerinfo,
+    multiaddress,
+    multistream,
+    crypto/crypto,
+    protocols/identify,
+  ]
 import ../../libp2p/muxers/muxer
 import ../../libp2p/transports/quictransport
 import ../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, rpc/message]
 
-const topicStreamsTopics* = ["interop/topic-streams/small", "interop/topic-streams/large"]
+const topicStreamsTopics* =
+  ["interop/topic-streams/small", "interop/topic-streams/large"]
+
+proc newTopicStreamsSwitch*(rng: Rng): Switch =
+  # Keep optional protocols out of the standalone interop build.
+  let
+    key = PrivateKey.random(rng).get()
+    peerInfo =
+      PeerInfo.new(key, @[MultiAddress.init("/ip4/127.0.0.1/udp/0/quic-v1").get()])
+    addressManager = AddressManager.new()
+    identify = Identify.new(peerInfo, addressManager = addressManager)
+    peerStore = PeerStore.new(identify)
+    connManager = ConnManager.new()
+    ms = MultistreamSelect.new()
+    transports = @[Transport(QuicTransport.new(Upgrade(ms: ms), key, rng, connManager))]
+  connManager.peerStore = peerStore
+  result = Switch(
+    peerInfo: peerInfo,
+    peerStore: peerStore,
+    connManager: connManager,
+    ms: ms,
+    transports: transports,
+    dialer: Dialer.new(peerInfo.peerId, connManager, peerStore, transports, ms),
+    addressManager: addressManager,
+    rng: rng,
+  )
+  result.mount(identify)
 
 proc topicStreamsInteropTest*(
     otherAddr: MultiAddress, otherPeerId: PeerId, timeout: Duration = 45.seconds
@@ -19,18 +54,12 @@ proc topicStreamsInteropTest*(
   ## Returns false for an unexpected echo, fallback, stream replacement, or timeout.
   let
     rng = newRng()
-    switch = SwitchBuilder
-      .new()
-      .withRng(rng)
-      .withAddresses(@[MultiAddress.init("/ip4/127.0.0.1/udp/0/quic-v1").get()])
-      .withQuicTransport()
-      .build()
+    switch = newTopicStreamsSwitch(rng)
     gossip = GossipSub.init(
       switch = switch,
       rng = rng,
-      parameters = GossipSubParams.init(
-        topicStreamsConfig = Opt.some(TopicStreamsConfig())
-      ),
+      parameters =
+        GossipSubParams.init(topicStreamsConfig = Opt.some(TopicStreamsConfig())),
     )
   switch.mount(gossip)
 
@@ -42,8 +71,8 @@ proc topicStreamsInteropTest*(
     if response != nil and not response.finished:
       response.complete(
         peer.peerId == otherPeerId and msg.fromPeer == otherPeerId and
-        msg.topic == expectedTopic and msg.data == expectedPayload and
-        msg.signature.len > 0
+          msg.topic == expectedTopic and msg.data == expectedPayload and
+          msg.signature.len > 0
       )
 
   gossip.addObserver(PubSubObserver(onValidated: onValidated))
@@ -60,9 +89,7 @@ proc topicStreamsInteropTest*(
 
   proc scenario(): Future[bool] {.async.} =
     await switch.connect(otherPeerId, @[otherAddr])
-    while not topicStreamsTopics.allIt(
-      gossip.mesh.getOrDefault(it).len == 1
-    ):
+    while not topicStreamsTopics.allIt(gossip.mesh.getOrDefault(it).len == 1):
       await sleepAsync(10.milliseconds)
     if not gossip.extensionsState.peerHasTopicStreams(otherPeerId):
       error "Echo peer did not negotiate topic streams"
@@ -72,7 +99,13 @@ proc topicStreamsInteropTest*(
     for round in 0 .. 1:
       for i, topic in topicStreamsTopics:
         expectedTopic = topic
-        expectedPayload = repeat(byte(round + 1), if i == 0: 32 else: 256 * 1024)
+        expectedPayload = repeat(
+          byte(round + 1),
+          if i == 0:
+            32
+          else:
+            256 * 1024,
+        )
         response = newFuture[bool]()
         let published = await gossip.publish(topic, expectedPayload)
         if published == 0:
@@ -83,7 +116,11 @@ proc topicStreamsInteropTest*(
           return false
 
         let streams = topicStreams()
-        let expectedCount = if round == 0: i + 1 else: 2
+        let expectedCount =
+          if round == 0:
+            i + 1
+          else:
+            2
         for direction in [Direction.In, Direction.Out]:
           if toSeq(streams).countIt(it.dir == direction) != expectedCount:
             error "Unexpected topic stream count", topic, round, direction
