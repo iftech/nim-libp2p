@@ -12,7 +12,7 @@ suite "Waggle switch integration":
   teardown:
     checkTrackers()
 
-  asyncTest "constructor attaches to the switch and exchanges pieces":
+  asyncTest "start attaches to the switch and exchanges pieces":
     let a = makeStandardSwitch(TcpAutoAddress)
     let b = makeStandardSwitch(TcpAutoAddress)
     var received: seq[WaggleEvent]
