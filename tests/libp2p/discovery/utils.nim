@@ -66,9 +66,11 @@ proc populatePeerRegistrations*(
   # - Calling advertise() sequentially is too slow for large counts.
   await peerRdv.advertise(namespace)
 
-  let record = targetRdv.registered.s[0]
+  let record = targetRdv.registered[targetRdv.registered.firstId()]
   for i in 0 ..< count - 1:
-    targetRdv.registered.s.add(record)
+    targetRdv.namespaces[namespace & targetRdv.salt].add(
+      targetRdv.registered.add(record)
+    )
   targetRdv.registeredCount[record.peerId] = count
 
 proc createCorruptedSignedPeerRecord*(peerId: PeerId): SignedPeerRecord =

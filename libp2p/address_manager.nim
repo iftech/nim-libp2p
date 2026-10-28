@@ -273,8 +273,9 @@ func reachability*(self: AddressManager): NetworkReachability =
 proc `onReachabilityChange=`*(
     self: AddressManager, handler: ReachabilityChangeHandler
 ) =
-  ## Called from the verification heartbeat when the `reachability` summary changed; one slot.
+  ## Called when the `reachability` summary changed; one slot. A new handler gets the current one.
   self.onReachabilityChange = handler
+  self.notifiedReachability = NetworkReachability.Unknown
 
 proc `deriveIdentifyCandidates=`*(self: AddressManager, enabled: bool) =
   ## Each verification run then turns the identify observations into `Identify` candidates.

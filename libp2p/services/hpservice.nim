@@ -25,7 +25,7 @@ type HPService* = ref object of Service
   onNewStatusHandler: ReachabilityHandler
   autoRelayService: AutoRelayService
   autonatService: AutonatService
-  dcutrMounted: bool
+  dcutr: Dcutr
 
 proc new*(
     T: typedesc[HPService],
@@ -135,9 +135,12 @@ proc configure(self: HPService, switch: Switch) {.raises: [LPError].} =
 method start*(
     self: HPService, switch: Switch
 ) {.async: (raises: [CancelledError, LPError]).} =
-  if not self.dcutrMounted:
-    switch.tryMount(Dcutr.new(switch)).onErrorRaise(LPError)
-    self.dcutrMounted = true
+  if self.dcutr.isNil:
+    let dcutr = Dcutr.new(switch)
+    await dcutr.start()
+    switch.tryMount(dcutr).onErrorRaise(LPError)
+    self.dcutr = dcutr
+
   self.configure(switch)
   switch.connManager.addPeerEventHandler(
     self.newConnectedPeerHandler, PeerEventKind.Identified
@@ -157,3 +160,8 @@ method stop*(self: HPService, switch: Switch) {.async: (raises: [CancelledError]
   await self.autonatService.stop(switch)
   if self.autoRelayService.isRunning():
     await self.autoRelayService.stop(switch)
+
+  if not self.dcutr.isNil:
+    await self.dcutr.stop()
+    discard switch.unmount(self.dcutr)
+    self.dcutr = nil

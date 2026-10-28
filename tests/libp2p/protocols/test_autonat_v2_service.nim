@@ -18,13 +18,12 @@ import ../../tools/[unittest, futures, crypto, multiaddress]
 
 const VerifyInterval = 50.milliseconds
 
-proc createSwitch(
-    service: AutonatV2Service = nil, minCount = DefaultObservedAddrMinCount
-): Switch =
-  let switch = SwitchBuilder
+proc createSwitch(minCount = DefaultObservedAddrMinCount): Switch =
+  return SwitchBuilder
     .new()
     .withRng(rng())
-    .withAddresses(@[TcpWildcardAddress], false)
+    .withAddresses(@[TcpWildcardAddress])
+    .withWildcardResolver(false)
     .withTcpTransport()
     .withYamux()
     .withNoise()
@@ -34,10 +33,15 @@ proc createSwitch(
     .withAutonatV2Server()
     .build()
 
-  if not service.isNil():
-    switch.add(service)
+proc startAutonatSwitch(switch: Switch, service: AutonatV2Service) {.async.} =
+  await switch.start()
+  await service.start(switch)
 
-  switch
+proc stopAutonatSwitch(switch: Switch, service: AutonatV2Service) {.async.} =
+  try:
+    await service.stop(switch)
+  finally:
+    await switch.stop()
 
 proc mockResponse(reachability: NetworkReachability): AutonatV2Response =
   let dialStatus =
@@ -92,20 +96,20 @@ suite "AutonatV2 Service":
 
   asyncTest "reachability is unknown before the switch starts":
     let (service, _) = newService(Reachable)
-    discard createSwitch(service)
+    discard createSwitch()
     check service.networkReachability == NetworkReachability.Unknown
 
   asyncTest "a confirmed candidate makes the node reachable and notifies every subscriber":
     let
       (service, _) = newService(Reachable)
-      switch = createSwitch(service)
+      switch = createSwitch()
       peer = createSwitch()
       first = service.awaitReachability(Reachable)
       second = service.awaitReachability(Reachable)
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     await switch.connect(peer)
 
     await first
@@ -118,14 +122,14 @@ suite "AutonatV2 Service":
   asyncTest "a failed dial back drops the public address and keeps the LAN ones":
     let
       (service, _) = newService(NotReachable)
-      switch = createSwitch(service)
+      switch = createSwitch()
       peer = createSwitch()
       notified = service.awaitReachability(NotReachable)
       publicAddr = ma("/ip4/1.2.3.4/tcp/4040")
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     switch.addressManager.add(publicAddr, AddrSource.Upnp)
     await switch.connect(peer)
 
@@ -140,7 +144,7 @@ suite "AutonatV2 Service":
   asyncTest "an unknown verdict changes nothing and notifies nobody":
     let
       (service, _) = newService(Unknown)
-      switch = createSwitch(service)
+      switch = createSwitch()
       peer = createSwitch()
 
     discard service.reachabilityObservers.add(
@@ -152,9 +156,9 @@ suite "AutonatV2 Service":
         fail()
     )
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     await switch.connect(peer)
 
     await sleepAsync(VerifyInterval * 4)
@@ -163,14 +167,14 @@ suite "AutonatV2 Service":
   asyncTest "a node which becomes reachable later notifies both changes":
     let
       (service, client) = newService(NotReachable, expectedDials = 2)
-      switch = createSwitch(service)
+      switch = createSwitch()
       peer = createSwitch()
       notReachable = service.awaitReachability(NotReachable)
       reachable = service.awaitReachability(Reachable)
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     await switch.connect(peer)
 
     await notReachable
@@ -184,13 +188,13 @@ suite "AutonatV2 Service":
       (service, _) = newService(
         Reachable, config = AutonatV2ServiceConfig.new(enableDialableCandidates = true)
       )
-      switch = createSwitch(service, minCount = 3)
+      switch = createSwitch(minCount = 3)
       peer = createSwitch()
       notified = service.awaitReachability(Reachable)
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     await switch.connect(peer)
 
     let observedAddr = ma("/ip4/8.8.8.8/tcp/4040")
@@ -205,13 +209,13 @@ suite "AutonatV2 Service":
   asyncTest "no candidate is derived from observations by default":
     let
       (service, _) = newService(Reachable)
-      switch = createSwitch(service, minCount = 3)
+      switch = createSwitch(minCount = 3)
       peer = createSwitch()
       notified = service.awaitReachability(Reachable)
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     await switch.connect(peer)
 
     let observedAddr = ma("/ip4/8.8.8.8/tcp/4040")
@@ -236,12 +240,12 @@ suite "AutonatV2 Service":
         client = client,
         config = AutonatV2ServiceConfig.new(scheduleInterval = Opt.some(interval)),
       )
-      switch = createSwitch(service)
+      switch = createSwitch()
       peer = createSwitch()
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     await switch.connect(peer)
 
     checkUntilTimeout:
@@ -250,12 +254,12 @@ suite "AutonatV2 Service":
   asyncTest "a peer which dialed us triggers no verification":
     let
       (service, client) = newService(Reachable)
-      switch = createSwitch(service)
+      switch = createSwitch()
       peer = createSwitch()
 
-    await allFuturesRaising(switch.start(), peer.start())
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
     defer:
-      await allFuturesRaising(switch.stop(), peer.stop())
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
     await peer.connect(switch)
 
     await sleepAsync(VerifyInterval * 4)

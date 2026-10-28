@@ -262,7 +262,19 @@ suite "GossipSub Extensions :: Preamble Extension":
           # rejected: len exceeds limit
       ],
     )
-    # no crash = limit is enforced correctly
+
+    # accepted entries make the peer skip the preamble, the rejected one does not
+    for msgId in [msgId1, msgId2]:
+      cr.broadcasted = @[]
+      ext.preambleBroadcastIfNotReceiving(
+        RPCMsg.withPreamble(@[makePreamble(msgId)]), @[peerId]
+      )
+      check cr.broadcasted.len == 0
+
+    let rejectedMsg = RPCMsg.withPreamble(@[makePreamble(@[7'u8])])
+    cr.broadcasted = @[]
+    ext.preambleBroadcastIfNotReceiving(rejectedMsg, @[peerId])
+    check cr.broadcasted == @[BC(rejectedMsg, @[peerId])]
 
   test "handleIHave: returns true when message is in ongoingReceives":
     var cr = CallbackRecorder(meshPeers: @[peerId])

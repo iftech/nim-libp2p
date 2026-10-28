@@ -27,7 +27,7 @@ suite "KadDHT - Get Providers":
     let key = kads[0].rtable.selfId
 
     # Add key to kads[3] providedKeys locally (without broadcasting via addProvider)
-    kads[3].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[3].providerManager.providedKeys.provided[key] = nowUnixSeconds()
 
     # Verify other nodes don't know about the provider yet
     check:
@@ -90,7 +90,7 @@ suite "KadDHT - Get Providers":
     let key = kads[0].rtable.selfId
 
     # kads[0] is providing the key
-    kads[0].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[0].providerManager.providedKeys.provided[key] = nowUnixSeconds()
 
     check:
       kads[2].hasKey(kads[0].rtable.selfId)
@@ -125,7 +125,7 @@ suite "KadDHT - Get Providers":
       cidDagPb.toKey() == cidRaw.toKey()
 
     # kads[1] announces as provider using dag-pb CID key
-    kads[1].providerManager.providedKeys.provided[expectedKey] = Moment.now()
+    kads[1].providerManager.providedKeys.provided[expectedKey] = nowUnixSeconds()
 
     # kads[0] queries using raw CID - should find the same provider
     let providers = await kads[0].getProviders(cidRaw.toKey())
@@ -144,9 +144,9 @@ suite "KadDHT - Get Providers":
     let key = @[1.byte, 2, 3, 4, 5]
 
     # kads[0] (the querying node) is a provider for the key
-    kads[0].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[0].providerManager.providedKeys.provided[key] = nowUnixSeconds()
     # kads[1] is also a provider for the key
-    kads[1].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[1].providerManager.providedKeys.provided[key] = nowUnixSeconds()
 
     let providers = await kads[0].getProviders(key)
 
@@ -284,10 +284,10 @@ suite "KadDHT - Get Providers":
     let key = @[1.byte, 2, 3, 4, 5]
 
     # kads[1 .. 4] are providers
-    kads[1].providerManager.providedKeys.provided[key] = Moment.now()
-    kads[2].providerManager.providedKeys.provided[key] = Moment.now()
-    kads[3].providerManager.providedKeys.provided[key] = Moment.now()
-    kads[4].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[1].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    kads[2].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    kads[3].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    kads[4].providerManager.providedKeys.provided[key] = nowUnixSeconds()
 
     let providers = await kads[0].getProviders(key)
 

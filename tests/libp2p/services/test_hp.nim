@@ -16,9 +16,9 @@ import ../../stubs/[autonatclientstub, switchstub]
 import ../../tools/[unittest, futures, resolver, crypto, switch_builder, multiaddress]
 
 proc createSwitch(
-    r: Relay = nil, hpService: Service = nil, nameResolver: NameResolver = nil
+    r: Relay = nil, nameResolver: NameResolver = nil
 ): Switch {.raises: [LPError].} =
-  let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+  return makeStandardSwitchBuilder(TcpAutoAddress)
     .withAutonat()
     .withMaxConnsPerPeer(2)
     # HP needs relay + direct to coexist briefly during upgrade
@@ -26,9 +26,15 @@ proc createSwitch(
     .withNameResolver(nameResolver)
     .build()
 
-  switch.add(hpService)
+proc startHpSwitch(switch: Switch, service: HPService) {.async.} =
+  await switch.start()
+  await service.start(switch)
 
-  return switch
+proc stopHpSwitch(switch: Switch, service: HPService) {.async.} =
+  try:
+    await service.stop(switch)
+  finally:
+    await switch.stop()
 
 suite "Hole Punching":
   teardown:
@@ -63,13 +69,13 @@ suite "Hole Punching":
     let hpservice = HPService.new(autonatService, autoRelayService)
 
     let privatePeerSwitch =
-      createSwitch(relayClient, hpservice, nameresolver = MockResolver.default())
+      createSwitch(relayClient, nameresolver = MockResolver.default())
     let peerSwitch = createSwitch()
     let switchRelay = createSwitch(Relay.new())
 
     await allFuturesRaising(
       switchRelay.start(),
-      privatePeerSwitch.start(),
+      startHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.start(),
       peerSwitch.start(),
     )
@@ -95,7 +101,7 @@ suite "Hole Punching":
       )
 
     await allFuturesRaising(
-      privatePeerSwitch.stop(),
+      stopHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.stop(),
       switchRelay.stop(),
       peerSwitch.stop(),
@@ -126,13 +132,13 @@ suite "Hole Punching":
     let hpservice = HPService.new(autonatService, autoRelayService)
 
     let privatePeerSwitch =
-      createSwitch(relayClient, hpservice, nameResolver = MockResolver.default())
+      createSwitch(relayClient, nameResolver = MockResolver.default())
     let peerSwitch = createSwitch()
     let switchRelay = createSwitch(Relay.new())
 
     await allFuturesRaising(
       switchRelay.start(),
-      privatePeerSwitch.start(),
+      startHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.start(),
       peerSwitch.start(),
     )
@@ -154,7 +160,7 @@ suite "Hole Punching":
       )
 
     await allFuturesRaising(
-      privatePeerSwitch.stop(),
+      stopHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.stop(),
       switchRelay.stop(),
       peerSwitch.stop(),
@@ -192,10 +198,9 @@ suite "Hole Punching":
     let hpservice1 = HPService.new(autonatService1, autoRelayService1)
     let hpservice2 = HPService.new(autonatService2, autoRelayService2)
 
-    let privatePeerSwitch1 = SwitchStub.new(
-      createSwitch(relayClient1, hpservice1, nameresolver = MockResolver.default())
-    )
-    let privatePeerSwitch2 = SwitchStub.new(createSwitch(relayClient2, hpservice2))
+    let privatePeerSwitch1 =
+      SwitchStub.new(createSwitch(relayClient1, nameresolver = MockResolver.default()))
+    let privatePeerSwitch2 = SwitchStub.new(createSwitch(relayClient2))
 
     let switchRelay = createSwitch(Relay.new())
     let switchAux = createSwitch()
@@ -205,8 +210,8 @@ suite "Hole Punching":
 
     await allFuturesRaising(
       switchRelay.start(),
-      privatePeerSwitch1.start(),
-      privatePeerSwitch2.start(),
+      startHpSwitch(privatePeerSwitch1, hpservice1),
+      startHpSwitch(privatePeerSwitch2, hpservice2),
       switchAux.start(),
       switchAux2.start(),
       switchAux3.start(),
@@ -236,8 +241,8 @@ suite "Hole Punching":
     await sleepAsync(300.millis)
 
     await allFuturesRaising(
-      privatePeerSwitch1.stop(),
-      privatePeerSwitch2.stop(),
+      stopHpSwitch(privatePeerSwitch1, hpservice1),
+      stopHpSwitch(privatePeerSwitch2, hpservice2),
       switchRelay.stop(),
       switchAux.stop(),
       switchAux2.stop(),

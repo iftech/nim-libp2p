@@ -7,7 +7,7 @@ import
   algorithm, chronos, metrics, results, sets, sequtils, strutils, tables, stew/byteutils
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
-import ../../tools/[lifecycle, topology, unittest, multiaddress]
+import ../../tools/[lifecycle, topology, unittest, multiaddress, metrics_utils]
 import ./[mock_kademlia, utils]
 
 proc isAtMaxCapacity(providerRecords: ProviderRecords): bool =
@@ -16,10 +16,26 @@ proc isAtMaxCapacity(providerRecords: ProviderRecords): bool =
 proc isAtMaxCapacity(providedKeys: ProvidedKeys): bool =
   providedKeys.len == providedKeys.capacity
 
+proc `==`(pr: ProviderRecords, expected: openArray[ProviderRecord]): bool =
+  pr.len == expected.len and (0 ..< pr.len).allIt(pr[it] == expected[it])
+
 proc setupOptimisticHub(): seq[KadDHT] =
   var cfg = testKadConfig(replication = 2, beta = 1)
   cfg.optimisticProvide = true
   (0 ..< 6).mapIt(setupKad(cfg))
+
+proc backdateExpiry(records: ProviderRecords) =
+  ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
+  var aged: seq[ProviderRecord]
+  while records.len > 0:
+    var record = records.pop()
+    record.expiresAt -= 1
+    aged.add(record)
+  for record in aged:
+    records.push(record)
+
+proc makeProvidedCid(seed: byte): Cid =
+  Cid.init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[seed]).get()).get()
 
 proc holdsProviderRecord(kad: KadDHT): bool =
   kad.providerManager.providerRecords.len == 1
@@ -84,6 +100,27 @@ suite "KadDHT - Add Provider":
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 0
 
+  asyncTest "Record with a past expiry is pruned":
+    let kad = setupKad()
+    startAndDeferStop(@[kad])
+    let
+      now = nowUnixSeconds()
+      expired = ProviderRecord(
+        provider: Peer(id: PeerId.random().getBytes()),
+        expiresAt: now - 1,
+        key: kad.rtable.selfId,
+      )
+      live = ProviderRecord(
+        provider: Peer(id: PeerId.random().getBytes()),
+        expiresAt: UnixTimestamp.after(1.hours),
+        key: kad.rtable.selfId,
+      )
+    kad.providerManager.providerRecords.push(expired)
+    kad.providerManager.providerRecords.push(live)
+
+    checkUntilTimeout:
+      kad.providerManager.providerRecords == [live]
+
   asyncTest "Adding providers again refreshes expiration time":
     let kads = setupKadSwitches(2)
     startAndDeferStop(kads)
@@ -103,6 +140,7 @@ suite "KadDHT - Add Provider":
     checkUntilTimeout:
       kads[0].providerManager.providerRecords.len == 2
 
+    kads[0].providerManager.providerRecords.backdateExpiry()
     let
       originalExpiresAt1 = kads[0].providerManager.providerRecords[0].expiresAt
       originalExpiresAt2 = kads[0].providerManager.providerRecords[1].expiresAt
@@ -112,6 +150,7 @@ suite "KadDHT - Add Provider":
     await kads[1].addProvider(key2.toCid())
 
     checkUntilTimeout:
+      kads[0].providerManager.providerRecords.len == 2
       kads[0].providerManager.providerRecords[0].expiresAt > originalExpiresAt1
       kads[0].providerManager.providerRecords[1].expiresAt > originalExpiresAt2
 
@@ -154,14 +193,12 @@ suite "KadDHT - Add Provider":
     startAndDeferStop(@[kad])
     let keys = kad.providerManager.providedKeys
     keys.capacity = 2
-    let first = Cid
-      .init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[1.byte]).get())
-      .get()
-    let second = Cid
-      .init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[2.byte]).get())
-      .get()
-    keys.provided[first.toKey()] = Moment.now() - 2.seconds
-    keys.provided[second.toKey()] = Moment.now() - 1.seconds
+    let
+      first = makeProvidedCid(1)
+      second = makeProvidedCid(2)
+    let now = nowUnixSeconds()
+    keys.provided[first.toKey()] = now - 2
+    keys.provided[second.toKey()] = now - 1
 
     await kad.startProviding(second)
 
@@ -169,6 +206,28 @@ suite "KadDHT - Add Provider":
       keys.len == 2
       keys.hasKey(first.toKey())
       keys.hasKey(second.toKey())
+
+  asyncTest "Providing a new key at capacity evicts a key with a current or future timestamp":
+    let kad = setupKad()
+    startAndDeferStop(@[kad])
+    let keys = kad.providerManager.providedKeys
+    keys.capacity = 2
+    let
+      first = makeProvidedCid(1)
+      second = makeProvidedCid(2)
+      third = makeProvidedCid(3)
+    for offset in [0.seconds, 1.hours]:
+      keys.provided.clear()
+      let providedAt = UnixTimestamp.after(offset)
+      keys.provided[first.toKey()] = providedAt
+      keys.provided[second.toKey()] = providedAt
+
+      await kad.startProviding(third)
+
+      check:
+        keys.len == keys.capacity
+        not keys.hasKey(first.toKey())
+        keys.hasKey(third.toKey())
 
   asyncTest "Provider limits":
     let kads = setupKadSwitches(2, republishProvidedKeysInterval = chronos.hours(1))
@@ -367,6 +426,7 @@ suite "KadDHT - Add Provider":
       kads[0].providerManager.providerRecords[0].provider.id ==
         kads[1].rtable.selfId.toBytes()
 
+    kads[0].providerManager.providerRecords.backdateExpiry()
     let originalExpiresAt = kads[0].providerManager.providerRecords[0].expiresAt
 
     # Add provider using CIDv1 raw with same multihash - should update same key
@@ -615,7 +675,7 @@ suite "KadDHT - Republish By Keyspace Region":
     ## Seed the store directly, so only the republish loop advertises the keys.
     let keys = Key.makeKeys(count)
     for key in keys:
-      kad.providerManager.providedKeys.provided[key] = Moment.now()
+      kad.providerManager.providedKeys.provided[key] = nowUnixSeconds()
     keys
 
   asyncTest "Provided keys are grouped into keyspace regions":
@@ -719,13 +779,13 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     checkUntilTimeout:
       receiverKad.providerManager.providerRecords.len == 1
 
+    receiverKad.providerManager.providerRecords.backdateExpiry()
     let originalExpiry = receiverKad.providerManager.providerRecords[0].expiresAt
 
-    # Ensure the clock advances so the refreshed expiresAt is strictly greater
-    await sleepAsync(10.milliseconds)
     # Same sender re-advertises; knownKeys count stays ≤ maxProvidersPerKey
     await senderKad.addProvider(key.toCid())
     checkUntilTimeout:
+      receiverKad.providerManager.providerRecords.len == 1
       receiverKad.providerManager.providerRecords[0].expiresAt > originalExpiry
 
   asyncTest "Spillover: stores at farther node when closest node is full":
@@ -755,7 +815,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     closeKad.providerManager.knownKeys[key].incl(existingPeer)
     closeKad.providerManager.providerRecords.push(
       ProviderRecord(
-        provider: existingPeer, expiresAt: Moment.now() + 1.hours, key: key
+        provider: existingPeer, expiresAt: UnixTimestamp.after(1.hours), key: key
       )
     )
     check closeKad.providerManager.providerRecords.len == 1
@@ -881,12 +941,12 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     check (await peerA.advertiseStatus(receiverKad, k0)) == AddProviderStatus.accepted
 
     let keysB = (0 .. perPeerCap).mapIt(randomServiceId())
-    let rejectionsBefore = kad_provider_rejections_sent.value()
+    let rejectionsBefore = metricValue(kad_provider_rejections_sent)
     for key in keysB[0 ..< perPeerCap]:
       check (await peerB.advertiseStatus(receiverKad, key)) == AddProviderStatus.accepted
     check (await peerB.advertiseStatus(receiverKad, keysB[perPeerCap])) ==
       AddProviderStatus.rejected
-    check kad_provider_rejections_sent.value() == rejectionsBefore + 1
+    check metricValue(kad_provider_rejections_sent) == rejectionsBefore + 1
 
     check:
       receiverKad.providerManager.knownKeys.hasKey(k0)
@@ -1011,7 +1071,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     receiverKad.providerManager.knownKeys[msgKey].incl(existingPeer)
     receiverKad.providerManager.providerRecords.push(
       ProviderRecord(
-        provider: existingPeer, expiresAt: Moment.now() + 1.hours, key: msgKey
+        provider: existingPeer, expiresAt: UnixTimestamp.after(1.hours), key: msgKey
       )
     )
     check receiverKad.providerManager.providerRecords.len == 1

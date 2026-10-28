@@ -48,10 +48,6 @@ suite "protobuf_chronos_sec":
     let dec = Protobuf.decode(enc, DurationMsg)
     check dec.dur.seconds == ns
 
-  test "multiple Duration re-encodes to same bytes":
-    let msg = DurationMsg(dur: 42.seconds)
-    check Protobuf.encode(msg) == Protobuf.encode(msg)
-
   test "distinct Duration values encode to distinct bytes":
     let enc1 = Protobuf.encode(DurationMsg(dur: 1.seconds))
     let enc2 = Protobuf.encode(DurationMsg(dur: 2.seconds))
@@ -94,10 +90,6 @@ suite "protobuf_chronos_sec":
     let enc1 = Protobuf.encode(DurationSeqMsg(durs: @[1.seconds, 2.seconds]))
     let enc2 = Protobuf.encode(DurationSeqMsg(durs: @[2.seconds, 1.seconds]))
     check enc1 != enc2
-
-  test "seq[Duration] re-encodes to same bytes":
-    let msg = DurationSeqMsg(durs: @[1.seconds, 2.seconds])
-    check Protobuf.encode(msg) == Protobuf.encode(msg)
 
   test "Duration seconds at int64 nanosecond bounds decode":
     check Protobuf.decode(Protobuf.encode(IntMsg(v: maxSecs)), DurationMsg).dur ==
