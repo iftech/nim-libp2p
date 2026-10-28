@@ -12,11 +12,12 @@ import
     routing_table, peer_registry, protobuf, types, find, get, put, keyspace, provider,
     ping, ip_diversity,
   ]
-import ./kademlia/[kademlia_metrics, netsize, probe_backoff, rpc]
+import ./kademlia/[kademlia_metrics, memory_store, netsize, probe_backoff, rpc, store]
 
 export
   chronicles, routing_table, peer_registry, protobuf, types, find, get, put, keyspace,
-  provider, ping, kademlia_metrics, netsize, probe_backoff, ip_diversity
+  provider, ping, kademlia_metrics, netsize, probe_backoff, ip_diversity, store,
+  memory_store
 
 logScope:
   topics = "libp2p kademlia"
