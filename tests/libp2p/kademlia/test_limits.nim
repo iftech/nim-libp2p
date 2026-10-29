@@ -16,6 +16,10 @@ suite "KadDHT - Limits":
 
   asyncTest "admitPeers spawns at most maxConcurrentProbes probes":
     let kad = setupKad()
+    # A cancelled probe's dial keeps running (message_sender's dropLateDial);
+    # stopping the switch closes whatever it opened before the leak check.
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(2)
 
     let peers = peersWithAddrs(5)
@@ -29,6 +33,8 @@ suite "KadDHT - Limits":
 
   asyncTest "admitPeers records addresses of candidates past the probe cap":
     let kad = setupKad()
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(2)
 
     let peers = peersWithAddrs(5)
@@ -44,6 +50,8 @@ suite "KadDHT - Limits":
 
   asyncTest "a candidate dropped for a full probe cap is probed on a later call":
     let kad = setupKad()
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(1)
 
     let peers = peersWithAddrs(2)
@@ -83,6 +91,8 @@ suite "KadDHT - Limits":
     ## Admission and eviction use independent semaphores: a saturated
     ## livenessSem must not prevent admitPeers from launching probes.
     let kad = setupKad()
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(2)
     kad.livenessSem = newAsyncSemaphore(1)
     check kad.livenessSem.tryAcquire() # hold the only liveness slot
