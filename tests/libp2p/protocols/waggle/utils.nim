@@ -3,7 +3,7 @@
 
 {.push raises: [], gcsafe.}
 
-import ../../../libp2p/protocols/waggle
+import ../../../../libp2p/protocols/waggle
 
 export waggle
 
@@ -21,9 +21,13 @@ method clone*(m: BitMetadata): WaggleMetadata =
 method bytes*(m: BitMetadata): seq[byte] =
   @[m.have]
 
-method update*(m: BitMetadata, data: seq[byte]): Result[bool, string] =
+proc validate(data: seq[byte]): Result[void, string] =
   if data.len != 1 or data[0] > 7:
     return err("invalid bit metadata")
+  ok()
+
+method update*(m: BitMetadata, data: seq[byte]): Result[bool, string] =
+  ?data.validate()
   let next = m.have or data[0]
   let changed = m.have != next
   m.have = next
@@ -41,8 +45,7 @@ method actionFromMetadata*(
   var remote: byte
   if metadata.isSome:
     let data = metadata.get()
-    if data.len != 1 or data[0] > 7:
-      return err("invalid bit metadata")
+    ?data.validate()
     remote = data[0]
   let missing = s.have and not remote
   var action = WaggleAction(need: (remote and not s.have) != 0)
