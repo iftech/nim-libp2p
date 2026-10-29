@@ -2,6 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import std/[tables, sequtils]
+import results
 from peerinfo import PeerId
 from muxers/muxer import Muxer
 from stream/connection import Direction
@@ -11,6 +12,11 @@ type MuxerStore* = ref object
 
 proc getAll*(s: MuxerStore): Table[PeerId, seq[Muxer]] =
   return s.muxed
+
+proc get*(s: MuxerStore, peerId: PeerId): Result[seq[Muxer], string] =
+  s.muxed.withValue(peerId, muxers):
+    return ok(muxers[])
+  err("No connections for peer")
 
 proc countPeers*(s: MuxerStore): int =
   return s.muxed.len

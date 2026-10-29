@@ -398,10 +398,10 @@ proc shouldStoreSignedPeerRecord(
 # Peer Store API #
 ##################
 macro getTypeName(t: type): untyped =
-  # Generate unique name in form of Module.Type
+  # Symbol signatures include module identity, including for generic arguments.
   func qualify(n: NimNode): NimNode =
     if n.kind == nnkSym:
-      return newDotExpr(ident(repr(n.owner())), n)
+      return ident(n.signatureHash())
     let res = copyNimNode(n)
     for child in n:
       res.add qualify(child)
