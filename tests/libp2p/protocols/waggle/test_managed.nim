@@ -198,6 +198,64 @@ suite "Waggle managed dissemination":
       b.events.countIt(it.kind == WaggleEventKind.Received) +
         c.events.countIt(it.kind == WaggleEventKind.Received) == 1
 
+  asyncTest "first publish of a relayed object preserves the seed budget":
+    let relay = await newNode(fanout = 1)
+    let source = await newNode()
+    let other = await newNode()
+    for node in nodes:
+      discard node.protocol.subscribe(topic).get()
+    discard await connect(relay, source)
+    discard await connect(relay, other)
+    checkUntilTimeout:
+      relay.protocol.subscribers(topic).len == 2 and
+        source.protocol.subscribers(topic).len == 1 and
+        other.protocol.subscribers(topic).len == 1
+    check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 7)).get() == 1
+    checkUntilTimeout:
+      relay.events.anyIt(
+        it.kind == WaggleEventKind.Received and it.message.pieces == Opt.some(@[byte 7])
+      )
+    check relay.protocol.publish(topic, BitShard(id: @[byte 1], have: 7)).get() == 2
+    checkUntilTimeout:
+      other.events.anyIt(
+        it.kind == WaggleEventKind.Received and it.message.pieces == Opt.some(@[byte 7])
+      )
+
+  asyncTest "oversized outgoing messages report local rejection without blaming peers":
+    let a = await newNode()
+    let b = await newNode()
+    discard a.protocol.subscribe(topic).get()
+    discard b.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1 and b.protocol.subscribers(topic).len == 1
+    let shard = BitShard(id: newSeq[byte](65536), have: 1)
+    var rejections = 0
+    var retryFailed = false
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.OutgoingRejected:
+        inc rejections
+        if rejections < 3:
+          retryFailed = a.protocol.publish(topic, shard).isErr
+
+    a.onEvent = onEvent
+    check a.protocol.publish(topic, shard).isErr
+    check rejections == 1
+    check retryFailed
+    let rejected = a.events.filterIt(it.kind == WaggleEventKind.OutgoingRejected)
+    require rejected.len == 1
+    check rejected[0].peerId == b.peer
+    check rejected[0].topicId == topic
+    check rejected[0].message.objectId == shard.id
+    check rejected[0].reason == "Outgoing message exceeds maximum length"
+    check a.events.allIt(it.kind != WaggleEventKind.InvalidData)
+    check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).get() == 1
+    checkUntilTimeout:
+      b.events.anyIt(it.kind == WaggleEventKind.Received)
+    check b.events.allIt(
+      it.kind != WaggleEventKind.Received or it.message.objectId != shard.id
+    )
+
   asyncTest "queue saturation reports an event and unchanged snapshots can retry":
     let a = await newNode(1, maxQueued = 1)
     let b = await newNode()
