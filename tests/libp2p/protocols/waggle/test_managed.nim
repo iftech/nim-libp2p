@@ -161,7 +161,7 @@ suite "Waggle managed dissemination":
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 0 and
         a.events.anyIt(it.kind == WaggleEventKind.Unsubscribed)
-    check b.protocol.subscribe(topic).get()
+    check b.protocol.subscribe(topic).get().added
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 1
     check (
@@ -231,7 +231,7 @@ suite "Waggle managed dissemination":
     checkUntilTimeout:
       a.events.anyIt(it.kind == WaggleEventKind.StreamFailed)
     await b.protocol.start()
-    check not a.protocol.subscribe(topic).get()
+    check not a.protocol.subscribe(topic).get().added
     checkUntilTimeout:
       b.protocol.subscribers(topic).len == 1
     check not am.connection.closed and not bm.connection.closed
@@ -246,7 +246,7 @@ suite "Waggle managed dissemination":
     checkUntilTimeout:
       b.protocol.subscribers(topic).len == 1 and c.protocol.subscribers(topic).len == 1
     let stopping = a.protocol.unsubscribe(topic)
-    check a.protocol.subscribe(topic).get()
+    check a.protocol.subscribe(topic).get().added
     check await stopping
     checkUntilTimeout:
       b.events.countIt(it.kind == WaggleEventKind.Subscribed) == 2 and
@@ -270,13 +270,16 @@ suite "Waggle managed dissemination":
         unsubscribing = a.protocol.unsubscribe(@[byte 2])
 
     a.onEvent = onEvent
-    check a.protocol.subscribe(@[byte 2]).get()
+    check a.protocol.subscribe(@[byte 2]).get().blockedConnections.len == 2
+    check unsubscribing == nil
+    let d = await newNode(managed = true)
+    discard await connect(a, d)
     check unsubscribing != nil
     check await unsubscribing
     check a.events.countIt(it.kind == WaggleEventKind.StreamFailed) == 1
     a.onEvent = nil
     # Adding a connection replays topics; its callback may mutate the topic set.
-    let d = await newNode(managed = true)
+    let e = await newNode(managed = true)
     discard a.protocol.subscribe(@[byte 3]).get()
     var changed = false
     proc changeTopics(event: WaggleEvent) {.gcsafe, raises: [].} =
@@ -285,7 +288,7 @@ suite "Waggle managed dissemination":
         discard a.protocol.subscribe(@[byte 4]).get()
 
     a.onEvent = changeTopics
-    discard await connect(a, d)
+    discard await connect(a, e)
     check changed
 
   asyncTest "failure callback can retry after negotiation failure":
@@ -302,7 +305,7 @@ suite "Waggle managed dissemination":
           discard a.protocol.subscribe(topic).get()
 
     a.onEvent = onEvent
-    check a.protocol.subscribe(topic).get()
+    check a.protocol.subscribe(topic).get().added
     checkUntilTimeout:
       b.protocol.subscribers(topic) == @[a.peer]
     check failures == 1
@@ -335,35 +338,111 @@ suite "Waggle managed dissemination":
           discard a.protocol.subscribe(topic).get()
 
     a.onEvent = onEvent
-    check a.protocol.subscribe(topic).get()
+    check a.protocol.subscribe(topic).get().added
     checkUntilTimeout:
       b.protocol.subscribers(topic) == @[a.peer]
     check failures == 1
 
-  asyncTest "stream limit callback can retry without recursive notifications":
+  asyncTest "background failure callbacks can inspect admission when retrying":
     let a = await newNode(managed = true, maxStreamsPerPeer = 1)
     let b = await newNode(managed = true)
-    discard a.protocol.subscribe(topic).get()
-    discard await connect(a, b)
-    checkUntilTimeout:
-      b.protocol.subscribers(topic) == @[a.peer]
+    let other = @[byte 2]
+    check a.protocol.subscribe(topic).get().added
+    check a.protocol.subscribe(other).get().added
     var failures = 0
+    var retryBlocked = false
+    var blockedTopic: TopicId
+    var blockedConnection: ConnectionId
     proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
       if event.kind == WaggleEventKind.StreamFailed:
         inc failures
-        # Bound the regression so the broken implementation fails without crashing.
+        blockedTopic = event.topicId
+        blockedConnection = event.connectionId
         if failures < 3:
-          discard a.protocol.subscribe(event.topicId).get()
+          let retry = a.protocol.subscribe(event.topicId).get()
+          retryBlocked =
+            not retry.added and event.connectionId in retry.blockedConnections
 
     a.onEvent = onEvent
-    check a.protocol.subscribe(@[byte 2]).get()
-    check failures == 1
+    discard await connect(a, b)
+    checkUntilTimeout:
+      failures == 1 and
+        b.protocol.subscribers(topic).len + b.protocol.subscribers(other).len == 1
+    check retryBlocked
+    let retry = a.protocol.subscribe(blockedTopic).get()
+    check not retry.added
+    check retry.blockedConnections == @[blockedConnection]
     let drained = newAsyncEvent()
     callSoon proc(udata: pointer) {.gcsafe, raises: [].} =
       drained.fire()
     await drained.wait()
     check failures == 1
-    check await a.protocol.unsubscribe(topic)
-    discard a.protocol.subscribe(@[byte 2]).get()
+    let activeTopic = if blockedTopic == topic: other else: topic
+    check await a.protocol.unsubscribe(activeTopic)
+    let admitted = a.protocol.subscribe(blockedTopic).get()
+    check not admitted.added
+    check admitted.blockedConnections.len == 0
     checkUntilTimeout:
-      b.protocol.subscribers(@[byte 2]) == @[a.peer]
+      b.protocol.subscribers(blockedTopic) == @[a.peer]
+
+  asyncTest "admission reports preserve subscriptions and still attempt healthy connections":
+    let a = await newNode(managed = true, maxStreamsPerPeer = 1)
+    let b = await newNode(managed = true)
+    let c = await newNode(managed = true)
+    discard b.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic) == @[b.peer]
+    discard await connect(a, c)
+    let other = @[byte 2]
+    let blockedConnection =
+      a.events.filterIt(it.kind == WaggleEventKind.Subscribed and it.peerId == b.peer)[
+        0
+      ].connectionId
+    let attempt = a.protocol.subscribe(other).get()
+    check attempt.added
+    check attempt.blockedConnections == @[blockedConnection]
+    checkUntilTimeout:
+      c.protocol.subscribers(other) == @[a.peer]
+    let retry = a.protocol.subscribe(other).get()
+    check not retry.added
+    check retry.blockedConnections == @[blockedConnection]
+    check not a.events.anyIt(it.kind == WaggleEventKind.StreamFailed)
+    check c.events.countIt(it.kind == WaggleEventKind.Subscribed) == 1
+    let d = await newNode(managed = true)
+    discard await connect(a, d)
+    checkUntilTimeout:
+      d.protocol.subscribers(other) == @[a.peer]
+    check await b.protocol.unsubscribe(topic)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 0
+    let admitted = a.protocol.subscribe(other).get()
+    check not admitted.added
+    check admitted.blockedConnections.len == 0
+    checkUntilTimeout:
+      b.protocol.subscribers(other) == @[a.peer]
+    check c.events.countIt(it.kind == WaggleEventKind.Subscribed) == 1
+
+  asyncTest "explicit admission reports do not cascade retry callbacks across peers":
+    let a = await newNode(managed = true, maxStreamsPerPeer = 1)
+    let b = await newNode(managed = true)
+    let c = await newNode(managed = true)
+    discard b.protocol.subscribe(topic).get()
+    discard c.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    discard await connect(a, c)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 2
+    var failures = 0
+    let other = @[byte 2]
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.StreamFailed:
+        inc failures
+        if failures < 10:
+          discard a.protocol.subscribe(other).get()
+
+    a.onEvent = onEvent
+    let attempt = a.protocol.subscribe(other).get()
+    check attempt.added
+    check attempt.blockedConnections.len == 2
+    check failures == 0

@@ -37,6 +37,19 @@ Repeating `subscribe(topic)` reopens finished receivers; failures are not retrie
 automatically. `subscribers(topic)` lists each peer once even when it has multiple
 connections.
 
+`subscribe(topic)` returns a `SubscriptionAttempt`. Its `added` field says whether
+this call registered a new local topic. `blockedConnections` lists the connection
+IDs denied by local stream limits. The topic remains registered, and other current
+and future connections are still attempted. Validation failures return an error
+without changing registration.
+
+A failure handler can retry and check whether its event's `connectionId` remains
+in `blockedConnections`. A connection absent from that list may still be opening;
+negotiation and later stream failures arrive through events. Explicit admission
+failures only appear in the report; automatic admission failures on new connections
+or background reopening emit `StreamFailed`. This avoids recursive failure events
+when a handler retries against an unchanged limit.
+
 Events identify the peer, a nonzero `ConnectionId`, and the topic as `topicId`
 (`TopicId`, an alias for opaque bytes). Direct streams without registration use their message handler and
 returned Results.
