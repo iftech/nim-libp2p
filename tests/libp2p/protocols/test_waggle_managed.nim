@@ -287,3 +287,78 @@ suite "Waggle managed dissemination":
     a.onEvent = changeTopics
     discard await connect(a, d)
     check changed
+
+  asyncTest "failure callback can retry after negotiation failure":
+    let a = await newNode(managed = true, maxStreamsPerPeer = 1)
+    let b = await newNode(managed = true)
+    check b.ms.removeHandler(b.protocol)
+    discard await connect(a, b)
+    var failures = 0
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.StreamFailed:
+        inc failures
+        if failures == 1:
+          b.ms.addHandler(b.protocol)
+          discard a.protocol.subscribe(topic).get()
+
+    a.onEvent = onEvent
+    check a.protocol.subscribe(topic).get()
+    checkUntilTimeout:
+      b.protocol.subscribers(topic) == @[a.peer]
+    check failures == 1
+
+  asyncTest "failure callback can retry after invalid data":
+    let a = await newNode(managed = true, maxStreamsPerPeer = 1)
+    let b = await newNode(managed = true)
+    let handle = b.protocol.handler
+    var corrupted = false
+    proc corruptOnce(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      if not corrupted:
+        corrupted = true
+        try:
+          discard await stream.readLp(1024)
+          await stream.writeLp(@[byte 0xff])
+        except LPStreamError:
+          discard
+      else:
+        await handle(stream, proto)
+
+    b.protocol.handler = corruptOnce
+    discard await connect(a, b)
+    var failures = 0
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.InvalidData:
+        inc failures
+        if failures == 1:
+          discard a.protocol.subscribe(topic).get()
+
+    a.onEvent = onEvent
+    check a.protocol.subscribe(topic).get()
+    checkUntilTimeout:
+      b.protocol.subscribers(topic) == @[a.peer]
+    check failures == 1
+
+  asyncTest "stream limit callback can retry without recursive notifications":
+    let a = await newNode(managed = true, maxStreamsPerPeer = 1)
+    let b = await newNode(managed = true)
+    discard a.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    checkUntilTimeout:
+      b.protocol.subscribers(topic) == @[a.peer]
+    var failures = 0
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.StreamFailed:
+        inc failures
+        # Bound the regression so the broken implementation fails without crashing.
+        if failures < 3:
+          discard a.protocol.subscribe(event.topicId).get()
+
+    a.onEvent = onEvent
+    check a.protocol.subscribe(@[byte 2]).get()
+    check failures == 1
+    check await a.protocol.unsubscribe(topic)
+    discard a.protocol.subscribe(@[byte 2]).get()
+    checkUntilTimeout:
+      b.protocol.subscribers(@[byte 2]) == @[a.peer]
