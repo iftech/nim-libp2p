@@ -7,25 +7,27 @@ import std/tables
 import ./[shard, messages]
 import ../../peerid
 
-# Ordered tables keep cache touches and eviction constant-time.
 type
   RemoteView = ref object
+    lastUsed: uint64
     raw: Opt[seq[byte]]
     tracked: WaggleMetadata
     advertised: WaggleMetadata
 
   ObjectViews = ref object
-    entries: OrderedTable[seq[byte], RemoteView]
+    entries: Table[seq[byte], RemoteView]
 
   CachedObject = object
+    lastUsed: uint64
     shard: WaggleShard
 
   TopicState = ref object
-    local: OrderedTable[seq[byte], CachedObject]
+    local: Table[seq[byte], CachedObject]
     remote: Table[uint64, ObjectViews]
 
   WaggleState* = ref object
     topics: Table[seq[byte], TopicState]
+    clock: uint64
     capacity: int
     maxTopics: int
 
@@ -43,23 +45,23 @@ type
 proc new*(T: type WaggleState, capacity, maxTopics: int): T =
   T(capacity: capacity, maxTopics: maxTopics)
 
-proc firstKey[K, V](table: OrderedTable[K, V]): K =
-  for key in table.keys:
-    return key
-  raiseAssert "empty LRU"
+# Keep cache hits cheap; scan recency counters only when evicting.
+proc oldestKey[K, V](table: Table[K, V]): K =
+  var oldest = high(uint64)
+  for key, value in table:
+    if value.lastUsed < oldest:
+      oldest = value.lastUsed
+      result = key
 
-proc touch[K, V](table: var OrderedTable[K, V], key: K, value: V) =
-  table.del(key)
-  table[key] = value
+proc touch[K, V](state: WaggleState, table: var Table[K, V], key: K, value: V) =
+  var entry = value
+  inc state.clock
+  entry.lastUsed = state.clock
+  table[key] = entry
 
 proc lookup[K, V](table: Table[K, V], key: K): Opt[V] =
   table.withValue(key, found):
     return Opt.some(found)
-  return Opt.none(V)
-
-proc lookup[K, V](table: OrderedTable[K, V], key: K): Opt[V] =
-  if table.hasKey(key):
-    return Opt.some(table.getOrDefault(key))
   return Opt.none(V)
 
 proc topicState(state: WaggleState, topic: seq[byte]): Result[TopicState, string] =
@@ -73,38 +75,40 @@ proc topicState(state: WaggleState, topic: seq[byte]): Result[TopicState, string
   ok(value)
 
 proc view(
-    state: WaggleState, topic: TopicState, id: uint64, objectId: seq[byte]
+    state: WaggleState, topic: TopicState, connectionId: uint64, objectId: seq[byte]
 ): RemoteView =
-  let views = topic.remote.lookup(id).valueOr:
+  let views = topic.remote.lookup(connectionId).valueOr:
     let created = ObjectViews()
-    topic.remote[id] = created
+    topic.remote[connectionId] = created
     created
   let remote = views.entries.lookup(objectId).valueOr:
     if views.entries.len >= state.capacity:
-      views.entries.del(views.entries.firstKey())
+      views.entries.del(views.entries.oldestKey())
     RemoteView()
-  views.entries.touch(objectId, remote)
+  state.touch(views.entries, objectId, remote)
   return remote
 
-proc local(topic: TopicState, objectId: seq[byte]): Opt[WaggleShard] =
+proc local(
+    state: WaggleState, topic: TopicState, objectId: seq[byte]
+): Opt[WaggleShard] =
   let entry = topic.local.lookup(objectId).valueOr:
     return Opt.none(WaggleShard)
-  topic.local.touch(objectId, entry)
+  state.touch(topic.local, objectId, entry)
   return Opt.some(entry.shard)
 
 proc store*(
     state: WaggleState, topic: seq[byte], shard: WaggleShard
 ): Result[bool, string] =
   let cache = ?state.topicState(topic)
-  let id = shard.objectId()
-  let previous = cache.local.lookup(id)
+  let objectId = shard.objectId()
+  let previous = cache.local.lookup(objectId)
   var changed = true
   if previous.isSome:
     changed = ?previous.get().shard.metadata().update(shard.metadata().bytes())
   elif cache.local.len >= state.capacity:
-    let evicted = cache.local.firstKey()
+    let evicted = cache.local.oldestKey()
     cache.local.del(evicted)
-  cache.local.touch(id, CachedObject(shard: shard))
+  state.touch(cache.local, objectId, CachedObject(shard: shard))
   ok(changed)
 
 proc peerBytes(view: RemoteView): Opt[seq[byte]] =
@@ -116,17 +120,17 @@ proc peerBytes(view: RemoteView): Opt[seq[byte]] =
 proc prepare*(
     state: WaggleState,
     topic: seq[byte],
-    id: uint64,
+    connectionId: uint64,
     peer: PeerId,
     objectId: seq[byte],
     metadataOnly: bool = false,
 ): Result[Opt[Transmission], string] =
   let cache = state.topics.lookup(topic).valueOr:
     return ok(Opt.none(Transmission))
-  let shard = cache.local(objectId).valueOr:
+  let shard = state.local(cache, objectId).valueOr:
     return ok(Opt.none(Transmission))
-  let view = state.view(cache, id, objectId)
-  let action = ?shard.actionFromMetadata(peer, id, view.peerBytes())
+  let view = state.view(cache, connectionId, objectId)
+  let action = ?shard.actionFromMetadata(peer, connectionId, view.peerBytes())
   var tx = Transmission(view: view, message: ObjectPieces(objectId: objectId))
   if action.send.isSome and not metadataOnly:
     let sending = action.send.get()
@@ -158,10 +162,14 @@ proc commit*(tx: Transmission) =
     tx.view.advertised = tx.advertised
 
 proc received*(
-    state: WaggleState, topic: seq[byte], id: uint64, peer: PeerId, msg: ObjectPieces
+    state: WaggleState,
+    topic: seq[byte],
+    connectionId: uint64,
+    peer: PeerId,
+    msg: ObjectPieces,
 ): Result[ReceiveAction, string] =
   let cache = ?state.topicState(topic)
-  let view = state.view(cache, id, msg.objectId)
+  let view = state.view(cache, connectionId, msg.objectId)
   var changed = false
   if msg.piecesMetadata.isSome:
     let data = msg.piecesMetadata.get()
@@ -174,9 +182,9 @@ proc received*(
       view.raw = Opt.some(data)
   if not changed and msg.pieces.isNone:
     return ok(ReceiveAction())
-  let shard = cache.local(msg.objectId).valueOr:
+  let shard = state.local(cache, msg.objectId).valueOr:
     return ok(ReceiveAction(active: true, emit: true))
-  let action = ?shard.actionFromMetadata(peer, id, view.peerBytes())
+  let action = ?shard.actionFromMetadata(peer, connectionId, view.peerBytes())
   var outcome = ReceiveAction(active: true, emit: action.need)
   if action.send.isSome:
     let sending = action.send.get()
@@ -197,23 +205,23 @@ proc received*(
     )
   ok(outcome)
 
-proc removeSubscription*(state: WaggleState, topic: seq[byte], id: uint64) =
+proc removeSubscription*(state: WaggleState, topic: seq[byte], connectionId: uint64) =
   state.topics.withValue(topic, cache):
-    cache[].remote.del(id)
+    cache[].remote.del(connectionId)
 
-proc removeConnection*(state: WaggleState, id: uint64) =
+proc removeConnection*(state: WaggleState, connectionId: uint64) =
   for topic in state.topics.values:
-    topic.remote.del(id)
+    topic.remote.del(connectionId)
 
 proc removeTopic*(state: WaggleState, topic: seq[byte]) =
   state.topics.del(topic)
 
 proc peerView*(
-    state: WaggleState, topic: seq[byte], id: uint64, objectId: seq[byte]
+    state: WaggleState, topic: seq[byte], connectionId: uint64, objectId: seq[byte]
 ): tuple[known, advertised: bool] =
   let cache = state.topics.lookup(topic).valueOr:
     return (false, false)
-  let views = cache.remote.lookup(id).valueOr:
+  let views = cache.remote.lookup(connectionId).valueOr:
     return (false, false)
   let view = views.entries.lookup(objectId).valueOr:
     return (false, false)

@@ -5,8 +5,8 @@
 
 import std/[sequtils, sets]
 import chronos
-import ../../../libp2p/[protocols/waggle, stream/bufferstream, muxers/muxer, varint]
-import ../../tools/[unittest, crypto, bufferstream]
+import ../../../../libp2p/[protocols/waggle, stream/bufferstream, muxers/muxer, varint]
+import ../../../tools/[unittest, crypto, bufferstream]
 
 const topic = @[byte 0, 255, 1]
 
