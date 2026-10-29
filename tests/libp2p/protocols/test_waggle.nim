@@ -166,11 +166,12 @@ suite "Waggle topic streams":
       await receiving.handler
 
   asyncTest "topics are isolated and concurrent sends preserve frames":
-    var received: seq[ObjectPieces]
+    const messageCount = 20
+    let received = newAsyncQueue[ObjectPieces]()
     proc onPieces(
         peer: PeerId, t: seq[byte], msg: ObjectPieces
     ) {.async: (raises: [CancelledError]).} =
-      received.add(msg)
+      await received.addLast(msg)
 
     let (inbound, outbound) = await openPair()
     tasks.add(publisher.handler(inbound, WaggleCodec))
@@ -180,11 +181,9 @@ suite "Waggle topic streams":
     check not (await publisher.send(remotePeer, @[byte 4], ObjectPieces())).get()
     check publisher.subscribers(@[byte 4]).len == 0
     var sends: seq[Future[LPResult[bool]]]
-    for i in 0 ..< 20:
+    for i in 0 ..< messageCount:
       sends.add(publisher.send(remotePeer, topic, ObjectPieces(objectId: @[byte i])))
     for sending in sends:
       check (await sending).get()
-    checkUntilTimeout:
-      received.len == 20
-    for i in 0 ..< 20:
-      check received[i].objectId == @[byte i]
+    for i in 0 ..< messageCount:
+      check (await received.popFirst()).objectId == @[byte i]
