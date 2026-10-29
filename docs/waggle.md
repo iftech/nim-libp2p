@@ -67,7 +67,7 @@ discard await protocol.unsubscribe(topic)
 ### Define your object format
 
 Waggle needs an application-defined `WaggleShard` and `WaggleMetadata` to decide
-what to exchange. The [bit-set example](../tests/libp2p/protocols/waggle_utils.nim)
+what to exchange. The [bit-set example](../tests/libp2p/protocols/waggle/utils.nim)
 is a small implementation of both interfaces.
 
 Implement these methods:
@@ -198,7 +198,7 @@ For a manually upgraded transport stack, construct Waggle without `switch` and
 register each running muxer with `protocol.addConnection(muxer)`. Route incoming
 streams through a multistream selector containing the protocol.
 
-The [managed protocol tests](../tests/libp2p/protocols/test_waggle_managed.nim)
+The [managed protocol tests](../tests/libp2p/protocols/waggle/test_managed.nim)
 include examples of registering connections directly. Most applications should
 use the Switch constructor path shown above.
 
