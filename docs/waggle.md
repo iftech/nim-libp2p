@@ -30,13 +30,19 @@ Two peers wanting mutual delivery each open a subscription stream.
 
 ## Connection events
 
-Events require a registered connection and carry a nonzero `ConnectionId`
-and the topic as `topicId` (`TopicId`, an alias for opaque bytes).
-Passing a switch to `Waggle.new` registers connections automatically. Direct
-streams without registration use their message handler and returned Results;
-malformed subscriptions are also logged at trace level. `maxStreams` caps both
-streams and registered connections separately.
+Events require a registered connection. Passing a switch to `Waggle.new`
+registers connections automatically when the protocol starts. Mount it before
+starting the switch. Managed topics subscribed before start are opened at start.
+Repeating `subscribe(topic)` reopens finished receivers; failures are not retried
+automatically. `subscribers(topic)` lists each peer once even when it has multiple
+connections.
 
+Events identify the peer, a nonzero `ConnectionId`, and the topic as `topicId`
+(`TopicId`, an alias for opaque bytes). Direct streams without registration use their message handler and
+returned Results.
+
+
+`maxStreams` caps streams and registered connections separately.
 ## Object model contract
 
 `WaggleShard.metadata` and `WaggleMetadata.clone` must return independent,

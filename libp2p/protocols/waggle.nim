@@ -51,11 +51,14 @@ type
 
   WaggleEventHandler* = proc(event: WaggleEvent) {.gcsafe, raises: [].}
 
+  ReceiverFailure = tuple[kind: WaggleEventKind, reason: string]
+
   WaggleConnection = ref object
     id: ConnectionId
     muxer: Muxer
     opening: int
-    readers: Table[TopicId, Future[void]]
+    readers: Table[TopicId, Future[Opt[ReceiverFailure]]]
+    notifyingFailures: HashSet[TopicId]
 
   TopicSession = ref object
     stream: Stream
@@ -95,6 +98,15 @@ proc notify(
     reason = "",
 ) =
   if p.onEvent != nil and link != nil:
+    let failure = kind in {WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData}
+    if failure:
+      # An immediate retry at capacity must not recursively notify the same failure.
+      if topicId in link.notifyingFailures:
+        return
+      link.notifyingFailures.incl(topicId)
+    defer:
+      if failure:
+        link.notifyingFailures.excl(topicId)
     p.onEvent(
       WaggleEvent(
         kind: kind,
@@ -350,19 +362,13 @@ proc processReceived(
 
 proc receiveTopic(
     p: Waggle, link: WaggleConnection, topicId: TopicId
-) {.async: (raises: [CancelledError]).} =
+): Future[Opt[ReceiverFailure]] {.async: (raises: [CancelledError]).} =
   var stream: Stream
   var opening = true
   try:
     stream = await link.muxer.newStream()
     if not (await MultistreamSelect.select(stream, WaggleCodec)):
-      p.notify(
-        WaggleEventKind.StreamFailed,
-        link,
-        topicId,
-        reason = "Peer does not support Waggle",
-      )
-      return
+      return Opt.some((WaggleEventKind.StreamFailed, "Peer does not support Waggle"))
     proc onPieces(
         peer: PeerId, topicId: TopicId, msg: ObjectPieces
     ) {.async: (raises: [CancelledError]).} =
@@ -377,18 +383,19 @@ proc receiveTopic(
           WaggleEventKind.InvalidData
         else:
           WaggleEventKind.StreamFailed
-      p.notify(kind, link, topicId, reason = $received.error)
+      return Opt.some((kind, $received.error))
   except InvalidVarintError, MaxSizeError:
     let kind =
       if opening: WaggleEventKind.StreamFailed else: WaggleEventKind.InvalidData
-    p.notify(kind, link, topicId, reason = getCurrentExceptionMsg())
+    return Opt.some((kind, getCurrentExceptionMsg()))
   except LPError as exc:
-    p.notify(WaggleEventKind.StreamFailed, link, topicId, reason = exc.msg)
+    return Opt.some((WaggleEventKind.StreamFailed, exc.msg))
   finally:
     if opening:
       dec link.opening
     if stream != nil:
       await noCancel stream.reset()
+  return Opt.none(ReceiverFailure)
 
 proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
   if p.stopping or topicId notin p.topics or link notin p.links:
@@ -415,6 +422,12 @@ proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
   task.addCallback proc(udata: pointer) {.gcsafe, raises: [].} =
     if link.readers.getOrDefault(topicId) == task:
       link.readers.del(topicId)
+    # Failure handlers may retry immediately, after receiver cleanup is complete.
+    if task.completed():
+      let failure = task.value()
+      if failure.isSome:
+        let (kind, reason) = failure.get()
+        p.notify(kind, link, topicId, reason = reason)
 
 proc subscribe*(p: Waggle, topicId: TopicId): Result[bool, string] =
   ## Subscribe on every current and future registered connection. Repeating a
@@ -438,7 +451,7 @@ proc unsubscribe*(p: Waggle, topicId: TopicId): Future[bool] {.async: (raises: [
   if topicId notin p.topics:
     return false
   p.topics.excl(topicId)
-  var readers: seq[Future[void]]
+  var readers: seq[Future[Opt[ReceiverFailure]]]
   let links = p.links
   for link in links:
     link.readers.withValue(topicId, task):
@@ -515,7 +528,7 @@ method stop*(p: Waggle) {.async: (raises: []).} =
     p.connHandler = nil
   let links = move p.links
   p.registeredMuxers.clear()
-  var readers: seq[Future[void]]
+  var readers: seq[Future[Opt[ReceiverFailure]]]
   for link in links:
     readers.add(toSeq(link.readers.values))
     link.readers.clear()
