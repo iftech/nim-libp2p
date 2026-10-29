@@ -20,24 +20,23 @@ import compiler/ast
 import lint/types
 
 type
-  MessageSettings* = object
-    ## Settings shared by the message checks.
+  MessageSettings* = object ## Settings shared by the message checks.
     allowTrailingPeriod*: bool ## Accept `Some message.`.
 
   FieldNameSettings* = object
     minLength*: int ## Shortest accepted field name.
     exceptions*: seq[string] ## Names accepted regardless of `minLength`.
 
-  ExceptionSettings* = object
-    ## Which fields must carry exception text.
+  ExceptionSettings* = object ## Which fields must carry exception text.
     field*: string ## The field exception text is expected in.
     aliases*: seq[string] ## Fields that must not stand in for it.
 
   PayloadSettings* = object
     ## Which log levels must not carry payloads, and which fields carry them.
-    levels*: seq[string] ## Levels that must stay payload-free, e.g.
-                         ## `["warn", "error"]`. Matched against the level name
-                         ## in the source, so it needs no enum.
+    levels*: seq[string]
+      ## Levels that must stay payload-free, e.g.
+      ## `["warn", "error"]`. Matched against the level name
+      ## in the source, so it needs no enum.
     fields*: seq[string] ## Field names that carry a payload.
 
 # Settings used when a check is configured without a `settings:` block. These
@@ -45,17 +44,15 @@ type
 # setting that is present always wins, so an empty list means "none", not
 # "use the default".
 const
-  defaultFieldNameSettings* = FieldNameSettings(
-    minLength: 3, exceptions: @["id", "ip"]
-  )
+  defaultFieldNameSettings* = FieldNameSettings(minLength: 3, exceptions: @["id", "ip"])
   defaultExceptionSettings* = ExceptionSettings(
     field: "err", aliases: @["description", "error", "message", "msg"]
   )
   defaultPayloadSettings* = PayloadSettings(
     levels: @["warn", "error"],
     fields: @[
-      "msg", "message", "buffer", "record", "reply", "response", "rpcMsg",
-      "data", "encoded", "certificate", "ticket", "key",
+      "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
+      "encoded", "certificate", "ticket", "key",
     ],
   )
 
@@ -178,24 +175,20 @@ proc runNoPayloadWhenElevated(ast: PNode, s: PayloadSettings): seq[Finding] =
     for f in logFields(call):
       if f.name in s.fields:
         result.add finding(
-          f.value,
-          "elevated log contains payload field `" & f.name & "`",
+          f.value, "elevated log contains payload field `" & f.name & "`"
         )
 
 # --- linter ---------------------------------------------------------------
 
 let chronicles* = newLinter("chronicles")
 
-let messageEndsWithPeriod* = chronicles.check(
-  "messageEndsWithPeriod", runMessageEndsWithPeriod
-)
+let messageEndsWithPeriod* =
+  chronicles.check("messageEndsWithPeriod", runMessageEndsWithPeriod)
 let messageOneSentence* = chronicles.check("messageOneSentence", runMessageOneSentence)
-let fieldNameLength* = chronicles.check(
-  "fieldNameLength", runFieldNameLength, defaultFieldNameSettings
-)
-let errForException* = chronicles.check(
-  "errForException", runErrForException, defaultExceptionSettings
-)
+let fieldNameLength* =
+  chronicles.check("fieldNameLength", runFieldNameLength, defaultFieldNameSettings)
+let errForException* =
+  chronicles.check("errForException", runErrForException, defaultExceptionSettings)
 let noPayloadWhenElevated* = chronicles.check(
   "noPayloadWhenElevated", runNoPayloadWhenElevated, defaultPayloadSettings
 )
