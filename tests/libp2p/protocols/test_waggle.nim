@@ -52,6 +52,7 @@ type TestStream = ref object of TestBufferStream
   readRequests: AsyncQueue[int]
   writes: AsyncQueue[seq[byte]]
   readFailure: ref LPStreamError
+  joinStarted: AsyncEvent
 
 method readOnce(
     s: TestStream, pbytes: pointer, nbytes: int
@@ -61,6 +62,12 @@ method readOnce(
   if s.readFailure != nil:
     raise s.readFailure
   return count
+
+method join(
+    s: TestStream
+): Future[void] {.async: (raises: [CancelledError], raw: true).} =
+  s.joinStarted.fire()
+  procCall LPStream(s).join()
 
 func frame(data: seq[byte]): seq[byte] =
   let prefix = PB.toBytes(uint64(data.len))
@@ -88,6 +95,7 @@ suite "Waggle direct streams":
     stream.peerId = peer
     stream.readRequests = newAsyncQueue[int]()
     stream.writes = writes
+    stream.joinStarted = newAsyncEvent()
     streams.add(stream)
     stream
 
@@ -447,6 +455,32 @@ suite "Waggle direct streams":
       rejected.wasResetLocally
       not stream.closed
       waggle.subscribers(topic).len == 0
+
+  asyncTest "remote write-side closure preserves delivery until disconnect":
+    waggle = Waggle.new(maxStreams = 1)
+    let stream = openStream()
+    let handling = handle(stream)
+    await handshake(stream)
+
+    # Remote EOF ends reads while leaving the local write side available.
+    stream.readFailure = newLPStreamRemoteClosedError()
+    await stream.pushEof()
+    await stream.joinStarted.wait()
+    check:
+      not handling.finished()
+      not stream.closed
+      waggle.subscribers(topic) == @[stream.peerId]
+
+    let msg = ObjectPieces(objectId: @[byte 42], pieces: Opt.some(@[byte 1]))
+    check (await waggle.send(stream.peerId, topic, msg)).get()
+    check (await stream.writes.popFirst()) == frame(msg.encode())
+    await stream.close()
+    await handling
+    check waggle.subscribers(topic).len == 0
+
+    let replacement = openStream(stream.peerId)
+    discard handle(replacement)
+    await handshake(replacement)
 
   asyncTest "handler cleans up EOF before and during the handshake":
     waggle = Waggle.new(maxStreams = 1)
