@@ -4,9 +4,9 @@
 {.used.}
 
 import chronos
-import ./waggle_utils
-import ../../../libp2p/switch
-import ../../tools/[unittest, switch_builder, multiaddress]
+import ./utils
+import ../../../../libp2p/switch
+import ../../../tools/[unittest, switch_builder, multiaddress]
 
 suite "Waggle switch integration":
   teardown:
