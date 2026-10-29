@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import lint
-import linters/chronicles
+import tools/chroniclesLinter
 
 runLint:
   sources = ["."]
