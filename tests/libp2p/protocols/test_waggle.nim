@@ -627,7 +627,7 @@ suite "Waggle direct streams":
     await handshake(accepted)
     let opened = events.filterIt(it.kind == WaggleEventKind.Subscribed)
     check opened.len == 1
-    check opened[0].topic == topic
+    check opened[0].topicId == topic
     check opened[0].connectionId != 0
     check events.allIt(
       it.peerId == connection.peerId and it.connectionId == opened[0].connectionId
@@ -641,4 +641,53 @@ suite "Waggle direct streams":
     check closed.len == 1
     check closed[0].peerId == connection.peerId
     check closed[0].connectionId == opened[0].connectionId
-    check closed[0].topic == topic
+    check closed[0].topicId == topic
+
+  asyncTest "late connection registration survives stop and restart":
+    var
+      events: seq[WaggleEvent]
+      subscribed =
+        Future[WaggleEvent].Raising([CancelledError]).init("waggle-test-subscribed")
+    waggle = Waggle.new(
+      onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+        events.add(event)
+        if event.kind == WaggleEventKind.Subscribed and not subscribed.finished():
+          subscribed.complete(event)
+    )
+    let connection = openStream()
+    let running = Future[void].Raising([]).init(
+        "waggle-test-live-connection", {FutureFlag.OwnCancelSchedule}
+      )
+    defer:
+      if not running.finished():
+        running.complete()
+    let muxer = Muxer(connection: connection, handler: running)
+    var previousId: ConnectionId
+    for cycle in 0 .. 1:
+      if cycle > 0:
+        await waggle.start()
+        subscribed =
+          Future[WaggleEvent].Raising([CancelledError]).init("waggle-test-resubscribed")
+      let stream = openStream(connection.peerId, wrapped = connection)
+      let handling = handle(stream)
+      discard await stream.readRequests.popFirst()
+      check waggle.addConnection(muxer).get()
+      await stream.pushData(frame(TopicSubscription(topicId: topic).encode()))
+      let opened = await subscribed
+      check:
+        opened.peerId == connection.peerId
+        opened.topicId == topic
+        opened.connectionId > previousId
+      previousId = opened.connectionId
+
+      await waggle.stop()
+      await handling
+      check:
+        stream.wasResetLocally
+        waggle.subscribers(topic).len == 0
+        not connection.closed
+        not running.finished()
+        events[^1].kind == WaggleEventKind.Unsubscribed
+        events[^1].connectionId == opened.connectionId
+        events[^1].topicId == topic
+    check events.len == 4
