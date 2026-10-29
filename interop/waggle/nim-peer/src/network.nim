@@ -4,7 +4,7 @@
 import std/strutils
 import ./constants
 import chronos
-import ../../../../tests/libp2p/protocols/waggle_utils
+import ../../../../tests/libp2p/protocols/waggle/utils
 import ../../../../libp2p/builders
 
 proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
