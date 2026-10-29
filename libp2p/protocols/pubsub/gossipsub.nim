@@ -302,25 +302,6 @@ proc validateParameters*(parameters: TopicParams): Result[void, cstring] =
   else:
     ok()
 
-method init*(g: GossipSub) =
-  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-    ## main protocol handler that gets triggered on every
-    ## connection for a protocol string
-    ## e.g. ``/floodsub/1.0.0``, etc...
-    ##
-    try:
-      await g.handleConn(stream, proto)
-    except CancelledError as exc:
-      trace "gossipsub handler cancelled", stream
-      raise exc
-
-  g.handler = handler
-
-  g.codecs &= GossipSubCodec_13
-  g.codecs &= GossipSubCodec_12
-  g.codecs &= GossipSubCodec_11
-  g.codecs &= GossipSubCodec_10
-
 proc usesExtensions(g: GossipSub): bool =
   return
     g.parameters.topicStreamsConfig.isSome() or g.parameters.testExtensionConfig.isSome() or
@@ -1355,6 +1336,18 @@ proc createTopicStreamProtocol(g: GossipSub): LPProtocol =
 
 method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   procCall FloodSub(g).initPubSub()
+
+  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    try:
+      await g.handleConn(stream, proto)
+    except CancelledError as exc:
+      trace "gossipsub handler cancelled", stream
+      raise exc
+
+  g.handler = handler
+
+  g.codecs =
+    @[GossipSubCodec_13, GossipSubCodec_12, GossipSubCodec_11, GossipSubCodec_10]
 
   if not g.parameters.explicit:
     g.parameters = GossipSubParams.init()

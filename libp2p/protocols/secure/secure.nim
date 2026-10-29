@@ -149,8 +149,8 @@ proc handleConn(
 
   sconn
 
-method init*(s: Secure) =
-  procCall LPProtocol(s).init()
+proc new*(T: typedesc[Secure], codec: string): T =
+  let s = T(codecs: @[codec])
 
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     trace "Secure upgrade started", protocol = proto, stream
@@ -168,6 +168,7 @@ method init*(s: Secure) =
       await stream.close()
 
   s.handler = handle
+  s
 
 method secure*(
     s: Secure, conn: RawConn, peerId: Opt[PeerId]

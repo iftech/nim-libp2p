@@ -139,15 +139,11 @@ proc new*(
     sendSignedPeerRecord = false,
     addressManager = AddressManager.new(),
 ): T =
-  let identify = T(
+  let p = T(
     peerInfo: peerInfo,
     sendSignedPeerRecord: sendSignedPeerRecord,
     addressManager: addressManager,
   )
-  identify.init()
-  identify
-
-method init*(p: Identify) =
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     trace "handling identify request", stream
 
@@ -163,6 +159,7 @@ method init*(p: Identify) =
 
   p.handler = handle
   p.codec = IdentifyCodec
+  p
 
 func invalidMsg(msg: string): ref IdentifyError =
   newException(IdentityInvalidMsgError, msg)
@@ -215,11 +212,7 @@ proc identify*(
 proc new*(T: typedesc[IdentifyPush], handler: IdentifyPushHandler = nil): T =
   ## Create a IdentifyPush protocol. `handler` will be called every time
   ## a peer sends us new `PeerInfo`
-  let identifypush = T(identifyHandler: handler)
-  identifypush.init()
-  identifypush
-
-proc init*(p: IdentifyPush) =
+  let p = T(identifyHandler: handler)
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     trace "handling identify push", stream
     defer:
@@ -233,7 +226,7 @@ proc init*(p: IdentifyPush) =
         return
 
     let identifyMsg = IdentifyMsg.decode(move message).valueOr:
-      trace "failed to decode identify message", error, stream
+      trace "failed to decode identify message", error = error, stream
       return
 
     trace "identify push: info received", stream, identifyMsg
@@ -264,6 +257,7 @@ proc init*(p: IdentifyPush) =
 
   p.handler = handle
   p.codec = IdentifyPushCodec
+  p
 
 proc push*(
     p: IdentifyPush, peerInfo: PeerInfo, stream: Stream

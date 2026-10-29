@@ -637,10 +637,6 @@ method closeImpl*(s: NoiseConnection) {.async: (raises: []).} =
   burnMem(s.readCs)
   burnMem(s.writeCs)
 
-method init*(p: Noise) {.gcsafe.} =
-  procCall Secure(p).init()
-  p.codec = NoiseCodec
-
 proc new*(
     T: typedesc[Noise],
     rng: Rng,
@@ -655,15 +651,12 @@ proc new*(
     .getBytes()
     .expect("Couldn't get public Key bytes")
 
-  var noise = Noise(
-    rng: rng,
-    outgoing: outgoing,
-    localPrivateKey: privateKey,
-    localPublicKey: pkBytes,
-    noiseKeys: genKeyPair(rng),
-    commonPrologue: commonPrologue,
-    muxers: muxers,
-  )
-
-  noise.init()
+  let noise = T.new(NoiseCodec)
+  noise.rng = rng
+  noise.outgoing = outgoing
+  noise.localPrivateKey = privateKey
+  noise.localPublicKey = pkBytes
+  noise.noiseKeys = genKeyPair(rng)
+  noise.commonPrologue = commonPrologue
+  noise.muxers = muxers
   noise
