@@ -167,7 +167,7 @@ suite "Waggle managed dissemination":
     let b = await newNode(2, integrate = true)
     let c = await newNode(4, integrate = true)
     for node in nodes:
-      check node.protocol.subscribe(topic).get()
+      check node.protocol.subscribe(topic).get().added
     discard await connect(a, b)
     discard await connect(b, c)
     checkUntilTimeout:
@@ -256,12 +256,12 @@ suite "Waggle managed dissemination":
     let config = TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: 1)
     check p.setTopicConfig(@[byte 1, 2, 3, 4], config).error ==
       "Waggle topic exceeds maximum length"
-    check p.subscribe(topic).get()
+    check p.subscribe(topic).get().added
     check p.setTopicConfig(topic, config).isOk
     check p.setTopicConfig(@[byte 2], config).error ==
       "Waggle topic configuration limit reached"
     check await p.unsubscribe(topic)
-    check p.subscribe(@[byte 2]).get()
+    check p.subscribe(@[byte 2]).get().added
     check p.setTopicConfig(@[byte 2], config).isOk
     await p.stop()
 
@@ -364,7 +364,7 @@ suite "Waggle managed dissemination":
     a.ms = MultistreamSelect.new()
     a.ms.addHandler(a.protocol)
     check a.protocol.subscribe(@[byte 2]).isErr
-    check a.protocol.subscribe(topic).get()
+    check a.protocol.subscribe(topic).get().added
     check a.protocol.setTopicConfig(
       topic, TopicConfig(publishFanout: 0, forwardFanout: 1, gossipFanout: 1)
     ).isErr
