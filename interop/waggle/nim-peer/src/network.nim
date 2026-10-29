@@ -214,7 +214,7 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
         while not unsubscribed:
           await sleepAsync(10.milliseconds)
 
-        doAssert waggle.subscribe(dataTopic).get()
+        doAssert waggle.subscribe(dataTopic).get().added
 
         while phase != 2:
           await sleepAsync(10.milliseconds)
