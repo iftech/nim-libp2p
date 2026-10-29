@@ -32,7 +32,8 @@ Two peers wanting mutual delivery each open a subscription stream.
 
 Call `addConnection(muxer)` for each running muxer to receive `Subscribed`,
 `Unsubscribed`, and `InvalidData` through `onEvent`. Events identify a registered
-connection with a nonzero connection ID. Direct streams without registration
+connection with a nonzero `ConnectionId` and carry the topic as `topicId`
+(`TopicId`, an alias for opaque bytes). Direct streams without registration
 use their message handler and returned Results; malformed subscriptions are
 also logged at trace level.
 

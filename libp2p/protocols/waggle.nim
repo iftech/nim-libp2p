@@ -26,7 +26,11 @@ const
   WaggleInvalidDataCause* = "Invalid Waggle data"
 
 type
-  PiecesHandler* = proc(peer: PeerId, topic: seq[byte], msg: ObjectPieces) {.
+  TopicId* = seq[byte]
+  ConnectionId* = uint64
+  ValidatedTopic = distinct TopicId
+
+  PiecesHandler* = proc(peer: PeerId, topicId: TopicId, msg: ObjectPieces) {.
     async: (raises: [CancelledError]), gcsafe
   .}
 
@@ -38,35 +42,35 @@ type
   WaggleEvent* = object
     kind*: WaggleEventKind
     peerId*: PeerId
-    connectionId*: uint64
-    topic*: seq[byte]
+    connectionId*: ConnectionId
+    topicId*: TopicId
     message*: ObjectPieces
     reason*: string
 
   WaggleEventHandler* = proc(event: WaggleEvent) {.gcsafe, raises: [].}
 
   WaggleConnection = ref object
-    id: uint64
+    id: ConnectionId
     muxer: Muxer
 
-  TopicStream = ref object
+  TopicSession = ref object
     stream: Stream
-    topic: seq[byte]
+    topicId: TopicId
     receiving: bool
     ready: bool
     lock: AsyncLock
     link: WaggleConnection
 
   Waggle* = ref object of LPProtocol
-    streams: seq[TopicStream]
+    streams: seq[TopicSession]
     maxMessageSize: int
     maxTopicSize: int
     maxStreams: int
     maxStreamsPerPeer: int
     stopping: bool
     links: seq[WaggleConnection]
-    nextConnectionId: uint64
-    topicWhitelist: Opt[HashSet[seq[byte]]]
+    nextConnectionId: ConnectionId
+    topicWhitelist: Opt[HashSet[TopicId]]
     onEvent: WaggleEventHandler
     tasks: seq[Future[void]]
 
@@ -74,7 +78,7 @@ proc notify(
     p: Waggle,
     kind: WaggleEventKind,
     link: WaggleConnection,
-    topic: seq[byte],
+    topicId: TopicId,
     msg = ObjectPieces(),
     reason = "",
 ) =
@@ -84,7 +88,7 @@ proc notify(
         kind: kind,
         peerId: link.muxer.connection.peerId,
         connectionId: link.id,
-        topic: topic,
+        topicId: topicId,
         message: msg,
         reason: reason,
       )
@@ -104,16 +108,16 @@ proc findConnection(p: Waggle, stream: Stream): WaggleConnection =
     current = wrapped
 
 proc writeSession(
-  p: Waggle, target: TopicStream, msg: ObjectPieces
+  p: Waggle, target: TopicSession, msg: ObjectPieces
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]).}
 
-proc admit(p: Waggle, stream: Stream, receiving: bool): LPResult[TopicStream] =
+proc admit(p: Waggle, stream: Stream, receiving: bool): LPResult[TopicSession] =
   if p.stopping:
     return err("Waggle has stopped")
   if p.streams.len >= p.maxStreams or
       p.streams.countIt(it.stream.peerId == stream.peerId) >= p.maxStreamsPerPeer:
     return err("Waggle stream limit reached")
-  let session = TopicStream(
+  let session = TopicSession(
     stream: stream,
     receiving: receiving,
     lock: newAsyncLock(),
@@ -122,39 +126,45 @@ proc admit(p: Waggle, stream: Stream, receiving: bool): LPResult[TopicStream] =
   p.streams.add(session)
   return ok(session)
 
-proc setTopic(p: Waggle, session: TopicStream, topic: seq[byte]): LPResult[void] =
+proc updateLink(session: TopicSession, p: Waggle) =
   if session.link == nil:
     session.link = p.findConnection(session.stream)
-  if topic.len > p.maxTopicSize:
+
+proc validateTopic(
+    p: Waggle, session: TopicSession, topicId: TopicId
+): LPResult[ValidatedTopic] =
+  if topicId.len > p.maxTopicSize:
     return err("Waggle topic exceeds maximum length")
   for other in p.streams:
     if other != session and other.ready and other.receiving == session.receiving and
         other.stream.peerId == session.stream.peerId and
         (other.link == session.link or other.link == nil or session.link == nil) and
-        other.topic == topic:
+        other.topicId == topicId:
       return err("Duplicate Waggle topic stream")
-  session.topic = topic
-  session.ready = true
-  return ok()
+  return ok(ValidatedTopic(topicId))
 
-proc forget(p: Waggle, session: TopicStream) =
+proc setTopic(session: TopicSession, topicId: ValidatedTopic) =
+  session.topicId = TopicId(topicId)
+  session.ready = true
+
+proc forget(p: Waggle, session: TopicSession) =
   p.streams.keepItIf(it != session)
 
 proc invalidSubscription(
-    p: Waggle, stream: Stream, session: TopicStream, reason: string
+    p: Waggle, stream: Stream, session: TopicSession, reason: string
 ) =
   let link =
     if session == nil:
       p.findConnection(stream)
     else:
       session.link
-  let topic =
+  let topicId =
     if session == nil:
       @[]
     else:
-      session.topic
+      session.topicId
   trace "Invalid Waggle subscription", peer = stream.peerId, err = reason
-  p.notify(WaggleEventKind.InvalidData, link, topic, reason = reason)
+  p.notify(WaggleEventKind.InvalidData, link, topicId, reason = reason)
 
 proc new*(
     T: typedesc[Waggle],
@@ -162,7 +172,7 @@ proc new*(
     maxTopicSize: int = 1024,
     maxStreams: int = 128,
     maxStreamsPerPeer: int = 16,
-    topicWhitelist = Opt.none(HashSet[seq[byte]]),
+    topicWhitelist = Opt.none(HashSet[TopicId]),
     onEvent: WaggleEventHandler = nil,
 ): T =
   doAssert maxMessageSize > 0 and maxTopicSize >= 0
@@ -176,7 +186,7 @@ proc new*(
     maxStreamsPerPeer: maxStreamsPerPeer,
   )
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-    var session: TopicStream
+    var session: TopicSession
     try:
       session = p.admit(stream, receiving = false).valueOr:
         p.invalidSubscription(stream, session, $error)
@@ -185,15 +195,16 @@ proc new*(
       if subscription.isErr:
         p.invalidSubscription(stream, session, subscription.error)
         return
-      let topic = subscription.get().topicId
-      if p.topicWhitelist.isSome and topic notin p.topicWhitelist.get():
-        p.invalidSubscription(stream, session, "Topic is not allowed")
-        return
-      p.setTopic(session, topic).isOkOr:
+      session.updateLink(p)
+      let topicId = p.validateTopic(session, subscription.get().topicId).valueOr:
         p.invalidSubscription(stream, session, $error)
         return
+      if p.topicWhitelist.isSome and TopicId(topicId) notin p.topicWhitelist.get():
+        p.invalidSubscription(stream, session, "Topic is not allowed")
+        return
+      session.setTopic(topicId)
       if session.link != nil:
-        p.notify(WaggleEventKind.Subscribed, session.link, topic)
+        p.notify(WaggleEventKind.Subscribed, session.link, session.topicId)
       # The subscriber only writes its handshake; further bytes are a violation.
       var unexpected: byte
       try:
@@ -214,7 +225,7 @@ proc new*(
       if session != nil:
         p.forget(session)
         if session.link != nil and session.ready:
-          p.notify(WaggleEventKind.Unsubscribed, session.link, session.topic)
+          p.notify(WaggleEventKind.Unsubscribed, session.link, session.topicId)
       await noCancel stream.reset()
 
   p.codec = WaggleCodec
@@ -222,17 +233,18 @@ proc new*(
   p
 
 proc subscribe*(
-    p: Waggle, stream: Stream, topic: seq[byte], handler: PiecesHandler
+    p: Waggle, stream: Stream, topicId: TopicId, handler: PiecesHandler
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   ## Takes ownership of a stream opened for WaggleCodec, sends the subscription,
   ## and receives until EOF, cancellation, or a returned error. The stream is reset
   ## on every exit.
   doAssert handler != nil
-  var session: TopicStream
+  var session: TopicSession
   try:
     session = ?p.admit(stream, receiving = true)
-    ?p.setTopic(session, topic)
-    let subscription = TopicSubscription(topicId: topic).encode()
+    session.updateLink(p)
+    session.setTopic(?p.validateTopic(session, topicId))
+    let subscription = TopicSubscription(topicId: topicId).encode()
     if subscription.len > p.maxMessageSize:
       return err("Waggle subscription exceeds maximum length")
     await stream.writeLp(subscription)
@@ -240,7 +252,7 @@ proc subscribe*(
       let decoded = ObjectPieces.decode(await stream.readLp(p.maxMessageSize))
       if decoded.isErr:
         return err(decoded.error, WaggleInvalidDataCause)
-      await handler(stream.peerId, topic, decoded.get())
+      await handler(stream.peerId, topicId, decoded.get())
   except LPStreamResetError, LPStreamClosedError, LPStreamConnDownError:
     return err(getCurrentExceptionMsg())
   except LPStreamEOFError as exc:
@@ -255,17 +267,17 @@ proc subscribe*(
     await noCancel stream.reset()
   return ok()
 
-proc subscribers*(p: Waggle, topic: seq[byte]): seq[PeerId] =
+proc subscribers*(p: Waggle, topicId: TopicId): seq[PeerId] =
   ## Peers with an active inbound subscription for this topic.
   var peers: seq[PeerId]
   for session in p.streams:
     if session.ready and not session.receiving and not session.stream.closed and
-        session.topic == topic:
+        session.topicId == topicId:
       peers.add(session.stream.peerId)
   return peers
 
 proc send*(
-    p: Waggle, peer: PeerId, topic: seq[byte], msg: ObjectPieces
+    p: Waggle, peer: PeerId, topicId: TopicId, msg: ObjectPieces
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]).} =
   ## Concurrent sends are serialized by a per-stream lock. A cancelled or failed
   ## write resets the stream because its frame may be incomplete.
@@ -275,12 +287,12 @@ proc send*(
     return err("Waggle message exceeds maximum length")
   for session in p.streams:
     if session.ready and not session.receiving and session.stream.peerId == peer and
-        session.topic == topic:
+        session.topicId == topicId:
       return await p.writeSession(session, msg)
   return ok(false)
 
 proc writeSession(
-    p: Waggle, target: TopicStream, msg: ObjectPieces
+    p: Waggle, target: TopicSession, msg: ObjectPieces
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]).} =
   await target.lock.acquire()
   try:
@@ -333,14 +345,9 @@ method start*(p: Waggle) {.async: (raises: [CancelledError]).} =
 
 method stop*(p: Waggle) {.async: (raises: []).} =
   p.stopping = true
-  let links = p.links
-  for link in links:
-    await p.removeConnection(link)
-  let streams = p.streams
-  p.streams = @[]
+  p.links = @[]
+  let streams = move p.streams
   await noCancel allFutures(streams.mapIt(it.stream.reset()))
-  let tasks = p.tasks
-  p.tasks = @[]
-  for task in tasks:
-    await task.cancelAndWait()
+  let tasks = move p.tasks
+  await tasks.cancelAndWait()
   await procCall LPProtocol(p).stop()
