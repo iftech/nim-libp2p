@@ -5,9 +5,9 @@
 
 import std/sequtils
 import chronos
-import ./waggle_utils
+import ./utils
 import
-  ../../../libp2p/[
+  ../../../../libp2p/[
     switch,
     multistream,
     muxers/yamux/yamux,
@@ -15,7 +15,7 @@ import
     transports/tcptransport,
     upgrademngrs/upgrade,
   ]
-import ../../tools/[unittest, crypto, multiaddress]
+import ../../../tools/[unittest, crypto, multiaddress]
 
 const topic = @[byte 0, 255, 1]
 
