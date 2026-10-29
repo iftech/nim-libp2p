@@ -81,8 +81,6 @@ proc topicStreamsInteropTest*(
 
   proc topicStreams(): HashSet[Stream] =
     for mux in switch.connManager.getConnections().getOrDefault(otherPeerId):
-      if not (mux.connection of QuicSession):
-        return initHashSet[Stream]()
       for stream in mux.getStreams():
         if stream.protocol == TopicStreamsCodec:
           result.incl(stream)

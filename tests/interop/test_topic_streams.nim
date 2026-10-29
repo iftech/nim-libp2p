@@ -50,6 +50,7 @@ proc runEchoTest(mode: EchoMode): Future[bool] {.async.} =
   await switch.start()
   defer:
     await switch.stop()
+  # Silent must reach the timeout; keep it short while allowing other cases more CI time.
   result = await topicStreamsInteropTest(
     switch.peerInfo.addrs[0],
     switch.peerInfo.peerId,
