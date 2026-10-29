@@ -51,6 +51,7 @@ type
     InvalidData
     FullQueue
     StreamFailed
+    OutgoingRejected ## Local size validation failed; peerId is the intended recipient.
 
   WaggleEvent* = object
     kind*: WaggleEventKind
@@ -126,7 +127,7 @@ proc notify(
   let failure =
     kind in {
       WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData,
-      WaggleEventKind.FullQueue,
+      WaggleEventKind.FullQueue, WaggleEventKind.OutgoingRejected,
     }
   if failure:
     # An immediate retry at capacity must not recursively notify the same failure.
@@ -461,7 +462,7 @@ proc enqueue(p: Waggle, session: TopicSession, msg: ObjectPieces): bool =
   let size = msg.encodedSize()
   if size > p.maxMessageSize:
     p.notify(
-      WaggleEventKind.InvalidData, link, topicId, msg,
+      WaggleEventKind.OutgoingRejected, link, topicId, msg,
       "Outgoing message exceeds maximum length",
     )
     return false
@@ -562,7 +563,7 @@ proc disseminate(
     let known = p.state.peerView(topicId, link.id, id).known
     if existing and changed and not known:
       continue
-    let forwarding = existing and known
+    let forwarding = known
     let limit = if forwarding: config.forwardFanout else: config.publishFanout
     let payloads = if forwarding: forwarded else: seeded
     if not forwarding and payloads >= limit:
