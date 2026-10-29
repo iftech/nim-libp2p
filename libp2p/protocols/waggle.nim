@@ -97,26 +97,27 @@ proc notify(
     msg = ObjectPieces(),
     reason = "",
 ) =
-  if p.onEvent != nil and link != nil:
-    let failure = kind in {WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData}
+  if p.onEvent == nil or link == nil:
+    return
+  let failure = kind in {WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData}
+  if failure:
+    # An immediate retry at capacity must not recursively notify the same failure.
+    if topicId in link.notifyingFailures:
+      return
+    link.notifyingFailures.incl(topicId)
+  defer:
     if failure:
-      # An immediate retry at capacity must not recursively notify the same failure.
-      if topicId in link.notifyingFailures:
-        return
-      link.notifyingFailures.incl(topicId)
-    defer:
-      if failure:
-        link.notifyingFailures.excl(topicId)
-    p.onEvent(
-      WaggleEvent(
-        kind: kind,
-        peerId: link.muxer.connection.peerId,
-        connectionId: link.id,
-        topicId: topicId,
-        message: msg,
-        reason: reason,
-      )
+      link.notifyingFailures.excl(topicId)
+  p.onEvent(
+    WaggleEvent(
+      kind: kind,
+      peerId: link.muxer.connection.peerId,
+      connectionId: link.id,
+      topicId: topicId,
+      message: msg,
+      reason: reason,
     )
+  )
 
 proc findConnection(p: Waggle, stream: Stream): WaggleConnection =
   if p.links.len == 0:
@@ -423,7 +424,7 @@ proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
     if link.readers.getOrDefault(topicId) == task:
       link.readers.del(topicId)
     # Failure handlers may retry immediately, after receiver cleanup is complete.
-    if task.completed():
+    if task.completed() and not p.stopping and link in p.links and topicId in p.topics:
       let failure = task.value()
       if failure.isSome:
         let (kind, reason) = failure.get()
@@ -432,6 +433,7 @@ proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
 proc subscribe*(p: Waggle, topicId: TopicId): Result[bool, string] =
   ## Subscribe on every current and future registered connection. Repeating a
   ## subscription reopens finished receivers without retrying failures automatically.
+  ## The result says whether the local topic was added, not whether a receiver opened.
   if p.stopping:
     return err("Waggle has stopped")
   if topicId.len > p.maxTopicSize:
