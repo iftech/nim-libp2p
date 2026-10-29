@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright (c) Status Research & Development GmbH
+
 ## Linter for Chronicle log statements, following the rules nim-libp2p enforces
 ## with `tools/audit_logs.py`.
 ##
