@@ -61,8 +61,8 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
   defer:
     await switch.stop()
 
-  doAssert waggle.subscribe(dataTopic).get()
-  doAssert waggle.subscribe(controlTopic).get()
+  doAssert waggle.subscribe(dataTopic).get().added
+  doAssert waggle.subscribe(controlTopic).get().added
 
   let
     parts = address.rsplit("/p2p/", maxsplit = 1)
