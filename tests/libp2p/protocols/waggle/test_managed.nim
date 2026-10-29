@@ -358,6 +358,11 @@ suite "Waggle managed dissemination":
     a.onEvent = onEvent
     check a.protocol.subscribe(@[byte 2]).get()
     check failures == 1
+    let drained = newAsyncEvent()
+    callSoon proc(udata: pointer) {.gcsafe, raises: [].} =
+      drained.fire()
+    await drained.wait()
+    check failures == 1
     check await a.protocol.unsubscribe(topic)
     discard a.protocol.subscribe(@[byte 2]).get()
     checkUntilTimeout:
