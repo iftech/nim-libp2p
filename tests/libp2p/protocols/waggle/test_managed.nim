@@ -207,8 +207,19 @@ suite "Waggle managed dissemination":
     checkUntilTimeout:
       a.protocol.subscribers(topic).len == 1
     check a.protocol.publish(topic, BitShard(id: @[byte 1], have: 1)).isOk
+    var failures = 0
+    var retryFailed = false
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.FullQueue:
+        inc failures
+        if failures < 3:
+          retryFailed =
+            a.protocol.publish(topic, BitShard(id: @[byte 2], have: 1)).isErr
+
+    a.onEvent = onEvent
     check a.protocol.publish(topic, BitShard(id: @[byte 2], have: 1)).isErr
-    check a.events.anyIt(it.kind == WaggleEventKind.FullQueue)
+    check failures == 1
+    check retryFailed
     checkUntilTimeout:
       b.events.anyIt(it.kind == WaggleEventKind.Received)
     check a.protocol.publish(topic, BitShard(id: @[byte 2], have: 1)).get() == 1
