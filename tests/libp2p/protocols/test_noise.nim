@@ -27,7 +27,8 @@ type TestProto = ref object of LPProtocol
 
 {.push raises: [].}
 
-method init(p: TestProto) {.gcsafe.} =
+proc new(T: typedesc[TestProto]): T =
+  let p = T()
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     try:
       let msg = string.fromBytes(await stream.readLp(1024))
@@ -40,6 +41,7 @@ method init(p: TestProto) {.gcsafe.} =
 
   p.codec = TestCodec
   p.handler = handle
+  p
 
 {.pop.}
 
@@ -223,8 +225,7 @@ suite "Noise":
     var switch1 = makeSwitch(maddr, false)
     var switch2 = makeSwitch(maddr, true)
 
-    let testProto = new TestProto
-    testProto.init()
+    let testProto = TestProto.new()
     testProto.codec = TestCodec
     switch1.mount(testProto)
     await switch1.start()
@@ -249,8 +250,7 @@ suite "Noise":
       .withMplex()
       .build()
 
-    let testProto = new TestProto
-    testProto.init()
+    let testProto = TestProto.new()
     switch1.mount(testProto)
     await switch1.start()
     await switch2.start()
@@ -273,8 +273,7 @@ suite "Noise":
     var switch1 = makeStandardSwitchBuilder(WsAutoAddress).build()
     var switch2 = makeStandardSwitchBuilder(WsAutoAddress).build()
 
-    let testProto = new TestProto
-    testProto.init()
+    let testProto = TestProto.new()
     switch1.mount(testProto)
     await switch1.start()
     await switch2.start()
@@ -294,8 +293,7 @@ suite "Noise":
     var switch1 = makeStandardSwitchBuilder(maddr).build()
     var switch2 = makeSwitch(maddr, true)
 
-    let testProto = new TestProto
-    testProto.init()
+    let testProto = TestProto.new()
     switch1.mount(testProto)
     await switch1.start()
     await switch2.start()
@@ -319,8 +317,7 @@ suite "Noise":
     var switch2 = makeSwitch(maddr, true, true)
       # PlainText enabled; mismatched with Noise, so we want this to fail
 
-    let testProto = new TestProto
-    testProto.init()
+    let testProto = TestProto.new()
     testProto.codec = TestCodec
     switch1.mount(testProto)
     await switch1.start()
