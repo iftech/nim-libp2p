@@ -123,7 +123,11 @@ proc notify(
 ) =
   if p.onEvent == nil or link == nil:
     return
-  let failure = kind in {WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData}
+  let failure =
+    kind in {
+      WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData,
+      WaggleEventKind.FullQueue,
+    }
   if failure:
     # An immediate retry at capacity must not recursively notify the same failure.
     if topicId in link.notifyingFailures:
