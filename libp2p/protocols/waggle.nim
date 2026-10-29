@@ -14,7 +14,7 @@ import ../results as lpresults
 
 export lpresults
 
-export protocol, messages, connection
+export protocol, messages, connection, chronicles
 
 logScope:
   topics = "libp2p waggle"
@@ -70,7 +70,21 @@ proc forget(p: Waggle, session: TopicStream) =
 proc invalidSubscription(p: Waggle, stream: Stream, reason: string) =
   trace "Invalid Waggle subscription", peer = stream.peerId, err = reason
 
-method init*(p: Waggle) =
+proc new*(
+    T: typedesc[Waggle],
+    maxMessageSize: int = 65536,
+    maxTopicSize: int = 1024,
+    maxStreams: int = 128,
+    maxStreamsPerPeer: int = 16,
+): T =
+  doAssert maxMessageSize > 0 and maxTopicSize >= 0
+  doAssert maxStreams > 0 and maxStreamsPerPeer > 0
+  let p = T(
+    maxMessageSize: maxMessageSize,
+    maxTopicSize: maxTopicSize,
+    maxStreams: maxStreams,
+    maxStreamsPerPeer: maxStreamsPerPeer,
+  )
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     var session: TopicStream
     try:
@@ -102,23 +116,6 @@ method init*(p: Waggle) =
 
   p.codec = WaggleCodec
   p.handler = handle
-
-proc new*(
-    T: typedesc[Waggle],
-    maxMessageSize: int = 65536,
-    maxTopicSize: int = 1024,
-    maxStreams: int = 128,
-    maxStreamsPerPeer: int = 16,
-): T =
-  doAssert maxMessageSize > 0 and maxTopicSize >= 0
-  doAssert maxStreams > 0 and maxStreamsPerPeer > 0
-  let p = T(
-    maxMessageSize: maxMessageSize,
-    maxTopicSize: maxTopicSize,
-    maxStreams: maxStreams,
-    maxStreamsPerPeer: maxStreamsPerPeer,
-  )
-  p.init()
   p
 
 proc subscribe*(
