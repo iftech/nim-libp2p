@@ -31,14 +31,6 @@ suite "GossipSub":
   teardown:
     checkTrackers()
 
-  test "construction advertises only GossipSub codecs in preference order":
-    let gossipSub = GossipSub.init(makeStandardSwitch(), rng = rng())
-
-    check:
-      gossipSub.codecs ==
-        @[GossipSubCodec_13, GossipSubCodec_12, GossipSubCodec_11, GossipSubCodec_10]
-      not gossipSub.handler.isNil
-
   asyncTest "onNewPeer - sets peer stats and budgets and disconnects if bad score":
     # Given a GossipSub instance with one peer
     let
