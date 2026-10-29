@@ -80,7 +80,7 @@ proc topicStreamsInteropTest*(
     gossip.subscribe(topic, nil)
 
   proc topicStreams(): HashSet[Stream] =
-    for mux in switch.connManager.getConnections().getOrDefault(otherPeerId):
+    for mux in switch.connManager.getConnections(otherPeerId).get(@[]):
       for stream in mux.getStreams():
         if stream.protocol == TopicStreamsCodec:
           result.incl(stream)

@@ -304,6 +304,10 @@ proc connectedPeers*(c: ConnManager): seq[PeerId] =
 proc getConnections*(c: ConnManager): Table[PeerId, seq[Muxer]] =
   return c.muxerStore.getAll()
 
+proc getConnections*(c: ConnManager, peerId: PeerId): Result[seq[Muxer], string] =
+  ## Returns the peer's connections, or an error if the peer has no connections.
+  return c.muxerStore.get(peerId)
+
 proc addConnEventHandler*(
     c: ConnManager, handler: ConnEventHandler, kind: ConnEventKind
 ) =
