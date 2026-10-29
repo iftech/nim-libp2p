@@ -34,6 +34,11 @@ type
     async: (raises: [CancelledError]), gcsafe
   .}
 
+  SubscriptionAttempt* = object
+    ## Immediate admission only; receivers may still be negotiating.
+    added*: bool
+    blockedConnections*: seq[ConnectionId]
+
   WaggleEventKind* {.pure.} = enum
     Received
     Subscribed
@@ -398,25 +403,21 @@ proc receiveTopic(
       await noCancel stream.reset()
   return Opt.none(ReceiverFailure)
 
-proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
+proc beginReceiver(
+    p: Waggle, link: WaggleConnection, topicId: TopicId
+): Result[void, string] =
   if p.stopping or topicId notin p.topics or link notin p.links:
-    return
+    return ok()
   if link.readers.hasKey(topicId):
     if not link.readers.getOrDefault(topicId).finished():
-      return
+      return ok()
     link.readers.del(topicId)
   let peer = link.muxer.connection.peerId
   let pending = p.pendingSlots(peer)
   let activePeer = p.streams.countIt(it.stream.peerId == peer)
   if p.streams.len + pending.total >= p.maxStreams or
       activePeer + pending.perPeer >= p.maxStreamsPerPeer:
-    p.notify(
-      WaggleEventKind.StreamFailed,
-      link,
-      topicId,
-      reason = "Waggle stream limit reached",
-    )
-    return
+    return err("Waggle stream limit reached")
   inc link.opening
   let task = p.receiveTopic(link, topicId)
   link.readers[topicId] = task
@@ -429,11 +430,19 @@ proc beginReceiver(p: Waggle, link: WaggleConnection, topicId: TopicId) =
       if failure.isSome:
         let (kind, reason) = failure.get()
         p.notify(kind, link, topicId, reason = reason)
+  ok()
 
-proc subscribe*(p: Waggle, topicId: TopicId): Result[bool, string] =
-  ## Subscribe on every current and future registered connection. Repeating a
-  ## subscription reopens finished receivers without retrying failures automatically.
-  ## The result says whether the local topic was added, not whether a receiver opened.
+proc beginReceiverOrNotify(p: Waggle, link: WaggleConnection, topicId: TopicId) =
+  let admission = p.beginReceiver(link, topicId)
+  if admission.isErr:
+    p.notify(WaggleEventKind.StreamFailed, link, topicId, reason = admission.error)
+
+proc subscribe*(p: Waggle, topicId: TopicId): Result[SubscriptionAttempt, string] =
+  ## Register a topic and retry finished receivers on current connections.
+  ## Validation errors leave registration unchanged. The topic remains registered
+  ## when connections are blocked, and other or future connections are still attempted.
+  ## Explicit admission failures are returned in the report, without failure events.
+  ## Negotiation and subsequent stream failures are reported through events.
   if p.stopping:
     return err("Waggle has stopped")
   if topicId.len > p.maxTopicSize:
@@ -445,9 +454,11 @@ proc subscribe*(p: Waggle, topicId: TopicId): Result[bool, string] =
     return err("Waggle topic subscription limit reached")
   p.topics.incl(topicId)
   let links = p.links
+  var attempt = SubscriptionAttempt(added: added)
   for link in links:
-    p.beginReceiver(link, topicId)
-  ok(added)
+    if p.beginReceiver(link, topicId).isErr:
+      attempt.blockedConnections.add(link.id)
+  ok(attempt)
 
 proc unsubscribe*(p: Waggle, topicId: TopicId): Future[bool] {.async: (raises: []).} =
   if topicId notin p.topics:
@@ -462,7 +473,7 @@ proc unsubscribe*(p: Waggle, topicId: TopicId): Future[bool] {.async: (raises: [
     await task.cancelAndWait()
   # A concurrent subscribe waits for the old receiver to finish before reopening.
   for link in links:
-    p.beginReceiver(link, topicId)
+    p.beginReceiverOrNotify(link, topicId)
   return true
 
 proc removeConnection(p: Waggle, link: WaggleConnection) {.async: (raises: []).} =
@@ -490,7 +501,7 @@ proc addConnection*(p: Waggle, muxer: Muxer): Result[bool, string] =
   p.links.add(link)
   p.registeredMuxers.incl(muxer)
   for topicId in toSeq(p.topics):
-    p.beginReceiver(link, topicId)
+    p.beginReceiverOrNotify(link, topicId)
   proc monitor() {.async: (raises: [CancelledError]).} =
     await muxer.handler.join()
     await p.removeConnection(link)

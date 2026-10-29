@@ -666,7 +666,7 @@ suite "Waggle direct streams":
         running.complete()
     let muxer = FailingMuxer(connection: connection, handler: running)
     check waggle.addConnection(muxer).get()
-    check waggle.subscribe(topic).get()
+    check waggle.subscribe(topic).get().added
     check failures == 0
     await waggle.stop()
     let drained = newAsyncEvent()
