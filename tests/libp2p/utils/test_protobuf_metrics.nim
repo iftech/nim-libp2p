@@ -8,7 +8,7 @@ when defined(libp2p_protobuf_metrics):
   import
     ../../../libp2p/
       [routing_record, utils/protobuf, utils/protobuf_metrics, crypto/crypto]
-  import ../../tools/[unittest, crypto, multiaddress]
+  import ../../tools/[unittest, crypto, multiaddress, metrics_utils]
 
   # A type that explicitly opts into metrics tracking.
   type MetricsTestMsg* {.proto2.} = object
@@ -17,10 +17,7 @@ when defined(libp2p_protobuf_metrics):
   Protobuf.serializerFor([MetricsTestMsg], withMetrics = true, domain = "test")
 
   template counterValue(counter: untyped, label: string): float64 =
-    try:
-      counter.value(["test." & label])
-    except exceptions.KeyError:
-      0.0
+    metricValue(counter, ["test." & label])
 
   proc makePeerRecord(): PeerRecord =
     PeerRecord.init(PeerId.random(), @[ma("/ip4/127.0.0.1/tcp/1234")])
@@ -133,9 +130,3 @@ when defined(libp2p_protobuf_metrics):
       check afterMsgMessages > beforeMsgMessages
       check afterOther == beforeOther
       check afterOtherMessages == beforeOtherMessages
-
-    test "counter for unregistered label returns zero":
-      check counterValue(libp2p_protobuf_bytes_received, "NonExistentType") == 0.0
-      check counterValue(libp2p_protobuf_bytes_sent, "NonExistentType") == 0.0
-      check counterValue(libp2p_protobuf_messages_sent, "NonExistentType") == 0.0
-      check counterValue(libp2p_protobuf_messages_received, "NonExistentType") == 0.0

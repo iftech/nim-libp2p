@@ -5,6 +5,7 @@ if dirExists("nimbledeps/pkgs2"):
 switch("warningAsError", "BareExcept:on")
 switch("warningAsError", "CaseTransition:on")
 switch("warningAsError", "CStringConv:on")
+switch("warningAsError", "Deprecated:on")
 switch("warningAsError", "ImplicitDefaultValue:on")
 switch("warningAsError", "LockLevel:on")
 switch("warningAsError", "ObservableStores:on")

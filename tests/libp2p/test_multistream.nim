@@ -315,15 +315,18 @@ suite "Multistream select":
     await handlerWait
 
   asyncTest "e2e - streams limit":
+    const maxStreams = 5
     let blocker = newWaitGroup(1)
+    let handlersEntered = newWaitGroup(maxStreams)
 
-    # Start 5 streams which are blocked by `blocker`
+    # Start maxStreams streams which are blocked by `blocker`
     # Try to start a new one, which should fail
-    # Unblock the 5 streams, check that we can open a new one
+    # Unblock them, check that we can open a new one
     proc testHandler(
         stream: Stream, proto: string
     ): Future[void] {.async: (raises: [CancelledError]).} =
       try:
+        handlersEntered.done()
         await blocker.wait()
         await stream.writeLp("Hello!")
       except LPStreamError:
@@ -331,7 +334,8 @@ suite "Multistream select":
       finally:
         await stream.close()
 
-    let protocol = LPProtocol.new(codecs, testHandler, maxIncomingStreamsPerPeer = 5)
+    let protocol =
+      LPProtocol.new(codecs, testHandler, maxIncomingStreamsPerPeer = maxStreams)
 
     protocol.handler = testHandler
     let msListen = MultistreamSelect.new()
@@ -362,10 +366,11 @@ suite "Multistream select":
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
 
-    # Fill up the 5 allowed streams
     var dialers: seq[Future[void]]
-    for _ in 0 ..< 5:
+    for _ in 0 ..< maxStreams:
       dialers.add(connector())
+    # accept order need not match dial order, so the extra dial must wait
+    await handlersEntered.wait()
 
     # This one will fail during negotiation
     expect LPStreamEOFError:

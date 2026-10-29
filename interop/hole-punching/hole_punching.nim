@@ -6,22 +6,16 @@ import std/[os, strformat]
 import chronos, chronicles, sequtils, tables
 import
   ../../libp2p/[
-    builders,
     switch,
     multicodec,
-    address_manager,
-    services/hpservice,
-    services/autorelayservice,
-    protocols/connectivity/relay/client,
     protocols/connectivity/relay/relay,
     protocols/connectivity/autonat/service,
     protocols/ping,
   ]
-import ../../tests/stubs/autonatclientstub
-import ../unified_testing
+import ../[hole_punching_switches, unified_testing]
 
 logScope:
-  topics = "hp interop peer"
+  topics = "hp-interop"
 
 const
   ListenMode = "listen"
@@ -128,48 +122,9 @@ proc fetchHolePunchListenerPeerId(
 proc printRttJson(rttMs: float) =
   echo &"""{{"rtt_to_holepunched_peer_millis":{rttMs:.2f}}}"""
 
-proc createSwitch(
-    config: BaseConfig, relayClient: Relay = nil, hpService: Service = nil
-): Switch =
-  var s = buildBaseSwitch(config, tcpFlags = {ServerFlags.TcpNoDelay})
-    .withAddressManager(AddressManagerConfig(maxSize: 1, minCount: 1))
-    .withAutonat()
-    .withCircuitRelay(relayClient)
-    .build()
-
-  s.add(hpService)
-  s.mount(Ping.new(rng = rng()))
-  s
-
 proc isDirectlyConnected(switch: Switch, peerId: PeerId): bool =
   let conns = switch.connManager.getConnections()
   peerId in conns and conns[peerId].anyIt(not isRelayed(it.connection))
-
-type HolePunchSwitches = object
-  sw: Switch
-  aux: Switch
-  autonatService: AutonatService
-
-proc createSwitches(config: BaseConfig): HolePunchSwitches =
-  # Setup relay
-  let relayClient = RelayClient.new()
-  let autoRelayService = AutoRelayService.new(1, relayClient, nil, rng())
-
-  # Setup autonat
-  let autonatClientStub = AutonatClientStub.new(expectedDials = 1)
-  autonatClientStub.answer = NotReachable
-
-  # Setup hpservice
-  let autonatService = AutonatService.new(autonatClientStub, rng(), maxQueueSize = 1)
-  let hpservice = HPService.new(autonatService, autoRelayService)
-
-  # Setup switches
-  let switches = HolePunchSwitches(
-    sw: createSwitch(config, relayClient, hpservice),
-    aux: createSwitch(config),
-    autonatService: autonatService,
-  )
-  switches
 
 proc connectToRelay(
     config: BaseConfig, redisClient: Redis, switches: HolePunchSwitches
@@ -208,13 +163,11 @@ proc connectToRelay(
 proc runDialer(config: BaseConfig) {.async.} =
   let
     redisClient = setupRedis(config.redisAddr)
-    switches = createSwitches(config)
+    switches = makeHolePunchSwitches(config)
 
-  await allFutures(switches.sw.start(), switches.aux.start())
+  await switches.start()
   defer:
-    # Timeout the stop to avoid hanging on mplex teardown
-    discard
-      await allFutures(switches.sw.stop(), switches.aux.stop()).withTimeout(5.seconds)
+    await switches.stop()
 
   let relayMA = await connectToRelay(config, redisClient, switches)
   let listenerId = await fetchHolePunchListenerPeerId(redisClient, config.testTimeout)
@@ -252,13 +205,11 @@ proc runDialer(config: BaseConfig) {.async.} =
 proc runListener(config: BaseConfig) {.async.} =
   let
     redisClient = setupRedis(config.redisAddr)
-    switches = createSwitches(config)
+    switches = makeHolePunchSwitches(config)
 
-  await allFutures(switches.sw.start(), switches.aux.start())
+  await switches.start()
   defer:
-    # Timeout the stop to avoid hanging on mplex teardown
-    discard
-      await allFutures(switches.sw.stop(), switches.aux.stop()).withTimeout(5.seconds)
+    await switches.stop()
 
   discard await connectToRelay(config, redisClient, switches)
 

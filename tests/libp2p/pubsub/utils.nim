@@ -25,7 +25,9 @@ import
     protocols/pubsub/rpc/messages,
   ]
 import
-  ../../tools/[unittest, crypto, bufferstream, futures, switch_builder, multiaddress]
+  ../../tools/[
+    unittest, crypto, bufferstream, futures, switch_builder, multiaddress, metrics_utils
+  ]
 import ./converters
 
 export switch, converters, crypto
@@ -552,20 +554,16 @@ proc `$`*(peer: PubSubPeer): string =
   shortLog(peer)
 
 proc currentRateLimitHits*(label: string = "nim-libp2p"): float64 =
-  try:
-    libp2p_gossipsub_peers_rate_limit_hits.valueByName(
-      "libp2p_gossipsub_peers_rate_limit_hits_total", @[label]
-    )
-  except KeyError:
-    0
+  metricValueByName(
+    libp2p_gossipsub_peers_rate_limit_hits,
+    "libp2p_gossipsub_peers_rate_limit_hits_total",
+    @[label],
+  )
 
 proc currentGraylistedRpcs*(label: string = "nim-libp2p"): float64 =
-  try:
-    libp2p_gossipsub_graylisted_rpcs.valueByName(
-      "libp2p_gossipsub_graylisted_rpcs_total", @[label]
-    )
-  except KeyError:
-    0
+  metricValueByName(
+    libp2p_gossipsub_graylisted_rpcs, "libp2p_gossipsub_graylisted_rpcs_total", @[label]
+  )
 
 proc addDirectPeer*[T: PubSub](node: T, target: T) {.async.} =
   doAssert node.switch.peerInfo.peerId != target.switch.peerInfo.peerId,

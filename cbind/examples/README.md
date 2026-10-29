@@ -11,6 +11,7 @@ The bindings are a header-only C API over a C ABI. Every generated method is asy
 - `relay.c` — three TCP nodes: a relay, a destination and a source. The destination reserves a slot on the relay (`circuit_relay_reserve`); the source reaches it over a `/p2p-circuit` address (`dial_circuit_relay`) and sends a message the destination reads off its relayed stream.
 - `peerstore.c` — drives one node's peerstore directly from a second node's PeerInfo: `peerstore_add_peer`, `peerstore_get_peers`, `peerstore_get_peer_info`, then `peerstore_delete_peer`. No dialing required.
 - `metrics.c` — a running node dumps the process-wide Prometheus registry as JSON via `collect_metrics`.
+- `read_timeout.c` — two TCP nodes over mplex, where the server never writes. A `stream_read_lp` with `timeoutMs = 100` fails with "read timeout" and resets the stream, so the next read on it fails at once. A second `stream_read_exactly` while the first one waits fails with "read already in progress".
 
 ## Build
 
@@ -46,6 +47,7 @@ cmake -S . -B build -DTINYCBOR_VENDOR=$(nimble path ffi)/ffi/codegen/templates/c
 ./build/relay
 ./build/peerstore
 ./build/metrics
+./build/read_timeout
 ```
 
 Each program exits `0` on success and prints the values it exchanged over the wire.

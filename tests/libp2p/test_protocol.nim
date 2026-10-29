@@ -5,34 +5,28 @@
 
 import chronos, metrics
 import ../../libp2p/[peerid, protocols/protocol, stream/connection]
-import ../tools/[unittest, crypto]
+import ../tools/[unittest, crypto, metrics_utils]
 
 proc handler(
     stream: Stream, proto: string
 ): Future[void] {.async: (raises: [CancelledError]).} =
   discard
 
-template handleKeyError(body: untyped): float64 =
-  try:
-    body
-  except exceptions.KeyError:
-    0.0
+proc rejectionCounterIn(proto: LPProtocol, scope: string): float64 =
+  metricValue(
+    libp2p_protocol_stream_cap_rejections_total, [proto.codecs[0], dirIn, scope]
+  )
 
-template rejectionCounterIn(proto: LPProtocol, scope: string): float64 =
-  handleKeyError:
-    libp2p_protocol_stream_cap_rejections_total.value([proto.codecs[0], dirIn, scope])
+proc rejectionCounterOut(proto: LPProtocol, scope: string): float64 =
+  metricValue(
+    libp2p_protocol_stream_cap_rejections_total, [proto.codecs[0], dirOut, scope]
+  )
 
-template rejectionCounterOut(proto: LPProtocol, scope: string): float64 =
-  handleKeyError:
-    libp2p_protocol_stream_cap_rejections_total.value([proto.codecs[0], dirOut, scope])
+proc openGaugeIn(proto: LPProtocol): float64 =
+  metricValue(libp2p_protocol_streams_open, [proto.codecs[0], dirIn])
 
-template openGaugeIn(proto: LPProtocol): float64 =
-  handleKeyError:
-    libp2p_protocol_streams_open.value([proto.codecs[0], dirIn])
-
-template openGaugeOut(proto: LPProtocol): float64 =
-  handleKeyError:
-    libp2p_protocol_streams_open.value([proto.codecs[0], dirOut])
+proc openGaugeOut(proto: LPProtocol): float64 =
+  metricValue(libp2p_protocol_streams_open, [proto.codecs[0], dirOut])
 
 template clearGauges(codecs: seq[string]) =
   libp2p_protocol_streams_open.set(0, labelValues = [codecs[0], dirIn])

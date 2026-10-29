@@ -599,3 +599,4 @@ method stop*(self: NATService, switch: Switch) {.async: (raises: [CancelledError
   info "Stopping NATService"
   await self.stopPortMapping(switch)
   await self.stopReachability(switch)
+  self.observers.reset()

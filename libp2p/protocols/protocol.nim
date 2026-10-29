@@ -61,9 +61,6 @@ type
     streamBudget: StreamBudgetState
       ## Runtime counters shared across all codecs of this protocol
 
-method init*(p: LPProtocol) {.base, gcsafe.} =
-  discard
-
 method start*(p: LPProtocol) {.base, async: (raises: [CancelledError]).} =
   p.started = true
 

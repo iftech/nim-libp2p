@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[net, sequtils]
+import std/[importutils, net, sequtils]
 import chronos
 import ../../../libp2p/results
 import ../../../libp2p/[builders, switch, multiaddress, multicodec, peerinfo, wire]
@@ -419,6 +419,18 @@ suite "NATService":
     check:
       nat.autonatV2Service.isNone()
       switch.peerInfo.addressMappers.len == 1
+
+  asyncTest "stop resets networkReachability to Unknown":
+    let switch = makeSwitch(autonatConfig(AutonatV1), @[TcpAutoAddress])
+    await switch.start()
+
+    let nat = findNatService(switch)
+    privateAccess(NATService)
+    await nat.observers.notify(NetworkReachability.Reachable, Opt.some(1.0))
+    check nat.networkReachability() == NetworkReachability.Reachable
+
+    await switch.stop()
+    check nat.networkReachability() == NetworkReachability.Unknown
 
   asyncTest "autonat v2 survives stop/start cycle":
     let switch = makeSwitch(autonatConfig(AutonatV2), @[TcpAutoAddress])
