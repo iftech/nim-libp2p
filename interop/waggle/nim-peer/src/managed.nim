@@ -55,7 +55,7 @@ proc managedInterop*(address: string) {.async.} =
   defer:
     await switch.stop()
 
-  doAssert waggle.subscribe(Topic).get()
+  doAssert waggle.subscribe(Topic).get().added
 
   let
     parts = address.rsplit("/p2p/", maxsplit = 1)
