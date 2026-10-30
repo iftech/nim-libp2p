@@ -527,6 +527,9 @@ func diversityCaps*(limits: KadDHTLimits): DiversityCaps =
       diversityCap(limits.maxPeersPerIpv6Subnet, limits.maxPeersPerIpv6SubnetPerBucket),
   )
 
+func defaultMaxProviderRecordsPerPeer*(providerRecordCapacity: int): int =
+  max(1, providerRecordCapacity div ProviderRecordsPerPeerDivisor)
+
 proc new*(
     T: typedesc[KadDHTLimits],
     replication: int,
@@ -540,7 +543,7 @@ proc new*(
   T(
     maxProvidersPerKey: Opt.some(replication),
     maxProviderRecordsPerPeer:
-      Opt.some(max(1, providerRecordCapacity div ProviderRecordsPerPeerDivisor)),
+      Opt.some(defaultMaxProviderRecordsPerPeer(providerRecordCapacity)),
     maxShortlistSize: replication * 2,
     maxReceivedSize: max(replication, quorum),
     maxValueSize: DefaultMaxValueSize,
