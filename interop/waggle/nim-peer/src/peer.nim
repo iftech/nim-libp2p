@@ -28,7 +28,32 @@ proc fixture(index, kind: byte, fromRust: bool): ObjectPieces =
     message.pieces = Opt.some(payload)
   return message
 
+proc awaitStage(
+    stage: Future[void], receiving: seq[Future[LPResult[void]]], description: string
+) {.async.} =
+  var pending = @[FutureBase(stage)]
+  for task in receiving:
+    pending.add(task)
+  try:
+    discard await race(pending).wait(20.seconds)
+    for task in receiving:
+      if task.finished:
+        let outcome = task.read()
+        if outcome.isErr:
+          raise newException(
+            IOError,
+            "Subscription failed while waiting for " & description & ": " &
+              $outcome.error,
+          )
+        raise
+          newException(IOError, "Subscription closed while waiting for " & description)
+    await stage
+  except AsyncTimeoutError:
+    raise newException(IOError, "Timed out waiting for " & description)
+
 proc run(address: string) {.async.} =
+  let subscribed = Future[void].Raising([CancelledError]).init()
+  var remoteTopics: HashSet[TopicId]
   let
     split = address.rsplit("/p2p/", maxsplit = 1)
     peer = PeerId.init(split[1]).get()
@@ -42,7 +67,17 @@ proc run(address: string) {.async.} =
       .withYamux()
       .withNoise()
       .build()
-    waggle = Waggle.new(switch = switch, rng = random)
+    waggle = Waggle.new(
+      switch = switch,
+      rng = random,
+      onEvent = proc(event: WaggleEvent) =
+        if event.kind == WaggleEventKind.Subscribed and event.peerId == peer and
+            event.topicId in [topic(0), topic(1)]:
+          remoteTopics.incl(event.topicId)
+          if remoteTopics.len == 2 and not subscribed.finished:
+            subscribed.complete()
+      ,
+    )
   switch.mount(waggle)
   var receiving: seq[Future[LPResult[void]]]
   defer:
@@ -88,14 +123,13 @@ proc run(address: string) {.async.} =
   for index in 0.byte .. 1.byte:
     let stream = await switch.dial(peer, WaggleCodec)
     receiving.add(waggle.subscribe(stream, topic(index), onPieces))
-  while waggle.subscribers(topic(0)).len != 1 or waggle.subscribers(topic(1)).len != 1:
-    await sleepAsync(10.milliseconds)
+  await awaitStage(subscribed, receiving, "Rust subscriptions to both topics")
   for index in 0.byte .. 1.byte:
     for kind in FixtureKinds:
       doAssert (
         await waggle.send(peer, topic(index), fixture(index, kind, fromRust = false))
       ).get()
-  await confirmed
+  await awaitStage(confirmed, receiving, "Rust acknowledgement")
   doAssert (
     await waggle.send(
       peer,
@@ -104,7 +138,7 @@ proc run(address: string) {.async.} =
     )
   ).get()
   # The Rust peer exits only after validating our final acknowledgement.
-  await disconnected
+  await awaitStage(disconnected, @[], "Rust disconnect after the final acknowledgement")
   echo "Nim verified 6 Rust messages across 2 topics and Rust's acknowledgement"
 
 when isMainModule:
