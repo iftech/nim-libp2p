@@ -321,7 +321,7 @@ async fn reconcile(address_file: &str) -> anyhow::Result<()> {
                 }
             }
             SwarmEvent::ConnectionClosed { cause, .. } => bail!("early close: {cause:?}"),
-            _ => {}
+            event => eprintln!("unhandled reconcile event: {event:?}"),
         }
     }
 }
@@ -425,7 +425,7 @@ async fn topology(address_file: &str) -> anyhow::Result<()> {
                 }
             }
             SwarmEvent::ConnectionClosed { .. } => bail!("unexpected disconnect"),
-            _ => {}
+            event => eprintln!("unhandled topology event: {event:?}"),
         }
     }
 }

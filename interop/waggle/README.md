@@ -1,10 +1,16 @@
 # Waggle Nim/Rust interoperability
 
 This runner imports the pinned, unmodified Rust Waggle implementation and checks
-bidirectional wire messages against a Nim Switch using TCP, Noise, and Yamux.
-Both peers must validate all six messages across two topics and complete the
-acknowledgement exchange. Binary payloads and absent versus empty fields are
-checked.
+three scenarios using Nim Switches over TCP, Noise, and Yamux:
+
+- **Wire:** both peers must validate all six messages across two topics and
+  complete the acknowledgement exchange. Binary payloads and absent versus empty
+  fields are checked.
+- **Reconciliation:** Nim and Rust start with complementary pieces, exchange only
+  missing pieces, reconstruct the object, and check duplicate payload suppression.
+- **Topology:** two Nim peers connect only through Rust. A readiness barrier starts
+  piece exchange, and all three peers must reconstruct the object before the final
+  acknowledgements complete.
 
 ## Run
 
@@ -28,6 +34,4 @@ CI integration is added in [PR #3349](https://github.com/iftech/nim-libp2p/pull/
 after the reconciliation and lifecycle scenarios are included. This layer can be
 run manually with the commands above.
 
-The runner keeps scenario arguments for [PR #3348](https://github.com/iftech/nim-libp2p/pull/3348),
-which adds reconciliation and topology peers. This layer only runs the wire
-scenario through `run(None)`.
+The runner executes wire, reconciliation, and topology in that order.
