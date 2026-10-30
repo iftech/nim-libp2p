@@ -3,7 +3,7 @@
 
 ## Provider record management for the Kademlia DHT.
 ## Receivers always enforce ``KadDHTConfig.limits.maxProvidersPerKey`` and
-## ``maxProviderRecordsPerPeer``; when ``providerRejection`` is true they
+## ``storeLimits.maxProviderRecordsPerPeer``; when ``providerRejection`` is true they
 ## additionally reply accepted/rejected on field 11 so senders can spill over
 ## to farther peers. Without ``providerRejection`` the receiver drops over-cap
 ## advertisements and sends no reply.
@@ -529,7 +529,7 @@ method handleAddProvider*(
       atCap = true
       trace "Add-provider request rejected",
         reason = "perKeyLimit", keySize = msgKey.len, limit = limit
-  kad.config.limits.maxProviderRecordsPerPeer.ifValue(limit):
+  kad.config.storeLimits.maxProviderRecordsPerPeer.ifValue(limit):
     let senderRecords = kad.providerManager.recordsPerPeer.getOrDefault(stream.peerId)
     if not senderIsKnown and senderRecords >= limit:
       atCap = true

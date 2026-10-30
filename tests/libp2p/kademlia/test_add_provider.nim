@@ -926,9 +926,9 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     const capacity = 10
     const perPeerCap = 3
     var receiverConfig = testKadConfig(providerRejection = true)
-    receiverConfig.providerRecordCapacity = capacity
+    receiverConfig.storeLimits.maxProviders = Opt.some(capacity)
     receiverConfig.providerExpirationInterval = 30.seconds
-    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
+    receiverConfig.storeLimits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
     let receiverKad = setupKad(receiverConfig)
     let peerA = setupKad(testKadConfig(providerRejection = true))
     let peerB = setupKad(testKadConfig(providerRejection = true))
@@ -960,9 +960,9 @@ suite "KadDHT - ADD_PROVIDER Rejection":
   asyncTest "Eviction at full capacity decrements the evicted owner's per-peer count":
     const capacity = 3
     var receiverConfig = testKadConfig(providerRejection = true)
-    receiverConfig.providerRecordCapacity = capacity
+    receiverConfig.storeLimits.maxProviders = Opt.some(capacity)
     receiverConfig.providerExpirationInterval = 30.seconds
-    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.none(int)
+    receiverConfig.storeLimits.maxProviderRecordsPerPeer = Opt.none(int)
     let receiverKad = setupKad(receiverConfig)
     let peerA = setupKad(testKadConfig(providerRejection = true))
     let peerB = setupKad(testKadConfig(providerRejection = true))
@@ -997,7 +997,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
   asyncTest "Expired records free the per-peer quota so the sender is accepted again":
     const perPeerCap = 1
     var receiverConfig = testKadConfig(providerRejection = true)
-    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
+    receiverConfig.storeLimits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
     let receiverKad = setupKad(receiverConfig)
     let peerA = setupKad(testKadConfig(providerRejection = true))
 
@@ -1024,7 +1024,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     const readvertisements = 3
     var receiverConfig = testKadConfig(providerRejection = true)
     receiverConfig.providerExpirationInterval = 30.seconds
-    receiverConfig.limits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
+    receiverConfig.storeLimits.maxProviderRecordsPerPeer = Opt.some(perPeerCap)
     let receiverKad = setupKad(receiverConfig)
     let peerA = setupKad(testKadConfig(providerRejection = true))
 
