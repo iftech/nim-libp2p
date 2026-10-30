@@ -5,7 +5,7 @@ import std/[tables, sequtils, sets, heapqueue, hashes]
 from std/times import format, getTime, parse, toTime, toUnix, utc
 import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
-import ../../utils/[opt, shortlog]
+import ../../utils/opt
 import ../protocol
 import ./[key_value, protobuf, message_sender]
 
@@ -393,21 +393,26 @@ proc init*(
 type
   ReceivedTable* = TableRef[PeerId, Opt[EntryRecord]]
   CandidatePeers* = ref HashSet[PeerId]
-  LocalTable* = Table[RecordKey, EntryRecord]
 
-proc insert*(
-    self: var LocalTable, key: RecordKey, value: sink Value, time: Timestamp
-) {.raises: [].} =
-  trace "Local Kademlia record stored", key, value
-  self[key] = EntryRecord(value: value, time: time)
+type
+  StoredValue* = object
+    key*: RecordKey
+    record*: EntryRecord
+    expiresAt*: UnixTimestamp
 
-proc get*(self: LocalTable, key: RecordKey): Opt[EntryRecord] {.raises: [].} =
-  if not self.hasKey(key):
-    return Opt.none(EntryRecord)
-  try:
-    return Opt.some(self[key])
-  except KeyError:
-    raiseAssert "checked with hasKey"
+  StoredProvider* = object
+    provider*: Provider
+    expiresAt*: UnixTimestamp
+
+  AddProviderOutcome* {.pure.} = enum
+    added
+    refreshed ## the provider was already stored for the key; ``expiresAt`` is updated
+    keyFull ## the key holds ``maxPerKey`` other live providers
+    peerFull ## the peer holds ``maxPerPeer`` live records
+    storeFull ## the total cap of the store is below 1, so nothing can be evicted
+
+  KadStore* = ref object of RootObj
+    ## The storage backend of Kademlia. See ``store.nim`` for the contract.
 
 type EntryValidator* = ref object of RootObj
 method isValid*(
@@ -577,6 +582,8 @@ type KadDHTConfig* = object
   quorum*: int
   providerRecordCapacity*: int
   providedKeyCapacity*: int
+  store*: Opt[KadStore]
+    ## The storage backend. ``none`` gives each node a ``MemoryKadStore`` with the caps of this config.
   republishProvidedKeysInterval*: chronos.Duration
   cleanupProvidersInterval*: chronos.Duration
   providerExpirationInterval*: chronos.Duration
@@ -636,6 +643,7 @@ proc new*(
     optimisticProvide: bool = true,
     limits: Opt[KadDHTLimits] = Opt.none(KadDHTLimits),
     bootstrapTimeout: chronos.Duration = bucketRefreshTime,
+    store: Opt[KadStore] = Opt.none(KadStore),
 ): K {.raises: [].} =
   let actualLimits = limits.valueOr:
     KadDHTLimits.new(replication, quorum, providerRecordCapacity)
@@ -689,6 +697,7 @@ proc new*(
     quorum: quorum,
     providerRecordCapacity: providerRecordCapacity,
     providedKeyCapacity: providedKeyCapacity,
+    store: store,
     republishProvidedKeysInterval: republishProvidedKeysInterval,
     cleanupProvidersInterval: cleanupProvidersInterval,
     providerExpirationInterval: providerExpirationInterval,
@@ -723,7 +732,7 @@ type KadDHT* = ref object of LPProtocol
   republishLoop*: Future[void]
   expiredLoop*: Future[void]
   recordExpirationLoop*: Future[void]
-  dataTable*: LocalTable
+  store*: KadStore
   providerManager*: ProviderManager
   nsEstimator*: NetworkSizeEstimator
     ## Drives the optimistic-provide distance thresholds.

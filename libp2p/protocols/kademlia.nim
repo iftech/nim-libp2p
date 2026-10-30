@@ -381,6 +381,14 @@ proc initKadBase*(
   kad.config = config
   kad.providerManager =
     ProviderManager.new(config.providerRecordCapacity, config.providedKeyCapacity)
+  kad.store = config.store.valueOr:
+    MemoryKadStore.new(
+      KadStoreLimits(
+        maxValues: config.limits.maxLocalRecords,
+        maxProviders: Opt.some(config.providerRecordCapacity),
+        maxProvided: Opt.some(config.providedKeyCapacity),
+      )
+    )
   kad.nsEstimator = NetworkSizeEstimator.new(config.replication)
   kad.rpcSem = newAsyncSemaphore(config.limits.maxConcurrentRpcs)
   kad.admissionSem = newAsyncSemaphore(config.limits.maxConcurrentProbes)

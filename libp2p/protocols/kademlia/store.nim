@@ -18,25 +18,6 @@ import chronos
 import ../../[peerid, results]
 import ./[key_value, protobuf, types]
 
-type
-  StoredValue* = object
-    key*: RecordKey
-    record*: EntryRecord
-    expiresAt*: UnixTimestamp
-
-  StoredProvider* = object
-    provider*: Provider
-    expiresAt*: UnixTimestamp
-
-  AddProviderOutcome* {.pure.} = enum
-    added
-    refreshed ## the provider was already stored for the key; ``expiresAt`` is updated
-    keyFull ## the key holds ``maxPerKey`` other live providers
-    peerFull ## the peer holds ``maxPerPeer`` live records
-    storeFull ## the total cap of the store is below 1, so nothing can be evicted
-
-  KadStore* = ref object of RootObj
-
 method getValue*(
     store: KadStore, key: RecordKey, now: UnixTimestamp
 ): Future[LPResult[Opt[StoredValue]]] {.
