@@ -55,6 +55,13 @@ type TestStream = ref object of TestBufferStream
   joinStarted: AsyncEvent
   wrapped: Stream
 
+type FailingMuxer = ref object of Muxer
+
+method newStream(
+    m: FailingMuxer, name: string = "", lazy: bool = false
+): Future[MuxedStream] {.async: (raises: [CancelledError, LPStreamError, MuxerError]).} =
+  raise newException(MuxerError, "opening failed")
+
 method readOnce(
     s: TestStream, pbytes: pointer, nbytes: int
 ): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
@@ -642,6 +649,31 @@ suite "Waggle direct streams":
     check closed[0].peerId == connection.peerId
     check closed[0].connectionId == opened[0].connectionId
     check closed[0].topicId == topic
+
+  asyncTest "stop suppresses queued receiver failures":
+    var failures = 0
+    waggle = Waggle.new(
+      onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+        if event.kind in {WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData}:
+          inc failures
+    )
+    let connection = openStream()
+    let running = Future[void].Raising([]).init(
+        "waggle-test-failing-connection", {FutureFlag.OwnCancelSchedule}
+      )
+    defer:
+      if not running.finished():
+        running.complete()
+    let muxer = FailingMuxer(connection: connection, handler: running)
+    check waggle.addConnection(muxer).get()
+    check waggle.subscribe(topic).get().added
+    check failures == 0
+    await waggle.stop()
+    let drained = newAsyncEvent()
+    callSoon proc(udata: pointer) {.gcsafe, raises: [].} =
+      drained.fire()
+    await drained.wait()
+    check failures == 0
 
   asyncTest "late connection registration survives stop and restart":
     var

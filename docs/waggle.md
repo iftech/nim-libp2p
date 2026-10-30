@@ -30,17 +30,32 @@ Two peers wanting mutual delivery each open a subscription stream.
 
 ## Connection events
 
-Call `addConnection(muxer)` for each running muxer to receive `Subscribed`,
-`Unsubscribed`, and `InvalidData` through `onEvent`. Events identify a registered
-connection with a nonzero `ConnectionId` and carry the topic as `topicId`
-(`TopicId`, an alias for opaque bytes). Direct streams without registration
-use their message handler and returned Results; malformed subscriptions are
-also logged at trace level.
+Events require a registered connection. Passing a switch to `Waggle.new`
+registers connections automatically when the protocol starts. Mount it before
+starting the switch. Managed topics subscribed before start are opened at start.
+Repeating `subscribe(topic)` reopens finished receivers; failures are not retried
+automatically. `subscribers(topic)` lists each peer once even when it has multiple
+connections.
 
-Register new muxers as they connect. After stopping and restarting Waggle,
-re-register live muxers. `maxStreams` caps both streams and registered
-connections separately.
+`subscribe(topic)` returns a `SubscriptionAttempt`. Its `added` field says whether
+this call registered a new local topic. `blockedConnections` lists the connection
+IDs denied by local stream limits. The topic remains registered, and other current
+and future connections are still attempted. Validation failures return an error
+without changing registration.
 
+A failure handler can retry and check whether its event's `connectionId` remains
+in `blockedConnections`. A connection absent from that list may still be opening;
+negotiation and later stream failures arrive through events. Explicit admission
+failures only appear in the report; automatic admission failures on new connections
+or background reopening emit `StreamFailed`. This avoids recursive failure events
+when a handler retries against an unchanged limit.
+
+Events identify the peer, a nonzero `ConnectionId`, and the topic as `topicId`
+(`TopicId`, an alias for opaque bytes). Direct streams without registration use their message handler and
+returned Results.
+
+
+`maxStreams` caps streams and registered connections separately.
 ## Object model contract
 
 `WaggleShard.metadata` and `WaggleMetadata.clone` must return independent,

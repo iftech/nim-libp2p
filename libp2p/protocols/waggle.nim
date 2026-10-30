@@ -5,10 +5,10 @@
 
 {.push raises: [], gcsafe.}
 
-import std/[sequtils, sets]
+import std/[sequtils, tables, sets, hashes]
 import chronos, chronicles
 import ./protocol, ./waggle/[messages, shard]
-import ../muxers/muxer
+import ../switch, ../muxers/muxer, ../multistream
 import ../stream/connection
 import ../peerid
 from ../utils/future import trackFut
@@ -34,10 +34,17 @@ type
     async: (raises: [CancelledError]), gcsafe
   .}
 
+  SubscriptionAttempt* = object
+    ## Immediate admission only; receivers may still be negotiating.
+    added*: bool
+    blockedConnections*: seq[ConnectionId]
+
   WaggleEventKind* {.pure.} = enum
+    Received
     Subscribed
     Unsubscribed
     InvalidData
+    StreamFailed
 
   WaggleEvent* = object
     kind*: WaggleEventKind
@@ -49,9 +56,14 @@ type
 
   WaggleEventHandler* = proc(event: WaggleEvent) {.gcsafe, raises: [].}
 
+  ReceiverFailure = tuple[kind: WaggleEventKind, reason: string]
+
   WaggleConnection = ref object
     id: ConnectionId
     muxer: Muxer
+    opening: int
+    readers: Table[TopicId, Future[Opt[ReceiverFailure]]]
+    notifyingFailures: HashSet[TopicId]
 
   TopicSession = ref object
     stream: Stream
@@ -69,10 +81,18 @@ type
     maxStreamsPerPeer: int
     stopping: bool
     links: seq[WaggleConnection]
+    registeredMuxers: HashSet[Muxer]
     nextConnectionId: ConnectionId
+    topics: HashSet[TopicId]
     topicWhitelist: Opt[HashSet[TopicId]]
+    maxTopics: int
     onEvent: WaggleEventHandler
     tasks: seq[Future[void]]
+    manager: ConnManager
+    connHandler: ConnEventHandler
+
+proc hash(muxer: Muxer): Hash =
+  hash(cast[pointer](muxer))
 
 proc notify(
     p: Waggle,
@@ -82,17 +102,27 @@ proc notify(
     msg = ObjectPieces(),
     reason = "",
 ) =
-  if p.onEvent != nil and link != nil:
-    p.onEvent(
-      WaggleEvent(
-        kind: kind,
-        peerId: link.muxer.connection.peerId,
-        connectionId: link.id,
-        topicId: topicId,
-        message: msg,
-        reason: reason,
-      )
+  if p.onEvent == nil or link == nil:
+    return
+  let failure = kind in {WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData}
+  if failure:
+    # An immediate retry at capacity must not recursively notify the same failure.
+    if topicId in link.notifyingFailures:
+      return
+    link.notifyingFailures.incl(topicId)
+  defer:
+    if failure:
+      link.notifyingFailures.excl(topicId)
+  p.onEvent(
+    WaggleEvent(
+      kind: kind,
+      peerId: link.muxer.connection.peerId,
+      connectionId: link.id,
+      topicId: topicId,
+      message: msg,
+      reason: reason,
     )
+  )
 
 proc findConnection(p: Waggle, stream: Stream): WaggleConnection =
   if p.links.len == 0:
@@ -111,11 +141,21 @@ proc writeSession(
   p: Waggle, target: TopicSession, msg: ObjectPieces
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]).}
 
+proc pendingSlots(p: Waggle, peer: PeerId): tuple[total, perPeer: int] =
+  var slots = (total: 0, perPeer: 0)
+  for link in p.links:
+    slots.total += link.opening
+    if link.muxer.connection.peerId == peer:
+      slots.perPeer += link.opening
+  return slots
+
 proc admit(p: Waggle, stream: Stream, receiving: bool): LPResult[TopicSession] =
   if p.stopping:
     return err("Waggle has stopped")
-  if p.streams.len >= p.maxStreams or
-      p.streams.countIt(it.stream.peerId == stream.peerId) >= p.maxStreamsPerPeer:
+  let pending = p.pendingSlots(stream.peerId)
+  if p.streams.len + pending.total >= p.maxStreams or
+      p.streams.countIt(it.stream.peerId == stream.peerId) + pending.perPeer >=
+      p.maxStreamsPerPeer:
     return err("Waggle stream limit reached")
   let session = TopicSession(
     stream: stream,
@@ -172,12 +212,16 @@ proc new*(
     maxTopicSize: int = 1024,
     maxStreams: int = 128,
     maxStreamsPerPeer: int = 16,
+    maxTopics: int = 64,
     topicWhitelist = Opt.none(HashSet[TopicId]),
     onEvent: WaggleEventHandler = nil,
+    switch: Switch = nil,
 ): T =
   doAssert maxMessageSize > 0 and maxTopicSize >= 0
   doAssert maxStreams > 0 and maxStreamsPerPeer > 0
+  doAssert maxTopics > 0
   let p = T(
+    maxTopics: maxTopics,
     topicWhitelist: topicWhitelist,
     onEvent: onEvent,
     maxMessageSize: maxMessageSize,
@@ -230,6 +274,8 @@ proc new*(
 
   p.codec = WaggleCodec
   p.handler = handle
+  if switch != nil:
+    p.manager = switch.connManager
   p
 
 proc subscribe*(
@@ -273,7 +319,8 @@ proc subscribers*(p: Waggle, topicId: TopicId): seq[PeerId] =
   for session in p.streams:
     if session.ready and not session.receiving and not session.stream.closed and
         session.topicId == topicId:
-      peers.add(session.stream.peerId)
+      if session.stream.peerId notin peers:
+        peers.add(session.stream.peerId)
   return peers
 
 proc send*(
@@ -313,25 +360,148 @@ proc writeSession(
     except AsyncLockError as exc:
       raiseAssert exc.msg
 
+proc processReceived(
+    p: Waggle, link: WaggleConnection, topicId: TopicId, msg: ObjectPieces
+) =
+  if topicId in p.topics and not p.stopping and link in p.links:
+    p.notify(WaggleEventKind.Received, link, topicId, msg)
+
+proc receiveTopic(
+    p: Waggle, link: WaggleConnection, topicId: TopicId
+): Future[Opt[ReceiverFailure]] {.async: (raises: [CancelledError]).} =
+  var stream: Stream
+  var opening = true
+  try:
+    stream = await link.muxer.newStream()
+    if not (await MultistreamSelect.select(stream, WaggleCodec)):
+      return Opt.some((WaggleEventKind.StreamFailed, "Peer does not support Waggle"))
+    proc onPieces(
+        peer: PeerId, topicId: TopicId, msg: ObjectPieces
+    ) {.async: (raises: [CancelledError]).} =
+      p.processReceived(link, topicId, msg)
+
+    dec link.opening
+    opening = false
+    let received = await p.subscribe(stream, topicId, onPieces)
+    if received.isErr:
+      let kind =
+        if received.isOfError(WaggleInvalidDataCause):
+          WaggleEventKind.InvalidData
+        else:
+          WaggleEventKind.StreamFailed
+      return Opt.some((kind, $received.error))
+  except InvalidVarintError, MaxSizeError:
+    let kind =
+      if opening: WaggleEventKind.StreamFailed else: WaggleEventKind.InvalidData
+    return Opt.some((kind, getCurrentExceptionMsg()))
+  except LPError as exc:
+    return Opt.some((WaggleEventKind.StreamFailed, exc.msg))
+  finally:
+    if opening:
+      dec link.opening
+    if stream != nil:
+      await noCancel stream.reset()
+  return Opt.none(ReceiverFailure)
+
+proc beginReceiver(
+    p: Waggle, link: WaggleConnection, topicId: TopicId
+): Result[void, string] =
+  if p.stopping or topicId notin p.topics or link notin p.links:
+    return ok()
+  if link.readers.hasKey(topicId):
+    if not link.readers.getOrDefault(topicId).finished():
+      return ok()
+    link.readers.del(topicId)
+  let peer = link.muxer.connection.peerId
+  let pending = p.pendingSlots(peer)
+  let activePeer = p.streams.countIt(it.stream.peerId == peer)
+  if p.streams.len + pending.total >= p.maxStreams or
+      activePeer + pending.perPeer >= p.maxStreamsPerPeer:
+    return err("Waggle stream limit reached")
+  inc link.opening
+  let task = p.receiveTopic(link, topicId)
+  link.readers[topicId] = task
+  task.addCallback proc(udata: pointer) {.gcsafe, raises: [].} =
+    if link.readers.getOrDefault(topicId) == task:
+      link.readers.del(topicId)
+    # Failure handlers may retry immediately, after receiver cleanup is complete.
+    if task.completed() and not p.stopping and link in p.links and topicId in p.topics:
+      let failure = task.value()
+      if failure.isSome:
+        let (kind, reason) = failure.get()
+        p.notify(kind, link, topicId, reason = reason)
+  ok()
+
+proc beginReceiverOrNotify(p: Waggle, link: WaggleConnection, topicId: TopicId) =
+  let admission = p.beginReceiver(link, topicId)
+  if admission.isErr:
+    p.notify(WaggleEventKind.StreamFailed, link, topicId, reason = admission.error)
+
+proc subscribe*(p: Waggle, topicId: TopicId): Result[SubscriptionAttempt, string] =
+  ## Register a topic and retry finished receivers on current connections.
+  ## Validation errors leave registration unchanged. The topic remains registered
+  ## when connections are blocked, and other or future connections are still attempted.
+  ## Explicit admission failures are returned in the report, without failure events.
+  ## Negotiation and subsequent stream failures are reported through events.
+  if p.stopping:
+    return err("Waggle has stopped")
+  if topicId.len > p.maxTopicSize:
+    return err("Waggle topic exceeds maximum length")
+  if p.topicWhitelist.isSome and topicId notin p.topicWhitelist.get():
+    return err("Topic is not allowed")
+  let added = topicId notin p.topics
+  if added and p.topics.len >= p.maxTopics:
+    return err("Waggle topic subscription limit reached")
+  p.topics.incl(topicId)
+  let links = p.links
+  var attempt = SubscriptionAttempt(added: added)
+  for link in links:
+    if p.beginReceiver(link, topicId).isErr:
+      attempt.blockedConnections.add(link.id)
+  ok(attempt)
+
+proc unsubscribe*(p: Waggle, topicId: TopicId): Future[bool] {.async: (raises: []).} =
+  if topicId notin p.topics:
+    return false
+  p.topics.excl(topicId)
+  var readers: seq[Future[Opt[ReceiverFailure]]]
+  let links = p.links
+  for link in links:
+    link.readers.withValue(topicId, task):
+      readers.add(task[])
+  for task in readers:
+    await task.cancelAndWait()
+  # A concurrent subscribe waits for the old receiver to finish before reopening.
+  for link in links:
+    p.beginReceiverOrNotify(link, topicId)
+  return true
+
 proc removeConnection(p: Waggle, link: WaggleConnection) {.async: (raises: []).} =
   p.links.keepItIf(it != link)
+  p.registeredMuxers.excl(link.muxer)
   let sessions = p.streams.filterIt(it.link == link)
   for session in sessions:
     await noCancel session.stream.reset()
+  let readers = toSeq(link.readers.values)
+  link.readers.clear()
+  for task in readers:
+    await task.cancelAndWait()
 
 proc addConnection*(p: Waggle, muxer: Muxer): Result[bool, string] =
   ## Register an upgraded muxer whose stream handler routes incoming protocols.
-  ## Register each new muxer and re-register live muxers after a stop/start cycle.
+  ## Pass a switch to Waggle.new for automatic connection discovery on start.
   if p.stopping or muxer == nil or muxer.handler == nil or muxer.connection.closed:
     return err("Waggle requires a live running muxer")
-  for link in p.links:
-    if link.muxer == muxer:
-      return ok(false)
+  if muxer in p.registeredMuxers:
+    return ok(false)
   if p.links.len >= p.maxStreams:
     return err("Waggle connection limit reached")
   inc p.nextConnectionId
   let link = WaggleConnection(id: p.nextConnectionId, muxer: muxer)
   p.links.add(link)
+  p.registeredMuxers.incl(muxer)
+  for topicId in toSeq(p.topics):
+    p.beginReceiverOrNotify(link, topicId)
   proc monitor() {.async: (raises: [CancelledError]).} =
     await muxer.handler.join()
     await p.removeConnection(link)
@@ -339,15 +509,45 @@ proc addConnection*(p: Waggle, muxer: Muxer): Result[bool, string] =
   p.tasks.trackFut(monitor())
   ok(true)
 
+proc refreshConnections(p: Waggle) =
+  for connections in p.manager.getConnections().values:
+    for muxer in connections:
+      let added = p.addConnection(muxer)
+      if added.isErr:
+        trace "Waggle connection not registered", reason = added.error
+
 method start*(p: Waggle) {.async: (raises: [CancelledError]).} =
   p.stopping = false
+  if p.manager != nil:
+    if p.connHandler == nil:
+      proc onConnection(
+          peer: PeerId, event: ConnEvent
+      ) {.async: (raises: [CancelledError]).} =
+        if not p.stopping:
+          for muxer in p.manager.getConnections(peer).get(@[]):
+            let added = p.addConnection(muxer)
+            if added.isErr:
+              trace "Waggle connection not registered", reason = added.error
+
+      p.connHandler = onConnection
+    p.manager.addConnEventHandler(p.connHandler, ConnEventKind.Connected)
+    p.refreshConnections()
   await procCall LPProtocol(p).start()
 
 method stop*(p: Waggle) {.async: (raises: []).} =
   p.stopping = true
-  p.links = @[]
+  if p.manager != nil and p.connHandler != nil:
+    p.manager.removeConnEventHandler(p.connHandler, ConnEventKind.Connected)
+    p.connHandler = nil
+  let links = move p.links
+  p.registeredMuxers.clear()
+  var readers: seq[Future[Opt[ReceiverFailure]]]
+  for link in links:
+    readers.add(toSeq(link.readers.values))
+    link.readers.clear()
   let streams = move p.streams
   await noCancel allFutures(streams.mapIt(it.stream.reset()))
+  await readers.cancelAndWait()
   let tasks = move p.tasks
   await tasks.cancelAndWait()
   await procCall LPProtocol(p).stop()
