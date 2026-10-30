@@ -91,17 +91,31 @@ async fn listen(address_file: &str, topics: &[u8]) -> anyhow::Result<libp2p::Swa
         .with_swarm_config(|config| config.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
     for &index in topics {
-        ensure!(swarm.behaviour_mut().subscribe(topic(index)));
+        ensure!(
+            swarm.behaviour_mut().subscribe(topic(index)),
+            "failed to subscribe to topic {index}"
+        );
     }
     swarm.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
 
     loop {
-        if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
-            fs::write(
-                address_file,
-                format!("{address}/p2p/{}", swarm.local_peer_id()),
-            )?;
-            return Ok(swarm);
+        match swarm.select_next_some().await {
+            SwarmEvent::NewListenAddr { address, .. } => {
+                let temporary = format!("{address_file}.tmp");
+                fs::write(
+                    &temporary,
+                    format!("{address}/p2p/{}", swarm.local_peer_id()),
+                )?;
+                fs::rename(&temporary, address_file)?;
+                return Ok(swarm);
+            }
+            SwarmEvent::ListenerError { error, .. } => bail!("listener error: {error}"),
+            SwarmEvent::ListenerClosed {
+                addresses, reason, ..
+            } => {
+                bail!("listener closed for {addresses:?}: {reason:?}")
+            }
+            event => eprintln!("waiting for listen address: {event:?}"),
         }
     }
 }
@@ -192,7 +206,7 @@ async fn run(address_file: &str) -> anyhow::Result<()> {
             SwarmEvent::ConnectionClosed { cause, .. } => {
                 bail!("connection closed before final ack: {cause:?}")
             }
-            _ => {}
+            event => eprintln!("unhandled wire event: {event:?}"),
         }
     }
 }
@@ -207,9 +221,11 @@ async fn main() -> anyhow::Result<()> {
         match mode.as_deref() {
             None => run(&path).await,
 
-            _ => bail!("unknown scenario"),
+            Some(scenario) => bail!("unknown scenario: {scenario}"),
         }
     };
-    tokio::time::timeout(Duration::from_secs(60), scenario).await??;
+    tokio::time::timeout(Duration::from_secs(60), scenario)
+        .await
+        .context("Waggle scenario did not complete within 60 seconds")??;
     Ok(())
 }
