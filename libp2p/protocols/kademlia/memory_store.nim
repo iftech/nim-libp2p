@@ -20,9 +20,13 @@ type
     peerId: PeerId
     expiresAt: UnixTimestamp
 
+  ValueSlot = object
+    value: StoredValue
+    expiresAt: UnixTimestamp
+
   Values = ref object
     cap: Opt[int]
-    byKey: Table[RecordKey, StoredValue]
+    byKey: Table[RecordKey, ValueSlot]
     keys: seq[RecordKey] ## the keys of ``byKey``, sorted
     nextExpiry: UnixTimestamp ## no value expires before this time
 
@@ -46,16 +50,7 @@ type
     providers: Providers
     provided: ProvidedKeys
 
-func new*(
-    T: typedesc[MemoryKadStore],
-    limits = KadStoreLimits(
-      maxValues: Opt.some(DefaultMaxLocalRecords),
-      maxProviders: Opt.some(DefaultProviderRecordCapacity),
-      maxProvided: Opt.some(DefaultProvidedKeyCapacity),
-      maxProviderRecordsPerPeer:
-        Opt.some(defaultMaxProviderRecordsPerPeer(DefaultProviderRecordCapacity)),
-    ),
-): T =
+func new*(T: typedesc[MemoryKadStore], limits = KadStoreLimits.new()): T =
   T(
     values: Values(cap: limits.maxValues),
     providers:
@@ -111,9 +106,9 @@ func prune(values: Values, now: UnixTimestamp) =
 
   var dead: seq[RecordKey]
   var nextExpiry = high(UnixTimestamp)
-  for key, value in values.byKey:
-    if value.expiresAt.isLive(now):
-      nextExpiry = min(nextExpiry, value.expiresAt)
+  for key, slot in values.byKey:
+    if slot.expiresAt.isLive(now):
+      nextExpiry = min(nextExpiry, slot.expiresAt)
     else:
       dead.add(key)
   for key in dead:
@@ -124,8 +119,8 @@ func prune(values: Values, now: UnixTimestamp) =
 func get(values: Values, key: RecordKey, now: UnixTimestamp): Opt[StoredValue] =
   values.prune(now)
 
-  values.byKey.withValue(key, value):
-    return Opt.some(value[])
+  values.byKey.withValue(key, slot):
+    return Opt.some(slot[].value)
   Opt.none(StoredValue)
 
 func put(values: Values, value: StoredValue, now: UnixTimestamp): bool =
@@ -136,8 +131,9 @@ func put(values: Values, value: StoredValue, now: UnixTimestamp): bool =
       return false
     values.keys.insertKey(value.key)
 
-  values.byKey[value.key] = value
-  values.nextExpiry = min(values.nextExpiry, value.expiresAt)
+  let expiresAt = now + value.ttl.seconds
+  values.byKey[value.key] = ValueSlot(value: value, expiresAt: expiresAt)
+  values.nextExpiry = min(values.nextExpiry, expiresAt)
   true
 
 func drop(values: Values, key: RecordKey) =
@@ -151,8 +147,8 @@ func list(
 
   var live: seq[StoredValue]
   for key in values.keys.page(after, limit):
-    values.byKey.withValue(key, value):
-      live.add(value[])
+    values.byKey.withValue(key, slot):
+      live.add(slot[].value)
   live
 
 method getValue*(

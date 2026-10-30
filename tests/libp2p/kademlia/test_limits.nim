@@ -243,8 +243,8 @@ suite "KadDHT - Limits":
 
     check:
       res.isErr()
-      kads[0].dataTable.len == 0
-      kads[1].dataTable.len == 0
+      kads[0].valueCount() == 0
+      kads[1].valueCount() == 0
 
   asyncTest "handlePutValue drops records exceeding maxValueSize":
     let kads = setupKadSwitches(2)
@@ -267,12 +267,12 @@ suite "KadDHT - Limits":
       kads[1].containsData(key, value)
       kads[0].containsNoData(key)
 
-  asyncTest "handlePutValue drops new records when maxLocalRecords is reached":
-    let kads = setupKadSwitches(2)
+  asyncTest "handlePutValue drops new records when the store holds maxValues":
+    var config = testKadConfig()
+    config.storeLimits.maxValues = Opt.some(1)
+    let kads = @[setupKad(config), setupKad()]
     startAndDeferStop(kads)
     await connect(kads[0], kads[1])
-
-    kads[0].config.limits.maxLocalRecords = Opt.some(1)
 
     let
       existingKey = PeerId.random()
@@ -280,7 +280,7 @@ suite "KadDHT - Limits":
       existingValue = @[1.byte]
       newValue = @[2.byte]
 
-    kads[0].dataTable.insert(existingKey, existingValue, Timestamp.now())
+    check await kads[0].seedLocalValue(existingKey, existingValue)
 
     let request = Message(
       msgType: MessageType.putValue,
@@ -311,7 +311,7 @@ suite "KadDHT - Limits":
       )
       await kad.handlePutValue(stream, request)
 
-      check kad.dataTable.len == 0
+      check kad.valueCount() == 0
 
     await stream.close()
 
@@ -332,30 +332,6 @@ suite "KadDHT - Limits":
         response.record.isNone()
         response.closerPeers.toHashSet().containsPeer(kads[2])
 
-  asyncTest "getValue skips local insert when maxLocalRecords is reached":
-    let kads = setupKadSwitches(2)
-    startAndDeferStop(kads)
-    await connect(kads[0], kads[1])
-
-    kads[0].config.limits.maxLocalRecords = Opt.some(1)
-
-    let
-      existingKey = PeerId.random()
-      lookupKey = kads[1].rtable.selfId
-      existingValue = @[1.byte]
-      lookupValue = @[2.byte]
-
-    kads[0].dataTable.insert(existingKey, existingValue, Timestamp.now())
-    kads[1].dataTable.insert(lookupKey, lookupValue, Timestamp.now())
-
-    let res = await kads[0].getValue(lookupKey, quorumOverride = Opt.some(1))
-
-    check:
-      res.isOk()
-      res.value().value == lookupValue
-      kads[0].containsData(existingKey, existingValue)
-      kads[0].containsNoData(lookupKey)
-
   asyncTest "getValue drops replies larger than maxValueSize":
     let kads = setupKadSwitches(2)
     startAndDeferStop(kads)
@@ -364,7 +340,7 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxValueSize = 8
 
     let key = kads[1].rtable.selfId
-    kads[1].dataTable.insert(key, newSeq[byte](64), Timestamp.now())
+    check await kads[1].seedLocalValue(key, newSeq[byte](64))
 
     let res = await kads[0].getValue(key, quorumOverride = Opt.some(1))
 

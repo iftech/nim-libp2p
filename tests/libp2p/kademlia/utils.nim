@@ -7,7 +7,9 @@ import
   ../../../libp2p/[
     protocols/kademlia, switch, builders, cid, multicodec, multihash, stream/connection
   ]
+import ../../../libp2p/protocols/kademlia/memory_store
 import ../../tools/[crypto, unittest, switch_builder, multiaddress]
+import std/importutils
 import ./mock_kademlia
 
 export crypto
@@ -110,7 +112,6 @@ proc testKadConfig*(
     providerRejection: bool = false,
     providerExpirationInterval: Duration = 1.seconds,
     recordExpirationInterval: Duration = DefaultRecordExpirationInterval,
-    cleanupDataEntriesInterval: Duration = chronos.milliseconds(100),
     republishRegionBits: Opt[int] = Opt.none(int),
     livenessGracePeriod: Duration = DefaultLivenessGracePeriod,
     livenessIdleInterval: Duration = DefaultLivenessIdleInterval,
@@ -131,7 +132,6 @@ proc testKadConfig*(
     retries = retries,
     providerRejection = providerRejection,
     recordExpirationInterval = recordExpirationInterval,
-    cleanupDataEntriesInterval = cleanupDataEntriesInterval,
     republishRegionBits = republishRegionBits,
     livenessGracePeriod = livenessGracePeriod,
     livenessIdleInterval = livenessIdleInterval,
@@ -177,7 +177,6 @@ proc setupKadSwitches*(
     replication: int = DefaultReplication,
     beta: int = DefaultBeta,
     recordExpirationInterval: Duration = DefaultRecordExpirationInterval,
-    cleanupDataEntriesInterval: Duration = chronos.milliseconds(100),
 ): seq[KadDHT] =
   var kads: seq[KadDHT]
   for i in 0 ..< count:
@@ -189,7 +188,6 @@ proc setupKadSwitches*(
       replication = replication,
       beta = beta,
       recordExpirationInterval = recordExpirationInterval,
-      cleanupDataEntriesInterval = cleanupDataEntriesInterval,
     )
     kads.add(setupKad(config, bootstrapNodes))
   kads
@@ -305,8 +303,35 @@ proc backdateExpiry*(kad: KadDHT) =
   for record in aged:
     records.push(record)
 
+privateAccess(MemoryKadStore)
+privateAccess(typeof(MemoryKadStore().values))
+privateAccess(typeof(MemoryKadStore().values.byKey.values()))
+
+func mem(kad: KadDHT): MemoryKadStore =
+  MemoryKadStore(kad.store)
+
+func valueCount*(kad: KadDHT): int =
+  kad.mem().values.byKey.len
+
+proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
+  kad.mem().values.byKey.withValue(key, slot):
+    if slot[].expiresAt > nowUnixSeconds():
+      return Opt.some(slot[].value.record)
+  Opt.none(EntryRecord)
+
+proc seedLocalValue*(
+    kad: KadDHT, key: RecordKey, value: Value
+): Future[bool] {.async: (raises: [CancelledError]).} =
+  let stored = StoredValue(
+    key: key,
+    record: EntryRecord(value: value, time: Timestamp.now()),
+    ttl: kad.config.recordExpirationInterval,
+  )
+  (await kad.store.putValue(stored, nowUnixSeconds())).valueOr:
+    raiseAssert "seedLocalValue: " & $error
+
 proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
-  let record = kad.dataTable.get(key).valueOr:
+  let record = kad.localValue(key).valueOr:
     checkpoint("containsData: key not found: " & $key.shortLog())
     return false
 
@@ -320,7 +345,7 @@ proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
   true
 
 proc containsNoData*(kad: KadDHT, key: RecordKey): bool =
-  kad.dataTable.get(key).isNone()
+  kad.localValue(key).isNone()
 
 proc pluckPeerIds*(kads: seq[KadDHT]): seq[PeerId] =
   kads.mapIt(it.switch.peerInfo.peerId)

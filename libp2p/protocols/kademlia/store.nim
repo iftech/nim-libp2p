@@ -5,7 +5,7 @@
 ## keys this node provides. Subclass ``KadStore`` and override every method.
 ##
 ## Contract for every backend:
-## - A read never returns an entry with ``expiresAt <= now``. Provided keys do not expire.
+## - A value expires ``ttl`` after the ``putValue`` that stored it, and a provider at ``expiresAt``. A read never returns an expired entry. Provided keys do not expire.
 ## - The backend deletes expired entries by itself, for example before a call that takes ``now``. ``KadDHT`` never asks it to prune.
 ## - An expired entry never costs capacity. A store refuses a new value or provider with ``ok(false)``, ``keyFull``, ``peerFull`` or ``storeFull`` only when its live entries fill the cap.
 ## - At the total provider cap, ``addProvider`` evicts the provider with the lowest ``expiresAt`` when the new provider expires later. Else it answers ``storeFull``.
@@ -25,7 +25,7 @@ type
   StoredValue* = object
     key*: RecordKey
     record*: EntryRecord
-    expiresAt*: UnixTimestamp
+    ttl*: chronos.Duration ## counts from the ``putValue`` call
 
   StoredProvider* = object
     provider*: Provider
@@ -38,14 +38,6 @@ type
     peerFull ## the peer holds its cap of live provider records
     storeFull
       ## the store holds its total cap of live providers and none expires before the new one
-
-  KadStoreLimits* = object
-    maxValues*: Opt[int]
-    maxProviders*: Opt[int]
-    maxProvided*: Opt[int]
-    maxProviderRecordsPerPeer*: Opt[int]
-
-  KadStore* = ref object of RootObj
 
 method getValue*(
     store: KadStore, key: RecordKey, now: UnixTimestamp
