@@ -3,7 +3,7 @@
 
 {.used.}
 
-import ./kad_store_suite
+import ./[kad_store_suite, utils]
 
 proc newMemoryStore(limits: KadStoreLimits): KadStore =
   MemoryKadStore.new(limits)
@@ -18,3 +18,22 @@ suite "MemoryKadStore default limits":
         maxProviders: Opt.some(DefaultProviderRecordCapacity),
         maxProvided: Opt.some(DefaultProvidedKeyCapacity),
       )
+
+  test "KadDHT defaults to a MemoryKadStore with the caps of its config":
+    var config = testKadConfig()
+    config.providerRecordCapacity = 7
+    config.providedKeyCapacity = 3
+    let kad = setupKad(config)
+
+    check:
+      kad.store of MemoryKadStore
+      MemoryKadStore(kad.store).limits().maxProviders == Opt.some(7)
+      MemoryKadStore(kad.store).limits().maxProvided == Opt.some(3)
+
+  test "KadDHT uses the store of its config":
+    let store = MemoryKadStore.new()
+    var config = testKadConfig()
+    config.store = Opt.some(KadStore(store))
+    let kad = setupKad(config)
+
+    check kad.store == KadStore(store)

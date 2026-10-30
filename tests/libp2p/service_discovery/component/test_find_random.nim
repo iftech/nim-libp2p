@@ -40,7 +40,7 @@ suite "Service Discovery - XPR key binding":
     await connectStar(discos)
 
     let servedKey = discos[2].switch.peerInfo.peerId
-    discos[2].dataTable.insert(servedKey, foreignXpr(), Timestamp.now())
+    check await discos[2].storeLocalRecord(servedKey, foreignXpr(), Timestamp.now())
 
     check (await discos[1].lookupRandom()).len == 0
 
@@ -55,7 +55,7 @@ suite "Service Discovery - XPR key binding":
     check discos[0].startAdvertising(service, Opt.some(advert.encode())).isOk()
 
     checkUntilTimeout:
-      discos[2].dataTable.get(signer.peerId).isSome()
+      discos[2].localValue(signer.peerId).isSome()
 
     let records = await discos[1].lookupRandom()
     check records.mapIt(it.peerId) == @[signer.peerId]

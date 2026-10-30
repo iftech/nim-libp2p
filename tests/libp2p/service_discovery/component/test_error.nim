@@ -357,4 +357,4 @@ suite "Service Discovery Component - Error Handling":
     let value = Value.fromBytes(makeAdvertisement().encode())
     discard await clientNode.dispatchPutVal(storePeerId, storePeerId, value)
 
-    check storeNode.dataTable.get(storePeerId).isNone()
+    check storeNode.localValue(storePeerId).isNone()

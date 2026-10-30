@@ -44,12 +44,8 @@ proc getValue*(
   let received = ReceivedTable()
 
   # if locally present and not expired, include our own copy
-  kad.dataTable.get(key).ifValue(localRecord):
-    if not localRecord.isExpired(kad.config.recordExpirationInterval):
-      received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
-    else:
-      kad.dataTable.del(key)
-      trace "Local record expired on read", key = key
+  (await kad.localRecord(key)).ifValue(localRecord):
+    received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
 
   let quorum = quorumOverride.valueOr:
     kad.config.quorum
@@ -106,10 +102,8 @@ proc getValue*(
   let best = ?kad.bestValidRecord(key, received, quorum)
 
   # insert value to our localtable
-  if kad.canStoreLocalRecord(key):
-    kad.dataTable.insert(key, best.value, Timestamp.now())
-  else:
-    debug "GetValue: local record limit reached", key = key, current = kad.dataTable.len
+  if not await kad.storeLocalRecord(key, best.value):
+    debug "GetValue: local record limit reached", key = key
 
   # update peers that
   # - don't have best value
@@ -129,20 +123,13 @@ proc getValue*(
 
   ok(best)
 
-proc liveLocalRecord(kad: KadDHT, key: Key): Opt[EntryRecord] =
-  ## Evicts an expired entry so the caller treats it as absent.
+proc liveLocalRecord(
+    kad: KadDHT, key: Key
+): Future[Opt[EntryRecord]] {.async: (raises: [CancelledError]).} =
   let recordKey = RecordKey.init(key).valueOr:
     return Opt.none(EntryRecord)
 
-  let record = kad.dataTable.get(recordKey).valueOr:
-    return Opt.none(EntryRecord)
-
-  if record.isExpired(kad.config.recordExpirationInterval):
-    trace "Record expired, dropping", key
-    kad.dataTable.del(recordKey)
-    return Opt.none(EntryRecord)
-
-  Opt.some(record)
+  await kad.localRecord(recordKey)
 
 method handleGetValue*(
     kad: KadDHT, stream: Stream, msg: Message
@@ -152,7 +139,7 @@ method handleGetValue*(
       reason = "missingKey", messageType = "getValue", stream
     return
 
-  let entryRecord = kad.liveLocalRecord(key).valueOr:
+  let entryRecord = (await kad.liveLocalRecord(key)).valueOr:
     let response = Message(
       msgType: Opt.some(MessageType.getValue),
       key: Opt.some(key),
