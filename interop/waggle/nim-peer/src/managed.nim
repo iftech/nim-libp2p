@@ -10,6 +10,9 @@ import ../../../../libp2p/builders
 const Topic = @[byte 0, 255, 1]
 
 proc managedInterop*(address: string) {.async.} =
+  let
+    parts = address.rsplit("/p2p/", maxsplit = 1)
+    peer = PeerId.init(parts[1]).get()
   let random = newRng()
 
   let switch = SwitchBuilder
@@ -24,11 +27,15 @@ proc managedInterop*(address: string) {.async.} =
   var have = 1.byte
   var deliveries = 0
   var waggle: Waggle
+  let subscribed = Future[void].Raising([CancelledError]).init()
   let confirmed = Future[void].Raising([CancelledError]).init()
 
   proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
     doAssert event.kind != WaggleEventKind.InvalidData
     doAssert event.kind != WaggleEventKind.FullQueue
+    if event.kind == WaggleEventKind.Subscribed:
+      if event.peerId == peer and event.topicId == Topic and not subscribed.finished:
+        subscribed.complete()
     if event.kind != WaggleEventKind.Received:
       return
 
@@ -47,7 +54,7 @@ proc managedInterop*(address: string) {.async.} =
 
         inc deliveries
         have = have or pieces[0]
-        discard waggle.publish(Topic, BitShard(id: @[byte 1], have: have))
+        doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: have)).isOk
 
   waggle = Waggle.new(switch = switch, rng = random, onEvent = onEvent)
   switch.mount(waggle)
@@ -56,10 +63,6 @@ proc managedInterop*(address: string) {.async.} =
     await switch.stop()
 
   doAssert waggle.subscribe(Topic).get().added
-
-  let
-    parts = address.rsplit("/p2p/", maxsplit = 1)
-    peer = PeerId.init(parts[1]).get()
 
   let disconnected = Future[void].Raising([CancelledError]).init()
   proc onPeerLeft(
@@ -75,11 +78,12 @@ proc managedInterop*(address: string) {.async.} =
   await switch.start()
   await switch.connect(peer, @[MultiAddress.init(parts[0]).get()])
 
-  while waggle.subscribers(Topic).len != 1:
-    await sleepAsync(10.milliseconds)
+  doAssert await subscribed.withTimeout(20.seconds),
+    "Timed out waiting for Rust subscription"
 
   doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: have)).isOk
-  await confirmed
+  doAssert await confirmed.withTimeout(20.seconds),
+    "Timed out waiting for Rust reconciliation acknowledgement"
 
   doAssert have == 3 and deliveries == 1
   doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: 3)).get() == 0
@@ -96,6 +100,7 @@ proc managedInterop*(address: string) {.async.} =
     )
   ).get()
 
-  await disconnected
+  doAssert await disconnected.withTimeout(20.seconds),
+    "Timed out waiting for Rust disconnect"
 
   echo "Nim reconciled complementary pieces with Rust; duplicate payload suppressed"
