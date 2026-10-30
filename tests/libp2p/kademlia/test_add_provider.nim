@@ -7,6 +7,7 @@ import
   algorithm, chronos, metrics, results, sets, sequtils, strutils, tables, stew/byteutils
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
+import ../../../libp2p/protocols/kademlia/memory_store
 import ../../tools/[lifecycle, topology, unittest, multiaddress, metrics_utils]
 import ./[mock_kademlia, utils]
 
@@ -174,9 +175,8 @@ suite "KadDHT - Add Provider":
     let
       first = makeProvidedCid(1)
       second = makeProvidedCid(2)
-    let now = nowUnixSeconds()
-    kad.markProvided(first.toKey(), now - 2)
-    kad.markProvided(second.toKey(), now - 1)
+    kad.markProvided(first.toKey())
+    kad.markProvided(second.toKey())
 
     await kad.startProviding(second)
 
@@ -185,7 +185,7 @@ suite "KadDHT - Add Provider":
       kad.isProvided(first.toKey())
       kad.isProvided(second.toKey())
 
-  asyncTest "Providing a new key at capacity evicts a key with a current or future timestamp":
+  asyncTest "Providing a new key at capacity evicts the key provided first":
     const capacity = 2
     let kad = setupKadProvidingAtMost(capacity)
     startAndDeferStop(@[kad])
@@ -193,19 +193,30 @@ suite "KadDHT - Add Provider":
       first = makeProvidedCid(1)
       second = makeProvidedCid(2)
       third = makeProvidedCid(3)
-    for offset in [0.seconds, 1.hours]:
-      for cid in [first, second, third]:
-        kad.stopProviding(cid)
-      let providedAt = UnixTimestamp.after(offset)
-      kad.markProvided(first.toKey(), providedAt)
-      kad.markProvided(second.toKey(), providedAt)
+    kad.markProvided(first.toKey())
+    kad.markProvided(second.toKey())
 
-      await kad.startProviding(third)
+    await kad.startProviding(third)
 
-      check:
-        kad.providedCount() == capacity
-        not kad.isProvided(first.toKey())
-        kad.isProvided(third.toKey())
+    check:
+      kad.providedCount() == capacity
+      not kad.isProvided(first.toKey())
+      kad.isProvided(third.toKey())
+
+  asyncTest "A key the store does not record is not advertised":
+    # providerRejection makes the sender await each reply before startProviding returns.
+    let config =
+      testKadConfig(providerRejection = true, providerExpirationInterval = 30.seconds)
+    let kads = @[setupKad(config), setupKad(config)]
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+    kads[0].store = MemoryKadStore.new(KadStoreLimits(maxProvided: Opt.some(0)))
+
+    await kads[0].startProviding(kads[0].rtable.selfId.toCid())
+
+    check:
+      kads[0].providedCount() == 0
+      kads[1].providerCount() == 0
 
   asyncTest "Provider limits":
     var senderConfig = testKadConfig(republishProvidedKeysInterval = chronos.hours(1))
@@ -233,6 +244,8 @@ suite "KadDHT - Add Provider":
       kads[1].hasProvider(cid1.toKey())
       kads[1].providerRecordsFull()
 
+    # The store evicts only for a provider that expires later.
+    kads[1].backdateExpiry()
     await kads[0].startProviding(cid2)
 
     checkUntilTimeout:
@@ -245,6 +258,7 @@ suite "KadDHT - Add Provider":
       kads[1].hasProvider(cid2.toKey())
       kads[1].providerRecordsFull()
 
+    kads[1].backdateExpiry()
     await kads[0].startProviding(cid3)
 
     checkUntilTimeout:
@@ -954,6 +968,8 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     check (await peerA.advertiseStatus(receiverKad, randomServiceId())) ==
       AddProviderStatus.accepted
+    # The store evicts only for a provider that expires later, so peerA expires first.
+    receiverKad.backdateExpiry()
     for _ in 1 ..< capacity:
       check (await peerB.advertiseStatus(receiverKad, randomServiceId())) ==
         AddProviderStatus.accepted
@@ -964,6 +980,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
       receiverKad.recordsPerPeer(idB) == capacity - 1
 
     # Full table: this push evicts peerA's record, the oldest one.
+    receiverKad.backdateExpiry()
     check (await peerB.advertiseStatus(receiverKad, randomServiceId())) ==
       AddProviderStatus.accepted
 

@@ -202,9 +202,8 @@ suite "KadDHT Get":
 
   asyncTest "Get updates routing table with closerPeers (no record)":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
@@ -267,9 +266,8 @@ suite "KadDHT Get":
 
   asyncTest "Get updates routing table with closerPeers (with record)":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
@@ -293,9 +291,8 @@ suite "KadDHT Get":
       kads[2].hasKey(kads[1].rtable.selfId)
 
   asyncTest "Quorum handling is ignored if quorum is 0 or 1":
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectStar(kads)

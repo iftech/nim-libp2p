@@ -14,11 +14,7 @@ suite "KadDHT - Get Providers":
     checkTrackers()
 
   asyncTest "Get providers uses iterative lookup":
-    let kads = setupKadSwitches(
-      4,
-      cleanupProvidersInterval = 1.seconds(),
-      republishProvidedKeysInterval = 1.seconds(),
-    )
+    let kads = setupKadSwitches(4, republishProvidedKeysInterval = 1.seconds())
     startAndDeferStop(kads)
 
     # topology: kads[0] <-> kads[1] <-> kads[2] <-> kads[3]
@@ -57,9 +53,8 @@ suite "KadDHT - Get Providers":
 
   asyncTest "Get providers updates routing table with closerPeers when no providers are returned":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
@@ -80,9 +75,8 @@ suite "KadDHT - Get Providers":
 
   asyncTest "Get providers updates routing table with closerPeers (with providers)":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
