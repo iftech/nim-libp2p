@@ -7,6 +7,8 @@ import ../utils/[heartbeat, future]
 import ../logging
 import ../[peerid, switch, multihash]
 import ./protocol
+import ./connectivity/autonat/types
+import ../services/reachabilityobservers
 import
   ./kademlia/[
     routing_table, peer_registry, protobuf, types, find, get, put, keyspace, provider,
@@ -480,6 +482,35 @@ proc changeMode*(kad: KadDHT, isServer: bool): Future[bool] {.async: (raises: []
   info "Kad DHT changed mode", previousIsServer = not isServer, isServer
   true
 
+proc enableAutoMode*(
+    kad: KadDHT, current: CurrentReachability
+): ReachabilityHandler {.raises: [].} =
+  ## Serves while reachable and returns the handler to subscribe. A second call
+  ## returns the same handler. Each ``start`` reads ``current``, because a
+  ## verdict that arrives while stopped is not sent again.
+  kad.autoModeHandler.ifValue(handler):
+    return handler
+
+  kad.currentReachability = current
+  let handler: ReachabilityHandler = proc(
+      reachability: NetworkReachability,
+      confidence: Opt[float],
+      dialBackAddr: Opt[MultiAddress],
+  ) {.async: (raises: [CancelledError]).} =
+    if not kad.started or kad.stopping:
+      return
+
+    case reachability
+    of NetworkReachability.Reachable:
+      discard await kad.changeMode(isServer = true)
+    of NetworkReachability.NotReachable:
+      discard await kad.changeMode(isServer = false)
+    of NetworkReachability.Unknown:
+      discard
+
+  kad.autoModeHandler = Opt.some(handler)
+  handler
+
 method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   if kad.started:
     warn "Kademlia DHT already started"
@@ -487,6 +518,8 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
 
   kad.started = true
   kad.stopping = false
+  if kad.autoModeHandler.isSome():
+    kad.isServer = kad.currentReachability() == NetworkReachability.Reachable
   kad.msgSender.start()
 
   if not kad.config.disableBootstrapping:

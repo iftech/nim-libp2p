@@ -584,23 +584,6 @@ proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
 
-proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
-  ## Handler for ``KadMode.Auto``: the node serves queries while it is
-  ## reachable, and stops serving when it is not. ``Unknown`` keeps the current
-  ## mode, since it means autonat has no verdict yet.
-  proc(
-      reachability: NetworkReachability,
-      confidence: Opt[float],
-      dialBackAddr: Opt[MultiAddress],
-  ) {.async: (raises: [CancelledError]).} =
-    case reachability
-    of NetworkReachability.Reachable:
-      discard await kad.changeMode(isServer = true)
-    of NetworkReachability.NotReachable:
-      discard await kad.changeMode(isServer = false)
-    of NetworkReachability.Unknown:
-      discard
-
 proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if not switch.peerStore.identify.isNil:
     ?switch.tryMount(switch.peerStore.identify)
@@ -638,7 +621,9 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
     if kadInfo.mode == KadMode.Auto:
       var wired = false
       switch.natService().ifValue(nat):
-        wired = nat.addReachabilityHandler(makeKadReachabilityHandler(kad))
+        let current = proc(): NetworkReachability {.gcsafe, raises: [].} =
+          nat.networkReachability()
+        wired = nat.addReachabilityHandler(kad.enableAutoMode(current))
       if not wired:
         warn "Kad-DHT auto mode has no reachability service; it stays a client",
           hint = "configure withNAT reachability or hole-punching"

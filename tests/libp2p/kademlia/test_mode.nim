@@ -5,6 +5,7 @@
 
 import chronos
 import ../../../libp2p/[protocols/kademlia, stream/connection, switch]
+import ../../../libp2p/services/reachabilityobservers
 import ../../tools/[lifecycle, unittest]
 import ./utils
 
@@ -34,6 +35,24 @@ proc dialFindNode(
     return Opt.some(reply)
   except CatchableError:
     return Opt.none(Message)
+
+type FakeReachability = ref object
+  value: NetworkReachability
+
+proc setupAutoKad(
+    source = FakeReachability(value: NetworkReachability.Unknown)
+): KadDHT =
+  let kad = setupKad(isServer = false)
+  discard kad.enableAutoMode(
+    proc(): NetworkReachability {.gcsafe, raises: [].} =
+      source.value
+  )
+  kad
+
+proc verdict(
+    kad: KadDHT, reachability: NetworkReachability
+) {.async: (raises: [CancelledError]).} =
+  await kad.autoModeHandler.get()(reachability, Opt.none(float), Opt.none(MultiAddress))
 
 suite "KadDHT dynamic mode":
   teardown:
@@ -144,3 +163,89 @@ suite "KadDHT dynamic mode":
 
     let reply = Message.decode(await stream.readLp(MaxMsgSize))
     check reply.get().msgType == MessageType.findNode
+
+  asyncTest "auto mode ignores a verdict while stopped":
+    let kad = setupAutoKad()
+
+    await kad.verdict(NetworkReachability.Reachable)
+    check not kad.isServer
+
+    await kad.start()
+    await kad.stop()
+    await kad.verdict(NetworkReachability.Reachable)
+    check not kad.isServer
+
+  asyncTest "auto mode restarts from the current reachability":
+    let source = FakeReachability(value: NetworkReachability.Unknown)
+    let kad = setupAutoKad(source)
+    await kad.start()
+    await kad.verdict(NetworkReachability.Reachable)
+    check kad.isServer
+
+    await kad.stop()
+    await kad.start()
+    check not kad.isServer
+
+    # A Reachable verdict that came while stopped is not sent again.
+    await kad.stop()
+    source.value = NetworkReachability.Reachable
+    await kad.start()
+    check kad.isServer
+
+    await kad.stop()
+    source.value = NetworkReachability.Unknown
+    await kad.start()
+    defer:
+      await kad.stop()
+    check not kad.isServer
+
+    await kad.verdict(NetworkReachability.Unknown)
+    check not kad.isServer
+
+    await kad.verdict(NetworkReachability.Reachable)
+    check kad.isServer
+
+    await kad.verdict(NetworkReachability.NotReachable)
+    check not kad.isServer
+
+  asyncTest "auto mode handler stays subscribed once across restarts":
+    let kad = setupAutoKad()
+    let observers = ReachabilityObservers.new()
+    check observers.add(kad.autoModeHandler.get())
+
+    for _ in 0 ..< 2:
+      await kad.start()
+      await kad.stop()
+      # A resubscribe after a restart matches the stored closure.
+      check not observers.add(kad.autoModeHandler.get())
+    check observers.len() == 1
+
+    await kad.start()
+    defer:
+      await kad.stop()
+    await observers.notify(NetworkReachability.Reachable, Opt.none(float))
+    check kad.isServer
+
+    check observers.remove(kad.autoModeHandler.get())
+    check observers.len() == 0
+
+  asyncTest "enabling auto mode twice keeps one handler":
+    let kad = setupAutoKad()
+    let current = proc(): NetworkReachability {.gcsafe, raises: [].} =
+      NetworkReachability.Reachable
+    let handler = kad.enableAutoMode(current)
+    check handler == kad.autoModeHandler.get()
+
+    await kad.start()
+    defer:
+      await kad.stop()
+    check not kad.isServer
+
+  asyncTest "start keeps a fixed mode":
+    for isServer in [true, false]:
+      let kad = setupKad(isServer = isServer)
+      await kad.start()
+      await kad.stop()
+      await kad.start()
+      check kad.isServer == isServer
+      await kad.stop()
