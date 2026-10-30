@@ -52,7 +52,7 @@ type
     maxTopics*: int = 64
     maxQueued*: int = 5000
     maxQueuedBytes*: int = 4 * 1024 * 1024
-    objectLifetime*: Duration = 5.minutes
+    objectLifetime*: Duration = DefaultObjectLifetime
     defaultTopicConfig*: TopicConfig =
       TopicConfig(publishFanout: 50, forwardFanout: 50, gossipFanout: 50)
     topicWhitelist*: Opt[HashSet[TopicId]]

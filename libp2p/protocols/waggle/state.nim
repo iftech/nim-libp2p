@@ -8,6 +8,8 @@ import chronos
 import ./[shard, messages]
 import ../../peerid
 
+const DefaultObjectLifetime* = 5.minutes
+
 type
   RemoteView = ref object
     lastUsed: uint64
@@ -47,7 +49,9 @@ type
     emit*: bool
     reply*: Opt[Transmission]
 
-proc new*(T: type WaggleState, capacity, maxTopics: int, lifetime = 5.minutes): T =
+proc new*(
+    T: type WaggleState, capacity, maxTopics: int, lifetime = DefaultObjectLifetime
+): T =
   doAssert lifetime > ZeroDuration
   T(capacity: capacity, maxTopics: maxTopics, lifetime: lifetime)
 
@@ -292,14 +296,18 @@ proc peerView*(
     return (false, false)
   return (view.raw.isSome or view.tracked != nil, view.advertised != nil)
 
-proc cachedObjects*(state: WaggleState, topic: seq[byte]): int =
+proc cachedObjects*(state: WaggleState, topic: seq[byte], now = Moment.now()): int =
   let cache = state.topics.lookup(topic).valueOr:
     return 0
+  cache.expire(now, state.lifetime)
   return cache.local.len
 
-proc trackedObjects*(state: WaggleState, topic: seq[byte], connectionId: uint64): int =
+proc trackedObjects*(
+    state: WaggleState, topic: seq[byte], connectionId: uint64, now = Moment.now()
+): int =
   let cache = state.topics.lookup(topic).valueOr:
     return 0
+  cache.expire(now, state.lifetime)
   let views = cache.remote.lookup(connectionId).valueOr:
     return 0
   return views.entries.len

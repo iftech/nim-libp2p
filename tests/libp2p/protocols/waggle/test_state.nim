@@ -172,6 +172,33 @@ suite "Waggle reconciliation state":
     discard state.store(topic, BitShard(id: @[byte 1], have: 1), now + 10.seconds).get()
     check state.prepare(topic, 1, peer, @[byte 1], now = now + 10.seconds).get().isSome
 
+  test "cached object counts expire snapshots on access":
+    let state = WaggleState.new(2, 1, 10.seconds)
+    let now = Moment.now()
+    discard state.store(topic, BitShard(id: @[byte 1], have: 1), now).get()
+    discard state.store(topic, BitShard(id: @[byte 2], have: 1), now + 5.seconds).get()
+    check state.cachedObjects(topic, now + 9.seconds) == 2
+    check state.cachedObjects(topic, now + 10.seconds) == 1
+    check state.cachedObjects(topic, now + 15.seconds) == 0
+
+  test "tracked object counts expire peer views on access":
+    let state = WaggleState.new(2, 1, 10.seconds)
+    let peer = PeerId.random()
+    let now = Moment.now()
+    for id in [1.byte, 2.byte]:
+      discard state
+        .received(
+          topic,
+          1,
+          peer,
+          ObjectPieces(objectId: @[id], piecesMetadata: Opt.some(@[byte 1])),
+          now + (int(id) - 1) * 5.seconds,
+        )
+        .get()
+    check state.trackedObjects(topic, 1, now + 9.seconds) == 2
+    check state.trackedObjects(topic, 1, now + 10.seconds) == 1
+    check state.trackedObjects(topic, 1, now + 15.seconds) == 0
+
   test "removal clears one object's snapshot and views without disturbing another":
     let state = WaggleState.new(2, 1)
     let peer = PeerId.random()
