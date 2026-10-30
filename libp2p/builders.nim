@@ -574,12 +574,20 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
 
   ok(switch)
 
-proc addServices(b: SwitchBuilder, switch: Switch) =
+func relayClient(circuitRelay: Opt[Relay]): RelayClient =
+  circuitRelay.ifValue(relay):
+    if relay of RelayClient:
+      return RelayClient(relay)
+  nil
+
+proc addServices(b: SwitchBuilder, switch: Switch, circuitRelay: Opt[Relay]) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
   b.natConfig.ifValue(natCfg):
-    switch.services.add(NATService.new(natCfg, b.rng, b.natPortMapperFactory))
+    switch.services.add(
+      NATService.new(natCfg, b.rng, b.natPortMapperFactory, circuitRelay.relayClient())
+    )
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
@@ -601,7 +609,9 @@ proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
     of NetworkReachability.Unknown:
       discard
 
-proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
+proc mountProtocols(
+    b: SwitchBuilder, switch: Switch, circuitRelay: Opt[Relay]
+): LPResult[void] =
   if not switch.peerStore.identify.isNil:
     ?switch.tryMount(switch.peerStore.identify)
 
@@ -616,7 +626,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if b.autonatEnabled:
     ?switch.tryMount(Autonat.new(switch))
 
-  b.circuitRelay.ifValue(relay):
+  circuitRelay.ifValue(relay):
     if relay of RelayClient:
       switch.addTransport(RelayTransport.new(RelayClient(relay), switch.muxedUpgrade))
     relay.setup(switch)
@@ -644,10 +654,18 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
           hint = "configure withNAT reachability or hole-punching"
   ok()
 
+proc resolveCircuitRelay(b: SwitchBuilder): Opt[Relay] =
+  b.natConfig.ifValue(natCfg):
+    if natCfg.holePunching.isSome() and b.circuitRelay.isNone():
+      return Opt.some(Relay(RelayClient.new()))
+  b.circuitRelay
+
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
   b.natConfig.ifValue(natCfg):
-    validateNATConfig(natCfg).onErrorRaise(LPError)
-  let switch = b.buildSwitch().valueOrRaise(LPError)
-  b.addServices(switch)
-  b.mountProtocols(switch).onErrorRaise(LPError)
+    validateNATConfig(natCfg, b.circuitRelay).onErrorRaise(LPError)
+  let
+    circuitRelay = b.resolveCircuitRelay()
+    switch = b.buildSwitch().valueOrRaise(LPError)
+  b.addServices(switch, circuitRelay)
+  b.mountProtocols(switch, circuitRelay).onErrorRaise(LPError)
   switch
