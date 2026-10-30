@@ -89,6 +89,30 @@ suite "Connection Manager":
 
     await connMngr.stop()
 
+  asyncTest "get connections for an unknown peer":
+    let connMngr = newMaxTotal()
+
+    check connMngr.getConnections(peerId).isErr()
+
+    await connMngr.stop()
+
+  asyncTest "get connections for a peer":
+    let connMngr = newMaxTotal(maxConnsPerPeer = 2)
+    let muxs = @[makeMuxer(peerId), makeMuxer(peerId, Direction.Out)]
+    let otherPeerId = PeerId.random()
+    let otherMux = makeMuxer(otherPeerId)
+    for mux in muxs & @[otherMux]:
+      check (await connMngr.storeMuxer(mux)).isOk()
+
+    check connMngr.getConnections(peerId).get() == muxs
+    check connMngr.getConnections(otherPeerId).get() == @[otherMux]
+
+    await connMngr.dropPeer(peerId)
+    check connMngr.getConnections(peerId).isErr()
+    check connMngr.getConnections(otherPeerId).get() == @[otherMux]
+
+    await connMngr.stop()
+
   asyncTest "shouldn't allow a closed connection":
     let connMngr = newMaxTotal()
 
