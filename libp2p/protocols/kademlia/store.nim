@@ -6,7 +6,8 @@
 ##
 ## Contract for every backend:
 ## - A read never returns an entry with ``expiresAt <= now``. Provided keys do not expire.
-## - An expired entry never costs capacity. A store refuses a new entry with ``ok(false)``, ``keyFull`` or ``storeFull`` only when its live entries fill the cap.
+## - An expired entry never costs capacity. A store refuses a new value with ``ok(false)`` and a new provider with ``keyFull`` or ``peerFull`` only when live entries fill the cap.
+## - At the total provider cap, ``addProvider`` evicts the provider that expires first. At the provided cap, ``addProvided`` evicts the key provided first.
 ## - ``err`` means the backend failed. The core logs it and treats the call as "not stored" or "not found".
 ## - A ``limit`` below 1 returns no entries.
 ## - A method must not block the chronos event loop. Slow I/O goes through ``await``.
@@ -31,7 +32,8 @@ type
     added
     refreshed ## the provider was already stored for the key; ``expiresAt`` is updated
     keyFull ## the key holds ``maxPerKey`` other live providers
-    storeFull ## the store holds its total cap of live providers
+    peerFull ## the peer holds ``maxPerPeer`` live records
+    storeFull ## the total cap of the store is below 1, so nothing can be evicted
 
   KadStore* = ref object of RootObj
 
@@ -62,11 +64,16 @@ method listValues*(
   raiseAssert "[KadStore.listValues] abstract method not implemented!"
 
 method addProvider*(
-    store: KadStore, key: Key, p: StoredProvider, now: UnixTimestamp, maxPerKey: int
+    store: KadStore,
+    key: Key,
+    p: StoredProvider,
+    now: UnixTimestamp,
+    maxPerKey: int,
+    maxPerPeer = high(int),
 ): Future[LPResult[AddProviderOutcome]] {.
     async: (raises: [CancelledError]), base, gcsafe
 .} =
-  ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey``. No id is ``err``.
+  ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey`` or ``maxPerPeer``. No id is ``err``.
   raiseAssert "[KadStore.addProvider] abstract method not implemented!"
 
 method getProviders*(
@@ -84,7 +91,7 @@ method removeProvider*(
 method addProvided*(
     store: KadStore, key: Key
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]), base, gcsafe.} =
-  ## Idempotent: ``true`` for a key already provided. ``false`` when a new key finds the store full.
+  ## ``true`` for a key already provided, which now counts as provided last. ``false`` only when the cap is below 1.
   raiseAssert "[KadStore.addProvided] abstract method not implemented!"
 
 method delProvided*(
