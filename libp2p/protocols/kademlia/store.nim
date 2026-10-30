@@ -6,7 +6,9 @@
 ##
 ## Contract for every backend:
 ## - A read never returns an entry with ``expiresAt <= now``. Provided keys do not expire.
-## - A full store refuses a new entry with ``ok(false)`` or ``storeFull``.
+## - A full value or provided-key store refuses a new entry with ``ok(false)``.
+## - A full provider store evicts the provider with the lowest ``expiresAt``.
+## - ``getProviders`` returns the providers of a key in no fixed order.
 ## - ``err`` means the backend failed. The core logs it and treats the call as "not stored" or "not found".
 ## - A ``limit`` below 1 returns no entries.
 ## - A method must not block the chronos event loop. Slow I/O goes through ``await``.
@@ -31,7 +33,7 @@ type
     added
     refreshed ## the provider was already stored for the key; ``expiresAt`` is updated
     keyFull ## the key holds ``maxPerKey`` other providers
-    storeFull ## the store holds its total cap
+    storeFull ## the store holds its total cap and has no provider to evict
 
   KadStore* = ref object of RootObj
 
@@ -66,7 +68,8 @@ method addProvider*(
 ): Future[LPResult[AddProviderOutcome]] {.
     async: (raises: [CancelledError]), base, gcsafe
 .} =
-  ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey``. No id is ``err``.
+  ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey`` or the total cap.
+  ## An id that is missing or is not a ``PeerId`` is ``err``.
   raiseAssert "[KadStore.addProvider] abstract method not implemented!"
 
 method getProviders*(

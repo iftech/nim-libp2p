@@ -15,9 +15,14 @@ const
   Later*: UnixTimestamp = Now + 60
   Unlimited* = high(int)
 
-type RemoveCase = object
-  target: Key
-  peerId: PeerId
+type
+  RemoveCase = object
+    target: Key
+    peerId: PeerId
+
+  IdCase = object
+    provider: Peer
+    cause: string
 
 func recordKey*(b: byte): RecordKey =
   RecordKey.init(Key.fromBytes(@[b])).get()
@@ -31,6 +36,9 @@ proc storedValue*(b: byte, expiresAt = Later): StoredValue =
 
 proc storedProvider*(peerId: PeerId, expiresAt = Later): StoredProvider =
   StoredProvider(provider: Peer(id: Opt.some(peerId.getBytes())), expiresAt: expiresAt)
+
+proc sameProviders*(got, want: seq[StoredProvider]): bool =
+  got.len == want.len and want.allIt(it in got)
 
 proc valueKeys(values: seq[StoredValue]): seq[Key] =
   var keys: seq[Key]
@@ -134,114 +142,243 @@ template kadStoreTestSuite*(name: string, factory: untyped) =
   suite name & " providers":
     let key = Key.init([7'u8])
 
+    proc add(
+        store: KadStore,
+        k: Key,
+        peerId: PeerId,
+        expiresAt = Later,
+        maxPerKey = Unlimited,
+    ): Future[AddProviderOutcome] {.async: (raises: [CancelledError]).} =
+      (await store.addProvider(k, storedProvider(peerId, expiresAt), maxPerKey)).get()
+
+    proc providers(
+        store: KadStore, k: Key, now = Now
+    ): Future[seq[StoredProvider]] {.async.} =
+      (await store.getProviders(k, now, Unlimited)).get()
+
     asyncTest "addProvider adds, then refreshes the same peer":
       let store = factory(KadStoreLimits())
       let peerId = PeerId.random()
 
       check:
-        (await store.addProvider(key, storedProvider(peerId), 1)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peerId, Later + 1), 1)).get() ==
-          AddProviderOutcome.refreshed
-        (await store.getProviders(key, Now, Unlimited)).get() ==
-          @[storedProvider(peerId, Later + 1)]
+        (await store.add(key, peerId)) == AddProviderOutcome.added
+        (await store.add(key, peerId, Later + 1)) == AddProviderOutcome.refreshed
+        (await store.providers(key)) == @[storedProvider(peerId, Later + 1)]
 
     asyncTest "a known provider refreshes when the key is full":
       let store = factory(KadStoreLimits())
       let peers = PeerId.random(2)
-      check:
-        (await store.addProvider(key, storedProvider(peers[0]), 2)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[1]), 2)).get() ==
-          AddProviderOutcome.added
+      for peerId in peers:
+        check (await store.add(key, peerId, maxPerKey = 2)) == AddProviderOutcome.added
 
-      check (await store.addProvider(key, storedProvider(peers[0]), 2)).get() ==
-        AddProviderOutcome.refreshed
+      check:
+        (await store.add(key, peers[0], Later + 1, maxPerKey = 2)) ==
+          AddProviderOutcome.refreshed
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[0], Later + 1), storedProvider(peers[1])]
+        )
 
     asyncTest "a new provider gets keyFull at maxPerKey":
       let store = factory(KadStoreLimits())
       let peers = PeerId.random(2)
-      check (await store.addProvider(key, storedProvider(peers[0]), 1)).get() ==
-        AddProviderOutcome.added
+      check (await store.add(key, peers[0], maxPerKey = 1)) == AddProviderOutcome.added
 
       check:
-        (await store.addProvider(key, storedProvider(peers[1]), 1)).get() ==
+        (await store.add(key, peers[1], maxPerKey = 1)) == AddProviderOutcome.keyFull
+        (await store.add(Key.init([8'u8]), peers[1], maxPerKey = 0)) ==
           AddProviderOutcome.keyFull
-        (await store.addProvider(Key.init([8'u8]), storedProvider(peers[1]), 0)).get() ==
-          AddProviderOutcome.keyFull
-        (await store.getProviders(key, Now, Unlimited)).get().len == 1
+        (await store.providers(key)) == @[storedProvider(peers[0])]
 
-    asyncTest "a new provider gets storeFull at the total cap":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(1)))
+    asyncTest "a new provider at the total cap evicts the provider that expires first":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let peers = PeerId.random(3)
+      check:
+        (await store.add(key, peers[0], Later + 1)) == AddProviderOutcome.added
+        (await store.add(key, peers[1], Later)) == AddProviderOutcome.added
+
+      check:
+        (await store.add(Key.init([8'u8]), peers[2], Later + 2)) ==
+          AddProviderOutcome.added
+        (await store.providers(key)) == @[storedProvider(peers[0], Later + 1)]
+        (await store.providers(Key.init([8'u8]))) ==
+          @[storedProvider(peers[2], Later + 2)]
+
+    asyncTest "a refresh moves the provider back in the eviction order":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let peers = PeerId.random(3)
+      check:
+        (await store.add(key, peers[0], Later)) == AddProviderOutcome.added
+        (await store.add(key, peers[1], Later + 1)) == AddProviderOutcome.added
+        (await store.add(key, peers[0], Later + 2)) == AddProviderOutcome.refreshed
+
+      check:
+        (await store.add(key, peers[2], Later + 3)) == AddProviderOutcome.added
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[0], Later + 2), storedProvider(peers[2], Later + 3)]
+        )
+
+    asyncTest "a re-advertisement at the total cap evicts nothing":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
       let peers = PeerId.random(2)
-      check (await store.addProvider(key, storedProvider(peers[0]), Unlimited)).get() ==
-        AddProviderOutcome.added
+      for peerId in peers:
+        check (await store.add(key, peerId)) == AddProviderOutcome.added
 
       check:
-        (await store.addProvider(Key.init([8'u8]), storedProvider(peers[1]), Unlimited)).get() ==
-          AddProviderOutcome.storeFull
-        (await store.addProvider(key, storedProvider(peers[0]), Unlimited)).get() ==
-          AddProviderOutcome.refreshed
+        (await store.add(key, peers[1], Later + 1)) == AddProviderOutcome.refreshed
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[0]), storedProvider(peers[1], Later + 1)]
+        )
 
-    asyncTest "addProvider rejects a provider without an id":
+    asyncTest "a store with a total cap of 0 gives storeFull":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(0)))
+
+      check:
+        (await store.add(key, PeerId.random())) == AddProviderOutcome.storeFull
+        (await store.providers(key)).len == 0
+
+    asyncTest "addProvider rejects a provider without a valid id":
       let store = factory(KadStoreLimits())
-      let res =
-        (await store.addProvider(key, StoredProvider(expiresAt: Later), Unlimited))
-
-      check:
-        res.isErr()
-        res.isOfError("provider without id")
+      let cases = [
+        IdCase(provider: Peer(), cause: "provider without id"),
+        IdCase(provider: Peer(id: Opt.some(@[1'u8])), cause: "invalid provider id"),
+      ]
+      for c in cases:
+        let res = await store.addProvider(
+          key, StoredProvider(provider: c.provider, expiresAt: Later), Unlimited
+        )
+        check:
+          res.isErr()
+          res.isOfError(c.cause)
 
     asyncTest "removeProvider removes only that peer and frees capacity":
       let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
       let peers = PeerId.random(3)
       for peerId in peers[0 .. 1]:
-        check (await store.addProvider(key, storedProvider(peerId), Unlimited)).get() ==
-          AddProviderOutcome.added
+        check (await store.add(key, peerId)) == AddProviderOutcome.added
 
       check (await store.removeProvider(key, peers[0])).isOk()
 
       check:
-        (await store.getProviders(key, Now, Unlimited)).get() ==
-          @[storedProvider(peers[1])]
-        (await store.addProvider(key, storedProvider(peers[2]), Unlimited)).get() ==
-          AddProviderOutcome.added
+        (await store.providers(key)) == @[storedProvider(peers[1])]
+        (await store.add(key, peers[2])) == AddProviderOutcome.added
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[1]), storedProvider(peers[2])]
+        )
 
     asyncTest "getProviders hides expired providers and caps at limit":
       let store = factory(KadStoreLimits())
       let peers = PeerId.random(3)
       check:
-        (
-          await store.addProvider(
-            key, storedProvider(peers[0], expiresAt = Now), Unlimited
-          )
-        ).get() == AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[1]), Unlimited)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[2]), Unlimited)).get() ==
-          AddProviderOutcome.added
+        (await store.add(key, peers[0], expiresAt = Now)) == AddProviderOutcome.added
+        (await store.add(key, peers[1])) == AddProviderOutcome.added
+        (await store.add(key, peers[2])) == AddProviderOutcome.added
 
+      let live = @[storedProvider(peers[1]), storedProvider(peers[2])]
+      let one = (await store.getProviders(key, Now, 1)).get()
       check:
-        (await store.getProviders(key, Now, Unlimited)).get() ==
-          @[storedProvider(peers[1]), storedProvider(peers[2])]
-        (await store.getProviders(key, Now, 1)).get() == @[storedProvider(peers[1])]
+        (await store.providers(key)).sameProviders(live)
+        one.len == 1
+        one[0] in live
         (await store.getProviders(key, Now, 0)).get().len == 0
+        (await store.providers(key, Now - 1)).len == 3
 
     asyncTest "pruneExpired deletes expired providers and frees capacity":
       let store = factory(KadStoreLimits(maxProviders: Opt.some(1)))
       let peers = PeerId.random(2)
-      check (
-        await store.addProvider(
-          key, storedProvider(peers[0], expiresAt = Now), Unlimited
-        )
-      ).get() == AddProviderOutcome.added
+      check (await store.add(key, peers[0], expiresAt = Now)) == AddProviderOutcome.added
 
       check (await store.pruneExpired(Now)).isOk()
 
       check:
-        (await store.getProviders(key, Now - 1, Unlimited)).get().len == 0
-        (await store.addProvider(key, storedProvider(peers[1]), Unlimited)).get() ==
-          AddProviderOutcome.added
+        (await store.providers(key, Now - 1)).len == 0
+        (await store.add(key, peers[1])) == AddProviderOutcome.added
+
+    asyncTest "pruneExpired keeps a provider refreshed past now":
+      let store = factory(KadStoreLimits())
+      let peerId = PeerId.random()
+      check:
+        (await store.add(key, peerId, expiresAt = Now)) == AddProviderOutcome.added
+        (await store.add(key, peerId)) == AddProviderOutcome.refreshed
+
+      check (await store.pruneExpired(Now)).isOk()
+
+      check (await store.providers(key)) == @[storedProvider(peerId)]
+
+    asyncTest "a refresh to an earlier expiry moves the provider forward in the eviction order":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let peers = PeerId.random(3)
+      check:
+        (await store.add(key, peers[0], Later + 5)) == AddProviderOutcome.added
+        (await store.add(key, peers[1], Later + 1)) == AddProviderOutcome.added
+        (await store.add(key, peers[0], Later)) == AddProviderOutcome.refreshed
+
+      check:
+        (await store.add(key, peers[2], Later + 9)) == AddProviderOutcome.added
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[1], Later + 1), storedProvider(peers[2], Later + 9)]
+        )
+
+    asyncTest "many refreshes keep the eviction order and the pruning exact":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let peers = PeerId.random(5)
+      check:
+        (await store.add(key, peers[0], Later)) == AddProviderOutcome.added
+        (await store.add(key, peers[1], Later + 1)) == AddProviderOutcome.added
+      for i in 10 .. 20:
+        check (await store.add(key, peers[1], Later + i)) == AddProviderOutcome.refreshed
+
+      check:
+        (await store.add(key, peers[2], Later + 30)) == AddProviderOutcome.added
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[1], Later + 20), storedProvider(peers[2], Later + 30)]
+        )
+
+      check (await store.pruneExpired(Later + 20)).isOk()
+
+      check:
+        (await store.providers(key, Now)) == @[storedProvider(peers[2], Later + 30)]
+        (await store.add(key, peers[3], Later + 31)) == AddProviderOutcome.added
+        (await store.providers(key, Now)).sameProviders(
+          @[storedProvider(peers[2], Later + 30), storedProvider(peers[3], Later + 31)]
+        )
+        (await store.add(key, peers[4], Later + 32)) == AddProviderOutcome.added
+        (await store.providers(key, Now)).sameProviders(
+          @[storedProvider(peers[3], Later + 31), storedProvider(peers[4], Later + 32)]
+        )
+
+    asyncTest "removeProvider of an evicted provider does not free capacity":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let other = Key.init([8'u8])
+      let peers = PeerId.random(4)
+      check:
+        (await store.add(key, peers[0], Later)) == AddProviderOutcome.added
+        (await store.add(key, peers[1], Later + 1)) == AddProviderOutcome.added
+        (await store.add(other, peers[2], Later + 2)) == AddProviderOutcome.added
+      check (await store.removeProvider(key, peers[0])).isOk()
+
+      check:
+        (await store.add(other, peers[3], Later + 3)) == AddProviderOutcome.added
+        (await store.providers(key)).len == 0
+        (await store.providers(other)).sameProviders(
+          @[storedProvider(peers[2], Later + 2), storedProvider(peers[3], Later + 3)]
+        )
+
+    asyncTest "pruneExpired after removeProvider does not free capacity twice":
+      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let peers = PeerId.random(4)
+      check:
+        (await store.add(key, peers[0], Now)) == AddProviderOutcome.added
+        (await store.add(key, peers[1], Later)) == AddProviderOutcome.added
+      check:
+        (await store.removeProvider(key, peers[0])).isOk()
+        (await store.pruneExpired(Now)).isOk()
+        (await store.add(key, peers[2], Later + 1)) == AddProviderOutcome.added
+
+      check:
+        (await store.add(key, peers[3], Later + 2)) == AddProviderOutcome.added
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[2], Later + 1), storedProvider(peers[3], Later + 2)]
+        )
 
     asyncTest "removeProvider of an unknown key or peer leaves the count intact":
       let peers = PeerId.random(2)
@@ -251,61 +388,54 @@ template kadStoreTestSuite*(name: string, factory: untyped) =
       ]
       for c in cases:
         let store = factory(KadStoreLimits(maxProviders: Opt.some(1)))
-        check (await store.addProvider(key, storedProvider(peers[0]), Unlimited)).get() ==
-          AddProviderOutcome.added
+        check (await store.add(key, peers[0])) == AddProviderOutcome.added
 
         check:
           (await store.removeProvider(c.target, c.peerId)).isOk()
-          (await store.getProviders(key, Now, Unlimited)).get() ==
-            @[storedProvider(peers[0])]
-          (
-            await store.addProvider(
-              Key.init([9'u8]), storedProvider(peers[1]), Unlimited
-            )
-          ).get() == AddProviderOutcome.storeFull
+          (await store.providers(key)) == @[storedProvider(peers[0])]
+          (await store.add(Key.init([9'u8]), peers[1])) == AddProviderOutcome.added
+          (await store.providers(key)).len == 0
 
     asyncTest "pruneExpired keeps the live providers of a key and counts them exactly":
       let store = factory(KadStoreLimits(maxProviders: Opt.some(3)))
       let peers = PeerId.random(5)
       check:
-        (
-          await store.addProvider(
-            key, storedProvider(peers[0], expiresAt = Now), Unlimited
-          )
-        ).get() == AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[1]), Unlimited)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[2]), Unlimited)).get() ==
-          AddProviderOutcome.added
+        (await store.add(key, peers[0], expiresAt = Now)) == AddProviderOutcome.added
+        (await store.add(key, peers[1])) == AddProviderOutcome.added
+        (await store.add(key, peers[2], Later + 1)) == AddProviderOutcome.added
 
       check (await store.pruneExpired(Now)).isOk()
 
       check:
-        (await store.getProviders(key, Now - 1, Unlimited)).get() ==
-          @[storedProvider(peers[1]), storedProvider(peers[2])]
-        (await store.addProvider(key, storedProvider(peers[3]), Unlimited)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[4]), Unlimited)).get() ==
-          AddProviderOutcome.storeFull
+        (await store.providers(key, Now - 1)).sameProviders(
+          @[storedProvider(peers[1]), storedProvider(peers[2], Later + 1)]
+        )
+        (await store.add(key, peers[3], Later + 1)) == AddProviderOutcome.added
+        (await store.providers(key)).len == 3
+        (await store.add(key, peers[4], Later + 1)) == AddProviderOutcome.added
+        (await store.providers(key)).sameProviders(
+          @[
+            storedProvider(peers[2], Later + 1),
+            storedProvider(peers[3], Later + 1),
+            storedProvider(peers[4], Later + 1),
+          ]
+        )
 
-    asyncTest "a refreshed provider at storeFull keeps the count unchanged":
+    asyncTest "a refreshed provider at the total cap keeps the count unchanged":
       let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
-      let peers = PeerId.random(4)
+      let peers = PeerId.random(3)
       check:
-        (await store.addProvider(key, storedProvider(peers[0]), Unlimited)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[1]), Unlimited)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[0], Later + 1), Unlimited)).get() ==
-          AddProviderOutcome.refreshed
+        (await store.add(key, peers[0])) == AddProviderOutcome.added
+        (await store.add(key, peers[1])) == AddProviderOutcome.added
+        (await store.add(key, peers[0], Later + 1)) == AddProviderOutcome.refreshed
 
       check (await store.removeProvider(key, peers[0])).isOk()
 
       check:
-        (await store.addProvider(key, storedProvider(peers[2]), Unlimited)).get() ==
-          AddProviderOutcome.added
-        (await store.addProvider(key, storedProvider(peers[3]), Unlimited)).get() ==
-          AddProviderOutcome.storeFull
+        (await store.add(key, peers[2])) == AddProviderOutcome.added
+        (await store.providers(key)).sameProviders(
+          @[storedProvider(peers[1]), storedProvider(peers[2])]
+        )
 
   suite name & " provided keys":
     asyncTest "addProvided is idempotent and refuses a new key when full":
