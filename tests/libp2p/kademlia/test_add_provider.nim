@@ -10,35 +10,16 @@ import
 import ../../tools/[lifecycle, topology, unittest, multiaddress, metrics_utils]
 import ./[mock_kademlia, utils]
 
-proc isAtMaxCapacity(providerRecords: ProviderRecords): bool =
-  providerRecords.len == providerRecords.capacity
-
-proc isAtMaxCapacity(providedKeys: ProvidedKeys): bool =
-  providedKeys.len == providedKeys.capacity
-
-proc `==`(pr: ProviderRecords, expected: openArray[ProviderRecord]): bool =
-  pr.len == expected.len and (0 ..< pr.len).allIt(pr[it] == expected[it])
-
 proc setupOptimisticHub(): seq[KadDHT] =
   var cfg = testKadConfig(replication = 2, beta = 1)
   cfg.optimisticProvide = true
   (0 ..< 6).mapIt(setupKad(cfg))
 
-proc backdateExpiry(records: ProviderRecords) =
-  ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
-  var aged: seq[ProviderRecord]
-  while records.len > 0:
-    var record = records.pop()
-    record.expiresAt -= 1
-    aged.add(record)
-  for record in aged:
-    records.push(record)
-
 proc makeProvidedCid(seed: byte): Cid =
   Cid.init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[seed]).get()).get()
 
 proc holdsProviderRecord(kad: KadDHT): bool =
-  kad.providerManager.providerRecords.len == 1
+  kad.providerCount() == 1
 
 proc mineKeyWithTwoReceiversWithin(
     receivers: seq[KadDHT], maxDistance: float64, hasher: Opt[XorDHasher]
@@ -66,15 +47,14 @@ suite "KadDHT - Add Provider":
     let key = kads[0].rtable.selfId
 
     # ensure providermanager is empty
-    check kads[0].providerManager.providerRecords.len == 0
+    check kads[0].providerCount() == 0
 
     await kads[1].addProvider(key.toCid())
 
     # kads[0] has kads[1] in its providermanager after adding provider
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.id ==
-        kads[1].rtable.selfId.toBytes()
+      kads[0].providerCount() == 1
+      kads[0].records()[0].provider.id == kads[1].rtable.selfId.toBytes()
 
   asyncTest "Provider expired":
     let kads = setupKadSwitches(2)
@@ -87,39 +67,39 @@ suite "KadDHT - Add Provider":
       key2 = kads[1].rtable.selfId
 
     # ensure providermanager is empty
-    check kads[0].providerManager.providerRecords.len == 0
+    check kads[0].providerCount() == 0
 
     await kads[1].addProvider(key1.toCid())
     await kads[1].addProvider(key2.toCid())
 
     # provider records added
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 2
+      kads[0].providerCount() == 2
 
     # provider records expired and evicted after expiration time
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 0
+      kads[0].providerCount() == 0
 
   asyncTest "Record with a past expiry is pruned":
     let kad = setupKad()
     startAndDeferStop(@[kad])
     let
       now = nowUnixSeconds()
-      expired = ProviderRecord(
-        provider: Peer(id: PeerId.random().getBytes()),
-        expiresAt: now - 1,
-        key: kad.rtable.selfId,
+      expired = StoredProvider(
+        provider: Peer(id: PeerId.random().getBytes()), expiresAt: now - 1
       )
-      live = ProviderRecord(
+      live = StoredProvider(
         provider: Peer(id: PeerId.random().getBytes()),
         expiresAt: UnixTimestamp.after(1.hours),
-        key: kad.rtable.selfId,
       )
-    kad.providerManager.providerRecords.push(expired)
-    kad.providerManager.providerRecords.push(live)
+    check:
+      (await kad.store.addProvider(kad.rtable.selfId, expired, now, high(int))).get() ==
+        AddProviderOutcome.added
+      (await kad.store.addProvider(kad.rtable.selfId, live, now, high(int))).get() ==
+        AddProviderOutcome.added
 
     checkUntilTimeout:
-      kad.providerManager.providerRecords == [live]
+      kad.records() == @[live]
 
   asyncTest "Adding providers again refreshes expiration time":
     let kads = setupKadSwitches(2)
@@ -132,27 +112,27 @@ suite "KadDHT - Add Provider":
       key2 = kads[1].rtable.selfId
 
     # ensure providermanager is empty
-    check kads[0].providerManager.providerRecords.len == 0
+    check kads[0].providerCount() == 0
 
     await kads[1].addProvider(key1.toCid())
     await kads[1].addProvider(key2.toCid())
 
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 2
+      kads[0].providerCount() == 2
 
-    kads[0].providerManager.providerRecords.backdateExpiry()
+    kads[0].backdateExpiry()
     let
-      originalExpiresAt1 = kads[0].providerManager.providerRecords[0].expiresAt
-      originalExpiresAt2 = kads[0].providerManager.providerRecords[1].expiresAt
+      originalExpiresAt1 = kads[0].records()[0].expiresAt
+      originalExpiresAt2 = kads[0].records()[1].expiresAt
 
     # refresh providers
     await kads[1].addProvider(key1.toCid())
     await kads[1].addProvider(key2.toCid())
 
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 2
-      kads[0].providerManager.providerRecords[0].expiresAt > originalExpiresAt1
-      kads[0].providerManager.providerRecords[1].expiresAt > originalExpiresAt2
+      kads[0].providerCount() == 2
+      kads[0].records()[0].expiresAt > originalExpiresAt1
+      kads[0].records()[1].expiresAt > originalExpiresAt2
 
   asyncTest "Start/stop providing":
     let kads = setupKadSwitches(2, republishProvidedKeysInterval = 2.secs)
@@ -170,64 +150,58 @@ suite "KadDHT - Add Provider":
     await kads[0].addProvider(key2.toCid())
 
     checkUntilTimeout:
-      kads[1].providerManager.providerRecords.len == 2
-      kads[1].providerManager.knownKeys.len == 2
-      kads[0].providerManager.providedKeys.len == 1
+      kads[1].providerCount() == 2
+      kads[1].providerKeyCount() == 2
+      kads[0].providedCount() == 1
 
     # after the expiration time only key2 expired
     checkUntilTimeout:
-      kads[1].providerManager.providerRecords.len == 1
-      kads[1].providerManager.knownKeys.len == 1
-      kads[0].providerManager.providedKeys.len == 1
+      kads[1].providerCount() == 1
+      kads[1].providerKeyCount() == 1
+      kads[0].providedCount() == 1
 
     # stop providing key
-    kads[0].stopProviding(key1.toCid())
+    await kads[0].stopProviding(key1.toCid())
 
     checkUntilTimeout:
-      kads[1].providerManager.providerRecords.len == 0
-      kads[1].providerManager.knownKeys.len == 0
-      kads[0].providerManager.providedKeys.len == 0
+      kads[1].providerCount() == 0
+      kads[1].providerKeyCount() == 0
+      kads[0].providedCount() == 0
 
   asyncTest "Refreshing a provided key at capacity preserves other keys":
     let kad = setupKad()
     startAndDeferStop(@[kad])
-    let keys = kad.providerManager.providedKeys
-    keys.capacity = 2
+    kad.store = MemoryKadStore.new(KadStoreLimits(maxProvided: Opt.some(2)))
     let
       first = makeProvidedCid(1)
       second = makeProvidedCid(2)
-    let now = nowUnixSeconds()
-    keys.provided[first.toKey()] = now - 2
-    keys.provided[second.toKey()] = now - 1
+    await kad.startProviding(first)
+    await kad.startProviding(second)
 
     await kad.startProviding(second)
 
     check:
-      keys.len == 2
-      keys.hasKey(first.toKey())
-      keys.hasKey(second.toKey())
+      kad.providedCount() == 2
+      kad.hasProvidedKey(first.toKey())
+      kad.hasProvidedKey(second.toKey())
 
-  asyncTest "Providing a new key at capacity evicts a key with a current or future timestamp":
+  asyncTest "Providing a new key at capacity evicts the key provided first":
     let kad = setupKad()
     startAndDeferStop(@[kad])
-    let keys = kad.providerManager.providedKeys
-    keys.capacity = 2
+    kad.store = MemoryKadStore.new(KadStoreLimits(maxProvided: Opt.some(2)))
     let
       first = makeProvidedCid(1)
       second = makeProvidedCid(2)
       third = makeProvidedCid(3)
-    for offset in [0.seconds, 1.hours]:
-      keys.provided.clear()
-      let providedAt = UnixTimestamp.after(offset)
-      keys.provided[first.toKey()] = providedAt
-      keys.provided[second.toKey()] = providedAt
+    await kad.startProviding(first)
+    await kad.startProviding(second)
 
-      await kad.startProviding(third)
+    await kad.startProviding(third)
 
-      check:
-        keys.len == keys.capacity
-        not keys.hasKey(first.toKey())
-        keys.hasKey(third.toKey())
+    check:
+      kad.providedCount() == 2
+      not kad.hasProvidedKey(first.toKey())
+      kad.hasProvidedKey(third.toKey())
 
   asyncTest "Provider limits":
     let kads = setupKadSwitches(2, republishProvidedKeysInterval = chronos.hours(1))
@@ -243,43 +217,42 @@ suite "KadDHT - Add Provider":
       mhash3 = MultiHash.digest("sha2-256", @[1.byte, 2, 3]).get()
       cid3 = Cid.init(CIDv1, multiCodec("raw"), mhash3).get()
 
-    kads[0].providerManager.providedKeys.capacity = 2 # max keys node can store
-    kads[1].providerManager.providerRecords.capacity = 1
-      # max provider records node stores from others
+    kads[0].store = MemoryKadStore.new(KadStoreLimits(maxProvided: Opt.some(2)))
+    kads[1].store = MemoryKadStore.new(KadStoreLimits(maxProviders: Opt.some(1)))
 
     await kads[0].startProviding(cid1)
 
     checkUntilTimeout:
-      kads[0].providerManager.providedKeys.hasKey(cid1.toKey())
-      kads[0].providerManager.providedKeys.len == 1
-      kads[1].providerManager.knownKeys.hasKey(cid1.toKey())
-      kads[1].providerManager.providerRecords.isAtMaxCapacity()
+      kads[0].hasProvidedKey(cid1.toKey())
+      kads[0].providedCount() == 1
+      kads[1].hasProviderKey(cid1.toKey())
+      kads[1].providerCount() == 1
 
     await kads[0].startProviding(cid2)
 
     checkUntilTimeout:
       # kads[0] (sender): capacity=2, so both cid1 and cid2 fit
-      kads[0].providerManager.providedKeys.hasKey(cid1.toKey())
-      kads[0].providerManager.providedKeys.hasKey(cid2.toKey())
-      kads[0].providerManager.providedKeys.isAtMaxCapacity()
+      kads[0].hasProvidedKey(cid1.toKey())
+      kads[0].hasProvidedKey(cid2.toKey())
+      kads[0].providedCount() == 2
       # kads[1] (receiver): capacity=1, cid1 evicted, only cid2 remains
-      not kads[1].providerManager.knownKeys.hasKey(cid1.toKey())
-      kads[1].providerManager.knownKeys.hasKey(cid2.toKey())
-      kads[1].providerManager.providerRecords.isAtMaxCapacity()
+      not kads[1].hasProviderKey(cid1.toKey())
+      kads[1].hasProviderKey(cid2.toKey())
+      kads[1].providerCount() == 1
 
     await kads[0].startProviding(cid3)
 
     checkUntilTimeout:
       # kads[0] (sender): cid1 (oldest) evicted, cid2 and cid3 remain
-      not kads[0].providerManager.providedKeys.hasKey(cid1.toKey())
-      kads[0].providerManager.providedKeys.hasKey(cid2.toKey())
-      kads[0].providerManager.providedKeys.hasKey(cid3.toKey())
-      kads[0].providerManager.providedKeys.isAtMaxCapacity()
+      not kads[0].hasProvidedKey(cid1.toKey())
+      kads[0].hasProvidedKey(cid2.toKey())
+      kads[0].hasProvidedKey(cid3.toKey())
+      kads[0].providedCount() == 2
       # kads[1] (receiver): capacity=1, cid2 evicted, only cid3 remains
-      not kads[1].providerManager.knownKeys.hasKey(cid1.toKey())
-      not kads[1].providerManager.knownKeys.hasKey(cid2.toKey())
-      kads[1].providerManager.knownKeys.hasKey(cid3.toKey())
-      kads[1].providerManager.providerRecords.isAtMaxCapacity()
+      not kads[1].hasProviderKey(cid1.toKey())
+      not kads[1].hasProviderKey(cid2.toKey())
+      kads[1].hasProviderKey(cid3.toKey())
+      kads[1].providerCount() == 1
 
   asyncTest "Add provider accepts matching PeerID and rejects mismatched PeerID":
     # Setup sender and imposter KadDHT instances
@@ -300,7 +273,7 @@ suite "KadDHT - Add Provider":
       targetKey = senderKad.rtable.selfId
       imposterPeer = imposterKad.switch.peerInfo.toPeer() # Invalid: doesn't match sender
 
-    check receiverKad.providerManager.providerRecords.len == 0
+    check receiverKad.providerCount() == 0
 
     # Inject a custom message with an imposter peer
     receiverKad.handleAddProviderMessage = Opt.some(
@@ -312,16 +285,15 @@ suite "KadDHT - Add Provider":
 
     # Verify imposter provider was filtered out
     await sleepAsync(200.milliseconds)
-    check receiverKad.providerManager.providerRecords.len == 0
+    check receiverKad.providerCount() == 0
 
     # Verify valid provider is stored
     receiverKad.handleAddProviderMessage = Opt.none(Message)
     await senderKad.addProvider(targetKey.toCid())
 
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.providerRecords[0].provider.id ==
-        senderKad.switch.peerInfo.peerId.getBytes()
+      receiverKad.providerCount() == 1
+      receiverKad.records()[0].provider.id == senderKad.switch.peerInfo.peerId.getBytes()
 
   asyncTest "Add provider accepts a non-multihash key within length bound":
     # Interop parity: go/js/py/dotnet advertise raw, non-multihash provider keys
@@ -333,7 +305,7 @@ suite "KadDHT - Add Provider":
 
     await connect(senderKad, receiverKad)
 
-    check receiverKad.providerManager.providerRecords.len == 0
+    check receiverKad.providerCount() == 0
 
     let keyBytes = "interop-test-key-0123".toBytes()
     check not MultiHash.validate(keyBytes) # sanity: not a valid multihash
@@ -348,8 +320,8 @@ suite "KadDHT - Add Provider":
     await senderKad.addProvider(senderKad.rtable.selfId.toCid())
 
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.knownKeys.hasKey(Key.fromBytes(keyBytes))
+      receiverKad.providerCount() == 1
+      receiverKad.hasProviderKey(Key.fromBytes(keyBytes))
 
   asyncTest "Add provider rejects an empty key":
     let kads = setupKadSwitches(1)
@@ -371,7 +343,7 @@ suite "KadDHT - Add Provider":
 
     # Empty key is out of bounds, record must not be stored
     await sleepAsync(200.milliseconds) # sleep needed for negative assertion
-    check receiverKad.providerManager.providerRecords.len == 0
+    check receiverKad.providerCount() == 0
 
   asyncTest "Add provider rejects a key exceeding the length bound":
     let kads = setupKadSwitches(1)
@@ -393,7 +365,7 @@ suite "KadDHT - Add Provider":
 
     # Over-size key is out of bounds, record must not be stored
     await sleepAsync(200.milliseconds) # sleep needed for negative assertion
-    check receiverKad.providerManager.providerRecords.len == 0
+    check receiverKad.providerCount() == 0
 
   asyncTest "Add provider with CID key extracts multihash":
     let kads = setupKadSwitches(2)
@@ -414,29 +386,28 @@ suite "KadDHT - Add Provider":
       cidDagPb.toKey() == cidRaw.toKey() # Same extracted key
       cidDagPb.toKey() == expectedKey
 
-    check kads[0].providerManager.providerRecords.len == 0
+    check kads[0].providerCount() == 0
 
     # Add provider using CIDv1 dag-pb
     await kads[1].addProvider(cidDagPb)
 
     # Provider record should be stored with multihash as key
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].key == expectedKey
-      kads[0].providerManager.providerRecords[0].provider.id ==
-        kads[1].rtable.selfId.toBytes()
+      kads[0].providerCount() == 1
+      kads[0].hasProviderKey(expectedKey)
+      kads[0].records()[0].provider.id == kads[1].rtable.selfId.toBytes()
 
-    kads[0].providerManager.providerRecords.backdateExpiry()
-    let originalExpiresAt = kads[0].providerManager.providerRecords[0].expiresAt
+    kads[0].backdateExpiry()
+    let originalExpiresAt = kads[0].records()[0].expiresAt
 
     # Add provider using CIDv1 raw with same multihash - should update same key
     await kads[1].addProvider(cidRaw)
 
     # Should still have one record (same key) with refreshed expiration
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].key == expectedKey
-      kads[0].providerManager.providerRecords[0].expiresAt > originalExpiresAt
+      kads[0].providerCount() == 1
+      kads[0].hasProviderKey(expectedKey)
+      kads[0].records()[0].expiresAt > originalExpiresAt
 
   asyncTest "Multiple providers for same CID":
     let kads = setupKadSwitches(3)
@@ -447,22 +418,22 @@ suite "KadDHT - Add Provider":
 
     let targetCid = kads[0].rtable.selfId.toCid()
 
-    check kads[0].providerManager.providerRecords.len == 0
+    check kads[0].providerCount() == 0
 
     # First provider announces
     await kads[1].addProvider(targetCid)
 
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 1
+      kads[0].providerCount() == 1
 
     # Second provider announces same CID
     await kads[2].addProvider(targetCid)
 
     # Both providers should be stored
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 2
+      kads[0].providerCount() == 2
 
-    let providers = kads[0].providerManager.knownKeys[targetCid.toKey()]
+    let providers = kads[0].providersOf(targetCid.toKey())
     check:
       providers.len == 2
       kads[1].rtable.selfId in providers.mapIt(it.id.get())
@@ -477,7 +448,7 @@ suite "KadDHT - Add Provider":
 
     await connect(senderKad, receiverKad)
 
-    check receiverKad.providerManager.providerRecords.len == 0
+    check receiverKad.providerCount() == 0
 
     # Inject message with provider that has no addresses
     let
@@ -499,10 +470,9 @@ suite "KadDHT - Add Provider":
 
     # Provider should be stored even without addresses
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.providerRecords[0].provider.id ==
-        senderKad.switch.peerInfo.peerId.getBytes()
-      receiverKad.providerManager.providerRecords[0].provider.addrs.len == 0
+      receiverKad.providerCount() == 1
+      receiverKad.records()[0].provider.id == senderKad.switch.peerInfo.peerId.getBytes()
+      receiverKad.records()[0].provider.addrs.len == 0
 
   asyncTest "Add provider keeps at most MaxProviderAddrs short addresses":
     let kads = setupKadSwitches(2)
@@ -534,9 +504,8 @@ suite "KadDHT - Add Provider":
     )
 
     check:
-      kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.addrs ==
-        shortAddrs[0 ..< MaxProviderAddrs]
+      kads[0].providerCount() == 1
+      kads[0].records()[0].provider.addrs == shortAddrs[0 ..< MaxProviderAddrs]
 
   asyncTest "Add provider includes local multiaddresses":
     let kads = setupKadSwitches(2)
@@ -550,15 +519,15 @@ suite "KadDHT - Add Provider":
     kads[1].switch.peerInfo.addrs.add(ma("/ip4/192.168.1.100/tcp/4001"))
     kads[1].switch.peerInfo.addrs.add(ma("/ip6/::1/tcp/4001"))
 
-    check kads[0].providerManager.providerRecords.len == 0
+    check kads[0].providerCount() == 0
 
     await kads[1].addProvider(key.toCid())
 
     # Verify provider record includes sender's multiaddresses
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 1
+      kads[0].providerCount() == 1
 
-    let storedProvider = kads[0].providerManager.providerRecords[0].provider
+    let storedProvider = kads[0].records()[0].provider
     check:
       storedProvider.id == kads[1].rtable.selfId.toBytes()
       storedProvider.addrs == kads[1].switch.peerInfo.addrs
@@ -580,9 +549,8 @@ suite "KadDHT - Add Provider":
 
     # Verify provider was stored at the successful receiver
     checkUntilTimeout:
-      kads[1].providerManager.providerRecords.len == 1
-      kads[1].providerManager.providerRecords[0].provider.id ==
-        kads[0].rtable.selfId.toBytes()
+      kads[1].providerCount() == 1
+      kads[1].records()[0].provider.id == kads[0].rtable.selfId.toBytes()
 
   template optimisticProvideStores(seedEstimate: bool) =
     ## Without a seeded estimate `addProvider` takes the classic path, with one
@@ -601,9 +569,8 @@ suite "KadDHT - Add Provider":
     await kads[1].addProvider(kads[0].rtable.selfId.toCid())
 
     checkUntilTimeout:
-      kads[0].providerManager.providerRecords.len == 1
-      kads[0].providerManager.providerRecords[0].provider.id ==
-        kads[1].rtable.selfId.toBytes()
+      kads[0].providerCount() == 1
+      kads[0].records()[0].provider.id == kads[1].rtable.selfId.toBytes()
 
   asyncTest "Optimistic provider RPCs belong to the DHT before the lookup returns":
     var cfg = testKadConfig(timeout = 3.seconds, providerRejection = true)
@@ -671,19 +638,19 @@ suite "KadDHT - Republish By Keyspace Region":
   teardown:
     checkTrackers()
 
-  proc provideWithoutAnnouncing(kad: KadDHT, count: int): seq[Key] =
+  proc provideWithoutAnnouncing(kad: KadDHT, count: int): Future[seq[Key]] {.async.} =
     ## Seed the store directly, so only the republish loop advertises the keys.
     let keys = Key.makeKeys(count)
     for key in keys:
-      kad.providerManager.providedKeys.provided[key] = nowUnixSeconds()
+      check (await kad.store.addProvided(key)).get()
     keys
 
   asyncTest "Provided keys are grouped into keyspace regions":
     let kad = setupKad(testKadConfig(republishRegionBits = Opt.some(1)))
     startAndDeferStop(@[kad])
 
-    let keys = kad.provideWithoutAnnouncing(8)
-    let regions = kad.providedKeyRegions()
+    let keys = await kad.provideWithoutAnnouncing(8)
+    let regions = (await kad.providedKeyRegions())
     let hasher = kad.rtable.config.hasher
 
     check:
@@ -703,8 +670,8 @@ suite "KadDHT - Republish By Keyspace Region":
 
     check kad.rtable.regionBits().isNone()
 
-    let keys = kad.provideWithoutAnnouncing(4)
-    let regions = kad.providedKeyRegions()
+    let keys = await kad.provideWithoutAnnouncing(4)
+    let regions = (await kad.providedKeyRegions())
 
     check:
       regions.len == keys.len
@@ -721,12 +688,12 @@ suite "KadDHT - Republish By Keyspace Region":
     startAndDeferStop(@[senderKad, receiverKad])
     await connect(senderKad, receiverKad)
 
-    let keys = senderKad.provideWithoutAnnouncing(5)
-    check senderKad.providedKeyRegions().len == 1
+    let keys = await senderKad.provideWithoutAnnouncing(5)
+    check (await senderKad.providedKeyRegions()).len == 1
 
     checkUntilTimeout:
-      receiverKad.providerManager.knownKeys.len == keys.len
-      keys.allIt(receiverKad.providerManager.knownKeys.hasKey(it))
+      receiverKad.providerKeyCount() == keys.len
+      keys.allIt(receiverKad.hasProviderKey(it))
 
 suite "KadDHT - ADD_PROVIDER Rejection":
   teardown:
@@ -744,12 +711,12 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     await connect(senderKad, receiverKad)
 
     let key = senderKad.rtable.selfId
-    check receiverKad.providerManager.providerRecords.len == 0
+    check receiverKad.providerCount() == 0
 
     # First ADD_PROVIDER: receiver has 0 providers for key → accepted
     await senderKad.addProvider(key.toCid())
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
+      receiverKad.providerCount() == 1
 
     # Now add a second sender and have it try to advertise the same key
     let sender2Kad = setupKad(testKadConfig(providerRejection = true))
@@ -777,16 +744,16 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     let key = senderKad.rtable.selfId
     await senderKad.addProvider(key.toCid())
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
+      receiverKad.providerCount() == 1
 
-    receiverKad.providerManager.providerRecords.backdateExpiry()
-    let originalExpiry = receiverKad.providerManager.providerRecords[0].expiresAt
+    receiverKad.backdateExpiry()
+    let originalExpiry = receiverKad.records()[0].expiresAt
 
     # Same sender re-advertises; knownKeys count stays ≤ maxProvidersPerKey
     await senderKad.addProvider(key.toCid())
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.providerRecords[0].expiresAt > originalExpiry
+      receiverKad.providerCount() == 1
+      receiverKad.records()[0].expiresAt > originalExpiry
 
   asyncTest "Spillover: stores at farther node when closest node is full":
     # Topology: sender → close (full for key) and far (empty).
@@ -811,24 +778,24 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     # Directly inject a record into closeKad to trigger rejection without
     # involving an extra sender (which would also discover and fill farKad).
     let existingPeer = Peer(id: PeerId.random().getBytes())
-    closeKad.providerManager.knownKeys[key] = initHashSet[Provider]()
-    closeKad.providerManager.knownKeys[key].incl(existingPeer)
-    closeKad.providerManager.providerRecords.push(
-      ProviderRecord(
-        provider: existingPeer, expiresAt: UnixTimestamp.after(1.hours), key: key
+    check (
+      await closeKad.store.addProvider(
+        key,
+        StoredProvider(provider: existingPeer, expiresAt: UnixTimestamp.after(1.hours)),
+        nowUnixSeconds(),
+        high(int),
       )
-    )
-    check closeKad.providerManager.providerRecords.len == 1
-    check farKad.providerManager.providerRecords.len == 0
+    ).get() == AddProviderOutcome.added
+    check closeKad.providerCount() == 1
+    check farKad.providerCount() == 0
 
     # senderKad advertises; closeKad rejects (maxProvidersPerKey=1, already full),
     # so senderKad spills over to farKad which accepts.
     await senderKad.addProvider(key.toCid())
 
     checkUntilTimeout:
-      farKad.providerManager.providerRecords.len == 1
-      farKad.providerManager.providerRecords[0].provider.id ==
-        senderKad.switch.peerInfo.peerId.getBytes()
+      farKad.providerCount() == 1
+      farKad.records()[0].provider.id == senderKad.switch.peerInfo.peerId.getBytes()
 
   asyncTest "Normal replication still works when all nodes accept":
     # With unlimited capacity both discovered peers get the record via normal replication.
@@ -843,14 +810,14 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     let key = senderKad.rtable.selfId
 
-    check nodeA.providerManager.providerRecords.len == 0
-    check nodeB.providerManager.providerRecords.len == 0
+    check nodeA.providerCount() == 0
+    check nodeB.providerCount() == 0
 
     await senderKad.addProvider(key.toCid())
 
     checkUntilTimeout:
-      nodeA.providerManager.providerRecords.len == 1
-      nodeB.providerManager.providerRecords.len == 1
+      nodeA.providerCount() == 1
+      nodeB.providerCount() == 1
 
   asyncTest "providerRejection=false: receiver enforces limit silently":
     # The receiver enforces ``maxProvidersPerKey`` even with rejection disabled,
@@ -870,7 +837,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     let key = senderKad.rtable.selfId
     await senderKad.addProvider(key.toCid())
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
+      receiverKad.providerCount() == 1
 
     # Second sender: receiver is at the per-key cap and drops the record
     # silently (no reply).
@@ -888,7 +855,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     # Limit enforced silently: still only one record at the receiver.
     # sendAddProviderAndGetStatus already waited for the reply timeout, so the
     # receiver has finished processing by the time we reach this check.
-    check receiverKad.providerManager.providerRecords.len == 1
+    check receiverKad.providerCount() == 1
 
   asyncTest "providerRejection=true: receiver enforces limit and rejects":
     let senderKad = setupKad(testKadConfig(providerRejection = true))
@@ -902,7 +869,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     let key = senderKad.rtable.selfId
     await senderKad.addProvider(key.toCid())
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 1
+      receiverKad.providerCount() == 1
 
     let sender2Kad = setupKad(testKadConfig(providerRejection = true))
     startAndDeferStop(@[sender2Kad])
@@ -913,7 +880,7 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     check status.isOk()
     check status.value() == AddProviderStatus.rejected
     # Limit enforced: still only one record
-    check receiverKad.providerManager.providerRecords.len == 1
+    check receiverKad.providerCount() == 1
 
   proc advertiseStatus(
       sender, receiver: KadDHT, key: Key
@@ -949,10 +916,9 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     check metricValue(kad_provider_rejections_sent) == rejectionsBefore + 1
 
     check:
-      receiverKad.providerManager.knownKeys.hasKey(k0)
-      receiverKad.providerManager.recordsPerPeer[peerB.switch.peerInfo.peerId] ==
-        perPeerCap
-      not receiverKad.providerManager.knownKeys.hasKey(keysB[perPeerCap])
+      receiverKad.hasProviderKey(k0)
+      receiverKad.recordsOf(peerB.switch.peerInfo.peerId) == perPeerCap
+      not receiverKad.hasProviderKey(keysB[perPeerCap])
 
     check (await peerB.advertiseStatus(receiverKad, keysB[0])) ==
       AddProviderStatus.accepted
@@ -981,18 +947,18 @@ suite "KadDHT - ADD_PROVIDER Rejection":
         AddProviderStatus.accepted
 
     check:
-      receiverKad.providerManager.providerRecords.len == capacity
-      receiverKad.providerManager.recordsPerPeer[idA] == 1
-      receiverKad.providerManager.recordsPerPeer[idB] == capacity - 1
+      receiverKad.providerCount() == capacity
+      receiverKad.recordsOf(idA) == 1
+      receiverKad.recordsOf(idB) == capacity - 1
 
     # Full table: this push evicts peerA's record, the oldest one.
     check (await peerB.advertiseStatus(receiverKad, randomServiceId())) ==
       AddProviderStatus.accepted
 
     check:
-      receiverKad.providerManager.providerRecords.len == capacity
-      receiverKad.providerManager.recordsPerPeer.getOrDefault(idA) == 0
-      receiverKad.providerManager.recordsPerPeer[idB] == capacity
+      receiverKad.providerCount() == capacity
+      receiverKad.recordsOf(idA) == 0
+      receiverKad.recordsOf(idB) == capacity
 
   asyncTest "Expired records free the per-peer quota so the sender is accepted again":
     const perPeerCap = 1
@@ -1010,14 +976,14 @@ suite "KadDHT - ADD_PROVIDER Rejection":
 
     check (await peerA.advertiseStatus(receiverKad, k1)) == AddProviderStatus.accepted
     check (await peerA.advertiseStatus(receiverKad, k2)) == AddProviderStatus.rejected
-    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
+    check receiverKad.recordsOf(idA) == perPeerCap
 
     checkUntilTimeout:
-      receiverKad.providerManager.providerRecords.len == 0
-      receiverKad.providerManager.recordsPerPeer.getOrDefault(idA) == 0
+      receiverKad.providerCount() == 0
+      receiverKad.recordsOf(idA) == 0
 
     check (await peerA.advertiseStatus(receiverKad, k2)) == AddProviderStatus.accepted
-    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
+    check receiverKad.recordsOf(idA) == perPeerCap
 
   asyncTest "Re-advertising the same key does not increase the per-peer count":
     const perPeerCap = 2
@@ -1039,14 +1005,14 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     for _ in 0 ..< readvertisements:
       check (await peerA.advertiseStatus(receiverKad, k1)) == AddProviderStatus.accepted
     check:
-      receiverKad.providerManager.providerRecords.len == 1
-      receiverKad.providerManager.recordsPerPeer[idA] == 1
+      receiverKad.providerCount() == 1
+      receiverKad.recordsOf(idA) == 1
 
     # A double-counted k1 would leave no room for k2.
     check (await peerA.advertiseStatus(receiverKad, k2)) == AddProviderStatus.accepted
-    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
+    check receiverKad.recordsOf(idA) == perPeerCap
     check (await peerA.advertiseStatus(receiverKad, k3)) == AddProviderStatus.rejected
-    check receiverKad.providerManager.recordsPerPeer[idA] == perPeerCap
+    check receiverKad.recordsOf(idA) == perPeerCap
 
   asyncTest "mixed: sender without rejection ignores reply from rejection-enabled receiver":
     # Sender has providerRejection=false so it never reads replies.
@@ -1067,21 +1033,22 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     # finds the existing record.
     let msgKey = key.toCid().toKey()
     let existingPeer = Peer(id: PeerId.random().getBytes())
-    receiverKad.providerManager.knownKeys[msgKey] = initHashSet[Provider]()
-    receiverKad.providerManager.knownKeys[msgKey].incl(existingPeer)
-    receiverKad.providerManager.providerRecords.push(
-      ProviderRecord(
-        provider: existingPeer, expiresAt: UnixTimestamp.after(1.hours), key: msgKey
+    check (
+      await receiverKad.store.addProvider(
+        msgKey,
+        StoredProvider(provider: existingPeer, expiresAt: UnixTimestamp.after(1.hours)),
+        nowUnixSeconds(),
+        high(int),
       )
-    )
-    check receiverKad.providerManager.providerRecords.len == 1
+    ).get() == AddProviderOutcome.added
+    check receiverKad.providerCount() == 1
 
     # Sender calls addProvider (no rejection → no spillover, just fire-and-forget)
     await senderKad.addProvider(key.toCid())
 
     # Receiver rejects (limit already full); record count stays at 1
     await sleepAsync(200.milliseconds)
-    check receiverKad.providerManager.providerRecords.len == 1
+    check receiverKad.providerCount() == 1
 
   asyncTest "Out-of-bounds key is rejected when providerRejection enabled":
     let senderKad = setupKad(testKadConfig(providerRejection = true))
@@ -1105,4 +1072,4 @@ suite "KadDHT - ADD_PROVIDER Rejection":
     check:
       status.isOk()
       status.value() == AddProviderStatus.rejected
-      receiverKad.providerManager.providerRecords.len == 0
+      receiverKad.providerCount() == 0

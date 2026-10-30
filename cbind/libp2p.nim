@@ -931,7 +931,7 @@ proc libp2pKadStopProviding*(
   ## Stops re-announcing this node as a provider of `cid`.
   let (kad, c) = kadAndCid(lib, cid).valueOr:
     return err(error)
-  kad.stopProviding(c)
+  await kad.stopProviding(c)
   ok(true)
 
 func makeProviderInfo(providers: HashSet[Provider]): seq[ProviderInfo] =

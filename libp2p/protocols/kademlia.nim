@@ -379,8 +379,6 @@ proc initKadBase*(
     ),
   )
   kad.config = config
-  kad.providerManager =
-    ProviderManager.new(config.providerRecordCapacity, config.providedKeyCapacity)
   kad.store = config.store.valueOr:
     MemoryKadStore.new(
       KadStoreLimits(

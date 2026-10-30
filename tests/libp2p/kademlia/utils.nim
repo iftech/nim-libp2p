@@ -220,6 +220,7 @@ proc countBucketEntries*(buckets: seq[Bucket], key: Key): uint32 =
   return res
 
 privateAccess(MemoryKadStore)
+privateAccess(HeldProvider)
 
 func mem(kad: KadDHT): MemoryKadStore =
   MemoryKadStore(kad.store)
@@ -227,11 +228,52 @@ func mem(kad: KadDHT): MemoryKadStore =
 func valueCount*(kad: KadDHT): int =
   kad.mem().values.len
 
+func providerCount*(kad: KadDHT): int =
+  kad.mem().providerCount
+
+func providerKeyCount*(kad: KadDHT): int =
+  kad.mem().providers.len
+
+func hasProviderKey*(kad: KadDHT, key: Key): bool =
+  key in kad.mem().providers
+
+func recordsOf*(kad: KadDHT, peerId: PeerId): int =
+  kad.mem().recordsPerPeer.getOrDefault(peerId.getBytes())
+
+func providedCount*(kad: KadDHT): int =
+  kad.mem().provided.len
+
+func hasProvidedKey*(kad: KadDHT, key: Key): bool =
+  key in kad.mem().provided
+
 proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
   kad.mem().values.withValue(key, stored):
     if stored[].expiresAt > nowUnixSeconds():
       return Opt.some(stored[].record)
   Opt.none(EntryRecord)
+
+proc seedProvider*(
+    kad: KadDHT, key: Key, provider: Provider
+) {.async: (raises: [CancelledError]).} =
+  let stored =
+    StoredProvider(provider: provider, expiresAt: UnixTimestamp.after(1.hours))
+  discard await kad.store.addProvider(key, stored, nowUnixSeconds(), high(int))
+
+func records*(kad: KadDHT): seq[StoredProvider] =
+  ## In the order the store added them.
+  var held: seq[HeldProvider]
+  for providers in kad.mem().providers.values():
+    held.add(providers)
+  held.sortedByIt(it.order).mapIt(it.stored)
+
+func providersOf*(kad: KadDHT, key: Key): seq[Provider] =
+  kad.mem().providers.getOrDefault(key).mapIt(it.stored.provider)
+
+func backdateExpiry*(kad: KadDHT) =
+  ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
+  for providers in kad.mem().providers.mvalues():
+    for provider in providers.mitems():
+      provider.stored.expiresAt -= 1
 
 proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
   let record = kad.localValue(key).valueOr:

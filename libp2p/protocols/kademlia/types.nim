@@ -292,25 +292,6 @@ type
 
   Provider* = Peer
 
-  ProviderRecord* = object
-    provider*: Provider
-    expiresAt*: UnixTimestamp
-    key*: Key
-
-  ProviderRecords* = ref object
-    records*: HeapQueue[ProviderRecord]
-    capacity*: int
-
-  ProvidedKeys* = ref object
-    provided*: OrderedTable[Key, UnixTimestamp] ## in provide order
-    capacity*: int
-
-  ProviderManager* = ref object
-    providerRecords*: ProviderRecords
-    providedKeys*: ProvidedKeys
-    knownKeys*: Table[Key, HashSet[Provider]]
-    recordsPerPeer*: CountTable[PeerId]
-
 func len*(bucket: Bucket): int =
   bucket.peers.len
 
@@ -333,16 +314,6 @@ template withRecord*(registry: PeerRegistry, nodeId: Key, record, body: untyped)
   ## Mutable access to one row. ``record`` is a ``ptr PeerRecord``; body uses ``record[]``.
   registry.peers.withValue(nodeId, record):
     body
-
-proc new*(
-    T: typedesc[ProviderManager], providerRecordCapacity: int, providedKeyCapacity: int
-): T =
-  let pm = T()
-
-  pm.providerRecords = ProviderRecords(capacity: providerRecordCapacity)
-  pm.providedKeys = ProvidedKeys(capacity: providedKeyCapacity)
-
-  return pm
 
 type
   NetSizeMeasurement* = object
@@ -733,7 +704,6 @@ type KadDHT* = ref object of LPProtocol
   expiredLoop*: Future[void]
   recordExpirationLoop*: Future[void]
   store*: KadStore
-  providerManager*: ProviderManager
   nsEstimator*: NetworkSizeEstimator
     ## Drives the optimistic-provide distance thresholds.
   provideTasks*: seq[Future[void]]
