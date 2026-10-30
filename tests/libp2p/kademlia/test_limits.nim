@@ -233,8 +233,8 @@ suite "KadDHT - Limits":
 
     check:
       res.isErr()
-      kads[0].dataTable.len == 0
-      kads[1].dataTable.len == 0
+      kads[0].valueCount() == 0
+      kads[1].valueCount() == 0
 
   asyncTest "handlePutValue drops records exceeding maxValueSize":
     let kads = setupKadSwitches(2)
@@ -264,13 +264,15 @@ suite "KadDHT - Limits":
 
     kads[0].config.limits.maxLocalRecords = Opt.some(1)
 
+    kads[0].store = MemoryKadStore.new(KadStoreLimits(maxValues: Opt.some(1)))
+
     let
       existingKey = PeerId.random()
       newKey = PeerId.random().toKey()
       existingValue = @[1.byte]
       newValue = @[2.byte]
 
-    kads[0].dataTable.insert(existingKey, existingValue, Timestamp.now())
+    check await kads[0].storeLocalRecord(existingKey, existingValue, Timestamp.now())
 
     let request = Message(
       msgType: MessageType.putValue,
@@ -301,7 +303,7 @@ suite "KadDHT - Limits":
       )
       await kad.handlePutValue(stream, request)
 
-      check kad.dataTable.len == 0
+      check kad.valueCount() == 0
 
     await stream.close()
 
@@ -329,14 +331,16 @@ suite "KadDHT - Limits":
 
     kads[0].config.limits.maxLocalRecords = Opt.some(1)
 
+    kads[0].store = MemoryKadStore.new(KadStoreLimits(maxValues: Opt.some(1)))
+
     let
       existingKey = PeerId.random()
       lookupKey = kads[1].rtable.selfId
       existingValue = @[1.byte]
       lookupValue = @[2.byte]
 
-    kads[0].dataTable.insert(existingKey, existingValue, Timestamp.now())
-    kads[1].dataTable.insert(lookupKey, lookupValue, Timestamp.now())
+    check await kads[0].storeLocalRecord(existingKey, existingValue, Timestamp.now())
+    check await kads[1].storeLocalRecord(lookupKey, lookupValue, Timestamp.now())
 
     let res = await kads[0].getValue(lookupKey, quorumOverride = Opt.some(1))
 
@@ -354,7 +358,7 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxValueSize = 8
 
     let key = kads[1].rtable.selfId
-    kads[1].dataTable.insert(key, newSeq[byte](64), Timestamp.now())
+    check await kads[1].storeLocalRecord(key, newSeq[byte](64), Timestamp.now())
 
     let res = await kads[0].getValue(key, quorumOverride = Opt.some(1))
 

@@ -1,51 +1,58 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[sequtils, strformat, tables]
+import std/[sequtils, strformat]
 import chronos, chronicles, results
 import ../../[peerid, switch, multihash]
 import ../../utils/[heartbeat, future]
 import ../protocol
-import ./[protobuf, types, find, rpc, kademlia_metrics]
+import ./[protobuf, store, types, find, rpc, kademlia_metrics]
 
 logScope:
   topics = "libp2p kademlia"
 
-proc isBestValue(kad: KadDHT, key: RecordKey, record: EntryRecord): bool =
+proc localRecord*(
+    kad: KadDHT, key: RecordKey
+): Future[Opt[EntryRecord]] {.async: (raises: [CancelledError]).} =
+  let stored = (await kad.store.getValue(key, nowUnixSeconds())).valueOr:
+    debug "Failed to read local record", key, err = error
+    return Opt.none(EntryRecord)
+  let value = stored.valueOr:
+    return Opt.none(EntryRecord)
+  Opt.some(value.record)
+
+proc storeLocalRecord*(
+    kad: KadDHT, key: RecordKey, value: Value, time: Timestamp = Timestamp.now()
+): Future[bool] {.async: (raises: [CancelledError]).} =
+  ## A record lives through its whole ``recordExpirationInterval``. An unparseable time is expired on arrival.
+  let storedAt = time.toUnixSeconds().valueOr(0)
+  let stored = StoredValue(
+    key: key,
+    record: EntryRecord(value: value, time: time),
+    expiresAt: storedAt + kad.config.recordExpirationInterval.seconds + 1,
+  )
+  (await kad.store.putValue(stored, nowUnixSeconds())).valueOr:
+    debug "Failed to store local record", key, err = error
+    return false
+
+proc isBestValue(
+    kad: KadDHT, key: RecordKey, record: EntryRecord
+): Future[bool] {.async: (raises: [CancelledError]).} =
   ## Returns whether `value` is a better value than what we have locally
   ## Always returns `true` if we don't have the value locally
 
-  kad.dataTable.get(key).ifValue(existing):
+  (await kad.localRecord(key)).ifValue(existing):
     kad.config.selector.select(key, @[record, existing]).ifValue(selectedIdx):
       return selectedIdx == 0
   return true
 
-proc isExpired*(
-    record: EntryRecord,
-    interval: chronos.Duration,
-    currentUnixSeconds = nowUnixSeconds(),
-): bool {.gcsafe, raises: [].} =
-  ## Returns true when the record's stored timestamp is older than `interval`.
-  ## Records whose timestamp cannot be parsed are treated as expired.
-  let storedUnix = record.time.toUnixSeconds().valueOr:
-    trace "Failed to parse record timestamp, treating as expired", time = record.time
-    return true
-
-  (currentUnixSeconds - storedUnix).seconds > interval
-
 proc manageExpiredRecords*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
-  ## Periodically scans `dataTable` and evicts entries that are older than
-  ## `config.recordExpirationInterval`. Runs indefinitely as a heartbeat
-  ## loop until cancelled (e.g. via `cancelSoon` or `cancelAndWait`).
+  ## Periodically deletes the entries that ``recordExpirationInterval`` expired.
+  ## Runs indefinitely as a heartbeat loop until cancelled (e.g. via
+  ## `cancelSoon` or `cancelAndWait`).
   heartbeat "cleanup expired data entries", kad.config.cleanupDataEntriesInterval:
-    let currentUnixSeconds = nowUnixSeconds()
-    var toRemove: seq[RecordKey]
-    for key, record in kad.dataTable:
-      if record.isExpired(kad.config.recordExpirationInterval, currentUnixSeconds):
-        toRemove.add(key)
-    for key in toRemove:
-      kad.dataTable.del(key)
-      trace "Expired record removed", key
+    (await kad.store.pruneExpired(nowUnixSeconds())).isOkOr:
+      debug "Failed to prune expired records", err = error
 
 proc dispatchPutVal*(
     kad: KadDHT, peer: PeerId, key: RecordKey, value: Value
@@ -66,13 +73,6 @@ proc dispatchPutVal*(
 
   ok()
 
-proc canStoreLocalRecord*(kad: KadDHT, key: RecordKey): bool {.raises: [].} =
-  if kad.dataTable.hasKey(key):
-    return true
-  kad.config.limits.maxLocalRecords.ifValue(limit):
-    return kad.dataTable.len < limit
-  true
-
 proc putValue*(
     kad: KadDHT, key: RecordKey, value: Value
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
@@ -86,16 +86,14 @@ proc putValue*(
   if not kad.config.validator.isValid(key, record):
     return err("invalid key/value pair")
 
-  if not kad.isBestValue(key, record):
+  if not await kad.isBestValue(key, record):
     return err("Value rejected, we have a better one")
 
   let peers = await kad.findNode(key.toKey())
 
-  let storedLocally = kad.canStoreLocalRecord(key)
-  if storedLocally:
-    kad.dataTable.insert(key, value, Timestamp.now())
-  else:
-    trace "PutValue: local record limit reached", current = kad.dataTable.len
+  let storedLocally = await kad.storeLocalRecord(key, value)
+  if not storedLocally:
+    trace "PutValue: local record limit reached"
 
   var attempted, succeeded, failed, cancelled, pending: int
   var outcome = "cancelled"
@@ -171,17 +169,16 @@ proc handlePutValue*(
       reason = "invalidRecord", messageType = "putValue", stream
     return
 
-  if not kad.isBestValue(key, entryRecord):
+  if not await kad.isBestValue(key, entryRecord):
     trace "Dropping received value, we have a better one"
     await stream.reset()
     return
 
-  if not kad.canStoreLocalRecord(key):
-    debug "PutValue: local record limit reached", stream, current = kad.dataTable.len
+  if not await kad.storeLocalRecord(key, entryRecord.value):
+    debug "PutValue: local record limit reached", stream
     await stream.reset()
     return
 
-  kad.dataTable.insert(key, entryRecord.value, Timestamp.now())
   # consistent with following link, echo message without change
   # https://github.com/libp2p/js-libp2p/blob/cf9aab5c841ec08bc023b9f49083c95ad78a7a07/packages/kad-dht/src/rpc/handlers/put-value.ts#L22
   let encoded = msg.encode(kad.config.hideConnectionStatus)

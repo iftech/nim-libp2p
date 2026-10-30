@@ -6,6 +6,7 @@ import algorithm, chronos, hashes, results, sequtils, sets, tables
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multihash, stream/connection]
 import ../../tools/[crypto, unittest, switch_builder, multiaddress]
+import std/importutils
 import ./mock_kademlia
 
 export crypto
@@ -218,8 +219,22 @@ proc countBucketEntries*(buckets: seq[Bucket], key: Key): uint32 =
         res += 1
   return res
 
+privateAccess(MemoryKadStore)
+
+func mem(kad: KadDHT): MemoryKadStore =
+  MemoryKadStore(kad.store)
+
+func valueCount*(kad: KadDHT): int =
+  kad.mem().values.len
+
+proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
+  kad.mem().values.withValue(key, stored):
+    if stored[].expiresAt > nowUnixSeconds():
+      return Opt.some(stored[].record)
+  Opt.none(EntryRecord)
+
 proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
-  let record = kad.dataTable.get(key).valueOr:
+  let record = kad.localValue(key).valueOr:
     checkpoint("containsData: key not found: " & $key.shortLog())
     return false
 
@@ -233,7 +248,7 @@ proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
   true
 
 proc containsNoData*(kad: KadDHT, key: RecordKey): bool =
-  kad.dataTable.get(key).isNone()
+  kad.localValue(key).isNone()
 
 proc pluckPeerIds*(kads: seq[KadDHT]): seq[PeerId] =
   kads.mapIt(it.switch.peerInfo.peerId)
