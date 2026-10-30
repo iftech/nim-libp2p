@@ -91,7 +91,7 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
     switch = switch,
     rng = switch.rng,
     onEvent = onEvent,
-    maxQueued = (if mode == PressureScenario: 1 else: 5000),
+    config = WaggleConfig(maxQueued: (if mode == PressureScenario: 1 else: 5000)),
   )
   switch.mount(waggle)
 
