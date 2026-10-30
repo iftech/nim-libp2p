@@ -40,7 +40,7 @@ method metadata*(s: BitShard): WaggleMetadata =
   BitMetadata(have: s.have)
 
 method actionFromMetadata*(
-    s: BitShard, peer: PeerId, connectionId: uint64, metadata: Opt[seq[byte]]
+    s: BitShard, peer: PeerId, connectionId: ConnectionId, metadata: Opt[seq[byte]]
 ): Result[WaggleAction, string] =
   var remote: byte
   if metadata.isSome:

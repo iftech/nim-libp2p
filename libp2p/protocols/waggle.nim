@@ -7,8 +7,8 @@
 
 import std/[sequtils, tables, sets, hashes]
 import chronos, chronicles
-import ./protocol, ./waggle/[messages, shard]
-import ../switch, ../muxers/muxer, ../multistream
+import ./protocol, ./waggle/[messages, shard, state]
+import ../switch, ../crypto/rng, ../muxers/muxer, ../multistream
 import ../stream/connection
 import ../peerid
 from ../utils/future import trackFut
@@ -27,7 +27,6 @@ const
 
 type
   TopicId* = seq[byte]
-  ConnectionId* = uint64
   ValidatedTopic = distinct TopicId
 
   PiecesHandler* = proc(peer: PeerId, topicId: TopicId, msg: ObjectPieces) {.
@@ -39,12 +38,32 @@ type
     added*: bool
     blockedConnections*: seq[ConnectionId]
 
+  TopicConfig* = object
+    publishFanout*: int
+    forwardFanout*: int
+    gossipFanout*: int
+
+  WaggleConfig* = object
+    maxMessageSize*: int = 65536
+    maxTopicSize*: int = 1024
+    maxStreams*: int = 128
+    maxStreamsPerPeer*: int = 16
+    maxCachedObjects*: int = 100
+    maxTopics*: int = 64
+    maxQueued*: int = 5000
+    maxQueuedBytes*: int = 4 * 1024 * 1024
+    defaultTopicConfig*: TopicConfig =
+      TopicConfig(publishFanout: 50, forwardFanout: 50, gossipFanout: 50)
+    topicWhitelist*: Opt[HashSet[TopicId]]
+
   WaggleEventKind* {.pure.} = enum
     Received
     Subscribed
     Unsubscribed
     InvalidData
+    FullQueue
     StreamFailed
+    OutgoingRejected ## Local size validation failed; peerId is the intended recipient.
 
   WaggleEvent* = object
     kind*: WaggleEventKind
@@ -61,6 +80,8 @@ type
   WaggleConnection = ref object
     id: ConnectionId
     muxer: Muxer
+    queued: int
+    queuedBytes: int
     opening: int
     readers: Table[TopicId, Future[Opt[ReceiverFailure]]]
     notifyingFailures: HashSet[TopicId]
@@ -72,6 +93,8 @@ type
     ready: bool
     lock: AsyncLock
     link: WaggleConnection
+    queue: AsyncQueue[ObjectPieces]
+    writer: Future[void]
 
   Waggle* = ref object of LPProtocol
     streams: seq[TopicSession]
@@ -84,8 +107,15 @@ type
     registeredMuxers: HashSet[Muxer]
     nextConnectionId: ConnectionId
     topics: HashSet[TopicId]
+    topicConfigs: Table[TopicId, TopicConfig]
+    defaultTopicConfig: TopicConfig
     topicWhitelist: Opt[HashSet[TopicId]]
     maxTopics: int
+    maxQueued: int
+    maxQueuedBytes: int
+    maxCachedObjects: int
+    state: WaggleState
+    random: Rng
     onEvent: WaggleEventHandler
     tasks: seq[Future[void]]
     manager: ConnManager
@@ -104,7 +134,11 @@ proc notify(
 ) =
   if p.onEvent == nil or link == nil:
     return
-  let failure = kind in {WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData}
+  let failure =
+    kind in {
+      WaggleEventKind.StreamFailed, WaggleEventKind.InvalidData,
+      WaggleEventKind.FullQueue, WaggleEventKind.OutgoingRejected,
+    }
   if failure:
     # An immediate retry at capacity must not recursively notify the same failure.
     if topicId in link.notifyingFailures:
@@ -137,6 +171,7 @@ proc findConnection(p: Waggle, stream: Stream): WaggleConnection =
       break
     current = wrapped
 
+proc beginWriter(p: Waggle, session: TopicSession)
 proc writeSession(
   p: Waggle, target: TopicSession, msg: ObjectPieces
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]).}
@@ -206,28 +241,54 @@ proc invalidSubscription(
   trace "Invalid Waggle subscription", peer = stream.peerId, err = reason
   p.notify(WaggleEventKind.InvalidData, link, topicId, reason = reason)
 
+proc validate*(config: TopicConfig): Result[void, string] =
+  if config.publishFanout <= 0 or config.forwardFanout <= 0 or config.gossipFanout < 0:
+    return err("Waggle publish/forward fanouts must be positive and gossip nonnegative")
+  ok()
+
+proc validate*(config: WaggleConfig): Result[void, string] =
+  if config.maxMessageSize <= 0 or config.maxTopicSize < 0:
+    return err("Invalid Waggle message or topic size limit")
+  if config.maxStreams <= 0 or config.maxStreamsPerPeer <= 0:
+    return err("Invalid Waggle stream limit")
+  if config.maxCachedObjects <= 0 or config.maxTopics <= 0:
+    return err("Invalid Waggle object or topic limit")
+  if config.maxQueued <= 0 or config.maxQueuedBytes <= 0:
+    return err("Invalid Waggle queue limit")
+  ?config.defaultTopicConfig.validate()
+  ok()
+
 proc new*(
     T: typedesc[Waggle],
-    maxMessageSize: int = 65536,
-    maxTopicSize: int = 1024,
-    maxStreams: int = 128,
-    maxStreamsPerPeer: int = 16,
-    maxTopics: int = 64,
-    topicWhitelist = Opt.none(HashSet[TopicId]),
+    config = WaggleConfig(),
     onEvent: WaggleEventHandler = nil,
+    rng: Rng = nil,
     switch: Switch = nil,
 ): T =
-  doAssert maxMessageSize > 0 and maxTopicSize >= 0
-  doAssert maxStreams > 0 and maxStreamsPerPeer > 0
-  doAssert maxTopics > 0
+  ## Queue limits apply per connection across topics, excluding the active write.
+  ## If rng is nil, create a generator seeded from system entropy. Inject a seeded
+  ## generator for reproducible peer selection, or share the switch generator.
+  doAssert config.validate().isOk, "Invalid Waggle configuration"
+  let random =
+    if rng == nil:
+      newRng()
+    else:
+      rng
+  doAssert random != nil
   let p = T(
-    maxTopics: maxTopics,
-    topicWhitelist: topicWhitelist,
+    random: random,
+    maxCachedObjects: config.maxCachedObjects,
+    maxTopics: config.maxTopics,
+    maxQueued: config.maxQueued,
+    maxQueuedBytes: config.maxQueuedBytes,
+    defaultTopicConfig: config.defaultTopicConfig,
+    topicWhitelist: config.topicWhitelist,
     onEvent: onEvent,
-    maxMessageSize: maxMessageSize,
-    maxTopicSize: maxTopicSize,
-    maxStreams: maxStreams,
-    maxStreamsPerPeer: maxStreamsPerPeer,
+    state: WaggleState.new(config.maxCachedObjects, config.maxTopics),
+    maxMessageSize: config.maxMessageSize,
+    maxTopicSize: config.maxTopicSize,
+    maxStreams: config.maxStreams,
+    maxStreamsPerPeer: config.maxStreamsPerPeer,
   )
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     var session: TopicSession
@@ -248,6 +309,7 @@ proc new*(
         return
       session.setTopic(topicId)
       if session.link != nil:
+        p.beginWriter(session)
         p.notify(WaggleEventKind.Subscribed, session.link, session.topicId)
       # The subscriber only writes its handshake; further bytes are a violation.
       var unexpected: byte
@@ -268,7 +330,12 @@ proc new*(
     finally:
       if session != nil:
         p.forget(session)
-        if session.link != nil and session.ready:
+        if session.writer != nil:
+          await noCancel session.writer.cancelAndWait()
+          session.link.queued -= session.queue.len
+          for msg in session.queue:
+            session.link.queuedBytes -= msg.encodedSize()
+          p.state.removeSubscription(session.topicId, session.link.id)
           p.notify(WaggleEventKind.Unsubscribed, session.link, session.topicId)
       await noCancel stream.reset()
 
@@ -330,6 +397,8 @@ proc send*(
   ## write resets the stream because its frame may be incomplete.
   ## Returns ok(true) after writing, or ok(false) if no writable subscription exists.
   ## Validation and stream failures return errors; cancellation propagates.
+  ## Do not mix this direct wire API with managed publishing on one subscription:
+  ## direct sends bypass its queue and do not update reconciliation state.
   if msg.encodedSize() > p.maxMessageSize:
     return err("Waggle message exceeds maximum length")
   for session in p.streams:
@@ -360,11 +429,224 @@ proc writeSession(
     except AsyncLockError as exc:
       raiseAssert exc.msg
 
+proc beginWriter(p: Waggle, session: TopicSession) =
+  session.queue = newAsyncQueue[ObjectPieces](p.maxQueued)
+  proc writeLoop() {.async: (raises: [CancelledError]).} =
+    try:
+      while true:
+        let msg = await session.queue.popFirst()
+        dec session.link.queued
+        let size = msg.encodedSize()
+        session.link.queuedBytes -= size
+        let written = await p.writeSession(session, msg)
+        if written.isErr:
+          p.notify(
+            WaggleEventKind.StreamFailed,
+            session.link,
+            session.topicId,
+            reason = $written.error,
+          )
+          return
+        if not written.get():
+          return
+    finally:
+      await noCancel session.stream.reset()
+
+  session.writer = writeLoop()
+  p.tasks.trackFut(session.writer)
+
+proc target(p: Waggle, link: WaggleConnection, topicId: TopicId): Opt[TopicSession] =
+  for session in p.streams:
+    if session.link == link and not session.receiving and session.ready and
+        session.topicId == topicId and not session.stream.closed:
+      return Opt.some(session)
+  return Opt.none(TopicSession)
+
+proc enqueue(p: Waggle, session: TopicSession, msg: ObjectPieces): bool =
+  let link = session.link
+  let topicId = session.topicId
+  if p.stopping or session.stream.closed:
+    return false
+  let size = msg.encodedSize()
+  if size > p.maxMessageSize:
+    p.notify(
+      WaggleEventKind.OutgoingRejected, link, topicId, msg,
+      "Outgoing message exceeds maximum length",
+    )
+    return false
+  if link.queued >= p.maxQueued or size > p.maxQueuedBytes - link.queuedBytes:
+    p.notify(WaggleEventKind.FullQueue, link, topicId)
+    return false
+  try:
+    session.queue.addLastNoWait(msg)
+    inc link.queued
+    link.queuedBytes += size
+    return true
+  except AsyncQueueFullError:
+    p.notify(WaggleEventKind.FullQueue, link, topicId)
+    return false
+
+proc dispatch(p: Waggle, session: TopicSession, tx: Transmission): bool =
+  if p.enqueue(session, tx.message):
+    tx.commit()
+    true
+  else:
+    false
+
+proc config(p: Waggle, topicId: TopicId): TopicConfig =
+  p.topicConfigs.getOrDefault(topicId, p.defaultTopicConfig)
+
+proc setTopicConfig*(
+    p: Waggle, topicId: TopicId, config: TopicConfig
+): Result[void, string] =
+  ?config.validate()
+  if topicId.len > p.maxTopicSize:
+    return err("Waggle topic exceeds maximum length")
+  if not p.topicConfigs.hasKey(topicId) and p.topicConfigs.len >= p.maxTopics:
+    return err("Waggle topic configuration limit reached")
+  p.topicConfigs[topicId] = config
+  ok()
+
+proc eligible(
+    p: Waggle, topicId: TopicId, exceptLink: WaggleConnection = nil
+): seq[TopicSession] =
+  var sessions: seq[TopicSession]
+  for session in p.streams:
+    if session.link != nil and session.link != exceptLink and
+        session.link.muxer in p.registeredMuxers and not session.receiving and
+        session.ready and session.topicId == topicId and not session.stream.closed:
+      sessions.add(session)
+  p.random.shuffle(sessions)
+  return sessions
+
+proc advertise(
+    p: Waggle, topicId: TopicId, objectId: ObjectId, exceptLink: WaggleConnection = nil
+): int =
+  if p.stopping:
+    return 0
+  var sent = 0
+  var discovered = 0
+  let config = p.config(topicId)
+  for session in p.eligible(topicId, exceptLink):
+    if p.stopping:
+      break
+    if session.stream.closed:
+      continue
+    let link = session.link
+    let view = p.state.peerView(topicId, link.id, objectId)
+    # Existing observers receive every change; discovery has its own budget.
+    if not view.advertised and (view.known or discovered >= config.gossipFanout):
+      continue
+    let prepared = p.state.prepare(
+      topicId, link.id, link.muxer.connection.peerId, objectId, metadataOnly = true
+    ).valueOr:
+      p.notify(
+        WaggleEventKind.InvalidData,
+        link,
+        topicId,
+        ObjectPieces(objectId: objectId),
+        error,
+      )
+      continue
+    let tx = prepared.valueOr:
+      continue
+    if p.dispatch(session, tx):
+      inc sent
+      if not view.advertised:
+        inc discovered
+  return sent
+
+proc disseminate(
+    p: Waggle,
+    topicId: TopicId,
+    objectId: ObjectId,
+    candidates: seq[TopicSession],
+    existing, changed: bool,
+): tuple[sent: int, attempted: bool] =
+  var sent = 0
+  var seeded = 0
+  var forwarded = 0
+  var attempted = false
+  # Forwarding uses known peer state; initial publication may seed unknown peers.
+  let config = p.config(topicId)
+  for session in candidates:
+    if p.stopping:
+      break
+    if session.stream.closed:
+      continue
+    let link = session.link
+    let known = p.state.peerView(topicId, link.id, objectId).known
+    if existing and changed and not known:
+      continue
+    let forwarding = known
+    let limit = if forwarding: config.forwardFanout else: config.publishFanout
+    let payloads = if forwarding: forwarded else: seeded
+    if not forwarding and payloads >= limit:
+      continue
+    let prepared = p.state.prepare(
+      topicId, link.id, link.muxer.connection.peerId, objectId
+    ).valueOr:
+      attempted = true
+      p.notify(
+        WaggleEventKind.InvalidData,
+        link,
+        topicId,
+        ObjectPieces(objectId: objectId),
+        error,
+      )
+      continue
+    let tx = prepared.valueOr:
+      continue
+    let budgeted = not forwarding or tx.message.pieces.isSome
+    if budgeted and payloads >= limit:
+      continue
+    attempted = true
+    if p.dispatch(session, tx):
+      inc sent
+      if budgeted:
+        if forwarding:
+          inc forwarded
+        else:
+          inc seeded
+  return (sent, attempted)
+
+proc publish*(p: Waggle, topicId: TopicId, shard: WaggleShard): Result[int, string] =
+  ## Cache a current snapshot and queue initial publication or selective forwarding.
+  ## Updated snapshots also advertise metadata to observers and discovery peers.
+  if p.stopping or shard == nil:
+    return err("Waggle is stopped or the shard is nil")
+  let candidates = p.eligible(topicId)
+  if candidates.len == 0:
+    return err("No peers subscribed to the topic")
+  let objectId = shard.objectId()
+  let existing = p.state.hasLocal(topicId, objectId)
+  let changed = ?p.state.store(topicId, shard)
+  var (sent, attempted) =
+    p.disseminate(topicId, objectId, candidates, existing, changed)
+  if existing:
+    sent += p.advertise(topicId, objectId)
+  if sent == 0 and (changed or attempted):
+    err("Message not sent on any connection")
+  else:
+    ok(sent)
+
 proc processReceived(
     p: Waggle, link: WaggleConnection, topicId: TopicId, msg: ObjectPieces
 ) =
-  if topicId in p.topics and not p.stopping and link in p.links:
+  if topicId notin p.topics or p.stopping or link notin p.links:
+    return
+  let action = p.state.received(topicId, link.id, link.muxer.connection.peerId, msg).valueOr:
+    p.notify(WaggleEventKind.InvalidData, link, topicId, msg, error)
+    return
+  if not action.active:
+    return
+  if action.reply.isSome:
+    let session = p.target(link, topicId)
+    if session.isSome:
+      discard p.dispatch(session.get(), action.reply.get())
+  if action.emit:
     p.notify(WaggleEventKind.Received, link, topicId, msg)
+  discard p.advertise(topicId, msg.objectId, link)
 
 proc receiveTopic(
     p: Waggle, link: WaggleConnection, topicId: TopicId
@@ -464,6 +746,8 @@ proc unsubscribe*(p: Waggle, topicId: TopicId): Future[bool] {.async: (raises: [
   if topicId notin p.topics:
     return false
   p.topics.excl(topicId)
+  p.state.removeTopic(topicId)
+  p.topicConfigs.del(topicId)
   var readers: seq[Future[Opt[ReceiverFailure]]]
   let links = p.links
   for link in links:
@@ -479,6 +763,7 @@ proc unsubscribe*(p: Waggle, topicId: TopicId): Future[bool] {.async: (raises: [
 proc removeConnection(p: Waggle, link: WaggleConnection) {.async: (raises: []).} =
   p.links.keepItIf(it != link)
   p.registeredMuxers.excl(link.muxer)
+  p.state.removeConnection(link.id)
   let sessions = p.streams.filterIt(it.link == link)
   for session in sessions:
     await noCancel session.stream.reset()
@@ -550,4 +835,5 @@ method stop*(p: Waggle) {.async: (raises: []).} =
   await readers.cancelAndWait()
   let tasks = move p.tasks
   await tasks.cancelAndWait()
+  p.state = WaggleState.new(p.maxCachedObjects, p.maxTopics)
   await procCall LPProtocol(p).stop()
