@@ -80,6 +80,14 @@ template kadStoreTestSuite*(name: string, factory: untyped) =
         (await store.getValue(recordKey(1), Now - 1)).get().isNone()
         (await store.getValue(recordKey(2), Now)).get().isSome()
 
+    asyncTest "pruneExpired frees capacity":
+      let store = factory(KadStoreLimits(maxValues: Opt.some(1)))
+      check (await store.putValue(storedValue(1, expiresAt = Now))).get()
+
+      check (await store.pruneExpired(Now)).isOk()
+
+      check (await store.putValue(storedValue(2))).get()
+
     asyncTest "a full store refuses a new key and accepts a known key":
       let store = factory(KadStoreLimits(maxValues: Opt.some(1)))
 
@@ -99,12 +107,13 @@ template kadStoreTestSuite*(name: string, factory: untyped) =
         (await store.getValue(recordKey(1), Now)).get().isNone()
         (await store.putValue(storedValue(2))).get()
 
-    asyncTest "listValues pages in key byte order and after is exclusive":
+    asyncTest "listValues pages in key byte order and after is exclusive across a delete":
       let store = factory(KadStoreLimits())
       for b in [3'u8, 1, 4, 2]:
         check (await store.putValue(storedValue(b))).get()
 
       let first = (await store.listValues(Opt.none(RecordKey), Now, 2)).get()
+      check (await store.delValue(first[^1].key)).isOk()
       let second = (await store.listValues(Opt.some(first[^1].key), Now, 2)).get()
       let last = (await store.listValues(Opt.some(second[^1].key), Now, 2)).get()
 
