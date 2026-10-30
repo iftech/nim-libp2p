@@ -9,6 +9,9 @@ import ../../peerid
 export results
 
 type
+  ConnectionId* = uint64
+  ObjectId* = seq[byte]
+
   WaggleMetadata* = ref object of RootObj
   WaggleShard* = ref object of RootObj
 
@@ -36,7 +39,7 @@ method update*(
   ## Merge remote state, returning whether it changed. Reject invalid metadata.
   raiseAssert "WaggleMetadata.update must be implemented"
 
-method objectId*(shard: WaggleShard): seq[byte] {.base.} =
+method objectId*(shard: WaggleShard): ObjectId {.base.} =
   raiseAssert "WaggleShard.objectId must be implemented"
 
 method metadata*(shard: WaggleShard): WaggleMetadata {.base.} =
@@ -45,7 +48,10 @@ method metadata*(shard: WaggleShard): WaggleMetadata {.base.} =
   raiseAssert "WaggleShard.metadata must be implemented"
 
 method actionFromMetadata*(
-    shard: WaggleShard, peer: PeerId, connectionId: uint64, metadata: Opt[seq[byte]]
+    shard: WaggleShard,
+    peer: PeerId,
+    connectionId: ConnectionId,
+    metadata: Opt[seq[byte]],
 ): Result[WaggleAction, string] {.base.} =
   ## Select missing pieces and the peer view after sending them. `need` asks the
   ## application to integrate an incoming message. Do not mutate the shard here.

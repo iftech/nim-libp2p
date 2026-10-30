@@ -172,7 +172,7 @@ suite "Waggle direct streams":
 
   asyncTest "send accepts the size limit and rejects a larger message without writing":
     let msg = ObjectPieces(objectId: @[byte 42], pieces: Opt.some(newSeq[byte](16)))
-    waggle = Waggle.new(maxMessageSize = msg.encodedSize())
+    waggle = Waggle.new(config = WaggleConfig(maxMessageSize: msg.encodedSize()))
     let stream = openStream()
     discard handle(stream)
     await handshake(stream)
@@ -306,7 +306,7 @@ suite "Waggle direct streams":
     check not replacement.closed
 
   asyncTest "subscribe rejects an oversized topic before writing":
-    waggle = Waggle.new(maxTopicSize = topic.len - 1)
+    waggle = Waggle.new(config = WaggleConfig(maxTopicSize: topic.len - 1))
     let stream = openStream()
     check:
       (await receive(stream)).isOfError("Waggle topic exceeds maximum length")
@@ -314,8 +314,10 @@ suite "Waggle direct streams":
       stream.wasResetLocally
 
   asyncTest "subscribe rejects an oversized encoded handshake before writing":
-    waggle =
-      Waggle.new(maxMessageSize = TopicSubscription(topicId: topic).encode().len - 1)
+    waggle = Waggle.new(
+      config =
+        WaggleConfig(maxMessageSize: TopicSubscription(topicId: topic).encode().len - 1)
+    )
     let stream = openStream()
     check:
       (await receive(stream)).isOfError("Waggle subscription exceeds maximum length")
@@ -343,7 +345,7 @@ suite "Waggle direct streams":
     check not replacement.closed
 
   asyncTest "subscribe enforces the total stream limit across peers":
-    waggle = Waggle.new(maxStreams = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreams: 1))
     let stream = openStream()
     discard receive(stream)
     discard await stream.writes.popFirst()
@@ -354,7 +356,7 @@ suite "Waggle direct streams":
       not stream.closed
 
   asyncTest "subscribe enforces per-peer limits without blocking another peer":
-    waggle = Waggle.new(maxStreamsPerPeer = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreamsPerPeer: 1))
     let stream = openStream()
     discard receive(stream)
     discard await stream.writes.popFirst()
@@ -368,7 +370,7 @@ suite "Waggle direct streams":
     check not other.closed
 
   asyncTest "subscribe tags malformed protobuf, invalid lengths, and oversized frames":
-    waggle = Waggle.new(maxMessageSize = 16)
+    waggle = Waggle.new(config = WaggleConfig(maxMessageSize: 16))
     let peer = PeerId.random()
     for data in [
       frame(@[byte 0x1A, 0]), newSeqWith(10, byte 0x80), frame(newSeq[byte](17))
@@ -420,7 +422,8 @@ suite "Waggle direct streams":
       stream.wasResetLocally
 
   asyncTest "handler rejects malformed, oversized, and trailing subscription data":
-    waggle = Waggle.new(maxMessageSize = 16, maxTopicSize = topic.len)
+    waggle =
+      Waggle.new(config = WaggleConfig(maxMessageSize: 16, maxTopicSize: topic.len))
     let valid = frame(TopicSubscription(topicId: topic).encode())
     let peer = PeerId.random()
     for data in [
@@ -457,7 +460,7 @@ suite "Waggle direct streams":
       waggle.subscribers(topic) == @[stream.peerId]
 
   asyncTest "handler shares admission limits with receiving streams":
-    waggle = Waggle.new(maxStreams = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreams: 1))
     let stream = openStream()
     discard receive(stream)
     discard await stream.writes.popFirst()
@@ -469,7 +472,7 @@ suite "Waggle direct streams":
       waggle.subscribers(topic).len == 0
 
   asyncTest "remote write-side closure preserves delivery until disconnect":
-    waggle = Waggle.new(maxStreams = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreams: 1))
     let stream = openStream()
     let handling = handle(stream)
     await handshake(stream)
@@ -495,7 +498,7 @@ suite "Waggle direct streams":
     await handshake(replacement)
 
   asyncTest "handler cleans up EOF before and during the handshake":
-    waggle = Waggle.new(maxStreams = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreams: 1))
     let peer = PeerId.random()
     for partial in [false, true]:
       let stream = openStream(peer)
@@ -510,7 +513,7 @@ suite "Waggle direct streams":
     await handshake(replacement)
 
   asyncTest "handler cancellation releases admission before and after the handshake":
-    waggle = Waggle.new(maxStreams = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreams: 1))
     let peer = PeerId.random()
     for subscribed in [false, true]:
       let stream = openStream(peer)
@@ -558,7 +561,7 @@ suite "Waggle direct streams":
     check waggle.subscribers(topic) == @[replacement.peerId]
 
   asyncTest "pending inbound handshakes count against the total stream limit":
-    waggle = Waggle.new(maxStreams = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreams: 1))
     let first = openStream()
     discard handle(first)
     discard await first.readRequests.popFirst()
@@ -569,7 +572,7 @@ suite "Waggle direct streams":
     check waggle.subscribers(topic) == @[first.peerId]
 
   asyncTest "pending inbound handshakes count against per-peer limits":
-    waggle = Waggle.new(maxStreamsPerPeer = 1)
+    waggle = Waggle.new(config = WaggleConfig(maxStreamsPerPeer: 1))
     let first = openStream()
     discard handle(first)
     discard await first.readRequests.popFirst()
@@ -584,7 +587,7 @@ suite "Waggle direct streams":
   asyncTest "registered connections filter topics, report events and close subscriptions":
     var events: seq[WaggleEvent]
     waggle = Waggle.new(
-      topicWhitelist = Opt.some([topic].toHashSet()),
+      config = WaggleConfig(topicWhitelist: Opt.some([topic].toHashSet())),
       onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
         events.add(event),
     )

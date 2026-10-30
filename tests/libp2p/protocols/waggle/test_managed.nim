@@ -33,10 +33,34 @@ type CountingShard = ref object of BitShard
   preparations: int
 
 method actionFromMetadata(
-    s: CountingShard, peer: PeerId, connectionId: uint64, metadata: Opt[seq[byte]]
+    s: CountingShard, peer: PeerId, connectionId: ConnectionId, metadata: Opt[seq[byte]]
 ): Result[WaggleAction, string] =
   inc s.preparations
   procCall BitShard(s).actionFromMetadata(peer, connectionId, metadata)
+
+suite "Waggle configuration":
+  test "topic fanout validation accepts only valid boundaries":
+    check TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: 0).validate().isOk
+    for invalid in [0, -1]:
+      check TopicConfig(publishFanout: invalid, forwardFanout: 1).validate().isErr
+      check TopicConfig(publishFanout: 1, forwardFanout: invalid).validate().isErr
+    check TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: -1).validate().isErr
+
+  test "protocol limits and default topic config are validated":
+    check WaggleConfig().validate().isOk
+    check WaggleConfig(maxTopicSize: 0).validate().isOk
+    check WaggleConfig(maxTopicSize: -1).validate().isErr
+    for invalid in [0, -1]:
+      check WaggleConfig(maxMessageSize: invalid).validate().isErr
+      check WaggleConfig(maxStreams: invalid).validate().isErr
+      check WaggleConfig(maxStreamsPerPeer: invalid).validate().isErr
+      check WaggleConfig(maxCachedObjects: invalid).validate().isErr
+      check WaggleConfig(maxTopics: invalid).validate().isErr
+      check WaggleConfig(maxQueued: invalid).validate().isErr
+      check WaggleConfig(maxQueuedBytes: invalid).validate().isErr
+    check WaggleConfig(defaultTopicConfig: TopicConfig()).validate().isErr
+    expect AssertionDefect:
+      discard Waggle.new(config = WaggleConfig(maxQueued: 0))
 
 suite "Waggle managed dissemination":
   var
@@ -81,15 +105,19 @@ suite "Waggle managed dissemination":
     if managed:
       node.manager = ConnManager.new(maxConnsPerPeer = 4)
     node.protocol = Waggle.new(
+      config = WaggleConfig(
+        maxStreamsPerPeer: maxStreamsPerPeer,
+        maxQueued: maxQueued,
+        maxQueuedBytes: maxQueuedBytes,
+        defaultTopicConfig: TopicConfig(
+          publishFanout: fanout,
+          forwardFanout: forwardFanout,
+          gossipFanout: gossipFanout,
+        ),
+      ),
       switch = (if managed: Switch(connManager: node.manager) else: nil),
       onEvent = onEvent,
-      maxStreamsPerPeer = maxStreamsPerPeer,
       rng = rng(),
-      maxQueued = maxQueued,
-      maxQueuedBytes = maxQueuedBytes,
-      defaultTopicConfig = TopicConfig(
-        publishFanout: fanout, forwardFanout: forwardFanout, gossipFanout: gossipFanout
-      ),
     )
     node.ms.addHandler(node.protocol)
     nodes.add(node)
@@ -256,6 +284,30 @@ suite "Waggle managed dissemination":
       it.kind != WaggleEventKind.Received or it.message.objectId != shard.id
     )
 
+  asyncTest "stopping in a failure callback skips remaining peer preparations":
+    let a = await newNode()
+    let b = await newNode()
+    let c = await newNode()
+    discard b.protocol.subscribe(topic).get()
+    discard c.protocol.subscribe(topic).get()
+    discard await connect(a, b)
+    discard await connect(a, c)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 2
+    var stopping: Future[void]
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.OutgoingRejected:
+        stopping = a.protocol.stop()
+
+    a.onEvent = onEvent
+    let shard = CountingShard(id: newSeq[byte](65536), have: 1)
+    check a.protocol.publish(topic, shard).isErr
+    check shard.preparations == 1
+    require stopping != nil
+    await stopping
+    check a.protocol.publish(topic, shard).isErr
+    check shard.preparations == 1
+
   asyncTest "queue saturation reports an event and unchanged snapshots can retry":
     let a = await newNode(1, maxQueued = 1)
     let b = await newNode()
@@ -310,7 +362,8 @@ suite "Waggle managed dissemination":
     check a.events.countIt(it.kind == WaggleEventKind.FullQueue) == 2
 
   asyncTest "unsubscribing releases the topic configuration budget":
-    let p = Waggle.new(maxTopics = 1, maxTopicSize = 3, rng = rng())
+    let p =
+      Waggle.new(config = WaggleConfig(maxTopics: 1, maxTopicSize: 3), rng = rng())
     let config = TopicConfig(publishFanout: 1, forwardFanout: 1, gossipFanout: 1)
     check p.setTopicConfig(@[byte 1, 2, 3, 4], config).error ==
       "Waggle topic exceeds maximum length"
@@ -414,8 +467,7 @@ suite "Waggle managed dissemination":
     let b = await newNode()
     await a.protocol.stop()
     a.protocol = Waggle.new(
-      topicWhitelist = Opt.some([topic].toHashSet()),
-      maxTopics = 1,
+      config = WaggleConfig(topicWhitelist: Opt.some([topic].toHashSet()), maxTopics: 1),
       onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
         a.events.add(event),
     )
