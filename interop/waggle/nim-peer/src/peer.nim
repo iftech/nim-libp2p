@@ -142,7 +142,8 @@ proc run(address: string) {.async.} =
   echo "Nim verified 6 Rust messages across 2 topics and Rust's acknowledgement"
 
 when isMainModule:
-  const usage = "usage: peer <multiaddress/p2p/peer-id> [reconcile|topology [1|4]]"
+  const usage =
+    "usage: peer <multiaddress/p2p/peer-id> [reconcile|topology [1|4]|lifecycle|pressure]"
   if paramCount() notin [1, 2, 3] or "/p2p/" notin paramStr(1):
     quit(usage, 1)
   if paramCount() >= 2:
@@ -156,6 +157,10 @@ when isMainModule:
         quit(usage, 1)
       let initial = if paramCount() == 3 and paramStr(3) == "4": 4.byte else: 1.byte
       waitFor networkInterop(paramStr(1), paramStr(2), initial).wait(60.seconds)
+    of LifecycleScenario, PressureScenario:
+      if paramCount() != 2:
+        quit(usage, 1)
+      waitFor networkInterop(paramStr(1), paramStr(2)).wait(60.seconds)
     else:
       quit(usage, 1)
   else:

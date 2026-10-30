@@ -430,6 +430,206 @@ async fn topology(address_file: &str) -> anyhow::Result<()> {
     }
 }
 
+async fn lifecycle(address_file: &str) -> anyhow::Result<()> {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Phase {
+        AwaitingSubscription,
+        Initial,
+        Resubscribed,
+        Reconnected,
+    }
+
+    let mut swarm = listen(address_file, &[0, 1]).await?;
+    let mut data_subscribers = HashSet::new();
+    let mut phase = Phase::AwaitingSubscription;
+    let mut unsubscribed = false;
+    let mut closed = false;
+    let mut identity = None;
+
+    loop {
+        match next_event(&mut swarm).await? {
+            SwarmEvent::Behaviour(Event::Subscribed { peer_id, topic_id }) => {
+                ensure!(topic_id == topic(0) || topic_id == topic(1), "wrong topic");
+                if topic_id == topic(1) {
+                    ensure!(data_subscribers.insert(peer_id), "duplicate subscription");
+                    ensure!(
+                        identity.is_none_or(|id| id == peer_id),
+                        "identity changed on reconnect"
+                    );
+                    identity = Some(peer_id);
+                    phase = match phase {
+                        Phase::AwaitingSubscription => Phase::Initial,
+                        Phase::Initial => {
+                            ensure!(unsubscribed, "resubscribed before close");
+                            Phase::Resubscribed
+                        }
+                        Phase::Resubscribed => {
+                            ensure!(closed, "expected a new connection");
+                            Phase::Reconnected
+                        }
+                        Phase::Reconnected => bail!("too many subscriptions"),
+                    };
+                    swarm.behaviour_mut().publish(
+                        topic(1),
+                        TestShard {
+                            id: vec![1],
+                            metadata: vec![phase as u8],
+                            pieces: Some(vec![phase as u8]),
+                        },
+                    )?;
+                }
+            }
+            SwarmEvent::Behaviour(Event::Unsubscribed { peer_id, topic_id }) => {
+                if topic_id == topic(1) {
+                    ensure!(Some(peer_id) == identity, "unexpected unsubscribe sender");
+                    data_subscribers.remove(&peer_id);
+                    if phase == Phase::Initial {
+                        ensure!(!unsubscribed, "duplicate unsubscribe");
+                        unsubscribed = true;
+                        swarm.behaviour_mut().publish(
+                            topic(0),
+                            TestShard {
+                                id: vec![RUST, 0],
+                                metadata: vec![],
+                                pieces: Some(vec![1]),
+                            },
+                        )?;
+                    }
+                }
+            }
+            SwarmEvent::Behaviour(Event::Received {
+                peer_id,
+                topic_id,
+                received: msg,
+            }) => {
+                ensure!(Some(peer_id) == identity, "unexpected sender");
+                ensure!(topic_id == topic(0), "unexpected data");
+                if msg.object_id == [NIM, 0] {
+                    ensure!(
+                        phase == Phase::Initial && msg.pieces == Some(vec![1]),
+                        "invalid close probe"
+                    );
+                    // Probe only while the subscription closure is still unobserved.
+                    if !unsubscribed {
+                        swarm.behaviour_mut().publish(
+                            topic(1),
+                            TestShard {
+                                id: vec![RUST, 0],
+                                metadata: vec![],
+                                pieces: Some(vec![]),
+                            },
+                        )?;
+                    }
+                    continue;
+                }
+                ensure!(
+                    phase == Phase::Reconnected && closed && unsubscribed,
+                    "lifecycle incomplete: sender={peer_id}, identity={identity:?}, phase={phase:?}, closed={closed}, unsubscribed={unsubscribed}"
+                );
+                ensure!(
+                    msg.object_id == [NIM, 255] && msg.pieces == Some(vec![3]),
+                    "invalid ack"
+                );
+                println!(
+                    "Rust verified unsubscribe/resubscribe and reconnect with the same Nim identity"
+                );
+                return Ok(());
+            }
+            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
+                ensure!(
+                    phase == Phase::Resubscribed && Some(peer_id) == identity && !closed,
+                    "unexpected disconnect: peer={peer_id}, identity={identity:?}, phase={phase:?}, closed={closed}, unsubscribed={unsubscribed}, cause={cause:?}"
+                );
+                closed = true;
+                data_subscribers.remove(&peer_id);
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn pressure(address_file: &str) -> anyhow::Result<()> {
+    let mut swarm = listen(address_file, &[0, 1]).await?;
+    let mut data_subscribers = HashSet::new();
+    let mut control_subscribers = HashSet::new();
+    let mut started = false;
+    let mut phase = 0u8;
+    let mut remote = None;
+
+    loop {
+        match next_event(&mut swarm).await? {
+            SwarmEvent::Behaviour(Event::Subscribed { peer_id, topic_id }) => {
+                ensure!(
+                    remote.is_none_or(|peer| peer == peer_id),
+                    "unexpected subscriber"
+                );
+                remote = Some(peer_id);
+                ensure!(topic_id == topic(0) || topic_id == topic(1), "wrong topic");
+                if topic_id == topic(0) {
+                    control_subscribers.insert(peer_id);
+                } else {
+                    ensure!(data_subscribers.insert(peer_id), "duplicate subscription");
+                }
+
+                if !started && data_subscribers.len() == 1 && control_subscribers.len() == 1 {
+                    started = true;
+                    swarm.behaviour_mut().publish(
+                        topic(0),
+                        TestShard {
+                            id: vec![RUST, 0],
+                            metadata: vec![],
+                            pieces: Some(vec![0]),
+                        },
+                    )?;
+                }
+            }
+            SwarmEvent::Behaviour(Event::Unsubscribed { peer_id, topic_id }) => {
+                if topic_id == topic(1) {
+                    data_subscribers.remove(&peer_id);
+                }
+            }
+            SwarmEvent::Behaviour(Event::Received {
+                peer_id,
+                topic_id,
+                received: msg,
+            }) => {
+                ensure!(Some(peer_id) == remote, "unexpected sender");
+                if topic_id == topic(0) {
+                    ensure!(
+                        phase == 2 && msg.object_id == [NIM, 255] && msg.pieces == Some(vec![2]),
+                        "invalid pressure ack"
+                    );
+                    println!(
+                        "Rust verified both payloads after Nim queue saturation and unchanged-snapshot retry"
+                    );
+                    return Ok(());
+                }
+
+                ensure!(
+                    started
+                        && phase < 2
+                        && topic_id == topic(1)
+                        && msg.object_id == [phase + 1]
+                        && msg.metadata == Some(vec![1])
+                        && msg.pieces == Some(vec![1]),
+                    "invalid pressure payload or duplicate"
+                );
+                phase += 1;
+                swarm.behaviour_mut().publish(
+                    topic(0),
+                    TestShard {
+                        id: vec![RUST, phase],
+                        metadata: vec![],
+                        pieces: Some(vec![phase]),
+                    },
+                )?;
+            }
+            SwarmEvent::ConnectionClosed { .. } => bail!("unexpected disconnect"),
+            _ => {}
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let path = std::env::args()
@@ -441,6 +641,8 @@ async fn main() -> anyhow::Result<()> {
             None => run(&path).await,
             Some("reconcile") => reconcile(&path).await,
             Some("topology") => topology(&path).await,
+            Some("lifecycle") => lifecycle(&path).await,
+            Some("pressure") => pressure(&path).await,
             Some(scenario) => bail!("unknown scenario: {scenario}"),
         }
     };
