@@ -431,11 +431,19 @@ async fn topology(address_file: &str) -> anyhow::Result<()> {
 }
 
 async fn lifecycle(address_file: &str) -> anyhow::Result<()> {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Phase {
+        AwaitingSubscription,
+        Initial,
+        Resubscribed,
+        Reconnected,
+    }
+
     let mut swarm = listen(address_file, &[0, 1]).await?;
     let mut data_subscribers = HashSet::new();
-    let mut phase = 0u8;
-    let mut unsubscribed = 0;
-    let mut closed = 0;
+    let mut phase = Phase::AwaitingSubscription;
+    let mut unsubscribed = false;
+    let mut closed = false;
     let mut identity = None;
 
     loop {
@@ -449,29 +457,35 @@ async fn lifecycle(address_file: &str) -> anyhow::Result<()> {
                         "identity changed on reconnect"
                     );
                     identity = Some(peer_id);
-                    phase += 1;
-                    ensure!(phase <= 3, "too many subscriptions");
-                    if phase == 2 {
-                        ensure!(unsubscribed == 1, "resubscribed before close");
-                    }
-                    if phase == 3 {
-                        ensure!(closed == 1, "expected a new connection");
-                    }
+                    phase = match phase {
+                        Phase::AwaitingSubscription => Phase::Initial,
+                        Phase::Initial => {
+                            ensure!(unsubscribed, "resubscribed before close");
+                            Phase::Resubscribed
+                        }
+                        Phase::Resubscribed => {
+                            ensure!(closed, "expected a new connection");
+                            Phase::Reconnected
+                        }
+                        Phase::Reconnected => bail!("too many subscriptions"),
+                    };
                     swarm.behaviour_mut().publish(
                         topic(1),
                         TestShard {
                             id: vec![1],
-                            metadata: vec![phase],
-                            pieces: Some(vec![phase]),
+                            metadata: vec![phase as u8],
+                            pieces: Some(vec![phase as u8]),
                         },
                     )?;
                 }
             }
             SwarmEvent::Behaviour(Event::Unsubscribed { peer_id, topic_id }) => {
                 if topic_id == topic(1) {
+                    ensure!(Some(peer_id) == identity, "unexpected unsubscribe sender");
                     data_subscribers.remove(&peer_id);
-                    if phase == 1 {
-                        unsubscribed += 1;
+                    if phase == Phase::Initial {
+                        ensure!(!unsubscribed, "duplicate unsubscribe");
+                        unsubscribed = true;
                         swarm.behaviour_mut().publish(
                             topic(0),
                             TestShard {
@@ -488,25 +502,29 @@ async fn lifecycle(address_file: &str) -> anyhow::Result<()> {
                 topic_id,
                 received: msg,
             }) => {
+                ensure!(Some(peer_id) == identity, "unexpected sender");
                 ensure!(topic_id == topic(0), "unexpected data");
                 if msg.object_id == [NIM, 0] {
                     ensure!(
-                        phase == 1 && msg.pieces == Some(vec![1]),
+                        phase == Phase::Initial && msg.pieces == Some(vec![1]),
                         "invalid close probe"
                     );
-                    swarm.behaviour_mut().publish(
-                        topic(1),
-                        TestShard {
-                            id: vec![RUST, 0],
-                            metadata: vec![],
-                            pieces: Some(vec![]),
-                        },
-                    )?;
+                    // Probe only while the subscription closure is still unobserved.
+                    if !unsubscribed {
+                        swarm.behaviour_mut().publish(
+                            topic(1),
+                            TestShard {
+                                id: vec![RUST, 0],
+                                metadata: vec![],
+                                pieces: Some(vec![]),
+                            },
+                        )?;
+                    }
                     continue;
                 }
                 ensure!(
-                    Some(peer_id) == identity && phase == 3 && closed == 1 && unsubscribed == 1,
-                    "lifecycle incomplete"
+                    phase == Phase::Reconnected && closed && unsubscribed,
+                    "lifecycle incomplete: sender={peer_id}, identity={identity:?}, phase={phase:?}, closed={closed}, unsubscribed={unsubscribed}"
                 );
                 ensure!(
                     msg.object_id == [NIM, 255] && msg.pieces == Some(vec![3]),
@@ -517,12 +535,12 @@ async fn lifecycle(address_file: &str) -> anyhow::Result<()> {
                 );
                 return Ok(());
             }
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
+            SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 ensure!(
-                    phase == 2 && Some(peer_id) == identity && closed == 0,
-                    "unexpected disconnect"
+                    phase == Phase::Resubscribed && Some(peer_id) == identity && !closed,
+                    "unexpected disconnect: peer={peer_id}, identity={identity:?}, phase={phase:?}, closed={closed}, unsubscribed={unsubscribed}, cause={cause:?}"
                 );
-                closed += 1;
+                closed = true;
                 data_subscribers.remove(&peer_id);
             }
             _ => {}
@@ -536,10 +554,16 @@ async fn pressure(address_file: &str) -> anyhow::Result<()> {
     let mut control_subscribers = HashSet::new();
     let mut started = false;
     let mut phase = 0u8;
+    let mut remote = None;
 
     loop {
         match next_event(&mut swarm).await? {
             SwarmEvent::Behaviour(Event::Subscribed { peer_id, topic_id }) => {
+                ensure!(
+                    remote.is_none_or(|peer| peer == peer_id),
+                    "unexpected subscriber"
+                );
+                remote = Some(peer_id);
                 ensure!(topic_id == topic(0) || topic_id == topic(1), "wrong topic");
                 if topic_id == topic(0) {
                     control_subscribers.insert(peer_id);
@@ -565,10 +589,11 @@ async fn pressure(address_file: &str) -> anyhow::Result<()> {
                 }
             }
             SwarmEvent::Behaviour(Event::Received {
+                peer_id,
                 topic_id,
                 received: msg,
-                ..
             }) => {
+                ensure!(Some(peer_id) == remote, "unexpected sender");
                 if topic_id == topic(0) {
                     ensure!(
                         phase == 2 && msg.object_id == [NIM, 255] && msg.pieces == Some(vec![2]),
