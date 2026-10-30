@@ -276,10 +276,11 @@ peers wanting mutual delivery each open their own subscription stream.
 Framing and stream direction remain provisional in the draft. This
 implementation follows the pinned Rust implementation described in the
 [interop guide](../interop/waggle/README.md), which also explains how to run the
-wire compatibility scenario.
+wire, reconciliation, and topology scenarios.
 
 Nim tests cover reconciliation, duplicate suppression, queue pressure, cache
 bounds and expiry, topic isolation, malformed messages, connection changes,
 subscription renewal, and cleanup. A TCP/Noise/Mplex exchange test covers the
-Switch constructor path. Rust interop covers binary wire exchange through a
-Switch configured with TCP, Noise, and Yamux.
+Switch constructor path. Rust interop covers wire exchange, managed
+reconciliation, and three-peer convergence through switches configured with TCP,
+Noise, and Yamux.

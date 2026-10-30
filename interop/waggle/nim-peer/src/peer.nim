@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import std/[os, strutils, sets]
-import ./constants
+import ./[constants, managed, network]
 import chronos
 import ../../../../libp2p/[builders, protocols/waggle]
 
@@ -142,6 +142,21 @@ proc run(address: string) {.async.} =
   echo "Nim verified 6 Rust messages across 2 topics and Rust's acknowledgement"
 
 when isMainModule:
-  if paramCount() != 1 or "/p2p/" notin paramStr(1):
-    quit("usage: peer <multiaddress/p2p/peer-id>", 1)
-  waitFor run(paramStr(1)).wait(60.seconds)
+  const usage = "usage: peer <multiaddress/p2p/peer-id> [reconcile|topology [1|4]]"
+  if paramCount() notin [1, 2, 3] or "/p2p/" notin paramStr(1):
+    quit(usage, 1)
+  if paramCount() >= 2:
+    case paramStr(2)
+    of ReconcileScenario:
+      if paramCount() != 2:
+        quit(usage, 1)
+      waitFor managedInterop(paramStr(1)).wait(60.seconds)
+    of TopologyScenario:
+      if paramCount() == 3 and paramStr(3) notin ["1", "4"]:
+        quit(usage, 1)
+      let initial = if paramCount() == 3 and paramStr(3) == "4": 4.byte else: 1.byte
+      waitFor networkInterop(paramStr(1), paramStr(2), initial).wait(60.seconds)
+    else:
+      quit(usage, 1)
+  else:
+    waitFor run(paramStr(1)).wait(60.seconds)
