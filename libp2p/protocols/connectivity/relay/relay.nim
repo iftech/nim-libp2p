@@ -36,6 +36,7 @@ export chronicles
 const
   RelayMsgSize* = 4096
   DefaultReservationTTL* = initDuration(hours = 1)
+  MaxReservationTTL* = initDuration(hours = 24)
   DefaultLimitDuration* = 120
   DefaultLimitData* = 1 shl 17
   DefaultHeartbeatSleepTime* = 1
@@ -360,6 +361,9 @@ proc setup*(r: Relay, switch: Switch) =
     Left,
   )
 
+func clampReservationTTL*(ttl: times.Duration): times.Duration =
+  if ttl > MaxReservationTTL: MaxReservationTTL else: ttl
+
 proc new*(
     T: typedesc[Relay],
     reservationTTL: times.Duration = DefaultReservationTTL,
@@ -372,7 +376,7 @@ proc new*(
     circuitRelayV1: bool = false,
 ): T =
   let r = T(
-    reservationTTL: reservationTTL,
+    reservationTTL: clampReservationTTL(reservationTTL),
     limit: Limit(duration: limitDuration, data: limitData),
     heartbeatSleepTime: heartbeatSleepTime,
     maxCircuit: maxCircuit,
