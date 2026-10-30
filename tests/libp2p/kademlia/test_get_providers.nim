@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, results, sequtils, sets, tables
+import chronos, results, sequtils, sets
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
 import ../../tools/[lifecycle, topology, unittest]
@@ -27,13 +27,13 @@ suite "KadDHT - Get Providers":
     let key = kads[0].rtable.selfId
 
     # Add key to kads[3] providedKeys locally (without broadcasting via addProvider)
-    kads[3].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    check (await kads[3].store.addProvided(key)).get()
 
     # Verify other nodes don't know about the provider yet
     check:
-      kads[0].providerManager.providerRecords.len() == 0
-      kads[1].providerManager.providerRecords.len() == 0
-      kads[2].providerManager.providerRecords.len() == 0
+      kads[0].providerCount() == 0
+      kads[1].providerCount() == 0
+      kads[2].providerCount() == 0
 
     # kad0 iteratively queries the network and should find kad3 as a provider
     let providers = await kads[0].getProviders(key)
@@ -45,9 +45,9 @@ suite "KadDHT - Get Providers":
 
     checkUntilTimeout:
       # Provider records have propagated
-      kads[0].providerManager.providerRecords.len() == 1
-      kads[1].providerManager.providerRecords.len() == 1
-      kads[2].providerManager.providerRecords.len() == 1
+      kads[0].providerCount() == 1
+      kads[1].providerCount() == 1
+      kads[2].providerCount() == 1
       # Other peers have been discovered
       kads[0].hasKey(kads[2].rtable.selfId)
       kads[0].hasKey(kads[3].rtable.selfId)
@@ -90,7 +90,7 @@ suite "KadDHT - Get Providers":
     let key = kads[0].rtable.selfId
 
     # kads[0] is providing the key
-    kads[0].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    check (await kads[0].store.addProvided(key)).get()
 
     check:
       kads[2].hasKey(kads[0].rtable.selfId)
@@ -125,7 +125,7 @@ suite "KadDHT - Get Providers":
       cidDagPb.toKey() == cidRaw.toKey()
 
     # kads[1] announces as provider using dag-pb CID key
-    kads[1].providerManager.providedKeys.provided[expectedKey] = nowUnixSeconds()
+    check (await kads[1].store.addProvided(expectedKey)).get()
 
     # kads[0] queries using raw CID - should find the same provider
     let providers = await kads[0].getProviders(cidRaw.toKey())
@@ -144,9 +144,9 @@ suite "KadDHT - Get Providers":
     let key = @[1.byte, 2, 3, 4, 5]
 
     # kads[0] (the querying node) is a provider for the key
-    kads[0].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    check (await kads[0].store.addProvided(key)).get()
     # kads[1] is also a provider for the key
-    kads[1].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    check (await kads[1].store.addProvided(key)).get()
 
     let providers = await kads[0].getProviders(key)
 
@@ -168,11 +168,8 @@ suite "KadDHT - Get Providers":
     let provider3 = kads[3].toPeer()
 
     # Both kads[1] and kads[2] know about kads[3] as a provider
-    kads[1].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[1].providerManager.knownKeys[key].incl(provider3)
-
-    kads[2].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[2].providerManager.knownKeys[key].incl(provider3)
+    await kads[1].seedProvider(key, provider3)
+    await kads[2].seedProvider(key, provider3)
 
     let providers = await kads[0].getProviders(key)
 
@@ -190,10 +187,9 @@ suite "KadDHT - Get Providers":
     let key = @[1.byte, 2, 3, 4, 5]
 
     # kads[1] has both valid and invalid providers in its knownKeys
-    kads[1].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[1].providerManager.knownKeys[key].incl(kads[2].toPeer())
+    await kads[1].seedProvider(key, kads[2].toPeer())
     # Invalid provider with malformed peer ID bytes
-    kads[1].providerManager.knownKeys[key].incl(Peer(id: @[1.byte, 1, 1]))
+    await kads[1].seedProvider(key, Peer(id: @[1.byte, 1, 1]))
 
     # kads[0] queries - should filter out invalid provider and return only valid one
     let providers = await kads[0].getProviders(key)
@@ -215,14 +211,11 @@ suite "KadDHT - Get Providers":
 
     # kads[1] knows about 3 providers
     # kads[2] knows about additional 2 providers
-    kads[1].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[1].providerManager.knownKeys[key].incl(kads[3].toPeer())
-    kads[1].providerManager.knownKeys[key].incl(kads[4].toPeer())
-    kads[1].providerManager.knownKeys[key].incl(kads[5].toPeer())
-
-    kads[2].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[2].providerManager.knownKeys[key].incl(kads[6].toPeer())
-    kads[2].providerManager.knownKeys[key].incl(kads[7].toPeer())
+    await kads[1].seedProvider(key, kads[3].toPeer())
+    await kads[1].seedProvider(key, kads[4].toPeer())
+    await kads[1].seedProvider(key, kads[5].toPeer())
+    await kads[2].seedProvider(key, kads[6].toPeer())
+    await kads[2].seedProvider(key, kads[7].toPeer())
 
     # kads[0] queries and should stop at kad[1] as replication reached
     check:
@@ -284,10 +277,10 @@ suite "KadDHT - Get Providers":
     let key = @[1.byte, 2, 3, 4, 5]
 
     # kads[1 .. 4] are providers
-    kads[1].providerManager.providedKeys.provided[key] = nowUnixSeconds()
-    kads[2].providerManager.providedKeys.provided[key] = nowUnixSeconds()
-    kads[3].providerManager.providedKeys.provided[key] = nowUnixSeconds()
-    kads[4].providerManager.providedKeys.provided[key] = nowUnixSeconds()
+    check (await kads[1].store.addProvided(key)).get()
+    check (await kads[2].store.addProvided(key)).get()
+    check (await kads[3].store.addProvided(key)).get()
+    check (await kads[4].store.addProvided(key)).get()
 
     let providers = await kads[0].getProviders(key)
 
