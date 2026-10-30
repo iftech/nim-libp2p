@@ -3,7 +3,7 @@
 
 ## The contract tests of ``KadStore``. Run them for each backend with ``kadStoreTestSuite``.
 
-import std/sequtils
+import std/[algorithm, sequtils]
 import chronos, results
 import ../../../libp2p/[peerid, protocols/kademlia, protocols/kademlia/memory_store]
 import ../../tools/[unittest, crypto]
@@ -14,6 +14,8 @@ const
   Now: UnixTimestamp = 1_000
   Later: UnixTimestamp = Now + 60
   Unlimited = high(int)
+  PageSize = 3
+  ProvidedKeyBytes = [7'u8, 2, 9, 4, 1, 8, 3, 6, 5, 10]
 
 type RemoveCase = object
   target: Key
@@ -31,6 +33,25 @@ proc storedValue(b: byte, expiresAt = Later): StoredValue =
 
 proc storedProvider(peerId: PeerId, expiresAt = Later): StoredProvider =
   StoredProvider(provider: Peer(id: Opt.some(peerId.getBytes())), expiresAt: expiresAt)
+
+func providedKey(b: byte): Key =
+  Key.fromBytes(@[b])
+
+template provideAll(store: KadStore, bytes: openArray[byte]) =
+  for b in bytes:
+    check (await store.addProvided(providedKey(b))).isOk()
+
+proc listProvidedFrom(
+    store: KadStore, start: Opt[Key], limit: int
+): Future[seq[Key]] {.async.} =
+  var keys: seq[Key]
+  var after = start
+  while true:
+    let page = (await store.listProvided(after, limit)).get()
+    if page.len == 0:
+      return keys
+    keys.add(page)
+    after = Opt.some(page[^1])
 
 proc valueKeys(values: seq[StoredValue]): seq[Key] =
   var keys: seq[Key]
@@ -413,44 +434,89 @@ template kadStoreTestSuite*(
           AddProviderOutcome.storeFull
 
   suite name & " provided keys":
-    asyncTest "addProvided is idempotent and refuses a new key when full":
-      let store = factory(KadStoreLimits(maxProvided: Opt.some(1)))
-      let key = Key.init([1'u8])
+    asyncTest "addProvided stores the key":
+      let store = factory(KadStoreLimits())
+
+      check (await store.addProvided(providedKey(1))).isOk()
 
       check:
-        (await store.addProvided(key)).get()
-        (await store.addProvided(key)).get()
-        not (await store.addProvided(Key.init([2'u8]))).get()
-        (await store.hasProvided(key)).get()
-        not (await store.hasProvided(Key.init([2'u8]))).get()
+        (await store.hasProvided(providedKey(1))).get()
+        not (await store.hasProvided(providedKey(2))).get()
+
+    asyncTest "a re-add refreshes the key without an eviction":
+      let store = factory(KadStoreLimits(maxProvided: Opt.some(2)))
+      store.provideAll([1'u8, 2, 2])
+
+      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
+        @[providedKey(1), providedKey(2)]
+
+      store.provideAll([1'u8, 3])
+
+      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
+        @[providedKey(1), providedKey(3)]
+
+    asyncTest "a new key in a full store evicts the oldest key":
+      let store = factory(KadStoreLimits(maxProvided: Opt.some(2)))
+      store.provideAll([1'u8, 2, 3])
+
+      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
+        @[providedKey(2), providedKey(3)]
 
     asyncTest "delProvided removes the key and frees capacity":
-      let store = factory(KadStoreLimits(maxProvided: Opt.some(1)))
-      check (await store.addProvided(Key.init([1'u8]))).get()
-
-      check (await store.delProvided(Key.init([1'u8]))).isOk()
+      let store = factory(KadStoreLimits(maxProvided: Opt.some(2)))
+      store.provideAll([1'u8, 2])
 
       check:
-        not (await store.hasProvided(Key.init([1'u8]))).get()
-        (await store.addProvided(Key.init([2'u8]))).get()
+        (await store.delProvided(providedKey(2))).isOk()
+        (await store.addProvided(providedKey(3))).isOk()
+
+      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
+        @[providedKey(1), providedKey(3)]
+
+    asyncTest "a store with maxProvided 0 stores no provided key":
+      let store = factory(KadStoreLimits(maxProvided: Opt.some(0)))
+
+      check (await store.addProvided(providedKey(1))).isOk()
+
+      check not (await store.hasProvided(providedKey(1))).get()
+
+    asyncTest "delProvided of an absent key succeeds and keeps the other keys":
+      let store = factory(KadStoreLimits())
+      store.provideAll([1'u8, 2])
+
+      check (await store.delProvided(providedKey(3))).isOk()
+
+      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
+        @[providedKey(1), providedKey(2)]
 
     asyncTest "provided keys survive pruneExpired":
       let store = factory(KadStoreLimits())
-      check (await store.addProvided(Key.init([1'u8]))).get()
+      check (await store.addProvided(providedKey(1))).isOk()
 
       check (await store.pruneExpired(high(UnixTimestamp))).isOk()
 
-      check (await store.hasProvided(Key.init([1'u8]))).get()
+      check (await store.hasProvided(providedKey(1))).get()
 
-    asyncTest "listProvided pages in key byte order":
+    asyncTest "listProvided returns every key exactly once across pages":
       let store = factory(KadStoreLimits())
-      let keys = [3'u8, 1, 2].mapIt(Key.fromBytes(@[it]))
-      for key in keys:
-        check (await store.addProvided(key)).get()
+      store.provideAll(ProvidedKeyBytes)
 
-      let first = (await store.listProvided(Opt.none(Key), 2)).get()
+      let listed = await store.listProvidedFrom(Opt.none(Key), PageSize)
 
       check:
-        first == @[keys[1], keys[2]]
-        (await store.listProvided(Opt.some(first[^1]), 2)).get() == @[keys[0]]
+        listed == ProvidedKeyBytes.sorted().mapIt(providedKey(it))
         (await store.listProvided(Opt.none(Key), 0)).get().len == 0
+
+    asyncTest "listProvided pages past keys deleted between pages":
+      let store = factory(KadStoreLimits())
+      store.provideAll(ProvidedKeyBytes)
+
+      let first = (await store.listProvided(Opt.none(Key), PageSize)).get()
+      let rest = ProvidedKeyBytes.sorted().mapIt(providedKey(it))[PageSize ..^ 1]
+
+      check:
+        (await store.delProvided(first[^1])).isOk()
+        (await store.delProvided(rest[0])).isOk()
+
+      check (await store.listProvidedFrom(Opt.some(first[^1]), PageSize)) ==
+        rest[1 ..^ 1]
