@@ -25,11 +25,50 @@ proc createSwitch(r: Relay = nil, useYamux: bool = false): Switch =
 
   return builder.build()
 
+proc createMockRelay(expire: uint64): Switch =
+  let
+    mockRelay = createSwitch()
+    hop = new LPProtocol
+  hop.codec = RelayV2HopCodec
+  hop.handler = proc(
+      stream: Stream, proto: string
+  ) {.async: (raises: [CancelledError]).} =
+    defer:
+      await stream.close()
+    try:
+      discard await stream.readLp(RelayMsgSize)
+      let reply = HopMessage(
+        msgType: Opt.some(HopMessageType.Status),
+        reservation: Opt.some(Reservation(expire: Opt.some(expire))),
+        status: Opt.some(StatusV2.Ok),
+      )
+      await stream.writeLp(encode(reply))
+    except LPStreamError:
+      raiseAssert "mock relay failed to answer RESERVE"
+  mockRelay.mount(hop)
+  mockRelay
+
+proc tryReserveOnMockRelay(
+    cl: RelayClient, expire: uint64
+): Future[LPResult[Rsvp]] {.async.} =
+  let mockRelay = createMockRelay(expire)
+  await mockRelay.start()
+  defer:
+    await mockRelay.stop()
+
+  await cl.tryReserve(mockRelay.peerInfo.peerId, mockRelay.peerInfo.addrs)
+
 suite "Circuit Relay V2":
   test "Relay v1 hop is opt-in":
     check:
       Relay.new().codecs == @[RelayV2HopCodec]
       Relay.new(circuitRelayV1 = true).codecs == @[RelayV1Codec]
+
+  test "Relay clamps the reservation TTL to MaxReservationTTL":
+    let ttl = MaxReservationTTL + initDuration(hours = 1)
+    check:
+      Relay.new(reservationTTL = ttl).reservationTTL == MaxReservationTTL
+      RelayClient.new(reservationTTL = ttl).reservationTTL == MaxReservationTTL
 
   suite "Voucher":
     test "Reject signed vouchers with missing required fields":
@@ -137,6 +176,43 @@ suite "Circuit Relay V2":
       let res = await cl2.tryReserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
       check:
         res.isOfError(ReservationFailedCause)
+
+    # The margin keeps a clock tick from moving an expiry across the limit.
+    const
+      MaxTtl = MaxReservationTTL.inSeconds()
+      Margin = 60'i64
+
+    asyncTest "Reserve fails on an invalid expiry":
+      checkpoint "expiry in the past"
+      let past = await cl2.tryReserveOnMockRelay((getTime().toUnix() - Margin).uint64)
+      check:
+        past.isOfError("Bad expiration date")
+
+      checkpoint "expiry above int64.high"
+      let tooHigh = await cl2.tryReserveOnMockRelay(int64.high().uint64 + 1)
+      check:
+        tooHigh.isOfError("Bad expiration date")
+
+    asyncTest "Reserve clamps an expiry beyond MaxReservationTTL":
+      checkpoint "expiry just over MaxReservationTTL"
+      var before = getTime().toUnix()
+      let over =
+        (await cl2.tryReserveOnMockRelay((before + MaxTtl + Margin).uint64)).tryGet()
+      check:
+        over.expire in (before + MaxTtl).uint64 .. (getTime().toUnix() + MaxTtl).uint64
+
+      checkpoint "expiry of int64.high"
+      before = getTime().toUnix()
+      let high = (await cl2.tryReserveOnMockRelay(int64.high().uint64)).tryGet()
+      check:
+        high.expire in (before + MaxTtl).uint64 .. (getTime().toUnix() + MaxTtl).uint64
+
+    asyncTest "Reserve keeps an expiry just under MaxReservationTTL":
+      let
+        expire = (getTime().toUnix() + MaxTtl - Margin).uint64
+        rsvp = (await cl2.tryReserveOnMockRelay(expire)).tryGet()
+      check:
+        rsvp.expire == expire
 
     asyncTest "Too many reservations + Reconnect":
       expect ReservationError:
