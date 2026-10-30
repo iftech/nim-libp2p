@@ -102,11 +102,16 @@ proc toRsvp(msg: HopMessage, relayPeerId: PeerId): LPResult[Rsvp] =
     return err("Missing reservation information")
   let expire = reservation.expire.valueOr:
     return err("Missing expire")
-  if expire > int64.high().uint64 or getTime().utc > expire.int64.fromUnix.utc:
+  let now = getTime().toUnix()
+  if expire > int64.high().uint64 or expire < now.uint64:
     return err("Bad expiration date")
 
+  let maxExpire = (now + MaxReservationTTL.inSeconds()).uint64
+  if expire > maxExpire:
+    debug "Clamping relay reservation expiry", relayPeerId, expire, maxExpire
+
   var rsvp = Rsvp(
-    expire: expire,
+    expire: min(expire, maxExpire),
     addrs: reservation.addrs,
     limitDuration: msg.limit.get(Limit()).duration,
     limitData: msg.limit.get(Limit()).data,
@@ -348,7 +353,7 @@ proc new*(
 ): T =
   let cl = T(
     canHop: canHop,
-    reservationTTL: reservationTTL,
+    reservationTTL: clampReservationTTL(reservationTTL),
     limit: Limit(duration: limitDuration, data: limitData),
     heartbeatSleepTime: heartbeatSleepTime,
     maxCircuit: maxCircuit,
