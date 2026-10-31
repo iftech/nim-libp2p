@@ -57,6 +57,13 @@ proc `[]=`*(key: var Key, index: int, value: byte) {.inline.} =
 proc `==`*(a, b: Key): bool {.borrow.}
 proc hash*(key: Key): Hash {.borrow.}
 
+func `<`*(a, b: Key): bool =
+  ## Byte order. A key sorts before its extension.
+  for i in 0 ..< min(a.len, b.len):
+    if a[i] != b[i]:
+      return a[i] < b[i]
+  a.len < b.len
+
 proc `$`*(key: Key): string =
   $seq[byte](key)
 
@@ -85,6 +92,9 @@ func len*(key: RecordKey): int =
 
 func `==`*(a, b: RecordKey): bool =
   a.toKey() == b.toKey()
+
+func `<`*(a, b: RecordKey): bool =
+  a.toKey() < b.toKey()
 
 func hash*(key: RecordKey): Hash =
   key.toKey().hash()
