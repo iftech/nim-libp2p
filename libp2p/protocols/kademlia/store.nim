@@ -6,7 +6,7 @@
 ##
 ## Contract for every backend:
 ## - A read never returns an entry with ``expiresAt <= now``. Provided keys do not expire.
-## - An expired entry never costs capacity. A store refuses a new entry with ``ok(false)``, ``keyFull`` or ``storeFull`` only when its live entries fill the cap.
+## - An expired entry never costs capacity. A store refuses a new value or provider with ``ok(false)``, ``keyFull`` or ``storeFull`` only when its live entries fill the cap.
 ## - ``err`` means the backend failed. The core logs it and treats the call as "not stored" or "not found".
 ## - A ``limit`` below 1 returns no entries.
 ## - A method must not block the chronos event loop. Slow I/O goes through ``await``.
@@ -83,8 +83,8 @@ method removeProvider*(
 
 method addProvided*(
     store: KadStore, key: Key
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), base, gcsafe.} =
-  ## Idempotent: ``true`` for a key already provided. ``false`` when a new key finds the store full.
+): Future[LPResult[void]] {.async: (raises: [CancelledError]), base, gcsafe.} =
+  ## Stores or refreshes the key. A full store evicts its oldest key; a tie goes to the earliest provided.
   raiseAssert "[KadStore.addProvided] abstract method not implemented!"
 
 method delProvided*(

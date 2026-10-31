@@ -3,7 +3,7 @@
 
 ## The default ``KadStore``: plain tables in memory. A ``none`` capacity means no limit.
 
-import std/[sequtils, sets, tables]
+import std/[sequtils, tables]
 import chronos
 import ../../[peerid, results]
 import ./[key_value, protobuf, store, types]
@@ -19,7 +19,7 @@ type
     valueKeys: seq[RecordKey] ## the keys of ``values``, sorted
     providers: Table[Key, seq[StoredProvider]]
     providerCount: int
-    provided: HashSet[Key]
+    provided: OrderedTable[Key, UnixTimestamp] ## in provide order
     providedKeys: seq[Key] ## the keys of ``provided``, sorted
     limits: KadStoreLimits
     nextValueExpiry: UnixTimestamp ## no value expires before this time
@@ -211,23 +211,38 @@ method removeProvider*(
     store.providers.del(key)
   ok()
 
+func oldestProvided(store: MemoryKadStore): Opt[Key] =
+  var oldest: Opt[Key]
+  var oldestAt: UnixTimestamp
+  for key, providedAt in store.provided:
+    if oldest.isNone() or providedAt < oldestAt:
+      oldest = Opt.some(key)
+      oldestAt = providedAt
+  oldest
+
+proc dropProvided(store: MemoryKadStore, key: Key) =
+  store.provided.del(key)
+  store.providedKeys.removeKey(key)
+
 method addProvided*(
     store: MemoryKadStore, key: Key
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   if key in store.provided:
-    return ok(true)
-  if store.provided.len.atCapacity(store.limits.maxProvided):
-    return ok(false)
+    # Re-insert so provide order breaks same-second ties in oldestProvided.
+    store.dropProvided(key)
+  elif store.provided.len.atCapacity(store.limits.maxProvided):
+    let oldest = store.oldestProvided().valueOr:
+      return ok()
+    store.dropProvided(oldest)
 
-  store.provided.incl(key)
+  store.provided[key] = nowUnixSeconds()
   store.providedKeys.insertKey(key)
-  ok(true)
+  ok()
 
 method delProvided*(
     store: MemoryKadStore, key: Key
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
-  store.provided.excl(key)
-  store.providedKeys.removeKey(key)
+  store.dropProvided(key)
   ok()
 
 method hasProvided*(
