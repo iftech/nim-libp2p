@@ -12,7 +12,7 @@ runLint:
     linter = chronicles
     check messageEndsWithPunctuation:
       severity = error
-    check messageOneSentence:
+    check messageMaxSentences:
       severity = error
 
   step "Check chronicles fields":

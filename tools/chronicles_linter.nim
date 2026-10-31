@@ -26,6 +26,7 @@ type
   MessageSettings* = object ## Settings shared by the message checks.
     trailingPunctuation*: set[char] = {'.', '!', '?'}
     allowTrailingPunctuation*: bool ## Accept `Some message.`.
+    maxSentences*: Positive = 1
 
   FieldNameSettings* = object
     minLength*: int ## Shortest accepted field name.
@@ -134,25 +135,24 @@ proc runMessageEndsWithPunctuation(
     if node != nil and node.strVal.strip()[^1] in s.trailingPunctuation:
       result.add finding(node, "log message must not end with forbidden punctuation")
 
-proc runMessageOneSentence(ast: PNode, s: MessageSettings): seq[Finding] =
+proc runMessageMaxSentences(ast: PNode, s: MessageSettings): seq[Finding] =
   for call in logCalls(ast):
     let node = messageNode(call)
     if node == nil:
       continue
     let msg = node.strVal
-    # A period, at least one whitespace character, then a capital letter starts
-    # a new sentence: "First sentence. Second sentence". This mirrors the
-    # `\.\s+(?=[A-Z])` pattern used by the Python audit.
-    var i = 0
-    while i < msg.len - 1:
-      if msg[i] == '.':
-        var j = i + 1
-        while j < msg.len and msg[j] in {' ', '\t', '\n', '\r'}:
-          inc j
-        if j > i + 1 and j < msg.len and msg[j] in {'A' .. 'Z'}:
-          result.add finding(node, "log message must contain one sentence")
-          break
-      inc i
+    var sentenceCount = 1 # if the message is not empty, there is at least one sentence
+
+    for i in 0 ..< msg.high:
+      if msg[i] in s.trailingPunctuation and msg[i + 1] in Whitespace:
+        inc sentenceCount
+
+      if sentenceCount > s.maxSentences:
+        result.add finding(
+          node,
+          "log message must contain no more than " & $s.maxSentences & " sentences",
+        )
+        break
 
 proc runFieldNameLength(ast: PNode, s: FieldNameSettings): seq[Finding] =
   for call in logCalls(ast):
@@ -191,6 +191,8 @@ let chronicles* = newLinter("chronicles")
 let messageEndsWithPunctuation* = chronicles.check(
   "messageEndsWithPunctuation", runMessageEndsWithPunctuation
 )
+let messageMaxSentences* =
+  chronicles.check("messageMaxSentences", runMessageMaxSentences)
 let fieldNameLength* =
   chronicles.check("fieldNameLength", runFieldNameLength, defaultFieldNameSettings)
 let errForException* =
@@ -198,3 +200,4 @@ let errForException* =
 let noPayloadWhenElevated* = chronicles.check(
   "noPayloadWhenElevated", runNoPayloadWhenElevated, defaultPayloadSettings
 )
+
