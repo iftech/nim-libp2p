@@ -125,9 +125,7 @@ proc isExceptionText(value: PNode): bool =
 
 # --- checks ---------------------------------------------------------------
 
-proc runMessageEndsWithPunctuation(
-    ast: PNode, s: MessageSettings
-): seq[Finding] =
+proc runMessageEndsWithPunctuation(ast: PNode, s: MessageSettings): seq[Finding] =
   if s.allowTrailingPunctuation:
     return
   for call in logCalls(ast):
@@ -188,9 +186,8 @@ proc runNoPayloadWhenElevated(ast: PNode, s: PayloadSettings): seq[Finding] =
 
 let chronicles* = newLinter("chronicles")
 
-let messageEndsWithPunctuation* = chronicles.check(
-  "messageEndsWithPunctuation", runMessageEndsWithPunctuation
-)
+let messageEndsWithPunctuation* =
+  chronicles.check("messageEndsWithPunctuation", runMessageEndsWithPunctuation)
 let messageMaxSentences* =
   chronicles.check("messageMaxSentences", runMessageMaxSentences)
 let fieldNameLength* =
