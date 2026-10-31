@@ -574,12 +574,20 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
 
   ok(switch)
 
+func relayClient(b: SwitchBuilder): RelayClient =
+  b.circuitRelay.ifValue(relay):
+    if relay of RelayClient:
+      return RelayClient(relay)
+  nil
+
 proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
   b.natConfig.ifValue(natCfg):
-    switch.services.add(NATService.new(natCfg, b.rng, b.natPortMapperFactory))
+    switch.services.add(
+      NATService.new(natCfg, b.rng, b.natPortMapperFactory, b.relayClient())
+    )
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
@@ -631,7 +639,9 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
 
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
   b.natConfig.ifValue(natCfg):
-    validateNATConfig(natCfg).onErrorRaise(LPError)
+    validateNATConfig(natCfg, b.circuitRelay).onErrorRaise(LPError)
+    if natCfg.holePunching.isSome() and b.circuitRelay.isNone():
+      b.circuitRelay = Opt.some(Relay(RelayClient.new()))
   let switch = b.buildSwitch().valueOrRaise(LPError)
   b.addServices(switch)
   b.mountProtocols(switch).onErrorRaise(LPError)
