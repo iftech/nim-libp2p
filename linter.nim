@@ -10,7 +10,7 @@ runLint:
 
   step "Check chronicles messages":
     linter = chronicles
-    check messageEndsWithPeriod:
+    check messageEndsWithPunctuation:
       severity = error
     check messageOneSentence:
       severity = error

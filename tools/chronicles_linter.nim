@@ -24,7 +24,8 @@ import lint/types
 
 type
   MessageSettings* = object ## Settings shared by the message checks.
-    allowTrailingPeriod*: bool ## Accept `Some message.`.
+    trailingPunctuation*: set[char] = {'.', '!', '?'}
+    allowTrailingPunctuation*: bool ## Accept `Some message.`.
 
   FieldNameSettings* = object
     minLength*: int ## Shortest accepted field name.
@@ -123,13 +124,15 @@ proc isExceptionText(value: PNode): bool =
 
 # --- checks ---------------------------------------------------------------
 
-proc runMessageEndsWithPeriod(ast: PNode, s: MessageSettings): seq[Finding] =
-  if s.allowTrailingPeriod:
+proc runMessageEndsWithPunctuation(
+    ast: PNode, s: MessageSettings
+): seq[Finding] =
+  if s.allowTrailingPunctuation:
     return
   for call in logCalls(ast):
     let node = messageNode(call)
-    if node != nil and node.strVal.endsWith("."):
-      result.add finding(node, "log message must not end with a full stop")
+    if node != nil and node.strVal.strip()[^1] in s.trailingPunctuation:
+      result.add finding(node, "log message must not end with forbidden punctuation")
 
 proc runMessageOneSentence(ast: PNode, s: MessageSettings): seq[Finding] =
   for call in logCalls(ast):
@@ -185,9 +188,9 @@ proc runNoPayloadWhenElevated(ast: PNode, s: PayloadSettings): seq[Finding] =
 
 let chronicles* = newLinter("chronicles")
 
-let messageEndsWithPeriod* =
-  chronicles.check("messageEndsWithPeriod", runMessageEndsWithPeriod)
-let messageOneSentence* = chronicles.check("messageOneSentence", runMessageOneSentence)
+let messageEndsWithPunctuation* = chronicles.check(
+  "messageEndsWithPunctuation", runMessageEndsWithPunctuation
+)
 let fieldNameLength* =
   chronicles.check("fieldNameLength", runFieldNameLength, defaultFieldNameSettings)
 let errForException* =
