@@ -197,4 +197,3 @@ let errForException* =
 let noPayloadWhenElevated* = chronicles.check(
   "noPayloadWhenElevated", runNoPayloadWhenElevated, defaultPayloadSettings
 )
-
