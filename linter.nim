@@ -6,7 +6,7 @@ import tools/chronicles_linter
 
 runLint:
   sources = ["."]
-  ignoredPatterns = ["./nimbledeps/**/*", "./nimcache/**/*"]
+  ignoredPatterns = ["**/nimbledeps/**", "**/nimcache*/**", "./build/**/*"]
 
   step "Check chronicles messages":
     linter = chronicles
