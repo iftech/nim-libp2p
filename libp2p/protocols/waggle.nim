@@ -26,7 +26,6 @@ const
   WaggleInvalidDataCause* = "Invalid Waggle data"
 
 type
-  TopicId* = seq[byte]
   ValidatedTopic = distinct TopicId
 
   PiecesHandler* = proc(peer: PeerId, topicId: TopicId, msg: ObjectPieces) {.
@@ -562,7 +561,7 @@ proc advertise(
         inc discovered
   return sent
 
-proc removeObject*(p: Waggle, topicId, objectId: seq[byte]): bool =
+proc removeObject*(p: Waggle, topicId: TopicId, objectId: ObjectId): bool =
   ## Forget the snapshot and peer views. Already queued transmissions are retained.
   p.state.removeObject(topicId, objectId)
 

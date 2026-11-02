@@ -11,6 +11,7 @@ export results
 type
   ConnectionId* = uint64
   ObjectId* = seq[byte]
+  TopicId* = seq[byte]
 
   WaggleMetadata* = ref object of RootObj
   WaggleShard* = ref object of RootObj
