@@ -501,15 +501,15 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   b.resolvedRelay.ifValue(relay):
     if relay of RelayClient and muxers.len == 0:
       # Relay circuits need a stream muxer even when the relay is reached over QUIC.
-      proc newYamux(conn: RawConn): Muxer =
-        Yamux.new(conn)
-
       proc newMplex(conn: RawConn): Muxer =
         Mplex.new(conn)
 
-      warn "No stream muxers configured for relay client; using Yamux and Mplex defaults"
-      muxers.add(MuxerProvider.new(newYamux, YamuxCodec))
+      proc newYamux(conn: RawConn): Muxer =
+        Yamux.new(conn)
+
+      warn "No stream muxers configured for relay client; using Mplex and Yamux defaults"
       muxers.add(MuxerProvider.new(newMplex, MplexCodec))
+      muxers.add(MuxerProvider.new(newYamux, YamuxCodec))
 
   var secureManagerInstances: seq[Secure]
   if SecureProtocol.Noise in b.secureManagers:
