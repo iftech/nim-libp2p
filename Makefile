@@ -151,3 +151,8 @@ clean-nim:
 	[ ! -d nimbledeps ] || rm -rf nimbledeps
 	[ ! -d tests/nimbledeps ] || rm -rf tests/nimbledeps
 	rm nimble.paths tests/nimble.paths 2>/dev/null || true
+
+lint:
+   # will be implemented in nim-libp2p#3367
+   echo "not implemented"
+   quit(1)
