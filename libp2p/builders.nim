@@ -99,6 +99,7 @@ type
     natPortMapperFactory: PortMapperFactory
     autotlsConfig: Opt[AutotlsConfig]
     circuitRelay: Opt[Relay]
+    resolvedRelay: Opt[Relay]
     rdvConfig: Opt[RendezVousConfig]
     kad: Opt[KadInfo]
     identifyPusherEnabled: bool
@@ -480,7 +481,7 @@ proc resolveCircuitRelay(b: SwitchBuilder): Opt[Relay] =
       return Opt.some(Relay(RelayClient.new()))
   b.circuitRelay
 
-proc buildSwitch(b: SwitchBuilder, circuitRelay: Opt[Relay]): LPResult[Switch] =
+proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   if b.rng.isNil:
     b.rng = newRng()
     if b.rng.isNil: # newRng could fail
@@ -494,8 +495,10 @@ proc buildSwitch(b: SwitchBuilder, circuitRelay: Opt[Relay]): LPResult[Switch] =
     debug "No secure managers configured; using Noise by default"
     b.secureManagers.add(SecureProtocol.Noise)
 
+  b.resolvedRelay = b.resolveCircuitRelay()
+
   var muxers = b.muxers
-  circuitRelay.ifValue(relay):
+  b.resolvedRelay.ifValue(relay):
     if relay of RelayClient and muxers.len == 0:
       # Relay circuits need a stream muxer even when the relay is reached over QUIC.
       proc newMuxer(conn: RawConn): Muxer =
@@ -595,21 +598,21 @@ func relayClient(circuitRelay: Opt[Relay]): RelayClient =
       return RelayClient(relay)
   nil
 
-proc addServices(b: SwitchBuilder, switch: Switch, circuitRelay: Opt[Relay]) =
+proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
   b.natConfig.ifValue(natCfg):
     switch.services.add(
-      NATService.new(natCfg, b.rng, b.natPortMapperFactory, circuitRelay.relayClient())
+      NATService.new(
+        natCfg, b.rng, b.natPortMapperFactory, b.resolvedRelay.relayClient()
+      )
     )
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
 
-proc mountProtocols(
-    b: SwitchBuilder, switch: Switch, circuitRelay: Opt[Relay]
-): LPResult[void] =
+proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if not switch.peerStore.identify.isNil:
     ?switch.tryMount(switch.peerStore.identify)
 
@@ -624,7 +627,7 @@ proc mountProtocols(
   if b.autonatEnabled:
     ?switch.tryMount(Autonat.new(switch))
 
-  circuitRelay.ifValue(relay):
+  b.resolvedRelay.ifValue(relay):
     if relay of RelayClient:
       switch.addTransport(RelayTransport.new(RelayClient(relay), switch.muxedUpgrade))
     relay.setup(switch)
@@ -657,8 +660,7 @@ proc mountProtocols(
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
   b.natConfig.ifValue(natCfg):
     validateNATConfig(natCfg, b.circuitRelay).onErrorRaise(LPError)
-  let circuitRelay = b.resolveCircuitRelay()
-  let switch = b.buildSwitch(circuitRelay).valueOrRaise(LPError)
-  b.addServices(switch, circuitRelay)
-  b.mountProtocols(switch, circuitRelay).onErrorRaise(LPError)
+  let switch = b.buildSwitch().valueOrRaise(LPError)
+  b.addServices(switch)
+  b.mountProtocols(switch).onErrorRaise(LPError)
   switch
