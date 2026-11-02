@@ -117,7 +117,9 @@ iterator logFields(call: PNode): tuple[name: string, value: PNode, named: bool] 
     of nkExprEqExpr:
       if arg[0].kind == nkIdent:
         yield (arg[0].ident.s, arg[1], true)
-      else:
+      elif arg[0].kind == nkAccQuoted and arg[0].len == 1 and arg[0][0].kind == nkIdent:
+        yield (arg[0][0].ident.s, arg[1], true)
+      elif arg[0].kind in {nkStrLit .. nkTripleStrLit}:
         yield (arg[0].strVal, arg[1], false)
     of nkIdent:
       yield (arg.ident.s, arg, false)
