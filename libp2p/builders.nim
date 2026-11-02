@@ -99,6 +99,7 @@ type
     natPortMapperFactory: PortMapperFactory
     autotlsConfig: Opt[AutotlsConfig]
     circuitRelay: Opt[Relay]
+    resolvedRelay: Opt[Relay]
     rdvConfig: Opt[RendezVousConfig]
     kad: Opt[KadInfo]
     identifyPusherEnabled: bool
@@ -474,6 +475,12 @@ proc withPrivateAddressFilter*(b: SwitchBuilder): SwitchBuilder =
   ## Circuit relay and DNS addresses are never filtered.
   b.withAddressPolicy(publicRoutableAddressPolicy)
 
+proc resolveCircuitRelay(b: SwitchBuilder): Opt[Relay] =
+  b.natConfig.ifValue(natCfg):
+    if natCfg.holePunching.isSome() and b.circuitRelay.isNone():
+      return Opt.some(Relay(RelayClient.new()))
+  b.circuitRelay
+
 proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   if b.rng.isNil:
     b.rng = newRng()
@@ -558,6 +565,8 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
     dialBackoff = b.dialBackoff,
   )
 
+  b.resolvedRelay = b.resolveCircuitRelay()
+
   let switch = Switch(
     peerInfo: peerInfo,
     ms: ms,
@@ -574,12 +583,22 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
 
   ok(switch)
 
+func relayClient(circuitRelay: Opt[Relay]): RelayClient =
+  circuitRelay.ifValue(relay):
+    if relay of RelayClient:
+      return RelayClient(relay)
+  nil
+
 proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
   b.natConfig.ifValue(natCfg):
-    switch.services.add(NATService.new(natCfg, b.rng, b.natPortMapperFactory))
+    switch.services.add(
+      NATService.new(
+        natCfg, b.rng, b.natPortMapperFactory, b.resolvedRelay.relayClient()
+      )
+    )
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
@@ -599,7 +618,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if b.autonatEnabled:
     ?switch.tryMount(Autonat.new(switch))
 
-  b.circuitRelay.ifValue(relay):
+  b.resolvedRelay.ifValue(relay):
     if relay of RelayClient:
       switch.addTransport(RelayTransport.new(RelayClient(relay), switch.muxedUpgrade))
     relay.setup(switch)
@@ -631,7 +650,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
 
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
   b.natConfig.ifValue(natCfg):
-    validateNATConfig(natCfg).onErrorRaise(LPError)
+    validateNATConfig(natCfg, b.circuitRelay).onErrorRaise(LPError)
   let switch = b.buildSwitch().valueOrRaise(LPError)
   b.addServices(switch)
   b.mountProtocols(switch).onErrorRaise(LPError)
