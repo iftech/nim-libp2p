@@ -11,6 +11,8 @@ import ../../../libp2p/services/[natservice, hpservice, autorelayservice]
 import ../../../libp2p/services/nat/portmapper
 import ../../../libp2p/protocols/connectivity/dcutr/core
 import ../../../libp2p/protocols/connectivity/relay/[relay, client]
+import ../../../libp2p/muxers/[mplex/mplex, yamux/yamux]
+import ../../../libp2p/upgrademngrs/muxedupgrade
 import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 
 type
@@ -460,6 +462,48 @@ suite "NATService":
     check:
       nat.relayClient == client
       HPService(nat.reachability).autoRelayService.client == client
+
+  asyncTest "QUIC-only hole-punching nodes use Mplex for relay circuits":
+    let reserved = newFuture[seq[MultiAddress]]()
+    proc onReservation(addresses: seq[MultiAddress]) {.gcsafe, raises: [].} =
+      reserved.completeOnce(addresses)
+
+    let
+      relay = standardBuilder(@[QuicAutoAddress]).withCircuitRelay(Relay.new()).build()
+      node = makeSwitch(
+        holePunchingConfig(onReservation = onReservation), @[QuicAutoAddress]
+      )
+      dialer =
+        standardBuilder(@[QuicAutoAddress]).withCircuitRelay(RelayClient.new()).build()
+    check:
+      relay.muxedUpgrade.muxers.len == 0
+      node.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec]
+      dialer.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec]
+
+    await allFutures(relay.start(), node.start(), dialer.start())
+    defer:
+      await allFutures(relay.stop(), node.stop(), dialer.stop())
+
+    privateAccess(NATService)
+    await findNatService(node).observers.notify(
+      NetworkReachability.NotReachable, Opt.some(1.0)
+    )
+    await node.connect(relay.peerInfo.peerId, relay.peerInfo.addrs)
+    let circuitAddrs = await reserved
+    check circuitAddrs.len > 0
+    await dialer.connect(node.peerInfo.peerId, circuitAddrs)
+    check dialer.isConnected(node.peerInfo.peerId)
+
+  test "default relay muxer does not change the builder's configured muxers":
+    let
+      builder = standardBuilder(@[QuicAutoAddress]).withNAT(holePunchingConfig())
+      first = builder.build()
+      second = builder.withYamux().build()
+      third = builder.withMplex().build()
+    check:
+      first.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec]
+      second.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec]
+      third.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec, MplexCodec]
 
   asyncTest "Upnp combined with autonat v1 wires both subsystems":
     # NATConfig keeps mode (port-mapping) and autonat orthogonal: enabling
