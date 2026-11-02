@@ -60,10 +60,5 @@ proc readFieldPackedInto*(
     header: FieldHeader,
     ProtoType: type ProtobufExt,
 ): bool {.raises: [SerializationError, IOError].} =
-  when compiles(readFieldPackedIntoIt(stream, header, pint64, (discard))):
-    readFieldPackedIntoIt(stream, header, pint64):
-      value.add it.toDurationSeconds
-  else:
-    # protobuf_serialization 0.6.0 requires the sequence argument.
-    readFieldPackedIntoIt(stream, value, header, pint64):
-      value.add it.toDurationSeconds
+  readFieldPackedIntoIt(stream, header, pint64):
+    value.add it.toDurationSeconds
