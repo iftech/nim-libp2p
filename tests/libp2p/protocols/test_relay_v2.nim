@@ -12,10 +12,11 @@ import
     protocols/connectivity/relay/messages,
     protocols/connectivity/relay/utils,
     protocols/connectivity/relay/client,
+    protocols/connectivity/relay/rconn,
     signed_envelope,
     peerid,
   ]
-import ../../tools/[unittest, crypto, switch_builder, multiaddress]
+import ../../tools/[unittest, crypto, switch_builder, multiaddress, bufferstream]
 
 proc createSwitch(r: Relay = nil, useYamux: bool = false): Switch =
   var builder = makeStandardSwitchBuilder(TcpWildcardAddress).withCircuitRelay(r)
@@ -71,6 +72,86 @@ suite "Circuit Relay V2":
     check:
       Relay.new(reservationTTL = ttl).reservationTTL == MaxReservationTTL
       RelayClient.new(reservationTTL = ttl).reservationTTL == MaxReservationTTL
+
+  suite "RelayConnection":
+    asyncTeardown:
+      checkTrackers()
+
+    const limit = 10'u64
+
+    proc recordingRelayConn(
+        sent: ref seq[seq[byte]], limitData: uint64 = limit
+    ): RelayConnection =
+      let wrapped = TestBufferStream.new(
+        proc(
+            data: sink seq[byte]
+        ) {.async: (raises: [CancelledError, LPStreamError]).} =
+          sent[].add(data)
+      )
+      RelayConnection.new(wrapped, limitDuration = 0, limitData = limitData)
+
+    asyncTest "writes up to the data limit reach the wrapped stream":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+      let msgs = @[newSeq[byte](limit - 1), newSeq[byte](1)]
+
+      for msg in msgs:
+        await conn.write(msg)
+
+      check:
+        sent[] == msgs
+        not conn.closed()
+      await conn.close()
+
+    asyncTest "write past the data limit raises, closes and blocks later writes":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+
+      expect LPStreamLimitError:
+        await conn.write(newSeq[byte](limit + 1))
+
+      check:
+        sent[].len == 0
+        conn.closed()
+
+      expect LPStreamClosedError:
+        await conn.write(newSeq[byte](1))
+      check sent[].len == 0
+
+    asyncTest "writes that add up past the data limit raise":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+      await conn.write(newSeq[byte](limit))
+
+      expect LPStreamLimitError:
+        await conn.write(newSeq[byte](1))
+
+      check:
+        sent[].len == 1
+        conn.closed()
+
+    asyncTest "write after close raises LPStreamClosedError and sends nothing":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+      await conn.close()
+
+      expect LPStreamClosedError:
+        await conn.write(newSeq[byte](1))
+
+      check:
+        sent[].len == 0
+        conn.dataSent == 0
+
+    asyncTest "limitData 0 means no limit":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent, limitData = 0)
+
+      await conn.write(newSeq[byte](limit * 100))
+
+      check:
+        sent[].len == 1
+        not conn.closed()
+      await conn.close()
 
   suite "Voucher":
     test "Reject signed vouchers with missing required fields":

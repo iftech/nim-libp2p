@@ -23,11 +23,17 @@ method readOnce*(
 method write*(
     self: RelayConnection, msg: sink seq[byte]
 ): Future[void] {.async: (raises: [CancelledError, LPStreamError]).} =
-  let msgLen = msg.len
-  self.dataSent.inc(msgLen)
+  if self.closed():
+    raise newLPStreamClosedError()
+
+  self.dataSent.inc(msg.len)
   if self.limitData != 0 and self.dataSent > self.limitData:
     await self.close()
-    return
+    raise newException(
+      LPStreamLimitError,
+      "relay data limit exceeded: " & $self.dataSent & " > " & $self.limitData,
+    )
+
   self.activity = true
   await self.stream.write(move(msg))
 
