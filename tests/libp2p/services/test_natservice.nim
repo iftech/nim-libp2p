@@ -463,7 +463,7 @@ suite "NATService":
       nat.relayClient == client
       HPService(nat.reachability).autoRelayService.client == client
 
-  asyncTest "QUIC-only hole-punching nodes use Mplex for relay circuits":
+  asyncTest "QUIC-only hole-punching nodes default to Yamux and Mplex for relay circuits":
     let reserved = newFuture[seq[MultiAddress]]()
     proc onReservation(addresses: seq[MultiAddress]) {.gcsafe, raises: [].} =
       reserved.completeOnce(addresses)
@@ -477,8 +477,8 @@ suite "NATService":
         standardBuilder(@[QuicAutoAddress]).withCircuitRelay(RelayClient.new()).build()
     check:
       relay.muxedUpgrade.muxers.len == 0
-      node.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec]
-      dialer.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec]
+      node.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec, MplexCodec]
+      dialer.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec, MplexCodec]
 
     await allFutures(relay.start(), node.start(), dialer.start())
     defer:
@@ -501,7 +501,7 @@ suite "NATService":
       second = builder.withYamux().build()
       third = builder.withMplex().build()
     check:
-      first.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec]
+      first.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec, MplexCodec]
       second.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec]
       third.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec, MplexCodec]
 
