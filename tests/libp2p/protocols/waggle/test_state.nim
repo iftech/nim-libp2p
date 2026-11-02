@@ -109,6 +109,29 @@ suite "Waggle reconciliation state":
     ).isErr
     check state.prepare(topic, 1, peer, @[byte 1]).get().isNone
 
+  test "invalid metadata does not refresh expiry but valid duplicates do":
+    let lifetime = 10.seconds
+    let peer = PeerId.random()
+    let now = Moment.now()
+    for valid in [false, true]:
+      let state = WaggleState.new(2, 1, lifetime)
+      let objectId = @[byte 1]
+      discard state.store(topic, BitShard(id: objectId, have: 1), now).get()
+      state.prepare(topic, 1, peer, objectId, now = now).get().get().commit()
+      let received = state.received(
+        topic,
+        1,
+        peer,
+        ObjectPieces(
+          objectId: objectId,
+          piecesMetadata: Opt.some(@[if valid: 1.byte else: 255.byte]),
+        ),
+        now + 9.seconds,
+      )
+      check received.isOk == valid
+      check state.peerView(topic, 1, objectId, now + lifetime).known == valid
+      check not state.peerView(topic, 1, objectId, now + 9.seconds + lifetime).known
+
   test "local reads refresh eviction order":
     let state = WaggleState.new(2, 1)
     let peer = PeerId.random()

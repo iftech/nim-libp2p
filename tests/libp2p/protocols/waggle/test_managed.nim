@@ -780,6 +780,10 @@ suite "Waggle managed dissemination":
     check failures == 0
 
   asyncTest "pending outgoing opens obey stream budgets":
+    const
+      maxStreams = 2
+      subscribeCount = 10
+
     proc write(
         data: sink seq[byte]
     ) {.async: (raises: [CancelledError, LPStreamError]).} =
@@ -799,14 +803,15 @@ suite "Waggle managed dissemination":
         inc rejected
 
     let p = Waggle.new(
-      config = WaggleConfig(maxStreams: 2, maxStreamsPerPeer: 2), onEvent = onEvent
+      config = WaggleConfig(maxStreams: maxStreams, maxStreamsPerPeer: maxStreams),
+      onEvent = onEvent,
     )
-    for index in 0.byte .. 9.byte:
-      discard p.subscribe(@[index]).get()
+    for index in 0 ..< subscribeCount:
+      discard p.subscribe(@[index.byte]).get()
     check p.addConnection(mux).get()
     checkUntilTimeout:
-      mux.opened == 2
-    check rejected == 8
+      mux.opened == maxStreams
+    check rejected == subscribeCount - maxStreams
     let incoming = TestBufferStream.new(write)
     incoming.peerId = stream.peerId
     await p.handler(incoming, WaggleCodec)
@@ -925,12 +930,15 @@ suite "Waggle managed dissemination":
           stream: Stream, proto: string
       ) {.async: (raises: [CancelledError]).} =
         try:
-          discard await stream.readLp(65536)
-          await stream.write(frame)
-          var data: byte
-          await stream.readExactly(addr data, 1)
-        except LPStreamError:
-          discard
+          try:
+            discard await stream.readLp(WaggleConfig().maxMessageSize)
+            await stream.write(frame)
+          except LPStreamError as e:
+            raiseAssert e.msg
+          # Malformed input must make the receiver reset this stream.
+          expect LPStreamResetError:
+            var data: byte
+            await stream.readExactly(addr data, 1)
         finally:
           await stream.reset()
 
