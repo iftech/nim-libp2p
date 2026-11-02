@@ -60,5 +60,5 @@ proc readFieldPackedInto*(
     header: FieldHeader,
     ProtoType: type ProtobufExt,
 ): bool {.raises: [SerializationError, IOError].} =
-  readFieldPackedIntoIt(stream, value, header, pint64):
+  readFieldPackedIntoIt(stream, header, pint64):
     value.add it.toDurationSeconds
