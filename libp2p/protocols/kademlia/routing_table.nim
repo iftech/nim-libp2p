@@ -18,6 +18,10 @@ logScope:
 
 const NoneHasher = Opt.none(XorDHasher)
 
+type KeyDistance = object
+  distance: XorDistance
+  key: Key
+
 proc new*(
     T: typedesc[RoutingTableConfig],
     replication = DefaultReplication,
@@ -310,24 +314,24 @@ proc markUseful*(rtable: RoutingTable, peerId: PeerId) =
 
 proc findClosest*(rtable: RoutingTable, targetId: Key, count: int): seq[Key] =
   ## Up to `count` nodes closest to `targetId`, which is hashed like every other key.
-  var allNodes: seq[Key] = @[]
-
-  for bucket in rtable.buckets:
-    for p in bucket.peers:
-      allNodes.add(p)
-
   let hasher = rtable.config.hasher
   let targetHash = Key.fromBytes(targetId.hashFor(hasher))
 
-  allNodes.sort(
-    proc(a, b: Key): int =
-      cmp(
-        xorDistance(Key.fromBytes(a.hashFor(hasher)), targetHash),
-        xorDistance(Key.fromBytes(b.hashFor(hasher)), targetHash),
+  var nodes: seq[KeyDistance] = @[]
+  for bucket in rtable.buckets:
+    for p in bucket.peers:
+      nodes.add(
+        KeyDistance(
+          distance: xorDistance(Key.fromBytes(p.hashFor(hasher)), targetHash), key: p
+        )
       )
+
+  nodes.sort(
+    proc(a, b: KeyDistance): int =
+      cmp(a.distance, b.distance)
   )
 
-  return allNodes[0 ..< min(count, allNodes.len)]
+  nodes.toOpenArray(0, clamp(count, 0, nodes.len) - 1).mapIt(it.key)
 
 proc findClosestPeerIds*(rtable: RoutingTable, targetId: Key, count: int): seq[PeerId] =
   findClosest(rtable, targetId, count).toPeerIds()
