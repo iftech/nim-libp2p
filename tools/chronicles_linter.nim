@@ -29,37 +29,47 @@ type
     maxSentences*: Positive = 1
 
   FieldNameSettings* = object
-    minLength*: int ## Shortest accepted field name.
-    exceptions*: seq[string] ## Names accepted regardless of `minLength`.
+    minLength*: int = 3 ## Shortest accepted field name.
+    exceptions*: seq[string] =
+      @["id", "ip"] ## Names accepted regardless of `minLength`.
 
   ExceptionSettings* = object ## Which fields must carry exception text.
-    field*: string ## The field exception text is expected in.
-    aliases*: seq[string] ## Fields that must not stand in for it.
+    field*: string = "err" ## The field exception text is expected in.
+    aliases*: seq[string] = @["description", "error", "message", "msg"]
+      ## Fields that must not stand in for it.
+
+  UnboundedSettings* = object
+    ## Which fields may carry an unbounded payload, and what makes them safe.
+    fields*: seq[string] = @[
+      "data", "buffer", "payload", "encoded", "certificate", "ticket", "signature",
+      "advertisement", "msg", "message", "request", "response", "record", "addresses",
+      "addrs",
+    ]
+      ## Field names that conventionally carry byte arrays or unbounded
+      ## protocol objects.
+    escapes*: seq[string] = @["shortLog", "len"]
+      ## Calls that make a value safe to log. `shortLog` bounds the value,
+      ## `len` logs its element count instead. Any call form counts:
+      ## `x.shortLog`, `shortLog(x)`, `x.len`, `len(x)`.
+    basicTypes*: seq[string] = @[
+      "bool", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
+      "uint32", "uint64", "float", "float32", "float64", "char", "string", "cstring",
+    ]
+      ## Type names that are safe to log as they are. A value whose type is
+      ## visible in the source — a literal, or a conversion such as `int(x)` —
+      ## is accepted when its type is listed here. Values whose type is only
+      ## known after semantic analysis are not covered.
 
   PayloadSettings* = object
     ## Which log levels must not carry payloads, and which fields carry them.
-    levels*: seq[string]
+    levels*: seq[string] = @["warn", "error"]
       ## Levels that must stay payload-free, e.g.
       ## `["warn", "error"]`. Matched against the level name
       ## in the source, so it needs no enum.
-    fields*: seq[string] ## Field names that carry a payload.
-
-# Settings used when a check is configured without a `settings:` block. These
-# are the values `audit_logs.py` enforces, and the only place defaults live: a
-# setting that is present always wins, so an empty list means "none", not
-# "use the default".
-const
-  defaultFieldNameSettings* = FieldNameSettings(minLength: 3, exceptions: @["id", "ip"])
-  defaultExceptionSettings* = ExceptionSettings(
-    field: "err", aliases: @["description", "error", "message", "msg"]
-  )
-  defaultPayloadSettings* = PayloadSettings(
-    levels: @["warn", "error"],
-    fields: @[
+    fields*: seq[string] = @[
       "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
       "encoded", "certificate", "ticket", "key",
-    ],
-  )
+    ] ## Field names that carry a payload.
 
 # --- AST helpers ----------------------------------------------------------
 
@@ -114,6 +124,26 @@ iterator logFields(call: PNode): tuple[name: string, value: PNode, named: bool] 
       yield (arg.ident.s, arg, false)
     else:
       discard
+
+proc callsAny(node: PNode, names: seq[string]): bool =
+  ## True when `node` contains a call to one of `names`, in either form:
+  ## `shortLog(x)` or `x.shortLog`.
+  if node == nil:
+    return false
+  case node.kind
+  of nkCall, nkCommand:
+    if node.len > 0 and node[0].kind == nkIdent and node[0].ident.s in names:
+      return true
+  of nkDotExpr:
+    if node.len == 2 and node[1].kind == nkIdent and node[1].ident.s in names:
+      return true
+  else:
+    discard
+  if node.kind in {nkNone .. nkNilLit}:
+    return false
+  for child in node.sons:
+    if callsAny(child, names):
+      return true
 
 proc isExceptionText(value: PNode): bool =
   ## Detects `getCurrentExceptionMsg()` and `<something>.msg`.
@@ -182,6 +212,63 @@ proc runNoPayloadWhenElevated(ast: PNode, s: PayloadSettings): seq[Finding] =
           f.value, "elevated log contains payload field `" & f.name & "`"
         )
 
+proc literalType(value: PNode): string =
+  ## The type name of a literal, or "" when the value is not a literal.
+  case value.kind
+  of nkIntLit .. nkInt64Lit: "int"
+  of nkUIntLit .. nkUInt64Lit: "uint"
+  of nkFloatLit .. nkFloat128Lit: "float"
+  of nkStrLit, nkRStrLit, nkTripleStrLit: "string"
+  of nkCharLit: "char"
+  else: ""
+
+proc convertedType(value: PNode): string =
+  ## The target type of a conversion such as `int(x)`, or "" when the value is
+  ## not a conversion.
+  if value.kind == nkCall and value.len == 2 and value[0].kind == nkIdent:
+    return value[0].ident.s
+  ""
+
+proc isBasicType(value: PNode, basicTypes: seq[string]): bool =
+  ## True when the value's type is visible in the source and is a basic type.
+  ## `true` and `false` parse as identifiers, so they are handled explicitly.
+  if value.kind == nkIdent and value.ident.s in ["true", "false"]:
+    return "bool" in basicTypes
+  let name =
+    if literalType(value).len > 0:
+      literalType(value)
+    else:
+      convertedType(value)
+  name.len > 0 and name in basicTypes
+
+proc runUnboundedFields(ast: PNode, s: UnboundedSettings): seq[Finding] =
+  ## Flags fields that conventionally carry unbounded payloads unless the value
+  ## is bounded.
+  ##
+  ## The rule, as nim-libp2p states it:
+  ##
+  ## - a `seq[T]` must never be logged raw: it needs a `chronicles.formatIt`
+  ##   for that sequence type, a `shortLog` call, or `.len`
+  ## - any other type needs a `chronicles.formatIt` for that type
+  ## - basic types (bool, int, float, string, enums) are always fine
+  ##
+  ## Only the value-side half is checkable without type information: a value
+  ## that calls an escape, takes `.len`, or is visibly a basic type is accepted.
+  ## Whether the value's type has a `formatIt` cannot be decided from a
+  ## parse-only tree, so a value that relies on one is reported here. That is
+  ## why this check is configured as a hint.
+  for call in logCalls(ast):
+    for f in logFields(call):
+      if f.name notin s.fields:
+        continue
+      if callsAny(f.value, s.escapes) or isBasicType(f.value, s.basicTypes):
+        continue
+      result.add finding(
+        f.value,
+        "potentially unbounded log field `" & f.name & "` must use " &
+          s.escapes.join(" or "),
+      )
+
 # --- linter ---------------------------------------------------------------
 
 let chronicles* = newLinter("chronicles")
@@ -190,10 +277,8 @@ let messageEndsWithPunctuation* =
   chronicles.check("messageEndsWithPunctuation", runMessageEndsWithPunctuation)
 let messageMaxSentences* =
   chronicles.check("messageMaxSentences", runMessageMaxSentences)
-let fieldNameLength* =
-  chronicles.check("fieldNameLength", runFieldNameLength, defaultFieldNameSettings)
-let errForException* =
-  chronicles.check("errForException", runErrForException, defaultExceptionSettings)
-let noPayloadWhenElevated* = chronicles.check(
-  "noPayloadWhenElevated", runNoPayloadWhenElevated, defaultPayloadSettings
-)
+let fieldNameLength* = chronicles.check("fieldNameLength", runFieldNameLength)
+let errForException* = chronicles.check("errForException", runErrForException)
+let noPayloadWhenElevated* =
+  chronicles.check("noPayloadWhenElevated", runNoPayloadWhenElevated)
+let unboundedFields* = chronicles.check("unboundedFields", runUnboundedFields)
