@@ -381,8 +381,6 @@ proc initKadBase*(
     ),
   )
   kad.config = config
-  kad.providerManager =
-    ProviderManager.new(config.providerRecordCapacity, config.providedKeyCapacity)
   kad.store = config.store.valueOr:
     MemoryKadStore.new(
       KadStoreLimits(
@@ -539,13 +537,11 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   kad.livenessLoop = kad.maintainLiveness()
   kad.fixLowPeersLoop = kad.maintainMinPeers()
   kad.republishLoop = kad.manageRepublishProvidedKeys()
-  kad.expiredLoop = kad.manageExpiredProviders()
 
   reportBackgroundFailure(kad.maintenanceLoop, "kademlia bucket maintenance")
   reportBackgroundFailure(kad.livenessLoop, "kademlia peer liveness")
   reportBackgroundFailure(kad.fixLowPeersLoop, "kademlia minimum peer maintenance")
   reportBackgroundFailure(kad.republishLoop, "kademlia provider republishing")
-  reportBackgroundFailure(kad.expiredLoop, "kademlia provider expiration")
 
   info "Kademlia DHT started"
 
@@ -567,13 +563,11 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
     kad.livenessLoop.cancelAndWait(),
     kad.fixLowPeersLoop.cancelAndWait(),
     kad.republishLoop.cancelAndWait(),
-    kad.expiredLoop.cancelAndWait(),
   )
   kad.maintenanceLoop = nil
   kad.livenessLoop = nil
   kad.fixLowPeersLoop = nil
   kad.republishLoop = nil
-  kad.expiredLoop = nil
 
   # loop: a handler racing shutdown can register a probe while we await a batch
   while kad.admissionProbes.len > 0 or kad.livenessProbes.len > 0:

@@ -96,7 +96,6 @@ proc makeKeys*(T: typedesc[Key], count: int): seq[Key] =
 proc testKadConfig*(
     validator: EntryValidator = PermissiveValidator(),
     selector: EntrySelector = CandSelector(),
-    cleanupProvidersInterval: Duration = chronos.milliseconds(100),
     republishProvidedKeysInterval: Duration = chronos.milliseconds(50),
     replication: int = DefaultReplication,
     alpha: int = DefaultAlpha,
@@ -118,7 +117,6 @@ proc testKadConfig*(
     selector,
     timeout = timeout,
     providerExpirationInterval = providerExpirationInterval,
-    cleanupProvidersInterval = cleanupProvidersInterval,
     republishProvidedKeysInterval = republishProvidedKeysInterval,
     replication = replication,
     alpha = alpha,
@@ -166,7 +164,6 @@ proc setupKadSwitches*(
     validator: EntryValidator = PermissiveValidator(),
     selector: EntrySelector = CandSelector(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
-    cleanupProvidersInterval: Duration = chronos.milliseconds(100),
     republishProvidedKeysInterval: Duration = chronos.milliseconds(50),
     replication: int = DefaultReplication,
     beta: int = DefaultBeta,
@@ -177,8 +174,7 @@ proc setupKadSwitches*(
     let config = testKadConfig(
       validator,
       selector,
-      cleanupProvidersInterval,
-      republishProvidedKeysInterval,
+      republishProvidedKeysInterval = republishProvidedKeysInterval,
       replication = replication,
       beta = beta,
       recordExpirationInterval = recordExpirationInterval,
@@ -216,6 +212,7 @@ proc countBucketEntries*(buckets: seq[Bucket], key: Key): uint32 =
   return res
 
 privateAccess(MemoryKadStore)
+privateAccess(HeldProvider)
 
 func mem(kad: KadDHT): MemoryKadStore =
   MemoryKadStore(kad.store)
@@ -223,11 +220,65 @@ func mem(kad: KadDHT): MemoryKadStore =
 func valueCount*(kad: KadDHT): int =
   kad.mem().values.len
 
+proc liveProviders(kad: KadDHT): Table[Key, seq[StoredProvider]] =
+  ## The store prunes only on a call that takes `now`, so the raw tables keep expired records.
+  let now = nowUnixSeconds()
+  var live: Table[Key, seq[StoredProvider]]
+  for key, held in kad.mem().providers:
+    let stored = held.filterIt(it.stored.expiresAt > now).mapIt(it.stored)
+    if stored.len > 0:
+      live[key] = stored
+  live
+
+proc providerCount*(kad: KadDHT): int =
+  kad.liveProviders().values().toSeq().foldl(a + b.len, 0)
+
+proc providerKeyCount*(kad: KadDHT): int =
+  kad.liveProviders().len
+
+func hasProviderKey*(kad: KadDHT, key: Key): bool =
+  key in kad.mem().providers
+
+proc recordsOf*(kad: KadDHT, peerId: PeerId): int =
+  let id = peerId.getBytes()
+  kad.liveProviders().values().toSeq().foldl(
+    a + b.countIt(it.provider.id == Opt.some(id)), 0
+  )
+
+func providedCount*(kad: KadDHT): int =
+  kad.mem().provided.len
+
+func hasProvidedKey*(kad: KadDHT, key: Key): bool =
+  key in kad.mem().provided
+
 proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
   kad.mem().values.withValue(key, stored):
     if stored[].expiresAt > nowUnixSeconds():
       return Opt.some(stored[].record)
   Opt.none(EntryRecord)
+
+proc seedProvider*(
+    kad: KadDHT, key: Key, provider: Provider
+) {.async: (raises: [CancelledError]).} =
+  let stored =
+    StoredProvider(provider: provider, expiresAt: UnixTimestamp.after(1.hours))
+  discard await kad.store.addProvider(key, stored, nowUnixSeconds(), high(int))
+
+func records*(kad: KadDHT): seq[StoredProvider] =
+  ## In the order the store added them.
+  var held: seq[HeldProvider]
+  for providers in kad.mem().providers.values():
+    held.add(providers)
+  held.sortedByIt(it.order).mapIt(it.stored)
+
+func providersOf*(kad: KadDHT, key: Key): seq[Provider] =
+  kad.mem().providers.getOrDefault(key).mapIt(it.stored.provider)
+
+func backdateExpiry*(kad: KadDHT) =
+  ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
+  for providers in kad.mem().providers.mvalues():
+    for provider in providers.mitems():
+      provider.stored.expiresAt -= 1
 
 proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
   let record = kad.localValue(key).valueOr:

@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import std/[tables, sequtils, sets, heapqueue, hashes]
-from std/times import format, getTime, parse, toTime, toUnix, utc
+from std/times import format, getTime, nanosecond, parse, toTime, toUnix, utc
 import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
 import ../../utils/opt
@@ -52,7 +52,6 @@ const
     # maximum number of provider records to store at once
   DefaultProvidedKeyCapacity* = 500 # maximum number of provided keys to store at once
   DefaultRepublishInterval* = 10.minutes # same as bootstrap
-  DefaultCleanupProvidersInterval* = 10.minutes # same as bootstrap
   DefaultProviderExpirationInterval* = 48.hours
   DefaultRecordExpirationInterval* = 24.hours
     # KV entries older than this are considered stale and will be evicted
@@ -170,8 +169,11 @@ func ceilSeconds(d: chronos.Duration): int64 =
     whole
 
 proc after*(T: typedesc[UnixTimestamp], d: chronos.Duration): UnixTimestamp =
-  ## The timestamp `d` after now.
-  nowUnixSeconds() + d.ceilSeconds()
+  ## The first whole second at least `d` after now. Expiry has one-second
+  ## resolution, so rounding now down could cut `d` to almost zero.
+  let now = getTime()
+  let partialSecond: int64 = if now.nanosecond > 0: 1 else: 0
+  now.toUnix() + partialSecond + d.ceilSeconds()
 
 type XorDistance* = array[IdLength, byte]
 
@@ -296,25 +298,6 @@ type
 
   Provider* = Peer
 
-  ProviderRecord* = object
-    provider*: Provider
-    expiresAt*: UnixTimestamp
-    key*: Key
-
-  ProviderRecords* = ref object
-    records*: HeapQueue[ProviderRecord]
-    capacity*: int
-
-  ProvidedKeys* = ref object
-    provided*: OrderedTable[Key, UnixTimestamp] ## in provide order
-    capacity*: int
-
-  ProviderManager* = ref object
-    providerRecords*: ProviderRecords
-    providedKeys*: ProvidedKeys
-    knownKeys*: Table[Key, HashSet[Provider]]
-    recordsPerPeer*: CountTable[PeerId]
-
 func len*(bucket: Bucket): int =
   bucket.peers.len
 
@@ -337,16 +320,6 @@ template withRecord*(registry: PeerRegistry, nodeId: Key, record, body: untyped)
   ## Mutable access to one row. ``record`` is a ``ptr PeerRecord``; body uses ``record[]``.
   registry.peers.withValue(nodeId, record):
     body
-
-proc new*(
-    T: typedesc[ProviderManager], providerRecordCapacity: int, providedKeyCapacity: int
-): T =
-  let pm = T()
-
-  pm.providerRecords = ProviderRecords(capacity: providerRecordCapacity)
-  pm.providedKeys = ProvidedKeys(capacity: providedKeyCapacity)
-
-  return pm
 
 type
   NetSizeMeasurement* = object
@@ -589,7 +562,6 @@ type KadDHTConfig* = object
   store*: Opt[KadStore]
     ## The storage backend. ``none`` gives each node a ``MemoryKadStore`` with the caps of this config.
   republishProvidedKeysInterval*: chronos.Duration
-  cleanupProvidersInterval*: chronos.Duration
   providerExpirationInterval*: chronos.Duration
   recordExpirationInterval*: chronos.Duration
   addressPolicy*: PeerAddressPolicy
@@ -634,7 +606,6 @@ proc new*(
     providerRecordCapacity = DefaultProviderRecordCapacity,
     providedKeyCapacity = DefaultProvidedKeyCapacity,
     republishProvidedKeysInterval: chronos.Duration = DefaultRepublishInterval,
-    cleanupProvidersInterval: chronos.Duration = DefaultCleanupProvidersInterval,
     providerExpirationInterval: chronos.Duration = DefaultProviderExpirationInterval,
     recordExpirationInterval: chronos.Duration = DefaultRecordExpirationInterval,
     addressPolicy: PeerAddressPolicy = defaultAddressPolicy,
@@ -701,7 +672,6 @@ proc new*(
     providedKeyCapacity: providedKeyCapacity,
     store: store,
     republishProvidedKeysInterval: republishProvidedKeysInterval,
-    cleanupProvidersInterval: cleanupProvidersInterval,
     providerExpirationInterval: providerExpirationInterval,
     recordExpirationInterval: recordExpirationInterval,
     addressPolicy: addressPolicy,
@@ -731,9 +701,7 @@ type KadDHT* = ref object of LPProtocol
   livenessLoop*: Future[void]
   fixLowPeersLoop*: Future[void]
   republishLoop*: Future[void]
-  expiredLoop*: Future[void]
   store*: KadStore
-  providerManager*: ProviderManager
   nsEstimator*: NetworkSizeEstimator
     ## Drives the optimistic-provide distance thresholds.
   provideTasks*: seq[Future[void]]
