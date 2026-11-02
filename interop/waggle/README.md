@@ -116,3 +116,6 @@ are generated for each run; no startup sleeps are required.
 The `run-waggle-interop` job in
 [`.github/workflows/interop.yml`](../../.github/workflows/interop.yml) runs this
 suite in CI. For the application API, see the [Waggle guide](../../docs/waggle.md).
+
+For Shadow simulations with the experimental `sukunrt/test-plans@waggle-interop`
+branch and its Rust/Go peers, see [test-plans/README.md](test-plans/README.md).
