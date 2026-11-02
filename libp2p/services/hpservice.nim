@@ -3,17 +3,16 @@
 
 {.push raises: [].}
 
-import std/[tables, sequtils]
+import std/[algorithm, tables, sequtils]
 
 import chronos, chronicles
 
-import ../switch, ../wire
+import ../switch, ../wire, ../peerstore, ../utils/collections
 import ../protocols/rendezvous
 import ../services/[autorelayservice, reachabilityobservers]
 import ../protocols/connectivity/relay/relay
 import ../protocols/connectivity/autonat/service
 import ../protocols/connectivity/dcutr/[client, server]
-import ../multicodec
 
 export reachabilityobservers
 
@@ -50,28 +49,50 @@ func natAddrs(switch: Switch): seq[MultiAddress] =
     return switch.peerInfo.addrs
   switch.peerInfo.listenAddrs.mapIt(manager.externalAddrFor(it))
 
-proc tryStartingDirectConn(
-    self: HPService, switch: Switch, peerId: PeerId
-): Future[bool] {.async: (raises: [CancelledError]).} =
-  proc tryConnect(
-      address: MultiAddress
-  ): Future[bool] {.async: (raises: [DialFailedError, CancelledError]).} =
-    trace "Trying to create direct connection", peerId, address
-    await switch.connect(peerId, @[address], true, false)
-    debug "Direct connection created", peerId, address
-    return true
+proc directDialAddrs(switch: Switch, peerId: PeerId): seq[MultiAddress] =
+  ## Live public addresses, highest confidence first, so a verified address goes in the first batch.
+  let book = switch.peerStore[AddressBook]
+  let live = book[peerId]
+  book
+    .entries(peerId)
+    .filterIt(
+      it.address in live and not it.address.isCircuitRelayMA() and
+        it.address.isPublicMA()
+    )
+    .sortedByIt(-ord(it.confidence))
+    .mapIt(it.address)
 
-  for address in switch.peerStore[AddressBook][peerId]:
-    try:
-      let isRelayed = address.contains(multiCodec("p2p-circuit"))
-      if not isRelayed.get(false) and address.isPublicMA():
-        return await tryConnect(address)
-    except CancelledError as err:
-      raise err
-    except CatchableError as err:
-      debug "Failed to create direct connection", err = err.msg, peerId, address
-      continue
-  return false
+proc tryDialBatch(
+    switch: Switch, peerId: PeerId, addrs: seq[MultiAddress], connectTimeout: Duration
+): Future[bool] {.async: (raises: [CancelledError]).} =
+  trace "Trying to create direct connection", peerId, addrs
+  # one call per batch: the dialer holds a per-peer lock, so it alone can run the dials in parallel
+  try:
+    await switch.connect(peerId, addrs, forceDial = false, reuseConnection = false).wait(
+      connectTimeout
+    )
+  except DialFailedError as e:
+    debug "Failed to create direct connection", err = e.msg, peerId, addrs
+    return false
+  except AsyncTimeoutError as e:
+    debug "Direct connection timed out", err = e.msg, peerId, addrs
+    return false
+
+  debug "Direct connection created", peerId
+  true
+
+proc tryStartingDirectConn(
+    self: HPService,
+    switch: Switch,
+    peerId: PeerId,
+    maxDialableAddrs: int,
+    connectTimeout: Duration,
+): Future[bool] {.async: (raises: [CancelledError]).} =
+  ## Dials every address, `maxDialableAddrs` at a time, so the dialing node has a limit on parallel dials.
+  for batch in switch.directDialAddrs(peerId).toChunks(maxDialableAddrs):
+    if await switch.tryDialBatch(peerId, batch, connectTimeout):
+      return true
+  false
 
 proc closeRelayConn(relayedConn: RawConn) {.async: (raises: [CancelledError]).} =
   await sleepAsync(2000.milliseconds) # grace period before closing relayed connection
@@ -91,11 +112,13 @@ proc newConnectedPeerHandler(
 
     let relayedConn = incomingRelays[0]
 
-    if await self.tryStartingDirectConn(switch, peerId):
+    let dcutrClient = DcutrClient.new()
+    if await self.tryStartingDirectConn(
+      switch, peerId, dcutrClient.maxDialableAddrs, dcutrClient.connectTimeout
+    ):
       await closeRelayConn(relayedConn)
       return
 
-    let dcutrClient = DcutrClient.new()
     await dcutrClient.startSync(switch, peerId, switch.natAddrs())
     await closeRelayConn(relayedConn)
   except CancelledError as err:

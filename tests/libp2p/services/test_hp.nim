@@ -5,11 +5,13 @@
 
 {.push raises: [].}
 
+import std/sequtils
 import chronos
-import
-  ../../../libp2p/
-    [builders, switch, wire, services/hpservice, services/autorelayservice]
+import ../../../libp2p/[builders, switch, wire, services/autorelayservice]
+import ../../../libp2p/utils/collections
+import ../../../libp2p/services/hpservice {.all.}
 import ../../../libp2p/protocols/connectivity/relay/[relay, client]
+import ../../../libp2p/protocols/connectivity/dcutr/client as dcutr_client
 import ../../../libp2p/protocols/connectivity/autonat/[service]
 import ../../../libp2p/nameresolving/[nameresolver, mockresolver]
 import ../../stubs/[autonatclientstub, switchstub]
@@ -49,6 +51,124 @@ suite "Hole Punching":
     let hpService = HPService.new(autonatService, nil)
 
     check hpService.reachabilityObservers == autonatService.reachabilityObservers
+
+  asyncTest "tryStartingDirectConn filters, ranks and batches the dials":
+    type DirectCase = object
+      name: string
+      book: seq[MultiAddress]
+      verified: seq[MultiAddress]
+      silent: seq[MultiAddress]
+      dialed: seq[MultiAddress]
+      expected: bool
+
+    let
+      dcutrClient = DcutrClient.new(connectTimeout = 100.milliseconds)
+      cap = dcutrClient.maxDialableAddrs
+      peerId = PeerId.random(rng()).tryGet()
+      nonPublic = @[
+        ma("/ip4/8.8.4.4/tcp/4001/p2p-circuit"),
+        ma("/ip4/192.168.1.5/tcp/4001"),
+        ma("/ip4/127.0.0.1/tcp/4001"),
+      ]
+      dnsAddr = @[ma("/dns4/example.com/tcp/4001")]
+      public = toSeq(1 .. 50).mapIt(ma("/ip4/8.8.8." & $it & "/tcp/4001"))
+      cases = @[
+        DirectCase(
+          name: "every public addr is dialed when all fail",
+          book: nonPublic & public,
+          dialed: public,
+          expected: false,
+        ),
+        DirectCase(
+          name: "a verified addr past the first batch is dialed first",
+          book: public,
+          verified: public[^1 .. ^1],
+          dialed: public[^1 .. ^1] & public[0 ..< ^1],
+          expected: false,
+        ),
+        DirectCase(
+          name: "a success in the first batch skips the next batches",
+          book: public,
+          dialed: public[0 ..< cap],
+          expected: true,
+        ),
+        DirectCase(
+          name: "a silent first batch moves on to the next batch",
+          book: public[0 .. cap],
+          silent: public[0 ..< cap],
+          dialed: public[0 .. cap],
+          expected: true,
+        ),
+        DirectCase(
+          name: "success returns true",
+          book: nonPublic & public[0 .. 1],
+          dialed: public[0 .. 1],
+          expected: true,
+        ),
+        DirectCase(
+          name: "only silent addrs time out",
+          book: public[0 .. 1],
+          silent: public[0 .. 1],
+          dialed: public[0 .. 1],
+          expected: false,
+        ),
+        DirectCase(
+          name: "dns addr is dialed alongside public ip addr",
+          book: nonPublic & dnsAddr & public[0 .. 0],
+          dialed: dnsAddr & public[0 .. 0],
+          expected: true,
+        ),
+        DirectCase(
+          name: "no public addr makes no connect call",
+          book: nonPublic,
+          dialed: @[],
+          expected: false,
+        ),
+      ]
+
+    let switch = SwitchStub.new(createSwitch())
+    var
+      calls: seq[seq[MultiAddress]]
+      forcedOrReused: seq[bool]
+      fails = false
+      silent: seq[MultiAddress]
+
+    proc recordConnect(
+        self: SwitchStub,
+        peerId: PeerId,
+        addrs: seq[MultiAddress],
+        forceDial = false,
+        reuseConnection = true,
+        dir = Direction.Out,
+    ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
+      calls.add(addrs)
+      forcedOrReused.add(forceDial or reuseConnection)
+      if addrs.anyIt(it in silent):
+        await Future[void].Raising([CancelledError]).init("test_hp.silent")
+      if fails:
+        raise newException(DialFailedError, "unreachable")
+
+    switch.connectStub = recordConnect
+    let hp = HPService.new(nil, nil)
+
+    for c in cases:
+      checkpoint c.name
+      calls.setLen(0)
+      forcedOrReused.setLen(0)
+      fails = not c.expected
+      silent = c.silent
+      discard switch.peerStore[AddressBook].del(peerId)
+      switch.peerStore[AddressBook].set(peerId, c.verified, AddressConfidence.High)
+      switch.peerStore[AddressBook][peerId] = c.book
+
+      check:
+        (
+          await hp.tryStartingDirectConn(
+            switch, peerId, cap, dcutrClient.connectTimeout
+          )
+        ) == c.expected
+        calls == c.dialed.toChunks(cap)
+        forcedOrReused == newSeqWith(calls.len, false)
 
   template directConnection(restart: bool) =
     let autonatClientStub = AutonatClientStub.new(expectedDials = 1)

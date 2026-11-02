@@ -26,6 +26,12 @@ proc new*(
 ): T =
   return T(connectTimeout: connectTimeout, maxDialableAddrs: maxDialableAddrs)
 
+func connectTimeout*(self: DcutrClient): Duration =
+  self.connectTimeout
+
+func maxDialableAddrs*(self: DcutrClient): int =
+  self.maxDialableAddrs
+
 proc connectDirectly(
     self: DcutrClient,
     switch: Switch,
