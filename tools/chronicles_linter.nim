@@ -13,8 +13,7 @@
 ##
 ## The checks are the syntactic subset of the script: they need only the parsed
 ## AST. The script's rule "potentially unbounded fields must use `shortLog`"
-## needs a value's *type*, which a parse-only AST does not carry. It is listed
-## under "Not implemented" in the README.
+## needs a value's *type*, which a parse-only AST does not carry.
 
 import std/strutils
 
