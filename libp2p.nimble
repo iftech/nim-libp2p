@@ -14,8 +14,7 @@ requires "nim >= 2.2.4",
   "serialization >= 0.5.0", "json_serialization >= 0.4.4", "lsquic >= 0.11.2",
   "protobuf_serialization >= 0.6.0",
   "https://github.com/status-im/nim-websock >= 0.4.1",
-  "https://github.com/logos-storage/nim-libplum >= 0.6.2",
-  "https://github.com/iftech/nim-lint"
+  "https://github.com/logos-storage/nim-libplum >= 0.6.2"
 
 import os
 

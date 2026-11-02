@@ -95,4 +95,4 @@ Reuse [the shared utilities](../libp2p/utils/shortlog.nim) for collections and `
 
 Where the audit needs an explicit concrete overload, keep a thin wrapper that delegates to the generic helper, as in [the Rendezvous formatters](../libp2p/protocols/rendezvous/protobuf.nim).
 
-Before submitting changes, run `nim r linter.nim` from the repository root. `linter.nim` checks event-message style, field naming, and selected payload/formatter patterns; passing it does not replace reviewing field contents for sensitive data or unbounded output.
+Before submitting changes, run `nimble install https://github.com/iftech/nim-lint` (once) and `nim r linter.nim` from the repository root. `linter.nim` checks event-message style, field naming, and selected payload/formatter patterns; passing it does not replace reviewing field contents for sensitive data or unbounded output.
