@@ -307,6 +307,8 @@ suite "AutoTLS certificate issuance and renewal":
     service = AutotlsService.new(rng(), config)
     await service.start(switch)
     let restored = (await service.getCertWhenReady()).get()
+    # Nothing signals a heartbeat that decided against renewing, so wait out
+    # several rounds in which an unwanted issuance could have started.
     await sleepAsync(3 * RenewCheckTime)
 
     check:
