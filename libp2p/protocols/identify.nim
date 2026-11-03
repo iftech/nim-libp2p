@@ -173,7 +173,7 @@ proc tryIdentify*(
 
   var message = await stream.readLp(maxMsgSize)
   if message.len == 0:
-    trace "identify: Empty message received!", stream
+    trace "identify: Empty message received", stream
     return err(invalidMsg("Empty message received"))
 
   let identifyMsg = IdentifyMsg.decode(move message).valueOr:

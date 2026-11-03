@@ -1164,7 +1164,7 @@ proc maintainDirectPeer(
   if id notin g.peers:
     trace "Attempting to dial a direct peer", peerId = id
     if g.switch.isConnected(id):
-      warn "We are connected to a direct peer, but it isn't a GossipSub peer!", id
+      warn "We are connected to a direct peer, but it isn't a GossipSub peer", id
       return
     try:
       await g.switch.connect(id, addrs, forceDial = true)
