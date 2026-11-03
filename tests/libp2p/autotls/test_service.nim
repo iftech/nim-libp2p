@@ -282,6 +282,7 @@ suite "AutoTLS certificate issuance and renewal":
       ipAddress = Opt.some(parseIpAddress(NodeIP)),
       domainSuffix = DomainSuffix,
       acmeDirectoryURL = parseUri(certServer.url),
+      registrationURL = parseUri(certServer.url),
       renewCheckTime = RenewCheckTime,
       issueRetries = 0,
       dnsRetries = 0,
