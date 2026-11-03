@@ -162,7 +162,7 @@ proc runMessageEndsWithPunctuation(ast: PNode, s: MessageSettings): seq[Finding]
   for call in logCalls(ast):
     let node = messageNode(call)
     if node != nil and node.strVal.strip()[^1] in s.trailingPunctuation:
-      result.add finding(node, "log message must not end with forbidden punctuation")
+      result.add finding(node, "log message must not end with punctuation")
 
 proc runMessageMaxSentences(ast: PNode, s: MessageSettings): seq[Finding] =
   for call in logCalls(ast):
