@@ -170,9 +170,14 @@ proc new*(
     finalizeRetries: int = 10,
     finalizeRetryTime: Duration = 1.seconds,
     storage: AutotlsStorage = nil,
+    nameResolver: NameResolver = nil,
 ): T =
   T(
-    nameResolver: DnsResolver.new(nameServers),
+    nameResolver:
+      if nameResolver.isNil:
+        DnsResolver.new(nameServers)
+      else:
+        nameResolver,
     acmeDirectoryURL: acmeDirectoryURL,
     acmeHttpFlags: acmeHttpFlags,
     ipAddress: ipAddress,

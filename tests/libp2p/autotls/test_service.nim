@@ -222,9 +222,11 @@ suite "AutoTLS certificate issuance and renewal":
     acmeApi.scriptChallenge(ChallengeToken)
 
     let config = AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      issueRetries = 0,
+      dnsRetries = 0,
+      nameResolver = StubNameResolver.new(),
     )
-    config.nameResolver = StubNameResolver.new()
     service = newService(config)
     await service.start(switch)
 
@@ -321,10 +323,12 @@ suite "AutoTLS certificate issuance and renewal":
     acmeApi.scriptChallenge(ChallengeToken)
 
     let config = AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      issueRetries = 0,
+      dnsRetries = 0,
+      # The A record resolves, so only the missing TXT record holds issuance back.
+      nameResolver = StubNameResolver.new(ipAddresses = @[NodeIP]),
     )
-    # The A record resolves, so only the missing TXT record holds issuance back.
-    config.nameResolver = StubNameResolver.new(ipAddresses = @[NodeIP])
     service = newService(config)
     await service.start(switch)
 
@@ -369,8 +373,8 @@ suite "AutoTLS on a switch":
       ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
       issueRetries = 0,
       dnsRetries = 0,
+      nameResolver = StubNameResolver.new(),
     )
-    config.nameResolver = StubNameResolver.new()
     let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
       .withAutotls(config)
       .build()
