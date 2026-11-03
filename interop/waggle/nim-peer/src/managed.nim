@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/strutils
-import ./constants
+import ./[constants, common]
 import chronos
 import ../../../../tests/libp2p/protocols/waggle/utils
 import ../../../../libp2p/builders
@@ -11,18 +10,9 @@ const Topic = @[byte 0, 255, 1]
 
 proc managedInterop*(address: string) {.async.} =
   let
-    parts = address.rsplit("/p2p/", maxsplit = 1)
-    peer = PeerId.init(parts[1]).get()
-  let random = newRng()
-
-  let switch = SwitchBuilder
-    .new()
-    .withRng(random)
-    .withAddress(MultiAddress.init("/ip4/127.0.0.1/tcp/0").get())
-    .withTcpTransport()
-    .withYamux()
-    .withNoise()
-    .build()
+    client = newInteropPeer(address)
+    peer = client.peer
+    switch = client.switch
 
   var have = 1.byte
   var deliveries = 0
@@ -56,27 +46,15 @@ proc managedInterop*(address: string) {.async.} =
         have = have or pieces[0]
         doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: have)).isOk
 
-  waggle = Waggle.new(switch = switch, rng = random, onEvent = onEvent)
-  switch.mount(waggle)
+  waggle = client.mountWaggle(onEvent)
 
   defer:
-    await switch.stop()
+    await client.stop()
 
   doAssert waggle.subscribe(Topic).get().added
 
-  let disconnected = Future[void].Raising([CancelledError]).init()
-  proc onPeerLeft(
-      remote: PeerId, event: PeerEvent
-  ) {.async: (raises: [CancelledError]).} =
-    if remote == peer and not disconnected.finished:
-      disconnected.complete()
-
-  switch.addPeerEventHandler(onPeerLeft, PeerEventKind.Left)
-  defer:
-    switch.removePeerEventHandler(onPeerLeft, PeerEventKind.Left)
-
   await switch.start()
-  await switch.connect(peer, @[MultiAddress.init(parts[0]).get()])
+  await client.connect()
 
   doAssert await subscribed.withTimeout(20.seconds),
     "Timed out waiting for Rust subscription"
@@ -100,7 +78,7 @@ proc managedInterop*(address: string) {.async.} =
     )
   ).get()
 
-  doAssert await disconnected.withTimeout(20.seconds),
+  doAssert await client.disconnected.withTimeout(20.seconds),
     "Timed out waiting for Rust disconnect"
 
   echo "Nim reconciled complementary pieces with Rust; duplicate payload suppressed"
