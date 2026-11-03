@@ -657,18 +657,20 @@ proc recordQueueDrop(
 
 proc evictQueuedBytes(
     p: PubSubPeer, priority: MessagePriority, bytesToFree: int
-): int {.gcsafe.} =
+) {.gcsafe.} =
   if priority == High:
-    return 0
+    return
+
+  var freedBytes = 0
 
   template evictFrom(queue: untyped) =
-    while result < bytesToFree and queue.len > 0:
+    while freedBytes < bytesToFree and queue.len > 0:
       let msg = queue.popFirst()
       let messageBytes = msg.data.len
       p.rpcmessagequeue.evictableBytes[priority] -= messageBytes
       p.releaseBytes(priority, messageBytes)
       p.recordQueueDrop(priority, messageBytes, "peer_limit", penaltyDelta = 0.0)
-      result += messageBytes
+      freedBytes += messageBytes
       when defined(pubsubpeer_queue_metrics):
         if priority == Medium:
           libp2p_gossipsub_medium_priority_queue_size.dec(labelValues = [$p.peerId])
@@ -693,10 +695,10 @@ proc makePeerRoom(p: PubSubPeer, priority: MessagePriority, messageBytes: int) =
       return
     var needed = bytesNeeded(p.queuedBytes(), messageBytes, p.maxOutboundQueueBytes)
     if needed > 0:
-      discard p.evictQueuedBytes(Low, needed)
+      p.evictQueuedBytes(Low, needed)
       needed = bytesNeeded(p.queuedBytes(), messageBytes, p.maxOutboundQueueBytes)
     if needed > 0:
-      discard p.evictQueuedBytes(Medium, needed)
+      p.evictQueuedBytes(Medium, needed)
   of Medium:
     let
       nonHighBytes = p.queuedBytes(Medium) + p.queuedBytes(Low)
@@ -714,7 +716,7 @@ proc makePeerRoom(p: PubSubPeer, priority: MessagePriority, messageBytes: int) =
     ) or not fitsWithin(nonHighBytes - removableBytes, messageBytes, maxNonHighBytes):
       return
     if needed > 0:
-      discard p.evictQueuedBytes(Low, needed)
+      p.evictQueuedBytes(Low, needed)
   of Low:
     discard
 
@@ -920,13 +922,16 @@ proc sendEncoded*(
       maxSize = p.maxMessageSize, msgSize = msg.len
     newFutureCompleted[void]()
   else:
-    if priority != High:
-      if priority != Medium or
-          p.rpcmessagequeue.mediumPriorityQueue.len < p.maxMediumPriorityQueueLen:
+    case priority
+    of High:
+      if not fitsWithin(p.queuedBytes(), msg.len, p.maxOutboundQueueBytes) and
+          p.rpcmessagequeue.sendPriorityQueue.len < p.maxHighPriorityQueueLen:
         p.makePeerRoom(priority, msg.len)
-    elif not fitsWithin(p.queuedBytes(), msg.len, p.maxOutboundQueueBytes):
-      if p.rpcmessagequeue.sendPriorityQueue.len < p.maxHighPriorityQueueLen:
+    of Medium:
+      if p.rpcmessagequeue.mediumPriorityQueue.len < p.maxMediumPriorityQueueLen:
         p.makePeerRoom(priority, msg.len)
+    of Low:
+      discard
 
     let action = determineQueueAction(
       priority, p.rpcmessagequeue, p.maxHighPriorityQueueLen,
