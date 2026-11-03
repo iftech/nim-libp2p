@@ -223,9 +223,9 @@ proc newStorageKey(self: AutotlsService): LPResult[AutotlsStorageKey] =
     )
   )
 
-proc restoreState(self: AutotlsService): Future[LPResult[void]] {.
-    async: (raises: [CancelledError])
-.} =
+proc restoreState(
+    self: AutotlsService
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   ## Restore state before creating the ACME client so its account identity is
   ## retained across process restarts.
   self.storageKey = Opt.some(?self.newStorageKey())
@@ -254,7 +254,9 @@ proc restoreState(self: AutotlsService): Future[LPResult[void]] {.
           try:
             let certificate = TLSCertificate.init(state.certificatePem)
             let privateKey = TLSPrivateKey.init(state.certificateKeyPem)
-            self.installCertificate(AutotlsCert.new(certificate, privateKey, expiry.utc))
+            self.installCertificate(
+              AutotlsCert.new(certificate, privateKey, expiry.utc)
+            )
             info "Restored AutoTLS certificate from storage"
           except TLSStreamProtocolError:
             return err("AutoTLS storage contains an invalid certificate or private key")
@@ -274,7 +276,9 @@ proc restoreState(self: AutotlsService): Future[LPResult[void]] {.
   ok()
 
 proc saveState(
-    self: AutotlsService, certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
+    self: AutotlsService,
+    certificate: ACMECertificateResponse,
+    certKeyPair: RsaPrivateKey,
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   ## Save state only after ACME completed issuance. A save failure does not
   ## invalidate the usable in-memory certificate, but is reported to callers.

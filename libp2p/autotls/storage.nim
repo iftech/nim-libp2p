@@ -5,10 +5,7 @@
 
 import chronos, uri
 
-import
-  ./acme/api,
-  ../results,
-  ../utils/opt
+import ./acme/api, ../results, ../utils/opt
 
 type AutotlsStorageKey* = object
   ## Identifies state belonging to one AutoTLS identity and ACME deployment.
