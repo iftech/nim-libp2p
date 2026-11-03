@@ -283,8 +283,8 @@ proc restoreState(
   var accountKey = Opt.none(RsaPrivateKey)
   var accountKid = Kid("")
   let state = ?(await self.storage.load(storageKey))
-  state.ifValue(state):
-    let validated = ?validateStoredState(state)
+  state.ifValue(storedState):
+    let validated = ?validateStoredState(storedState)
     accountKey = validated.accountKey
     accountKid = validated.accountKid
     validated.certificate.ifValue(certificate):
