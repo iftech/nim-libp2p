@@ -35,7 +35,7 @@ proc awaitStage(
   for task in receiving:
     pending.add(task)
   try:
-    discard await race(pending).wait(20.seconds)
+    discard await race(pending).wait(EventTimeout)
     for task in receiving:
       if task.finished:
         let outcome = task.read()

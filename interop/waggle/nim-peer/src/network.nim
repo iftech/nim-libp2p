@@ -16,10 +16,9 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
   var phase = 0.byte
   var unsubscribed = false
   let confirmed = Future[void].Raising([CancelledError]).init()
-  let started = Future[void].Raising([CancelledError]).init()
+  let readinessReceived = Future[void].Raising([CancelledError]).init()
   let reconstructed = Future[void].Raising([CancelledError]).init()
-  var dataSubscribed = Future[void].Raising([CancelledError]).init()
-  var controlSubscribed = Future[void].Raising([CancelledError]).init()
+  var dataSubscribed, controlSubscribed: Future[void].Raising([CancelledError])
   var fullQueues = 0
   var waggle: Waggle
   let dataTopic = @[byte 0, 255, 1]
@@ -47,16 +46,17 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
         doAssert msg.pieces == Opt.some(@[ack])
 
         if ack == 0:
-          doAssert not started.finished
-          started.complete()
+          doAssert not readinessReceived.finished
+          readinessReceived.complete()
         else:
-          doAssert ack == phase + 1 and ack <= 2
+          doAssert ack == phase + 1
+          doAssert ack <= 2
           phase = ack
         return
 
       if msg.objectId == @[RustObjectPrefix, 1]:
         doAssert mode == TopologyScenario and msg.pieces == Opt.some(@[byte 1])
-        started.complete()
+        readinessReceived.complete()
       elif msg.objectId == @[RustObjectPrefix, 0]:
         doAssert mode == LifecycleScenario and phase == 1
         doAssert msg.pieces == Opt.some(@[byte 1])
@@ -77,23 +77,22 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
 
     if mode == TopologyScenario:
       doAssert pieces[0] > 0 and pieces[0] <= 7
-      doAssert (pieces[0] and not have) != 0
+      let newPieces = pieces[0] and not have
+      doAssert newPieces > 0
       have = have or pieces[0]
-      if started.finished:
+      if readinessReceived.finished:
         doAssert waggle.publish(dataTopic, BitShard(id: @[byte 1], have: have)).isOk
-      if have == 7 and not reconstructed.finished:
+      if have == 7:
         reconstructed.complete()
     else:
-      doAssert pieces[0] == phase + 1 and pieces[0] <= 3
+      doAssert pieces[0] == phase + 1
+      doAssert pieces[0] <= 3
       phase = pieces[0]
 
-  waggle = Waggle.new(
-    switch = switch,
-    rng = switch.rng,
-    onEvent = onEvent,
+  waggle = client.mountWaggle(
+    onEvent,
     config = WaggleConfig(maxQueued: (if mode == PressureScenario: 1 else: 5000)),
   )
-  switch.mount(waggle)
 
   defer:
     await client.stop()
@@ -103,20 +102,20 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
 
   await switch.start()
 
-  for epoch in 0 .. (if mode == LifecycleScenario: 1 else: 0):
-    if epoch > 0:
-      dataSubscribed = Future[void].Raising([CancelledError]).init()
-      controlSubscribed = Future[void].Raising([CancelledError]).init()
-      client.disconnected = Future[void].Raising([CancelledError]).init()
+  let connections = if mode == LifecycleScenario: 2 else: 1
+  for epoch in 0 ..< connections:
+    dataSubscribed = Future[void].Raising([CancelledError]).init()
+    controlSubscribed = Future[void].Raising([CancelledError]).init()
+    client.disconnected = Future[void].Raising([CancelledError]).init()
     await client.connect()
     try:
-      doAssert await dataSubscribed.withTimeout(20.seconds),
+      doAssert await dataSubscribed.withTimeout(EventTimeout),
         "Timed out waiting for Rust data subscription"
-      doAssert await controlSubscribed.withTimeout(20.seconds),
+      doAssert await controlSubscribed.withTimeout(EventTimeout),
         "Timed out waiting for Rust control subscription"
 
       if mode == PressureScenario:
-        doAssert await started.withTimeout(20.seconds),
+        doAssert await readinessReceived.withTimeout(EventTimeout),
           "Timed out waiting for Rust readiness"
 
         doAssert waggle.publish(dataTopic, BitShard(id: @[byte 1], have: 1)).get() == 1
@@ -139,15 +138,15 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
           )
         ).get()
 
-        doAssert await client.disconnected.withTimeout(20.seconds),
+        doAssert await client.disconnected.withTimeout(EventTimeout),
           "Timed out waiting for Rust disconnect"
       elif mode == TopologyScenario:
-        doAssert await started.withTimeout(20.seconds),
+        doAssert await readinessReceived.withTimeout(EventTimeout),
           "Timed out waiting for Rust readiness"
 
         doAssert waggle.publish(dataTopic, BitShard(id: @[byte 1], have: have)).isOk
 
-        doAssert await reconstructed.withTimeout(20.seconds),
+        doAssert await reconstructed.withTimeout(EventTimeout),
           "Timed out waiting for all pieces"
 
         doAssert (
@@ -160,7 +159,7 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
           )
         ).get()
 
-        doAssert await confirmed.withTimeout(20.seconds),
+        doAssert await confirmed.withTimeout(EventTimeout),
           "Timed out waiting for Rust topology acknowledgement"
 
         doAssert (
@@ -173,7 +172,7 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
           )
         ).get()
 
-        doAssert await client.disconnected.withTimeout(20.seconds),
+        doAssert await client.disconnected.withTimeout(EventTimeout),
           "Timed out waiting for Rust disconnect"
       elif epoch == 0:
         while phase != 1:
@@ -209,7 +208,7 @@ proc networkInterop*(address, mode: string, initial: byte = 1) {.async.} =
           )
         ).get()
 
-        doAssert await client.disconnected.withTimeout(20.seconds),
+        doAssert await client.disconnected.withTimeout(EventTimeout),
           "Timed out waiting for Rust disconnect"
     finally:
       await switch.disconnect(peer)

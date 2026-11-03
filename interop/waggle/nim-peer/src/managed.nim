@@ -21,8 +21,7 @@ proc managedInterop*(address: string) {.async.} =
   let confirmed = Future[void].Raising([CancelledError]).init()
 
   proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
-    doAssert event.kind != WaggleEventKind.InvalidData
-    doAssert event.kind != WaggleEventKind.FullQueue
+    doAssert event.kind notin {WaggleEventKind.InvalidData, WaggleEventKind.FullQueue}
     if event.kind == WaggleEventKind.Subscribed:
       if event.peerId == peer and event.topicId == Topic and not subscribed.finished:
         subscribed.complete()
@@ -38,8 +37,7 @@ proc managedInterop*(address: string) {.async.} =
       confirmed.complete()
     else:
       doAssert event.message.objectId == @[byte 1]
-      if event.message.pieces.isSome:
-        let pieces = event.message.pieces.get()
+      event.message.pieces.ifValue(pieces):
         doAssert pieces == @[byte 2]
 
         inc deliveries
@@ -59,11 +57,11 @@ proc managedInterop*(address: string) {.async.} =
   await switch.start()
   await client.connect()
 
-  doAssert await subscribed.withTimeout(20.seconds),
+  doAssert await subscribed.withTimeout(EventTimeout),
     "Timed out waiting for Rust subscription"
 
   doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: have)).isOk
-  doAssert await confirmed.withTimeout(20.seconds),
+  doAssert await confirmed.withTimeout(EventTimeout),
     "Timed out waiting for Rust reconciliation acknowledgement"
 
   doAssert have == 3 and deliveries == 1
@@ -81,7 +79,7 @@ proc managedInterop*(address: string) {.async.} =
     )
   ).get()
 
-  doAssert await client.disconnected.withTimeout(20.seconds),
+  doAssert await client.disconnected.withTimeout(EventTimeout),
     "Timed out waiting for Rust disconnect"
 
   echo "Nim reconciled complementary pieces with Rust; duplicate payload suppressed"
