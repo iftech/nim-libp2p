@@ -201,17 +201,14 @@ proc new*(
     T: typedesc[AutotlsService], rng: Rng, config: AutotlsConfig = AutotlsConfig.new()
 ): T =
   T(
-    acmeClient: nil,
+    rng: rng,
+    config: config,
     broker: AutotlsBroker.new(rng, config.registrationURL),
     cert: Opt.none(AutotlsCert),
     certFailure: Opt.none(LPResultError),
     certReady: newAsyncEvent(),
     certUpdates: newAsyncEventQueue[Opt[AutotlsCert]](),
     running: newAsyncEvent(),
-    config: config,
-    managerFut: nil,
-    peerInfo: nil,
-    rng: rng,
     storage:
       if config.storage.isNil:
         AutotlsStorage(AutotlsMemoryStorage.new())
