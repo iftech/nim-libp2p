@@ -1,7 +1,8 @@
 .PHONY: all build deps cbind clean test \
         test_multiformat_exts test_integration test_autotls_docker_integration \
         bench_dial \
-        setup lock gen_multicodec format clean-nim
+        setup lock gen_multicodec format clean-nim \
+        lint
 
 NIM_VERSION  ?= 2.2.10
 NPH_VERSION  ?= 0.7.0
@@ -153,6 +154,4 @@ clean-nim:
 	rm nimble.paths tests/nimble.paths 2>/dev/null || true
 
 lint:
-	# will be implemented in nim-libp2p#3367
-	echo "not implemented"
-	exit 1
+	nimble c -r linter.nim
