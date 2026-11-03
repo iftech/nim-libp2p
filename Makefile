@@ -154,4 +154,6 @@ clean-nim:
 	rm nimble.paths tests/nimble.paths 2>/dev/null || true
 
 lint:
-	nimble c -r linter.nim
+	nimble list -i 2>/dev/null | grep -qx lint || \
+		nimble install https://github.com/iftech/nim-lint@#develop
+	nim r linter.nim
