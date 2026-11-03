@@ -281,6 +281,7 @@ suite "AutoTLS certificate issuance and renewal":
     let config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress(NodeIP)),
       domainSuffix = DomainSuffix,
+      acmeDirectoryURL = parseUri(certServer.url),
       renewCheckTime = RenewCheckTime,
       issueRetries = 0,
       dnsRetries = 0,
@@ -298,7 +299,7 @@ suite "AutoTLS certificate issuance and renewal":
     await service.start(switch)
     let issued = (await service.getCertWhenReady()).get()
     await service.stop(switch)
-    let requestCount = acmeApi.requestedUris.len
+    let connectionCount = certServer.connectionCount
 
     # A fresh service has no injected ACME client. It must restore both the
     # certificate and account from storage before it could contact ACME.
@@ -311,7 +312,7 @@ suite "AutoTLS certificate issuance and renewal":
       restored.expiry == issued.expiry
       service.acmeClient.key == accountKey
       service.acmeClient.kid == AccountURL
-      acmeApi.requestedUris.len == requestCount
+      certServer.connectionCount == connectionCount
 
   asyncTest "the certificate is not requested until the DNS records are published":
     acmeApi.scriptChallenge(ChallengeToken)

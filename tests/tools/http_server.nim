@@ -39,6 +39,9 @@ proc startTestHttpServer*(body: string): TestHttpServer =
   self.url = "http://" & $self.server.local & "/"
   self
 
+proc connectionCount*(self: TestHttpServer): int =
+  self.accepted.len
+
 proc stop*(self: TestHttpServer) {.async: (raises: []).} =
   self.server.stop2().isOkOr:
     raiseAssert "test http server stop failed"
