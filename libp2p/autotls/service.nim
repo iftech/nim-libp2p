@@ -90,6 +90,7 @@ type AutotlsService* = ref object of Service
   peerInfo: PeerInfo
   rng*: Rng
   publicIpWarnings: LogRateLimit
+  storage*: AutotlsStorage
 
 proc new*(
     T: typedesc[AutotlsCert],
@@ -194,11 +195,6 @@ proc new*(
     acmeRetryTime: acmeRetryTime,
     finalizeRetries: finalizeRetries,
     finalizeRetryTime: finalizeRetryTime,
-    storage:
-      if storage.isNil:
-        AutotlsStorage(AutotlsMemoryStorage.new())
-      else:
-        storage,
   )
 
 proc new*(
@@ -216,6 +212,11 @@ proc new*(
     managerFut: nil,
     peerInfo: nil,
     rng: rng,
+    storage:
+      if config.storage.isNil:
+        AutotlsStorage(AutotlsMemoryStorage.new())
+      else:
+        config.storage,
   )
 
 proc isRunning*(self: AutotlsService): bool =
