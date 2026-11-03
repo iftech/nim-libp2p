@@ -278,14 +278,12 @@ suite "AutoTLS certificate issuance and renewal":
     defer:
       await certServer.stop()
 
-    let storage = AutotlsMemoryStorage.new()
     var config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress(NodeIP)),
       domainSuffix = DomainSuffix,
       renewCheckTime = RenewCheckTime,
       issueRetries = 0,
       dnsRetries = 0,
-      storage = Opt.some(AutotlsStorage(storage)),
     )
     acmeApi.directoryURL = parseUri(certServer.url)
     acmeApi.scriptChallenge(ChallengeToken)

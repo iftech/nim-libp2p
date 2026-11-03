@@ -40,6 +40,7 @@ suite "AutoTLS Configuration Tests":
       config.acmeRetryTime == 1.seconds
       config.finalizeRetries == 10
       config.finalizeRetryTime == 1.seconds
+      config.storage of AutotlsMemoryStorage
 
   test "AutotlsConfig constructor with custom values":
     let customIpAddress = parseIpAddress("203.0.113.7")
@@ -101,3 +102,16 @@ suite "AutoTLS Configuration Tests":
       config.acmeRetryTime == customAcmeRetryTime
       config.finalizeRetries == customFinalizeRetries
       config.finalizeRetryTime == customFinalizeRetryTime
+
+  test "storage defaults to a fresh memory store and preserves custom stores":
+    let first = AutotlsConfig.new()
+    let second = AutotlsConfig.new()
+    let custom = AutotlsMemoryStorage.new()
+    let configured = AutotlsConfig.new(storage = custom)
+    let nilStorage = AutotlsConfig.new(storage = nil)
+
+    check:
+      second.storage of AutotlsMemoryStorage
+      first.storage != second.storage
+      configured.storage == AutotlsStorage(custom)
+      nilStorage.storage of AutotlsMemoryStorage

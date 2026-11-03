@@ -24,11 +24,9 @@ type AutotlsStoredState* = object
 type AutotlsStorage* = ref object of RootObj
   ## Application-owned persistence for AutoTLS state.
 
-type AutotlsMemoryStorage* = ref object of AutotlsStorage
-  ## A process-local storage implementation, useful for tests and embedders
-  ## that want the storage lifecycle to be explicit.
-  key: Opt[AutotlsStorageKey]
-  state: Opt[AutotlsStoredState]
+proc sameStorageKey*(a, b: AutotlsStorageKey): bool =
+  a.peerLabel == b.peerLabel and a.domainSuffix == b.domainSuffix and
+    $a.acmeDirectoryURL == $b.acmeDirectoryURL
 
 method load*(
     self: AutotlsStorage, key: AutotlsStorageKey
@@ -40,12 +38,14 @@ method save*(
 ): Future[LPResult[void]] {.base, async: (raises: [CancelledError]).} =
   ok()
 
+type AutotlsMemoryStorage* = ref object of AutotlsStorage
+  ## A process-local storage implementation, useful for tests and embedders
+  ## that want the storage lifecycle to be explicit.
+  key: Opt[AutotlsStorageKey]
+  state: Opt[AutotlsStoredState]
+  
 proc new*(T: typedesc[AutotlsMemoryStorage]): T =
   T(key: Opt.none(AutotlsStorageKey), state: Opt.none(AutotlsStoredState))
-
-proc sameStorageKey(a, b: AutotlsStorageKey): bool =
-  a.peerLabel == b.peerLabel and a.domainSuffix == b.domainSuffix and
-    $a.acmeDirectoryURL == $b.acmeDirectoryURL
 
 method load*(
     self: AutotlsMemoryStorage, key: AutotlsStorageKey

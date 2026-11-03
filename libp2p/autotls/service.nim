@@ -75,7 +75,7 @@ type AutotlsConfig* = object
   acmeRetryTime*: Duration
   finalizeRetries*: int
   finalizeRetryTime*: Duration
-  storage*: Opt[AutotlsStorage]
+  storage*: AutotlsStorage
 
 type AutotlsService* = ref object of Service
   acmeClient*: ACMEClient
@@ -90,7 +90,6 @@ type AutotlsService* = ref object of Service
   peerInfo: PeerInfo
   rng*: Rng
   publicIpWarnings: LogRateLimit
-  storageKey: Opt[AutotlsStorageKey]
 
 proc new*(
     T: typedesc[AutotlsCert],
@@ -170,7 +169,7 @@ proc new*(
     acmeRetryTime: Duration = 1.seconds,
     finalizeRetries: int = 10,
     finalizeRetryTime: Duration = 1.seconds,
-    storage: Opt[AutotlsStorage] = Opt.none(AutotlsStorage),
+    storage: AutotlsStorage = nil,
 ): T =
   T(
     nameResolver: DnsResolver.new(nameServers),
@@ -190,7 +189,7 @@ proc new*(
     acmeRetryTime: acmeRetryTime,
     finalizeRetries: finalizeRetries,
     finalizeRetryTime: finalizeRetryTime,
-    storage: storage,
+    storage: if storage.isNil: AutotlsStorage(AutotlsMemoryStorage.new()) else: storage,
   )
 
 proc new*(
@@ -208,7 +207,6 @@ proc new*(
     managerFut: nil,
     peerInfo: nil,
     rng: rng,
-    storageKey: Opt.none(AutotlsStorageKey),
   )
 
 proc isRunning*(self: AutotlsService): bool =
@@ -223,45 +221,62 @@ proc newStorageKey(self: AutotlsService): LPResult[AutotlsStorageKey] =
     )
   )
 
+type ValidatedAutotlsState* = object
+  ## Parsed state suitable for restoring an AutoTLS service.
+  accountKey*: Opt[RsaPrivateKey]
+  accountKid*: Kid
+  certificate*: Opt[AutotlsCert]
+  certificateExpired*: bool
+
+proc validateStoredState*(state: AutotlsStoredState): LPResult[ValidatedAutotlsState] =
+  var validated = ValidatedAutotlsState(
+    accountKey: Opt.none(RsaPrivateKey), certificate: Opt.none(AutotlsCert)
+  )
+  if state.accountKey.len == 0 and state.accountKid.len > 0:
+    return err("AutoTLS storage has an account URL without an account key")
+  if state.accountKey.len > 0:
+    let key = RsaPrivateKey.init(state.accountKey).valueOr:
+      return err("AutoTLS storage contains an invalid account key")
+    validated.accountKey = Opt.some(key)
+    validated.accountKid = state.accountKid
+
+  let hasCertificate = state.certificatePem.len > 0
+  let hasCertificateKey = state.certificateKeyPem.len > 0
+  if hasCertificate xor hasCertificateKey:
+    return err("AutoTLS storage contains an incomplete certificate")
+  if hasCertificate:
+    let expiry = validTo(state.certificatePem.toBytes, PEM).valueOr:
+      return err("AutoTLS storage contains a certificate with an invalid expiry")
+    if expiry.toUnix > now().toTime.toUnix:
+      try:
+        let certificate = TLSCertificate.init(state.certificatePem)
+        let privateKey = TLSPrivateKey.init(state.certificateKeyPem)
+        validated.certificate = Opt.some(AutotlsCert.new(certificate, privateKey, expiry.utc))
+      except TLSStreamProtocolError:
+        return err("AutoTLS storage contains an invalid certificate or private key")
+    else:
+      validated.certificateExpired = true
+  ok(validated)
+
 proc restoreState(
     self: AutotlsService
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   ## Restore state before creating the ACME client so its account identity is
   ## retained across process restarts.
-  self.storageKey = Opt.some(?self.newStorageKey())
+  let storageKey = ?self.newStorageKey()
 
   var accountKey = Opt.none(RsaPrivateKey)
   var accountKid = Kid("")
-  self.config.storage.ifValue(storage):
-    let state = ?(await storage.load(self.storageKey.get()))
-    state.ifValue(state):
-      if state.accountKey.len == 0 and state.accountKid.len > 0:
-        return err("AutoTLS storage has an account URL without an account key")
-      if state.accountKey.len > 0:
-        let key = RsaPrivateKey.init(state.accountKey).valueOr:
-          return err("AutoTLS storage contains an invalid account key")
-        accountKey = Opt.some(key)
-        accountKid = state.accountKid
-
-      let hasCertificate = state.certificatePem.len > 0
-      let hasCertificateKey = state.certificateKeyPem.len > 0
-      if hasCertificate xor hasCertificateKey:
-        return err("AutoTLS storage contains an incomplete certificate")
-      if hasCertificate:
-        let expiry = validTo(state.certificatePem.toBytes, PEM).valueOr:
-          return err("AutoTLS storage contains a certificate with an invalid expiry")
-        if expiry.toUnix > now().toTime.toUnix:
-          try:
-            let certificate = TLSCertificate.init(state.certificatePem)
-            let privateKey = TLSPrivateKey.init(state.certificateKeyPem)
-            self.installCertificate(
-              AutotlsCert.new(certificate, privateKey, expiry.utc)
-            )
-            info "Restored AutoTLS certificate from storage"
-          except TLSStreamProtocolError:
-            return err("AutoTLS storage contains an invalid certificate or private key")
-        else:
-          info "Stored AutoTLS certificate is expired; a replacement will be requested"
+  let state = ?(await self.config.storage.load(storageKey))
+  state.ifValue(state):
+    let validated = ?validateStoredState(state)
+    accountKey = validated.accountKey
+    accountKid = validated.accountKid
+    validated.certificate.ifValue(certificate):
+      self.installCertificate(certificate)
+      info "Restored AutoTLS certificate from storage"
+    if validated.certificateExpired:
+      info "Stored AutoTLS certificate is expired; a replacement will be requested"
 
   # Keeping this conditional makes tests and advanced callers that inject a
   # custom ACME API continue to work, while normal construction happens only
@@ -282,10 +297,7 @@ proc saveState(
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   ## Save state only after ACME completed issuance. A save failure does not
   ## invalidate the usable in-memory certificate, but is reported to callers.
-  if self.config.storage.isNone():
-    return ok()
-  if self.storageKey.isNone():
-    return err("AutoTLS storage key was not initialized")
+  let storageKey = ?self.newStorageKey()
 
   let accountKey = self.acmeClient.key.getBytes().valueOr:
     return err("Unable to serialize AutoTLS account key")
@@ -297,7 +309,7 @@ proc saveState(
     certificatePem: certificate.rawCertificate,
     certificateKeyPem: certificateKey.pemEncode("PRIVATE KEY"),
   )
-  await self.config.storage.get().save(self.storageKey.get(), state)
+  await self.config.storage.save(storageKey, state)
 
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey
@@ -546,7 +558,7 @@ method start*(
   if restored.isErr:
     let failure = "Could not restore AutoTLS state: " & $restored.error
     error "Could not restore AutoTLS state", err = restored.error
-    self.certFailure = Opt.some(failure)
+    self.certFailure = Opt.some(LPResultError.init(failure))
     self.certReady.fire()
     raise newException(LPError, failure)
 
