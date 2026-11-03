@@ -222,6 +222,8 @@ jobs:
     name: Run Waggle interoperability tests
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    env:
+      NIM_VERSION: 2.2.10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -238,7 +240,7 @@ jobs:
           os: linux
           cpu: amd64
           shell: bash
-          nim_ref: v2.2.10
+          nim_ref: v${{ env.NIM_VERSION }}
 
       - name: Build the Rust peer
         working-directory: interop/waggle/rust-peer
@@ -246,7 +248,6 @@ jobs:
 
       - name: Build the Nim peer
         run: |
-          NIM_VERSION=$(nim --version | sed -n 's/^Nim Compiler Version \([^ ]*\).*/\1/p')
           nimble --noLockfile --requires:"nim == $NIM_VERSION" --resolver:minver -l setup -y
           nim c --threads:on -d:chronicles_log_level=WARN interop/waggle/nim-peer/src/peer.nim
 

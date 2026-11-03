@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
+import chronos
+
 const
+  EventTimeout* = 20.seconds
+
   ReconcileScenario* = "reconcile"
   TopologyScenario* = "topology"
   LifecycleScenario* = "lifecycle"

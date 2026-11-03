@@ -39,9 +39,12 @@ proc newInteropPeer*(address: string): InteropPeer =
   switch.addPeerEventHandler(client.onPeerLeft, PeerEventKind.Left)
   client
 
-proc mountWaggle*(client: InteropPeer, onEvent: WaggleEventHandler): Waggle =
-  let waggle =
-    Waggle.new(switch = client.switch, rng = client.switch.rng, onEvent = onEvent)
+proc mountWaggle*(
+    client: InteropPeer, onEvent: WaggleEventHandler, config = WaggleConfig()
+): Waggle =
+  let waggle = Waggle.new(
+    switch = client.switch, rng = client.switch.rng, onEvent = onEvent, config = config
+  )
   client.switch.mount(waggle)
   waggle
 
