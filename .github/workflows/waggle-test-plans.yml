@@ -1,0 +1,88 @@
+name: Waggle test-plans interoperability
+
+on:
+  pull_request:
+    paths:
+      - 'libp2p/protocols/waggle*'
+      - 'libp2p/protocols/waggle/**'
+      - 'interop/waggle/test-plans/**'
+      - '.github/workflows/waggle-test-plans.yml'
+  workflow_dispatch:
+
+env:
+  NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shadow:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Checkout experimental Waggle test plans
+        uses: actions/checkout@v6
+        with:
+          repository: sukunrt/test-plans
+          ref: waggle-interop
+          path: test-plans
+          persist-credentials: false
+      - name: Record test-plans revision
+        run: git -C test-plans rev-parse HEAD
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.12'
+      - name: Set up Nim
+        uses: ./.github/actions/install_nim
+        with:
+          os: linux
+          cpu: amd64
+          shell: bash
+          nim_ref: v2.2.10
+      - name: Build Nim peer
+        run: |
+          nimble --noLockfile --requires:"nim == 2.2.10" --resolver:minver -l setup -y
+          nim c --threads:on -d:chronicles_log_level=WARN \
+            -d:chronicles_default_output_device=stderr \
+            --warningAsError:UseBase:off --warningAsError:UnusedImport:off \
+            --warningAsError:Deprecated:off --hintAsError:XCannotRaiseY:off \
+            --out:build/waggle-shadow interop/waggle/test-plans/peer.nim
+      - name: Build Shadow v3.3.0
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev libc-dbg libglib2.0-dev make netbase xz-utils
+          git clone --depth 1 --branch v3.3.0 https://github.com/shadow/shadow.git shadow-simulator
+          cd shadow-simulator
+          ./setup build --clean
+          ./setup install
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build upstream Rust and Go peers
+        run: make -C test-plans/waggle-interop binaries
+      - name: Run mixed implementation scenarios
+        run: |
+          for scenario in waggle waggle-sparse; do
+            for composition in 'nim' 'nim rust' 'nim go' 'nim rust go'; do
+              label=${composition// /-}
+              uv run --project test-plans/waggle-interop python interop/waggle/test-plans/run.py \
+                --test-plans test-plans --nim-peer build/waggle-shadow \
+                --composition $composition --scenario "$scenario" --node-count 8 \
+                --output-dir "build/waggle-results/$scenario-$label"
+            done
+          done
+      - name: Upload simulation logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: waggle-test-plans
+          path: build/waggle-results/
