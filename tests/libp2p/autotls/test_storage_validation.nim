@@ -5,8 +5,14 @@
 
 import results, times
 import stew/byteutils
-import ../../../libp2p/[autotls/service, autotls/acme/api, crypto/crypto, crypto/rsa,
-  transports/tls/certificate]
+import
+  ../../../libp2p/[
+    autotls/service,
+    autotls/acme/api,
+    crypto/crypto,
+    crypto/rsa,
+    transports/tls/certificate,
+  ]
 import ../../tools/[unittest, crypto]
 
 suite "AutoTLS stored state validation":
@@ -23,9 +29,10 @@ suite "AutoTLS stored state validation":
       empty.accountKey.isNone()
       empty.certificate.isNone()
       not empty.certificateExpired
-    let valid = validateStoredState(AutotlsStoredState(
-      accountKey: accountBytes, accountKid: Kid("account-url")
-    )).get()
+    let valid = validateStoredState(
+        AutotlsStoredState(accountKey: accountBytes, accountKid: Kid("account-url"))
+      )
+      .get()
     check:
       valid.accountKey.get() == accountKey
       valid.accountKid == Kid("account-url")
@@ -37,21 +44,24 @@ suite "AutoTLS stored state validation":
       "AutoTLS storage contains an invalid account key"
 
   test "rejects incomplete and malformed certificates":
-    for state in [AutotlsStoredState(certificatePem: certificate),
-                  AutotlsStoredState(certificateKeyPem: privateKey)]:
+    for state in [
+      AutotlsStoredState(certificatePem: certificate),
+      AutotlsStoredState(certificateKeyPem: privateKey),
+    ]:
       check validateStoredState(state).error ==
         "AutoTLS storage contains an incomplete certificate"
-    check validateStoredState(AutotlsStoredState(
-      certificatePem: "invalid", certificateKeyPem: privateKey
-    )).error == "AutoTLS storage contains a certificate with an invalid expiry"
-    check validateStoredState(AutotlsStoredState(
-      certificatePem: certificate, certificateKeyPem: "invalid"
-    )).error == "AutoTLS storage contains an invalid certificate or private key"
+    check validateStoredState(
+      AutotlsStoredState(certificatePem: "invalid", certificateKeyPem: privateKey)
+    ).error == "AutoTLS storage contains a certificate with an invalid expiry"
+    check validateStoredState(
+      AutotlsStoredState(certificatePem: certificate, certificateKeyPem: "invalid")
+    ).error == "AutoTLS storage contains an invalid certificate or private key"
 
   test "returns a usable certificate":
-    let valid = validateStoredState(AutotlsStoredState(
-      certificatePem: certificate, certificateKeyPem: privateKey
-    )).get()
+    let valid = validateStoredState(
+        AutotlsStoredState(certificatePem: certificate, certificateKeyPem: privateKey)
+      )
+      .get()
     check:
       valid.certificate.isSome()
       not valid.certificateExpired
@@ -59,9 +69,10 @@ suite "AutoTLS stored state validation":
 
   test "expired certificate is ignored":
     let expired = tlsCertPemGenerator(fromUnix(1600000000))
-    let valid = validateStoredState(AutotlsStoredState(
-      certificatePem: expired, certificateKeyPem: "unused"
-    )).get()
+    let valid = validateStoredState(
+        AutotlsStoredState(certificatePem: expired, certificateKeyPem: "unused")
+      )
+      .get()
     check:
       valid.certificate.isNone()
       valid.certificateExpired

@@ -189,7 +189,11 @@ proc new*(
     acmeRetryTime: acmeRetryTime,
     finalizeRetries: finalizeRetries,
     finalizeRetryTime: finalizeRetryTime,
-    storage: if storage.isNil: AutotlsStorage(AutotlsMemoryStorage.new()) else: storage,
+    storage:
+      if storage.isNil:
+        AutotlsStorage(AutotlsMemoryStorage.new())
+      else:
+        storage,
   )
 
 proc new*(
@@ -251,7 +255,8 @@ proc validateStoredState*(state: AutotlsStoredState): LPResult[ValidatedAutotlsS
       try:
         let certificate = TLSCertificate.init(state.certificatePem)
         let privateKey = TLSPrivateKey.init(state.certificateKeyPem)
-        validated.certificate = Opt.some(AutotlsCert.new(certificate, privateKey, expiry.utc))
+        validated.certificate =
+          Opt.some(AutotlsCert.new(certificate, privateKey, expiry.utc))
       except TLSStreamProtocolError:
         return err("AutoTLS storage contains an invalid certificate or private key")
     else:

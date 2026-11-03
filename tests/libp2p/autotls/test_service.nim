@@ -221,7 +221,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     acmeApi.scriptChallenge(ChallengeToken)
 
-    var config = AutotlsConfig.new(
+    let config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
     )
     config.nameResolver = StubNameResolver.new()
@@ -278,7 +278,7 @@ suite "AutoTLS certificate issuance and renewal":
     defer:
       await certServer.stop()
 
-    var config = AutotlsConfig.new(
+    let config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress(NodeIP)),
       domainSuffix = DomainSuffix,
       renewCheckTime = RenewCheckTime,
@@ -316,7 +316,7 @@ suite "AutoTLS certificate issuance and renewal":
   asyncTest "the certificate is not requested until the DNS records are published":
     acmeApi.scriptChallenge(ChallengeToken)
 
-    var config = AutotlsConfig.new(
+    let config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
     )
     # The A record resolves, so only the missing TXT record holds issuance back.
@@ -361,7 +361,7 @@ suite "AutoTLS on a switch":
     let authClient = PeerIDAuthClientStub.new()
     acmeApi.scriptChallenge("some-token")
 
-    var config = AutotlsConfig.new(
+    let config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
       issueRetries = 0,
       dnsRetries = 0,

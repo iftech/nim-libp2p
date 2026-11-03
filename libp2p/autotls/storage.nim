@@ -31,19 +31,19 @@ proc sameStorageKey*(a, b: AutotlsStorageKey): bool =
 method load*(
     self: AutotlsStorage, key: AutotlsStorageKey
 ): Future[LPResult[Opt[AutotlsStoredState]]] {.base, async: (raises: [CancelledError]).} =
-  ok(Opt.none(AutotlsStoredState))
+  raiseAssert "AutotlsStorage.load must be implemented"
 
 method save*(
     self: AutotlsStorage, key: AutotlsStorageKey, state: AutotlsStoredState
 ): Future[LPResult[void]] {.base, async: (raises: [CancelledError]).} =
-  ok()
+  raiseAssert "AutotlsStorage.save must be implemented"
 
 type AutotlsMemoryStorage* = ref object of AutotlsStorage
   ## A process-local storage implementation, useful for tests and embedders
   ## that want the storage lifecycle to be explicit.
   key: Opt[AutotlsStorageKey]
   state: Opt[AutotlsStoredState]
-  
+
 proc new*(T: typedesc[AutotlsMemoryStorage]): T =
   T(key: Opt.none(AutotlsStorageKey), state: Opt.none(AutotlsStoredState))
 

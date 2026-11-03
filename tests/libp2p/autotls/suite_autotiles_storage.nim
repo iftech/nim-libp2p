@@ -61,8 +61,10 @@ template autotlsStorageTestSuite*(name: string, factory: proc(): AutotlsStorage)
       let key = storageKey()
       check (await storage.save(key, storedState())).isOk()
       let replacement = AutotlsStoredState(
-        accountKey: @[9.byte], accountKid: Kid("replacement"),
-        certificatePem: "new certificate", certificateKeyPem: "new key",
+        accountKey: @[9.byte],
+        accountKid: Kid("replacement"),
+        certificatePem: "new certificate",
+        certificateKeyPem: "new key",
       )
       check (await storage.save(key, replacement)).isOk()
       let loaded = (await storage.load(key)).get().get()
