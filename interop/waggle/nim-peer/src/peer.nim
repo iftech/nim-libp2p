@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import std/[os, strutils, sets]
-import ./[constants, managed, network]
+import ./[constants, common, managed, network]
 import chronos
 import ../../../../libp2p/[builders, protocols/waggle]
 
@@ -55,49 +55,25 @@ proc run(address: string) {.async.} =
   let subscribed = Future[void].Raising([CancelledError]).init()
   var remoteTopics: HashSet[TopicId]
   let
-    split = address.rsplit("/p2p/", maxsplit = 1)
-    peer = PeerId.init(split[1]).get()
-    remoteAddr = MultiAddress.init(split[0]).get()
-    random = newRng()
-    switch = SwitchBuilder
-      .new()
-      .withRng(random)
-      .withAddress(MultiAddress.init("/ip4/127.0.0.1/tcp/0").get())
-      .withTcpTransport()
-      .withYamux()
-      .withNoise()
-      .build()
-    waggle = Waggle.new(
-      switch = switch,
-      rng = random,
-      onEvent = proc(event: WaggleEvent) =
+    client = newInteropPeer(address)
+    peer = client.peer
+    switch = client.switch
+    waggle = client.mountWaggle(
+      proc(event: WaggleEvent) =
         if event.kind == WaggleEventKind.Subscribed and event.peerId == peer and
             event.topicId in [topic(0), topic(1)]:
           remoteTopics.incl(event.topicId)
           if remoteTopics.len == 2 and not subscribed.finished:
             subscribed.complete()
-      ,
     )
-  switch.mount(waggle)
   var receiving: seq[Future[LPResult[void]]]
   defer:
     for task in receiving:
       await task.cancelAndWait()
-    await switch.stop()
-
-  let disconnected = Future[void].Raising([CancelledError]).init()
-  proc onPeerLeft(
-      remote: PeerId, event: PeerEvent
-  ) {.async: (raises: [CancelledError]).} =
-    if remote == peer and not disconnected.finished:
-      disconnected.complete()
-
-  switch.addPeerEventHandler(onPeerLeft, PeerEventKind.Left)
-  defer:
-    switch.removePeerEventHandler(onPeerLeft, PeerEventKind.Left)
+    await client.stop()
 
   await switch.start()
-  await switch.connect(peer, @[remoteAddr])
+  await client.connect()
 
   var received: HashSet[(byte, byte)]
   let confirmed = Future[void].Raising([CancelledError]).init()
@@ -138,7 +114,9 @@ proc run(address: string) {.async.} =
     )
   ).get()
   # The Rust peer exits only after validating our final acknowledgement.
-  await awaitStage(disconnected, @[], "Rust disconnect after the final acknowledgement")
+  await awaitStage(
+    client.disconnected, @[], "Rust disconnect after the final acknowledgement"
+  )
   echo "Nim verified 6 Rust messages across 2 topics and Rust's acknowledgement"
 
 when isMainModule:
