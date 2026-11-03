@@ -337,9 +337,8 @@ suite "AutoTLS certificate issuance and renewal":
       domainSuffix: config.domainSuffix,
     )
     let oldCert = tlsCertPemGenerator(fromUnix(1600000000))
-    let oldState = AutotlsStoredState(
-      certificatePem: oldCert, certificateKeyPem: "expired key"
-    )
+    let oldState =
+      AutotlsStoredState(certificatePem: oldCert, certificateKeyPem: "expired key")
     check (await config.storage.save(storageKey, oldState)).isOk()
 
     # Registration succeeds, but the following order request fails.
@@ -362,9 +361,8 @@ suite "AutoTLS certificate issuance and renewal":
       service.acmeClient.kid == AccountURL
 
   asyncTest "account key is saved before registration":
-    let config = AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0
-    )
+    let config =
+      AutotlsConfig.new(ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0)
     service = newService(config)
     await service.start(switch)
     check (await service.getCertWhenReady()).isErr()

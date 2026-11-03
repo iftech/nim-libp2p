@@ -268,8 +268,8 @@ proc validateStoredState*(state: AutotlsStoredState): LPResult[ValidatedAutotlsS
           )
         validated.certificate =
           Opt.some(AutotlsCert.new(certificate, privateKey, expiry.utc))
-      except TLSStreamProtocolError:
-        return err("AutoTLS storage contains an invalid certificate or private key")
+      except TLSStreamProtocolError as e:
+        return err(e, "AutoTLS storage contains an invalid certificate or private key")
     else:
       validated.certificateExpired = true
   ok(validated)
@@ -283,7 +283,7 @@ proc restoreState(
 
   var accountKey = Opt.none(RsaPrivateKey)
   var accountKid = Kid("")
-  let state = ?(await self.config.storage.load(storageKey))
+  let state = ?(await self.storage.load(storageKey))
   state.ifValue(state):
     let validated = ?validateStoredState(state)
     accountKey = validated.accountKey
@@ -306,18 +306,18 @@ proc restoreState(
     )
   ok()
 
-proc saveAccount(self: AutotlsService): Future[LPResult[void]] {.
-    async: (raises: [CancelledError])
-.} =
+proc saveAccount(
+    self: AutotlsService
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   ## Update the identity without replacing any previously stored certificate.
   let storageKey = ?self.newStorageKey()
   let accountKey = self.acmeClient.key.getBytes().valueOr:
     return err("Unable to serialize AutoTLS account key")
-  let existing = ?(await self.config.storage.load(storageKey))
+  let existing = ?(await self.storage.load(storageKey))
   var state = existing.valueOr(AutotlsStoredState())
   state.accountKey = accountKey
   state.accountKid = self.acmeClient.kid
-  await self.config.storage.save(storageKey, state)
+  await self.storage.save(storageKey, state)
 
 proc saveState(
     self: AutotlsService,
@@ -338,7 +338,7 @@ proc saveState(
     certificatePem: certificate.rawCertificate,
     certificateKeyPem: certificateKey.pemEncode("PRIVATE KEY"),
   )
-  await self.config.storage.save(storageKey, state)
+  await self.storage.save(storageKey, state)
 
 proc newAutotlsCert(
     certificate: ACMECertificateResponse, certKeyPair: RsaPrivateKey

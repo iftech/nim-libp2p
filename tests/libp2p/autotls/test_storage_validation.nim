@@ -73,12 +73,15 @@ suite "AutoTLS stored state validation":
     check:
       validateStoredState(
         AutotlsStoredState(certificatePem: chain, certificateKeyPem: privateKey)
-      ).isOk()
+      )
+        .isOk()
       validateStoredState(
         AutotlsStoredState(
-          certificatePem: chain, certificateKeyPem: string.fromBytes(otherPem.privateKey)
+          certificatePem: chain,
+          certificateKeyPem: string.fromBytes(otherPem.privateKey),
         )
-      ).error == "AutoTLS storage contains a certificate and private key that do not match"
+      ).error ==
+        "AutoTLS storage contains a certificate and private key that do not match"
 
   test "expired certificate is ignored":
     let expired = tlsCertPemGenerator(fromUnix(1600000000))

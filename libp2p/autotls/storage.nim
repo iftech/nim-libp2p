@@ -3,7 +3,7 @@
 
 {.push raises: [].}
 
-import chronos, uri
+import chronos, tables, uri
 
 import ./acme/api, ../results, ../utils/opt
 
@@ -22,7 +22,8 @@ type AutotlsStoredState* = object
   certificateKeyPem*: string
 
 type AutotlsStorage* = ref object of RootObj
-  ## Application-owned persistence for AutoTLS state.
+  ## Application-owned persistence for AutoTLS state, indexed by storage key.
+  ## Saving a key replaces its previous state without affecting other keys.
 
 proc sameStorageKey*(a, b: AutotlsStorageKey): bool =
   a.peerLabel == b.peerLabel and a.domainSuffix == b.domainSuffix and
@@ -41,22 +42,24 @@ method save*(
 type AutotlsMemoryStorage* = ref object of AutotlsStorage
   ## A process-local storage implementation, useful for tests and embedders
   ## that want the storage lifecycle to be explicit.
-  key: Opt[AutotlsStorageKey]
-  state: Opt[AutotlsStoredState]
+  states: Table[tuple[peerLabel, directoryURL, domainSuffix: string], AutotlsStoredState]
+
+proc tableKey(key: AutotlsStorageKey): tuple[peerLabel, directoryURL, domainSuffix: string] =
+  (key.peerLabel, $key.acmeDirectoryURL, key.domainSuffix)
 
 proc new*(T: typedesc[AutotlsMemoryStorage]): T =
-  T(key: Opt.none(AutotlsStorageKey), state: Opt.none(AutotlsStoredState))
+  T()
 
 method load*(
     self: AutotlsMemoryStorage, key: AutotlsStorageKey
 ): Future[LPResult[Opt[AutotlsStoredState]]] {.async: (raises: [CancelledError]).} =
-  if self.key.isSome() and sameStorageKey(self.key.get(), key):
-    return ok(self.state)
+  let index = key.tableKey()
+  if index in self.states:
+    return ok(Opt.some(self.states.getOrDefault(index)))
   ok(Opt.none(AutotlsStoredState))
 
 method save*(
     self: AutotlsMemoryStorage, key: AutotlsStorageKey, state: AutotlsStoredState
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
-  self.key = Opt.some(key)
-  self.state = Opt.some(state)
+  self.states[key.tableKey()] = state
   ok()

@@ -73,3 +73,25 @@ template autotlsStorageTestSuite*(name: string, factory: proc(): AutotlsStorage)
         loaded.accountKid == replacement.accountKid
         loaded.certificatePem == replacement.certificatePem
         loaded.certificateKeyPem == replacement.certificateKeyPem
+
+    asyncTest "multiple keys retain independent states when one is replaced":
+      let storage = factory()
+      let firstKey = storageKey()
+      var secondKey = firstKey
+      secondKey.peerLabel = "peer-two"
+      var thirdKey = firstKey
+      thirdKey.acmeDirectoryURL = parseUri("https://other.example/directory")
+      var fourthKey = firstKey
+      fourthKey.domainSuffix = "other.test"
+      let keys = [firstKey, secondKey, thirdKey, fourthKey]
+      for i, key in keys:
+        var state = storedState()
+        state.accountKey = @[byte(i)]
+        check (await storage.save(key, state)).isOk()
+
+      var replacement = storedState()
+      replacement.accountKey = @[99.byte]
+      check (await storage.save(secondKey, replacement)).isOk()
+      for i, key in keys:
+        let loaded = (await storage.load(key)).get().get()
+        check loaded.accountKey == (if i == 1: @[99.byte] else: @[byte(i)])
