@@ -191,6 +191,10 @@ proc parseCertTime(certTime: string): LPResult[DateTime] =
   except TimeParseError as e:
     return err(certTime & ": " & e.msg, InvalidCertTimeCause)
 
+proc matchesPrivateKey*(cert, key: openArray[byte]): bool =
+  ## Check a PEM private key against the leaf certificate of a PEM chain.
+  cert_matches_private_key(@cert, @key)
+
 proc validTo*(cert: openArray[byte], format: EncodingFormat): Result[Time, CertError] =
   ## Returns a certificate's notAfter value.
   ##

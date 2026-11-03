@@ -260,6 +260,8 @@ proc validateStoredState*(state: AutotlsStoredState): LPResult[ValidatedAutotlsS
       try:
         let certificate = TLSCertificate.init(state.certificatePem)
         let privateKey = TLSPrivateKey.init(state.certificateKeyPem)
+        if not matchesPrivateKey(state.certificatePem.toBytes, state.certificateKeyPem.toBytes):
+          return err("AutoTLS storage contains a certificate and private key that do not match")
         validated.certificate =
           Opt.some(AutotlsCert.new(certificate, privateKey, expiry.utc))
       except TLSStreamProtocolError:

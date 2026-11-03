@@ -471,6 +471,26 @@ proc cert_valid_to*(
 
   ok(CertificateTime(?asn1TimeToString(X509_get0_notAfter(x509))))
 
+proc cert_matches_private_key*(cert, key: seq[byte]): bool =
+  ## PEM_read_bio_X509 reads the leaf, the first certificate in the chain.
+  if cert.len == 0 or key.len == 0:
+    return false
+  let x509 = readX509(cert, CERT_FORMAT_PEM).valueOr:
+    return false
+  defer:
+    X509_free(x509)
+  let bio = BIO_new_mem_buf(key[0].unsafeAddr, ossl_ssize_t(key.len))
+  if bio.isNil:
+    return false
+  defer:
+    discard BIO_free(bio)
+  let pkey = PEM_read_bio_PrivateKey(bio, nil, nil, nil)
+  if pkey.isNil:
+    return false
+  defer:
+    EVP_PKEY_free(pkey)
+  X509_check_private_key(x509, pkey) == 1
+
 proc cert_free_key*(key: CertificateKey): void =
   if key.pkey.isNil:
     return
