@@ -313,7 +313,9 @@ func determineQueueAction*(
     sendPriorityQueueLen, mediumPriorityQueueLen, lowPriorityQueueLen: int,
     maxHighPriorityQueueLen, maxMediumPriorityQueueLen, maxLowPriorityQueueLen: int,
     messageBytes: int = 0,
-    highPriorityQueueBytes, mediumPriorityQueueBytes, lowPriorityQueueBytes: int = 0,
+    highPriorityQueueBytes: int = 0,
+    mediumPriorityQueueBytes: int = 0,
+    lowPriorityQueueBytes: int = 0,
     maxOutboundQueueBytes: int = DefaultMaxOutboundQueueBytes,
 ): QueueAction =
   let
