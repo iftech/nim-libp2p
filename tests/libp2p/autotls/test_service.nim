@@ -386,6 +386,32 @@ suite "AutoTLS certificate issuance and renewal":
       service.acmeClient.key == accountKey
       service.acmeClient.kid == AccountURL
 
+  asyncTest "an unknown account is cleared from memory and storage":
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      issueRetries = 0,
+    )
+    service = newService(config)
+    service.acmeClient.kid = AccountURL
+    acmeApi.mockedResponses.add(
+      HTTPResponse(
+        body: %*{"type": ACMEAccountDoesNotExist, "detail": "account missing"}
+      )
+    )
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let saved = (await service.storage.load(storageKey)).get().get()
+    check:
+      service.acmeClient.kid.len == 0
+      saved.accountKid.len == 0
+      saved.accountKey == accountKey.getBytes().get()
+
   asyncTest "account key is saved before registration":
     let config =
       AutotlsConfig.new(ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0)

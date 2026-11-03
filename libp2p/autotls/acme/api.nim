@@ -15,6 +15,7 @@ import ../../transports/tls/certificate
 export results
 
 const
+  ACMEAccountDoesNotExist* = "urn:ietf:params:acme:error:accountDoesNotExist"
   LetsEncryptDirectoryURL* = parseUri("https://acme-v02.api.letsencrypt.org/directory")
   LetsEncryptStagingDirectoryURL* =
     parseUri("https://acme-staging-v02.api.letsencrypt.org/directory")
@@ -194,6 +195,8 @@ func checkAPIError(resp: HTTPResponse): Result[void, LPResultError] =
     return ok()
 
   let detail = resp.body{"detail"}.getStr()
+  if respType == ACMEAccountDoesNotExist:
+    return err(detail, ACMEAccountDoesNotExist)
   err(fmt"type: {respType}, detail: {detail}", "API request failed")
 
 proc toHTTPResponse(
@@ -335,13 +338,17 @@ proc postAsGet(
     self: ACMEApi, uri: Uri, key: RsaPrivateKey, kid: Kid
 ): Future[Result[HTTPResponse, LPResultError]] {.async: (raises: [CancelledError]).} =
   let payload = ?(await self.createPostAsGetRequest(uri, key, kid))
-  await self.post(uri, payload)
+  let response = ?(await self.post(uri, payload))
+  ?response.checkAPIError()
+  ok(response)
 
 proc postSigned(
     self: ACMEApi, uri: Uri, payload: string, key: RsaPrivateKey, kid: Opt[Kid]
 ): Future[Result[HTTPResponse, LPResultError]] {.async: (raises: [CancelledError]).} =
   let signed = ?(await self.createSignedAcmeRequest(uri, payload, key, kid))
-  await self.post(uri, signed)
+  let response = ?(await self.post(uri, signed))
+  ?response.checkAPIError()
+  ok(response)
 
 func parseRegister(resp: HTTPResponse): Result[ACMERegisterResponse, LPResultError] =
   let body = ?resp.body.tryTo(ACMERegisterResponseBody)

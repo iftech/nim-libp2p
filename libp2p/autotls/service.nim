@@ -397,21 +397,29 @@ proc requestCertificate(
   if needsRegistration:
     ?(await self.saveAccount())
   trace "Requesting ACME challenge"
-  let dns01Challenge =
-    ?(await self.acmeClient.getChallenge(@[api.Domain("*." & baseDomain)]))
+  let challengeResult =
+    await self.acmeClient.getChallenge(@[api.Domain("*." & baseDomain)])
+  if challengeResult.isOfError(ACMEAccountDoesNotExist):
+    self.acmeClient.kid = Kid("")
+    ?(await self.saveAccount())
+  let dns01Challenge = ?challengeResult
   trace "Generating key authorization"
   let keyAuth = self.acmeClient.genKeyAuthorization(dns01Challenge.dns01.token)
 
   ?(await self.publishChallenge(baseDomain, keyAuth, addrs))
 
   trace "Notifying challenge completion to ACME and downloading cert"
-  await self.acmeClient.getCertificate(
+  let certificateResult = await self.acmeClient.getCertificate(
     api.Domain("*." & baseDomain),
     certKeyPair,
     dns01Challenge,
     self.config.acmeRetries,
     self.config.finalizeRetries,
   )
+  if certificateResult.isOfError(ACMEAccountDoesNotExist):
+    self.acmeClient.kid = Kid("")
+    ?(await self.saveAccount())
+  certificateResult
 
 proc boundAddrs(switch: Switch): seq[MultiAddress] =
   var boundAddrs: seq[MultiAddress]
