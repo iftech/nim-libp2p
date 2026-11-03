@@ -99,6 +99,7 @@ type
     natPortMapperFactory: PortMapperFactory
     autotlsConfig: Opt[AutotlsConfig]
     circuitRelay: Opt[Relay]
+    resolvedRelay: Opt[Relay]
     rdvConfig: Opt[RendezVousConfig]
     kad: Opt[KadInfo]
     identifyPusherEnabled: bool
@@ -474,6 +475,12 @@ proc withPrivateAddressFilter*(b: SwitchBuilder): SwitchBuilder =
   ## Circuit relay and DNS addresses are never filtered.
   b.withAddressPolicy(publicRoutableAddressPolicy)
 
+proc resolveCircuitRelay(b: SwitchBuilder): Opt[Relay] =
+  b.natConfig.ifValue(natCfg):
+    if natCfg.holePunching.isSome() and b.circuitRelay.isNone():
+      return Opt.some(Relay(RelayClient.new()))
+  b.circuitRelay
+
 proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   if b.rng.isNil:
     b.rng = newRng()
@@ -488,10 +495,32 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
     debug "No secure managers configured; using Noise by default"
     b.secureManagers.add(SecureProtocol.Noise)
 
+  b.resolvedRelay = b.resolveCircuitRelay()
+
+  var muxers = b.muxers
+  b.resolvedRelay.ifValue(relay):
+    if relay of RelayClient and muxers.len == 0:
+      # Relay circuits need a stream muxer even when the relay is reached over QUIC.
+      warn "No stream muxers configured for relay client; using Mplex and Yamux defaults"
+      muxers.add(
+        MuxerProvider.new(
+          proc(conn: RawConn): Muxer =
+            Mplex.new(conn),
+          MplexCodec,
+        )
+      )
+      muxers.add(
+        MuxerProvider.new(
+          proc(conn: RawConn): Muxer =
+            Yamux.new(conn),
+          YamuxCodec,
+        )
+      )
+
   var secureManagerInstances: seq[Secure]
   if SecureProtocol.Noise in b.secureManagers:
     secureManagerInstances.add(
-      Noise.new(b.rng, seckey, muxers = b.muxers.mapIt(it.codec)).Secure
+      Noise.new(b.rng, seckey, muxers = muxers.mapIt(it.codec)).Secure
     )
 
   let peerInfo = ?PeerInfo.tryNew(
@@ -524,7 +553,7 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   connManager.peerStore = peerStore
 
   let ms = MultistreamSelect.new()
-  let muxedUpgrade = MuxedUpgrade.new(b.muxers, secureManagerInstances, ms, connManager)
+  let muxedUpgrade = MuxedUpgrade.new(muxers, secureManagerInstances, ms, connManager)
 
   var services: seq[Service]
   var autotlsOpt = Opt.none(AutotlsService)
@@ -574,12 +603,22 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
 
   ok(switch)
 
+func relayClient(circuitRelay: Opt[Relay]): RelayClient =
+  circuitRelay.ifValue(relay):
+    if relay of RelayClient:
+      return RelayClient(relay)
+  nil
+
 proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
   b.natConfig.ifValue(natCfg):
-    switch.services.add(NATService.new(natCfg, b.rng, b.natPortMapperFactory))
+    switch.services.add(
+      NATService.new(
+        natCfg, b.rng, b.natPortMapperFactory, b.resolvedRelay.relayClient()
+      )
+    )
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
@@ -599,7 +638,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if b.autonatEnabled:
     ?switch.tryMount(Autonat.new(switch))
 
-  b.circuitRelay.ifValue(relay):
+  b.resolvedRelay.ifValue(relay):
     if relay of RelayClient:
       switch.addTransport(RelayTransport.new(RelayClient(relay), switch.muxedUpgrade))
     relay.setup(switch)
@@ -631,7 +670,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
 
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
   b.natConfig.ifValue(natCfg):
-    validateNATConfig(natCfg).onErrorRaise(LPError)
+    validateNATConfig(natCfg, b.circuitRelay).onErrorRaise(LPError)
   let switch = b.buildSwitch().valueOrRaise(LPError)
   b.addServices(switch)
   b.mountProtocols(switch).onErrorRaise(LPError)

@@ -5,12 +5,15 @@
 
 import std/[importutils, net, sequtils]
 import chronos
-import ../../../libp2p/results
+import ../../../libp2p/[results, utils/future]
 import ../../../libp2p/[builders, switch, multiaddress, multicodec, peerinfo, wire]
-import ../../../libp2p/services/natservice
+import ../../../libp2p/services/[natservice, hpservice, autorelayservice]
 import ../../../libp2p/services/nat/portmapper
 import ../../../libp2p/protocols/connectivity/dcutr/core
-import ../../tools/[unittest, multiaddress, switch_builder]
+import ../../../libp2p/protocols/connectivity/relay/[relay, client]
+import ../../../libp2p/muxers/[mplex/mplex, yamux/yamux]
+import ../../../libp2p/upgrademngrs/muxedupgrade
+import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 
 type
   MockCallKind = enum
@@ -386,6 +389,121 @@ suite "NATService":
         .withNAT(holePunchingConfig())
         .withNAT(autonatConfig(AutonatV2))
         .build()
+
+  test "hole-punching with a relay server is rejected at build":
+    expectMsgContains LPError, "holePunching needs a RelayClient":
+      discard standardBuilder(@[TcpAutoAddress])
+        .withCircuitRelay(Relay.new())
+        .withNAT(holePunchingConfig())
+        .build()
+
+  asyncTest "hole-punching without a mounted RelayClient fails at NATService start":
+    let switch = standardBuilder(@[TcpAutoAddress]).build()
+    for client in [RelayClient(nil), RelayClient.new()]:
+      let nat = NATService.new(holePunchingConfig(), rng(), relayClient = client)
+      expectMsgContains LPError, "holePunching needs a RelayClient mounted":
+        await nat.start(switch)
+
+  test "each build of a hole-punching builder gets its own RelayClient":
+    let
+      builder = standardBuilder(@[TcpAutoAddress]).withNAT(holePunchingConfig())
+      first = builder.build()
+      second = builder.build()
+
+    privateAccess(NATService)
+    let
+      firstClient = findNatService(first).relayClient
+      secondClient = findNatService(second).relayClient
+    check:
+      firstClient.switch == first
+      secondClient.switch == second
+
+  asyncTest "hole-punching node reserves a relay slot and accepts a circuit dial":
+    let reserved = newFuture[seq[MultiAddress]]()
+    proc onReservation(addresses: seq[MultiAddress]) {.gcsafe, raises: [].} =
+      reserved.completeOnce(addresses)
+
+    let
+      relay = standardBuilder(@[TcpAutoAddress]).withCircuitRelay(Relay.new()).build()
+      node =
+        makeSwitch(holePunchingConfig(onReservation = onReservation), @[TcpAutoAddress])
+      dialer =
+        standardBuilder(@[TcpAutoAddress]).withCircuitRelay(RelayClient.new()).build()
+    await allFutures(relay.start(), node.start(), dialer.start())
+    defer:
+      await allFutures(relay.stop(), node.stop(), dialer.stop())
+
+    privateAccess(NATService)
+    await findNatService(node).observers.notify(
+      NetworkReachability.NotReachable, Opt.some(1.0)
+    )
+    await node.connect(relay.peerInfo.peerId, relay.peerInfo.addrs)
+
+    let circuitAddrs = await reserved
+    check circuitAddrs.len > 0
+    await dialer.connect(node.peerInfo.peerId, circuitAddrs)
+    check dialer.isConnected(node.peerInfo.peerId)
+
+  asyncTest "hole-punching uses the RelayClient given to withCircuitRelay":
+    let
+      client = RelayClient.new()
+      switch = standardBuilder(@[TcpAutoAddress])
+        .withCircuitRelay(client)
+        .withNAT(holePunchingConfig())
+        .build()
+    await switch.start()
+    defer:
+      await switch.stop()
+
+    privateAccess(NATService)
+    privateAccess(HPService)
+    privateAccess(AutoRelayService)
+    let nat = findNatService(switch)
+    check:
+      nat.relayClient == client
+      HPService(nat.reachability).autoRelayService.client == client
+
+  asyncTest "QUIC-only hole-punching nodes default to Mplex and Yamux for relay circuits":
+    let reserved = newFuture[seq[MultiAddress]]()
+    proc onReservation(addresses: seq[MultiAddress]) {.gcsafe, raises: [].} =
+      reserved.completeOnce(addresses)
+
+    let
+      relay = standardBuilder(@[QuicAutoAddress]).withCircuitRelay(Relay.new()).build()
+      node = makeSwitch(
+        holePunchingConfig(onReservation = onReservation), @[QuicAutoAddress]
+      )
+      dialer =
+        standardBuilder(@[QuicAutoAddress]).withCircuitRelay(RelayClient.new()).build()
+    check:
+      relay.muxedUpgrade.muxers.len == 0
+      node.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec, YamuxCodec]
+      dialer.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec, YamuxCodec]
+
+    await allFutures(relay.start(), node.start(), dialer.start())
+    defer:
+      await allFutures(relay.stop(), node.stop(), dialer.stop())
+
+    privateAccess(NATService)
+    await findNatService(node).observers.notify(
+      NetworkReachability.NotReachable, Opt.some(1.0)
+    )
+    await node.connect(relay.peerInfo.peerId, relay.peerInfo.addrs)
+    let circuitAddrs = await reserved
+    check circuitAddrs.len > 0
+    await dialer.connect(node.peerInfo.peerId, circuitAddrs)
+    check dialer.isConnected(node.peerInfo.peerId)
+
+  test "default relay muxer does not change the builder's configured muxers":
+    let
+      builder = standardBuilder(@[QuicAutoAddress]).withNAT(holePunchingConfig())
+      first = builder.build()
+      second = builder.withYamux().build()
+      third = builder.withMplex().build()
+    check:
+      first.muxedUpgrade.muxers.mapIt(it.codec) == @[MplexCodec, YamuxCodec]
+      second.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec]
+      third.muxedUpgrade.muxers.mapIt(it.codec) == @[YamuxCodec, MplexCodec]
 
   asyncTest "Upnp combined with autonat v1 wires both subsystems":
     # NATConfig keeps mode (port-mapping) and autonat orthogonal: enabling
