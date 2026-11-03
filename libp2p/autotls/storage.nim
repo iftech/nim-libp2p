@@ -25,10 +25,6 @@ type AutotlsStorage* = ref object of RootObj
   ## Application-owned persistence for AutoTLS state, indexed by storage key.
   ## Saving a key replaces its previous state without affecting other keys.
 
-proc sameStorageKey*(a, b: AutotlsStorageKey): bool =
-  a.peerLabel == b.peerLabel and a.domainSuffix == b.domainSuffix and
-    $a.acmeDirectoryURL == $b.acmeDirectoryURL
-
 method load*(
     self: AutotlsStorage, key: AutotlsStorageKey
 ): Future[LPResult[Opt[AutotlsStoredState]]] {.base, async: (raises: [CancelledError]).} =

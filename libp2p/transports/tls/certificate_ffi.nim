@@ -471,7 +471,7 @@ proc cert_valid_to*(
 
   ok(CertificateTime(?asn1TimeToString(X509_get0_notAfter(x509))))
 
-proc cert_matches_private_key*(cert, key: seq[byte]): bool =
+proc cert_matches_private_key*(cert, key: openArray[byte]): bool =
   ## PEM_read_bio_X509 reads the leaf, the first certificate in the chain.
   if cert.len == 0 or key.len == 0:
     return false

@@ -5,6 +5,7 @@
 
 import results, times
 import stew/byteutils
+from ../../../libp2p/results import isOfError
 import
   ../../../libp2p/[
     autotls/service,
@@ -55,7 +56,8 @@ suite "AutoTLS stored state validation":
     ).error == "AutoTLS storage contains a certificate with an invalid expiry"
     check validateStoredState(
       AutotlsStoredState(certificatePem: certificate, certificateKeyPem: "invalid")
-    ).error == "AutoTLS storage contains an invalid certificate or private key"
+    )
+      .isOfError("AutoTLS storage contains an invalid certificate or private key")
 
   test "returns a usable certificate":
     let valid = validateStoredState(

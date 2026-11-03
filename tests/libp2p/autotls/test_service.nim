@@ -4,6 +4,7 @@
 {.used.}
 
 import chronos, json, net, results, sequtils, uri
+import stew/byteutils
 from times import fromUnix, now, initDuration, utc, `+`, `==`
 import
   ../../../libp2p/[
@@ -11,7 +12,9 @@ import
     autotls/broker,
     autotls/utils,
     autotls/acme/client,
+    crypto/crypto,
     crypto/rsa,
+    transports/tls/certificate,
     switch,
     wire,
   ]
@@ -54,6 +57,11 @@ suite "AutoTLS certificate issuance and renewal":
       running: newAsyncEvent(),
       config: config,
       rng: rng(),
+      storage:
+        if config.storage.isNil:
+          AutotlsStorage(AutotlsMemoryStorage.new())
+        else:
+          config.storage,
     )
 
   proc installCert(service: AutotlsService, expiresIn: times.Duration) =
@@ -285,6 +293,7 @@ suite "AutoTLS certificate issuance and renewal":
       domainSuffix = DomainSuffix,
       acmeDirectoryURL = parseUri(certServer.url),
       registrationURL = parseUri(certServer.url),
+      storage = AutotlsMemoryStorage.new(),
       renewCheckTime = RenewCheckTime,
       issueRetries = 0,
       dnsRetries = 0,
@@ -303,6 +312,22 @@ suite "AutoTLS certificate issuance and renewal":
     let issued = (await service.getCertWhenReady()).get()
     await service.stop(switch)
     let connectionCount = certServer.connectionCount
+
+    # The fixed HTTP response cannot sign the issuance CSR. Replace its test
+    # certificate and key with a matching pair before exercising restoration.
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    var saved = (await config.storage.load(storageKey)).get().get()
+    check saved.certificatePem == certPem
+    let pair = generateX509(
+      KeyPair.random(PKScheme.RSA, rng()).get(), encodingFormat = EncodingFormat.PEM
+    )
+    saved.certificatePem = string.fromBytes(pair.certificate)
+    saved.certificateKeyPem = string.fromBytes(pair.privateKey)
+    check (await config.storage.save(storageKey, saved)).isOk()
 
     # A fresh service has no injected ACME client. It must restore both the
     # certificate and account from storage before it could contact ACME.
@@ -329,6 +354,7 @@ suite "AutoTLS certificate issuance and renewal":
       domainSuffix = DomainSuffix,
       acmeDirectoryURL = parseUri(certServer.url),
       registrationURL = parseUri(certServer.url),
+      storage = AutotlsMemoryStorage.new(),
       issueRetries = 0,
     )
     let storageKey = AutotlsStorageKey(
@@ -346,7 +372,7 @@ suite "AutoTLS certificate issuance and renewal":
     service = newService(config)
     await service.start(switch)
     check (await service.getCertWhenReady()).isErr()
-    let saved = (await config.storage.load(storageKey)).get().get()
+    let saved = (await service.storage.load(storageKey)).get().get()
     check:
       saved.accountKey == accountKey.getBytes().get()
       saved.accountKid == AccountURL
@@ -371,7 +397,7 @@ suite "AutoTLS certificate issuance and renewal":
       acmeDirectoryURL: config.acmeDirectoryURL,
       domainSuffix: config.domainSuffix,
     )
-    let saved = (await config.storage.load(storageKey)).get().get()
+    let saved = (await service.storage.load(storageKey)).get().get()
     check:
       saved.accountKey == accountKey.getBytes().get()
       saved.accountKid.len == 0

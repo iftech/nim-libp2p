@@ -195,6 +195,7 @@ proc new*(
     acmeRetryTime: acmeRetryTime,
     finalizeRetries: finalizeRetries,
     finalizeRetryTime: finalizeRetryTime,
+    storage: storage,
   )
 
 proc new*(
@@ -629,14 +630,14 @@ method stop*(
   self.running.clear()
   if not self.certUpdates.isNil():
     self.certUpdates.emit(Opt.none(AutotlsCert))
+  if not self.managerFut.isNil():
+    await self.managerFut.cancelAndWait()
+    self.managerFut = nil
   if not self.acmeClient.isNil():
     await self.acmeClient.close()
     self.acmeClient = nil
   if not self.broker.isNil():
     await self.broker.close()
-  if not self.managerFut.isNil():
-    await self.managerFut.cancelAndWait()
-    self.managerFut = nil
 
 when defined(libp2p_testing):
   export installCertificate, issueCertificate
