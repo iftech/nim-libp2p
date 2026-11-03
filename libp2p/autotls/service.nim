@@ -260,8 +260,12 @@ proc validateStoredState*(state: AutotlsStoredState): LPResult[ValidatedAutotlsS
       try:
         let certificate = TLSCertificate.init(state.certificatePem)
         let privateKey = TLSPrivateKey.init(state.certificateKeyPem)
-        if not matchesPrivateKey(state.certificatePem.toBytes, state.certificateKeyPem.toBytes):
-          return err("AutoTLS storage contains a certificate and private key that do not match")
+        if not matchesPrivateKey(
+          state.certificatePem.toBytes, state.certificateKeyPem.toBytes
+        ):
+          return err(
+            "AutoTLS storage contains a certificate and private key that do not match"
+          )
         validated.certificate =
           Opt.some(AutotlsCert.new(certificate, privateKey, expiry.utc))
       except TLSStreamProtocolError:
@@ -301,6 +305,19 @@ proc restoreState(
       kid = accountKid,
     )
   ok()
+
+proc saveAccount(self: AutotlsService): Future[LPResult[void]] {.
+    async: (raises: [CancelledError])
+.} =
+  ## Update the identity without replacing any previously stored certificate.
+  let storageKey = ?self.newStorageKey()
+  let accountKey = self.acmeClient.key.getBytes().valueOr:
+    return err("Unable to serialize AutoTLS account key")
+  let existing = ?(await self.config.storage.load(storageKey))
+  var state = existing.valueOr(AutotlsStoredState())
+  state.accountKey = accountKey
+  state.accountKid = self.acmeClient.kid
+  await self.config.storage.save(storageKey, state)
 
 proc saveState(
     self: AutotlsService,
@@ -373,6 +390,13 @@ proc requestCertificate(
 ): Future[Result[ACMECertificateResponse, LPResultError]] {.
     async: (raises: [CancelledError])
 .} =
+  # Persist the key before registration, then its URL before starting an order.
+  # A failed save stops issuance so retries can persist the same identity.
+  ?(await self.saveAccount())
+  let needsRegistration = self.acmeClient.kid.len == 0
+  discard ?(await self.acmeClient.getOrInitKid())
+  if needsRegistration:
+    ?(await self.saveAccount())
   trace "Requesting ACME challenge"
   let dns01Challenge =
     ?(await self.acmeClient.getChallenge(@[api.Domain("*." & baseDomain)]))

@@ -69,11 +69,16 @@ suite "AutoTLS stored state validation":
 
   test "rejects a certificate and private key from different keypairs":
     let otherPem = generateX509(keyPair, encodingFormat = EncodingFormat.PEM)
-    check validateStoredState(
-      AutotlsStoredState(
-        certificatePem: certificate, certificateKeyPem: string.fromBytes(otherPem.privateKey)
-      )
-    ).error == "AutoTLS storage contains a certificate and private key that do not match"
+    let chain = certificate & string.fromBytes(otherPem.certificate)
+    check:
+      validateStoredState(
+        AutotlsStoredState(certificatePem: chain, certificateKeyPem: privateKey)
+      ).isOk()
+      validateStoredState(
+        AutotlsStoredState(
+          certificatePem: chain, certificateKeyPem: string.fromBytes(otherPem.privateKey)
+        )
+      ).error == "AutoTLS storage contains a certificate and private key that do not match"
 
   test "expired certificate is ignored":
     let expired = tlsCertPemGenerator(fromUnix(1600000000))

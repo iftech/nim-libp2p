@@ -319,6 +319,65 @@ suite "AutoTLS certificate issuance and renewal":
       service.acmeClient.kid == AccountURL
       certServer.connectionCount == connectionCount
 
+  asyncTest "account identity survives a failed issuance and restart":
+    let certServer = startTestHttpServer("not an ACME directory")
+    defer:
+      await certServer.stop()
+
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      acmeDirectoryURL = parseUri(certServer.url),
+      registrationURL = parseUri(certServer.url),
+      issueRetries = 0,
+    )
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let oldCert = tlsCertPemGenerator(fromUnix(1600000000))
+    let oldState = AutotlsStoredState(
+      certificatePem: oldCert, certificateKeyPem: "expired key"
+    )
+    check (await config.storage.save(storageKey, oldState)).isOk()
+
+    # Registration succeeds, but the following order request fails.
+    acmeApi.queueRegister()
+    service = newService(config)
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let saved = (await config.storage.load(storageKey)).get().get()
+    check:
+      saved.accountKey == accountKey.getBytes().get()
+      saved.accountKid == AccountURL
+      saved.certificatePem == oldState.certificatePem
+      saved.certificateKeyPem == oldState.certificateKeyPem
+    await service.stop(switch)
+
+    service = AutotlsService.new(rng(), config)
+    await service.start(switch)
+    check:
+      service.acmeClient.key == accountKey
+      service.acmeClient.kid == AccountURL
+
+  asyncTest "account key is saved before registration":
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0
+    )
+    service = newService(config)
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let saved = (await config.storage.load(storageKey)).get().get()
+    check:
+      saved.accountKey == accountKey.getBytes().get()
+      saved.accountKid.len == 0
+
   asyncTest "the certificate is not requested until the DNS records are published":
     acmeApi.scriptChallenge(ChallengeToken)
 
