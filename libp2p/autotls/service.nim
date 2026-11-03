@@ -631,6 +631,7 @@ method stop*(
     self.certUpdates.emit(Opt.none(AutotlsCert))
   if not self.acmeClient.isNil():
     await self.acmeClient.close()
+    self.acmeClient = nil
   if not self.broker.isNil():
     await self.broker.close()
   if not self.managerFut.isNil():

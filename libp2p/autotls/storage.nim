@@ -42,9 +42,12 @@ method save*(
 type AutotlsMemoryStorage* = ref object of AutotlsStorage
   ## A process-local storage implementation, useful for tests and embedders
   ## that want the storage lifecycle to be explicit.
-  states: Table[tuple[peerLabel, directoryURL, domainSuffix: string], AutotlsStoredState]
+  states:
+    Table[tuple[peerLabel, directoryURL, domainSuffix: string], AutotlsStoredState]
 
-proc tableKey(key: AutotlsStorageKey): tuple[peerLabel, directoryURL, domainSuffix: string] =
+proc tableKey(
+    key: AutotlsStorageKey
+): tuple[peerLabel, directoryURL, domainSuffix: string] =
   (key.peerLabel, $key.acmeDirectoryURL, key.domainSuffix)
 
 proc new*(T: typedesc[AutotlsMemoryStorage]): T =
