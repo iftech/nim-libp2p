@@ -1,1 +1,3 @@
---path:"$nim/"
+--path:
+  "$nim/"
+
