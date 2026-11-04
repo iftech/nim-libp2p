@@ -495,10 +495,32 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
     debug "No secure managers configured; using Noise by default"
     b.secureManagers.add(SecureProtocol.Noise)
 
+  b.resolvedRelay = b.resolveCircuitRelay()
+
+  var muxers = b.muxers
+  b.resolvedRelay.ifValue(relay):
+    if relay of RelayClient and muxers.len == 0:
+      # Relay circuits need a stream muxer even when the relay is reached over QUIC.
+      warn "No stream muxers configured for relay client; using Mplex and Yamux defaults"
+      muxers.add(
+        MuxerProvider.new(
+          proc(conn: RawConn): Muxer =
+            Mplex.new(conn),
+          MplexCodec,
+        )
+      )
+      muxers.add(
+        MuxerProvider.new(
+          proc(conn: RawConn): Muxer =
+            Yamux.new(conn),
+          YamuxCodec,
+        )
+      )
+
   var secureManagerInstances: seq[Secure]
   if SecureProtocol.Noise in b.secureManagers:
     secureManagerInstances.add(
-      Noise.new(b.rng, seckey, muxers = b.muxers.mapIt(it.codec)).Secure
+      Noise.new(b.rng, seckey, muxers = muxers.mapIt(it.codec)).Secure
     )
 
   let peerInfo = ?PeerInfo.tryNew(
@@ -531,7 +553,7 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   connManager.peerStore = peerStore
 
   let ms = MultistreamSelect.new()
-  let muxedUpgrade = MuxedUpgrade.new(b.muxers, secureManagerInstances, ms, connManager)
+  let muxedUpgrade = MuxedUpgrade.new(muxers, secureManagerInstances, ms, connManager)
 
   var services: seq[Service]
   var autotlsOpt = Opt.none(AutotlsService)
@@ -564,8 +586,6 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
     dialRanking = b.dialRanking,
     dialBackoff = b.dialBackoff,
   )
-
-  b.resolvedRelay = b.resolveCircuitRelay()
 
   let switch = Switch(
     peerInfo: peerInfo,
