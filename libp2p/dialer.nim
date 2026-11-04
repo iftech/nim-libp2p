@@ -180,25 +180,21 @@ proc expandDnsAddr(
 ): Future[LPResult[seq[(MultiAddress, Opt[PeerId])]]] {.
     async: (raises: [CancelledError])
 .} =
-  if not DNS.matchPartial(address):
+  if not address.containsDnsComponent():
     return ok(@[(address, peerId)])
   if isNil(self.nameResolver):
-    warn "Can't resolve DNSADDR without NameResolver", address = address
+    warn "Can't resolve DNS multiaddress without NameResolver", address
     return ok(newSeq[(MultiAddress, Opt[PeerId])]())
 
   trace "Address resolution started"
-  let toResolve =
-    if peerId.isSome:
-      ?concat(address, ?MultiAddress.init(multiCodec("p2p"), peerId.get()))
-    else:
-      address
-  # A dnsaddr record points at more dnsaddr records, and each lookup can take
-  # seconds, so the chain answers to the dial deadline like the dial itself.
+  # The expected peer is checked on final records, not imposed as a TXT suffix.
+  # Intermediate DNSADDR records may omit it.
+  # Recursive lookups share the dial deadline.
   let resolved =
     try:
-      self.nameResolver.resolveDnsAddr(toResolve).awaitWithDeadline(deadline)
+      self.nameResolver.resolveDnsAddr(address).awaitWithDeadline(deadline)
     except AsyncTimeoutError:
-      trace "DNSADDR resolution timed out", address = toResolve
+      trace "DNSADDR resolution timed out", address
       return ok(newSeq[(MultiAddress, Opt[PeerId])]())
     except MaError as e:
       return err(e)
@@ -206,7 +202,7 @@ proc expandDnsAddr(
       return err(e)
 
   trace "Address resolution completed",
-    originalAddresses = toResolve, resolvedAddresses = resolved
+    originalAddresses = address, resolvedAddresses = resolved
 
   var addrs: seq[(MultiAddress, Opt[PeerId])]
   for resolvedAddress in resolved:
@@ -268,7 +264,7 @@ proc normalizedDialAddrs(
 
 func fromNameLookup(candidate: DialCandidate): bool =
   ## Named directly, or reached through the dnsaddr chain that named it.
-  candidate.fromName or DNS.matchPartial(candidate.address)
+  candidate.fromName or candidate.address.containsDnsComponent()
 
 proc expandCandidate(
     self: Dialer, candidate: DialCandidate, deadline: Moment
@@ -337,7 +333,7 @@ proc directCandidates(
 
   var candidates: seq[DialCandidate]
   for address in addrs:
-    if DNS.matchPartial(address):
+    if address.containsDnsComponent():
       continue
     if self.transportFor(address).isNone():
       trace "Address skipped because no transport supports it", peerId, address
@@ -353,7 +349,9 @@ proc directCandidates(
 proc dnsCandidates(peerId: Opt[PeerId], addrs: seq[MultiAddress]): seq[DialCandidate] =
   ## The advertised addresses that need a lookup before anything can dial them.
 
-  addrs.filterIt(DNS.matchPartial(it)).mapIt(DialCandidate(address: it, peerId: peerId))
+  addrs.filterIt(it.containsDnsComponent()).mapIt(
+    DialCandidate(address: it, peerId: peerId)
+  )
 
 proc dialInOrder(
     self: Dialer,

@@ -504,6 +504,58 @@ suite "Dialer":
 
     check transport.dialedHosts == @["1.2.3.4"]
 
+  asyncTest "Composed names resolve and preserve hostnames in both dialing modes":
+    let src = makeStandardSwitch(TcpAutoAddress)
+    defer:
+      await src.stop()
+    let resolver = MockResolver.new()
+    resolver.ipResponses[("target.test", false)] = @["192.0.2.1"]
+    resolver.txtResponses["_dnsaddr.peers.test"] =
+      @["dnsaddr=invalid", "dnsaddr=/dns4/target.test/tcp/443/ws"]
+    let named = ma("/p2p-circuit/dnsaddr/peers.test")
+    let wire = ma("/p2p-circuit/ip4/192.0.2.1/tcp/443/ws")
+    for ranked in [false, true]:
+      let transport = FailingDialTransport.new(Upgrade(), rng(), handlesAny = true)
+      let dialer = Dialer.new(
+        src.peerInfo.peerId,
+        src.connManager,
+        src.peerStore,
+        @[Transport(transport)],
+        src.ms,
+        resolver,
+        dialRanking = ranked,
+      )
+      expect DialFailedError:
+        await dialer.connect(PeerId.random(), @[named])
+      check transport.dialedAddrs == @[wire]
+      check transport.dialedHosts == @["target.test"]
+
+  asyncTest "DNSADDR suffix matching does not require records to advertise the expected peer":
+    let src = makeStandardSwitch(TcpAutoAddress)
+    defer:
+      await src.stop()
+    let resolver = MockResolver.new()
+    let peer = PeerId.random()
+    let other = PeerId.random()
+    let wire = ma("/ip4/192.0.2.1/tcp/4001")
+    resolver.txtResponses["_dnsaddr.root.test"] = @["dnsaddr=/dnsaddr/child.test"]
+    resolver.txtResponses["_dnsaddr.child.test"] =
+      @["dnsaddr=" & $wire & "/p2p/" & $other, "dnsaddr=" & $wire]
+    for ranked in [false, true]:
+      let transport = FailingDialTransport.new(Upgrade(), rng(), handlesAny = true)
+      let dialer = Dialer.new(
+        src.peerInfo.peerId,
+        src.connManager,
+        src.peerStore,
+        @[Transport(transport)],
+        src.ms,
+        resolver,
+        dialRanking = ranked,
+      )
+      expect DialFailedError:
+        await dialer.connect(peer, @[ma("/dnsaddr/root.test")])
+      check transport.dialedAddrs == @[wire]
+
   test "Dial ranks put direct before relay, and QUIC before TCP within each":
     check rankOf(ma("/ip4/1.2.3.4/udp/4001/quic-v1")) == DialRank.DirectQuic
     check rankOf(ma("/ip4/1.2.3.4/udp/4001/quic")) == DialRank.DirectQuic
