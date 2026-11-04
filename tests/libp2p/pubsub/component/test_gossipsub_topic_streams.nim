@@ -11,6 +11,8 @@ import ../utils
 import ../extensions/my_partial_message
 
 suite "GossipSub Component - Topic streams":
+  const topic = "foobar"
+
   teardown:
     checkTrackers()
 
@@ -28,26 +30,26 @@ suite "GossipSub Component - Topic streams":
         inc received[index]
 
     for i in 0 .. 1:
-      nodes[i].subscribe("topic", handlerFor(i))
+      nodes[i].subscribe(topic, handlerFor(i))
 
     await connect(nodes[0], nodes[1])
-    waitSubscribeStar(nodes, "topic")
+    waitSubscribeStar(nodes, topic)
     checkUntilTimeout:
       nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
         nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
 
-    discard await nodes[0].publish("topic", "first".toBytes)
-    discard await nodes[1].publish("topic", "second".toBytes)
+    discard await nodes[0].publish(topic, "first".toBytes)
+    discard await nodes[1].publish(topic, "second".toBytes)
     checkUntilTimeout:
       received == [1, 1]
 
-    nodes[1].unsubscribeAll("topic")
+    nodes[1].unsubscribeAll(topic)
     checkUntilTimeout:
-      nodes[0].gossipsub.getOrDefault("topic").len == 0
+      nodes[0].gossipsub.getOrDefault(topic).len == 0
 
-    nodes[1].subscribe("topic", handlerFor(1))
-    waitSubscribeStar(nodes, "topic")
-    discard await nodes[0].publish("topic", "third".toBytes)
+    nodes[1].subscribe(topic, handlerFor(1))
+    waitSubscribeStar(nodes, topic)
+    discard await nodes[0].publish(topic, "third".toBytes)
     checkUntilTimeout:
       received == [1, 2]
 
@@ -69,21 +71,21 @@ suite "GossipSub Component - Topic streams":
         inc received[index]
 
     for i in 0 .. 2:
-      nodes[i].subscribe("mixed", handlerFor(i))
+      nodes[i].subscribe(topic, handlerFor(i))
 
     await connect(nodes[0], nodes[1])
     await connect(nodes[0], nodes[2])
     checkUntilTimeout:
-      nodes[0].gossipsub.getOrDefault("mixed").len == 2 and
-        nodes[1].gossipsub.getOrDefault("mixed").len == 1 and
-        nodes[2].gossipsub.getOrDefault("mixed").len == 1
+      nodes[0].gossipsub.getOrDefault(topic).len == 2 and
+        nodes[1].gossipsub.getOrDefault(topic).len == 1 and
+        nodes[2].gossipsub.getOrDefault(topic).len == 1
 
     let modern = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
     let legacy = nodes[0].peers.getOrDefault(nodes[2].peerInfo.peerId)
     check modern.extensionsState.peerHasTopicStreams(modern.peerId)
     check not legacy.extensionsState.peerHasTopicStreams(legacy.peerId)
 
-    discard await nodes[0].publish("mixed", "both".toBytes)
+    discard await nodes[0].publish(topic, "both".toBytes)
     checkUntilTimeout:
       received[1] == 1 and received[2] == 1
 
@@ -95,11 +97,11 @@ suite "GossipSub Component - Topic streams":
 
     await connect(nodes[0], nodes[1])
     checkUntilTimeout:
-      nodes[0].gossipsub.getOrDefault("mixed").len == 2 and
-        nodes[1].gossipsub.getOrDefault("mixed").len == 1 and
-        nodes[2].gossipsub.getOrDefault("mixed").len == 1
+      nodes[0].gossipsub.getOrDefault(topic).len == 2 and
+        nodes[1].gossipsub.getOrDefault(topic).len == 1 and
+        nodes[2].gossipsub.getOrDefault(topic).len == 1
 
-    discard await nodes[0].publish("mixed", "again".toBytes)
+    discard await nodes[0].publish(topic, "again".toBytes)
     checkUntilTimeout:
       received[1] == 2 and received[2] == 2
 
@@ -135,23 +137,23 @@ suite "GossipSub Component - Topic streams":
     startAndDeferStop(nodes)
 
     for node in nodes:
-      node.subscribe("partial", voidTopicHandler, requestsPartial = true)
+      node.subscribe(topic, voidTopicHandler, requestsPartial = true)
 
     await connect(nodes[0], nodes[1])
-    waitSubscribeStar(nodes, "partial")
+    waitSubscribeStar(nodes, topic)
 
     let request = MyPartialMessage(groupId: "group".toBytes, want: @[1])
     store.messages[request.groupId] = request
-    await nodes[1].publishPartial("partial", request.groupId, request.partsMetadata())
+    await nodes[1].publishPartial(topic, request.groupId, request.partsMetadata())
     checkUntilTimeout:
       incoming.len == 1
-    check incoming[0].topicID.get() == "partial"
+    check incoming[0].topicID.get() == topic
     check incoming[0].partialMessage.isNone
 
     let response =
       MyPartialMessage(groupId: request.groupId, data: {1: "one".toBytes}.toTable)
     store.messages[response.groupId] = response
-    await nodes[0].publishPartial("partial", response.groupId, response.partsMetadata())
+    await nodes[0].publishPartial(topic, response.groupId, response.partsMetadata())
     checkUntilTimeout:
       incoming.anyIt(it.partialMessage.isSome)
     check incoming[^1].partialMessage.get() == "one".toBytes
@@ -168,27 +170,28 @@ suite "GossipSub Component - Topic streams":
     proc onMessage(topic: string, data: seq[byte]) {.async.} =
       received = data == "reply".toBytes
 
-    nodes[0].subscribe("response", voidTopicHandler)
-    nodes[1].subscribe("response", onMessage)
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[1].subscribe(topic, onMessage)
 
     await connect(nodes[0], nodes[1])
-    waitSubscribeStar(nodes, "response")
+    waitSubscribeStar(nodes, topic)
 
     let msg = Message.init(
-      Opt.some(nodes[0].peerInfo), "reply".toBytes, "response", Opt.some(10'u64)
+      Opt.some(nodes[0].peerInfo), "reply".toBytes, topic, Opt.some(10'u64)
     )
     let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
+    const additionalTopic = "additional"
     nodes[0].sendResponse(
       peer,
       RPCMsg(
         messages: @[msg],
         subscriptions:
-          @[SubOpts(topic: Opt.some("additional"), subscribe: Opt.some(true))],
+          @[SubOpts(topic: Opt.some(additionalTopic), subscribe: Opt.some(true))],
       ),
       MessagePriority.Low,
     )
     checkUntilTimeout:
-      received and nodes[1].gossipsub.getOrDefault("additional").len == 1
+      received and nodes[1].gossipsub.getOrDefault(additionalTopic).len == 1
 
   asyncTest "application payload on negotiated control stream disconnects peer":
     let nodes = generateNodes(
@@ -197,22 +200,53 @@ suite "GossipSub Component - Topic streams":
       .toGossipSub()
     startAndDeferStop(nodes)
 
-    nodes.subscribeAllNodes("violation", voidTopicHandler)
+    nodes.subscribeAllNodes(topic, voidTopicHandler)
 
     await connect(nodes[0], nodes[1])
-    waitSubscribeStar(nodes, "violation")
+    waitSubscribeStar(nodes, topic)
 
     let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
     check peer.extensionsState.peerHasTopicStreams(peer.peerId)
 
     let msg = Message.init(
-      Opt.some(nodes[0].peerInfo),
-      "invalid stream".toBytes,
-      "violation",
-      Opt.some(20'u64),
+      Opt.some(nodes[0].peerInfo), "invalid stream".toBytes, topic, Opt.some(20'u64)
     )
     peer.trackSend(
       peer.sendEncoded(RPCMsg.withMessages(msg).encode(false), MessagePriority.High)
     )
     checkUntilTimeout:
       not nodes[1].switch.isConnected(nodes[0].peerInfo.peerId)
+
+  asyncTest "peer graylisted when its ControlExtensions arrives is disconnected on its topic stream":
+    # TODO: iftech/nim-libp2p#3390
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    nodes[0].subscribe(topic, voidTopicHandler)
+    let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
+    # nodes[1]'s score is 0, so this graylists it
+    nodes[0].parameters.graylistThreshold = 100000.0
+    # the agent label stays "unknown" until identify finishes
+    let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
+
+    # nodes[0] drops nodes[1]'s first RPC, its ControlExtensions
+    await connect(nodes[0], nodes[1])
+    checkUntilTimeout:
+      currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
+
+    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
+    # nodes[0] negotiates on this subscription, which has no ControlExtensions
+    nodes[1].subscribe(topic, voidTopicHandler)
+    waitSubscribeStar(nodes, topic)
+
+    check:
+      not nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
+      nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+
+    discard await nodes[1].publish(topic, "data".toBytes)
+
+    checkUntilTimeout:
+      not nodes[0].switch.isConnected(nodes[1].peerInfo.peerId)
