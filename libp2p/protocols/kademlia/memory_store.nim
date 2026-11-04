@@ -3,10 +3,14 @@
 
 ## The default ``KadStore``: plain tables in memory. A ``none`` capacity means no limit.
 
-import std/[sequtils, sets, tables]
+import std/[heapqueue, sequtils, sets, tables]
 import chronos
 import ../../[peerid, results]
+import ../../utils/opt
 import ./[key_value, protobuf, store, types]
+
+const MinExpirySlack = 16
+  ## stale heap slots tolerated before a compaction on a small store
 
 type
   KadStoreLimits* = object
@@ -14,16 +18,22 @@ type
     maxProviders*: Opt[int]
     maxProvided*: Opt[int]
 
+  ProviderSlot = object
+    key: Key
+    peerId: PeerId
+    expiresAt: UnixTimestamp
+
   MemoryKadStore* = ref object of KadStore
     values: Table[RecordKey, StoredValue]
     valueKeys: seq[RecordKey] ## the keys of ``values``, sorted
-    providers: Table[Key, seq[StoredProvider]]
+    providers: Table[Key, Table[PeerId, StoredProvider]]
     providerCount: int
+    providerExpiries: HeapQueue[ProviderSlot]
+      ## min-heap on ``expiresAt``; a slot whose provider was removed or refreshed is stale
     provided: HashSet[Key]
     providedKeys: seq[Key] ## the keys of ``provided``, sorted
     limits: KadStoreLimits
     nextValueExpiry: UnixTimestamp ## no value expires before this time
-    nextProviderExpiry: UnixTimestamp ## no provider expires before this time
 
 func new*(
     T: typedesc[MemoryKadStore],
@@ -91,17 +101,18 @@ proc pruneValues(store: MemoryKadStore, now: UnixTimestamp) =
 method getValue*(
     store: MemoryKadStore, key: RecordKey, now: UnixTimestamp
 ): Future[LPResult[Opt[StoredValue]]] {.async: (raises: [CancelledError]), gcsafe.} =
+  store.pruneValues(now)
+
   store.values.withValue(key, value):
-    if value[].expiresAt.isLive(now):
-      return ok(Opt.some(value[]))
+    return ok(Opt.some(value[]))
   ok(Opt.none(StoredValue))
 
 method putValue*(
     store: MemoryKadStore, value: StoredValue, now: UnixTimestamp
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+  store.pruneValues(now)
+
   if value.key notin store.values:
-    if store.values.len.atCapacity(store.limits.maxValues):
-      store.pruneValues(now)
     if store.values.len.atCapacity(store.limits.maxValues):
       return ok(false)
     store.valueKeys.insertKey(value.key)
@@ -128,39 +139,74 @@ method listValues*(
       values.add(value[])
   ok(values)
 
-template dropProvidersIf(
-    store: MemoryKadStore, stored: var seq[StoredProvider], pred: untyped
-) =
-  let before = stored.len
-  stored.keepItIf(not pred)
-  store.providerCount -= before - stored.len
+func `<`(a, b: ProviderSlot): bool =
+  a.expiresAt < b.expiresAt
 
-proc pruneProviders(store: MemoryKadStore, now: UnixTimestamp) =
-  if store.nextProviderExpiry.isLive(now):
+func isCurrent(store: MemoryKadStore, slot: ProviderSlot): bool =
+  store.providers.withValue(slot.key, stored):
+    stored[].withValue(slot.peerId, p):
+      return p[].expiresAt == slot.expiresAt
+  false
+
+proc compactProviderExpiries(store: MemoryKadStore) =
+  if store.providerExpiries.len <= 2 * store.providerCount + MinExpirySlack:
     return
 
-  var emptied: seq[Key]
-  var nextExpiry = high(UnixTimestamp)
-  for key, stored in store.providers.mpairs():
-    store.dropProvidersIf(stored, not it.expiresAt.isLive(now))
-    for provider in stored:
-      nextExpiry = min(nextExpiry, provider.expiresAt)
-    if stored.len == 0:
-      emptied.add(key)
-  for key in emptied:
-    store.providers.del(key)
-  store.nextProviderExpiry = nextExpiry
+  var fresh = initHeapQueue[ProviderSlot]()
+  for key, stored in store.providers:
+    for peerId, p in stored:
+      fresh.push(ProviderSlot(key: key, peerId: peerId, expiresAt: p.expiresAt))
+  store.providerExpiries = fresh
 
-func refusal(store: MemoryKadStore, key: Key, maxPerKey: int): Opt[AddProviderOutcome] =
-  var count = 0
+proc dropProvider(store: MemoryKadStore, key: Key, peerId: PeerId) =
   store.providers.withValue(key, stored):
-    count = stored[].len
+    if peerId notin stored[]:
+      return
+    stored[].del(peerId)
+    store.providerCount.dec()
+    if stored[].len == 0:
+      store.providers.del(key)
 
-  if count >= maxPerKey:
-    return Opt.some(AddProviderOutcome.keyFull)
-  if store.providerCount.atCapacity(store.limits.maxProviders):
-    return Opt.some(AddProviderOutcome.storeFull)
-  Opt.none(AddProviderOutcome)
+proc pruneProviders(store: MemoryKadStore, now: UnixTimestamp) =
+  while store.providerExpiries.len > 0 and
+      not store.providerExpiries[0].expiresAt.isLive(now):
+    let slot = store.providerExpiries.pop()
+    if store.isCurrent(slot):
+      store.dropProvider(slot.key, slot.peerId)
+
+proc soonestProvider(store: MemoryKadStore): Opt[ProviderSlot] =
+  while store.providerExpiries.len > 0:
+    let slot = store.providerExpiries[0]
+    if store.isCurrent(slot):
+      return Opt.some(slot)
+    discard store.providerExpiries.pop()
+  Opt.none(ProviderSlot)
+
+proc makeRoom(store: MemoryKadStore, p: StoredProvider): bool =
+  if not store.providerCount.atCapacity(store.limits.maxProviders):
+    return true
+
+  let victim = store.soonestProvider().valueOr:
+    return false
+  if victim.expiresAt >= p.expiresAt:
+    return false
+  store.dropProvider(victim.key, victim.peerId)
+  true
+
+proc putProvider(store: MemoryKadStore, key: Key, peerId: PeerId, p: StoredProvider) =
+  store.providers.withValue(key, stored):
+    stored[][peerId] = p
+  do:
+    store.providers[key] = {peerId: p}.toTable()
+  store.providerExpiries.push(
+    ProviderSlot(key: key, peerId: peerId, expiresAt: p.expiresAt)
+  )
+  store.compactProviderExpiries()
+
+func providersOf(store: MemoryKadStore, key: Key): int =
+  store.providers.withValue(key, stored):
+    return stored[].len
+  0
 
 method addProvider*(
     store: MemoryKadStore,
@@ -169,46 +215,44 @@ method addProvider*(
     now: UnixTimestamp,
     maxPerKey: int,
 ): Future[LPResult[AddProviderOutcome]] {.async: (raises: [CancelledError]), gcsafe.} =
-  if p.provider.id.isNone():
+  let id = p.provider.id.valueOr:
     return err("provider of key " & $key & " has no id", "provider without id")
+  let peerId = PeerId.init(id).valueOr:
+    return err("provider of key " & $key & ": " & $error, "invalid provider id")
+
+  store.pruneProviders(now)
 
   store.providers.withValue(key, stored):
-    for existing in stored[].mitems():
-      if existing.provider.id == p.provider.id:
-        existing = p
-        store.nextProviderExpiry = min(store.nextProviderExpiry, p.expiresAt)
-        return ok(AddProviderOutcome.refreshed)
+    if peerId in stored[]:
+      store.putProvider(key, peerId, p)
+      return ok(AddProviderOutcome.refreshed)
 
-  var refused = store.refusal(key, maxPerKey)
-  if refused.isSome():
-    let before = store.providerCount
-    store.pruneProviders(now)
-    if store.providerCount < before:
-      refused = store.refusal(key, maxPerKey)
-  if refused.isSome():
-    return ok(refused.get())
+  if store.providersOf(key) >= maxPerKey:
+    return ok(AddProviderOutcome.keyFull)
+  if not store.makeRoom(p):
+    return ok(AddProviderOutcome.storeFull)
 
-  store.providers.mgetOrPut(key, @[]).add(p)
   store.providerCount.inc()
-  store.nextProviderExpiry = min(store.nextProviderExpiry, p.expiresAt)
+  store.putProvider(key, peerId, p)
   ok(AddProviderOutcome.added)
 
 method getProviders*(
     store: MemoryKadStore, key: Key, now: UnixTimestamp, limit: int
 ): Future[LPResult[seq[StoredProvider]]] {.async: (raises: [CancelledError]), gcsafe.} =
-  let live = store.providers.getOrDefault(key).filterIt(it.expiresAt.isLive(now))
-  ok(live[0 ..< min(live.len, max(limit, 0))])
+  store.pruneProviders(now)
+
+  var live: seq[StoredProvider]
+  store.providers.withValue(key, stored):
+    for p in stored[].values():
+      if live.len >= limit:
+        break
+      live.add(p)
+  ok(live)
 
 method removeProvider*(
     store: MemoryKadStore, key: Key, peerId: PeerId
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
-  let id = Opt.some(peerId.getBytes())
-  var emptied = false
-  store.providers.withValue(key, stored):
-    store.dropProvidersIf(stored[], it.provider.id == id)
-    emptied = stored[].len == 0
-  if emptied:
-    store.providers.del(key)
+  store.dropProvider(key, peerId)
   ok()
 
 method addProvided*(
@@ -239,10 +283,3 @@ method listProvided*(
     store: MemoryKadStore, after: Opt[Key], limit: int
 ): Future[LPResult[seq[Key]]] {.async: (raises: [CancelledError]), gcsafe.} =
   ok(toSeq(store.providedKeys.page(after, limit)))
-
-method pruneExpired*(
-    store: MemoryKadStore, now: UnixTimestamp
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
-  store.pruneValues(now)
-  store.pruneProviders(now)
-  ok()
