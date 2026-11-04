@@ -385,17 +385,20 @@ proc requestCertificate(
 ): Future[Result[ACMECertificateResponse, LPResultError]] {.
     async: (raises: [CancelledError])
 .} =
-  # Persist the key before registration, then its URL before starting an order.
-  # A failed save stops issuance so retries can persist the same identity.
+  # Save the key before registration so a restart can reuse it even if
+  # registration succeeds but its response is lost.
   ?(await self.saveAccount())
   let needsRegistration = self.acmeClient.kid.len == 0
   discard ?(await self.acmeClient.getOrInitKid())
   if needsRegistration:
+    # Save the account URL before ordering, so a restart can restore it.
     ?(await self.saveAccount())
   trace "Requesting ACME challenge"
   let challengeResult =
     await self.acmeClient.getChallenge(@[api.Domain("*." & baseDomain)])
   if challengeResult.isOfError(ACMEAccountDoesNotExist):
+    # Forget the stale URL in storage as well as memory; the next attempt
+    # can register or look up the account using the same key.
     self.acmeClient.kid = Kid("")
     ?(await self.saveAccount())
   let dns01Challenge = ?challengeResult
@@ -413,6 +416,7 @@ proc requestCertificate(
     self.config.finalizeRetries,
   )
   if certificateResult.isOfError(ACMEAccountDoesNotExist):
+    # The account can also disappear after the challenge was obtained.
     self.acmeClient.kid = Kid("")
     ?(await self.saveAccount())
   certificateResult
