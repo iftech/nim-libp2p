@@ -187,12 +187,13 @@ proc expandDnsAddr(
     return ok(newSeq[(MultiAddress, Opt[PeerId])]())
 
   trace "Address resolution started"
-  # The expected peer is checked on final records, not imposed as a TXT suffix.
-  # Intermediate DNSADDR records may omit it.
+  # Prune other peers before recursion while allowing records without peer IDs.
   # Recursive lookups share the dial deadline.
   let resolved =
     try:
-      self.nameResolver.resolveDnsAddr(address).awaitWithDeadline(deadline)
+      self.nameResolver.resolveDnsAddr(address, peerId = peerId).awaitWithDeadline(
+        deadline
+      )
     except AsyncTimeoutError:
       trace "DNSADDR resolution timed out", address
       return ok(newSeq[(MultiAddress, Opt[PeerId])]())

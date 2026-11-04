@@ -541,6 +541,11 @@ suite "Dialer":
     resolver.txtResponses["_dnsaddr.root.test"] = @["dnsaddr=/dnsaddr/child.test"]
     resolver.txtResponses["_dnsaddr.child.test"] =
       @["dnsaddr=" & $wire & "/p2p/" & $other, "dnsaddr=" & $wire]
+    resolver.txtResponses["_dnsaddr.suffix.test"] = @[
+      "dnsaddr=" & $wire & "/p2p/" & $other,
+      "dnsaddr=/ip4/192.0.2.2/tcp/4002/p2p/" & $peer,
+      "dnsaddr=" & $wire & "/p2p/" & $peer,
+    ]
     for ranked in [false, true]:
       let transport = FailingDialTransport.new(Upgrade(), rng(), handlesAny = true)
       let dialer = Dialer.new(
@@ -552,9 +557,13 @@ suite "Dialer":
         resolver,
         dialRanking = ranked,
       )
-      expect DialFailedError:
-        await dialer.connect(peer, @[ma("/dnsaddr/root.test")])
-      check transport.dialedAddrs == @[wire]
+      for address in [
+        ma("/dnsaddr/root.test"), ma("/dnsaddr/suffix.test/tcp/4001/p2p/" & $peer)
+      ]:
+        transport.dialedAddrs.setLen(0)
+        expect DialFailedError:
+          await dialer.connect(peer, @[address])
+        check transport.dialedAddrs == @[wire]
 
   test "Dial ranks put direct before relay, and QUIC before TCP within each":
     check rankOf(ma("/ip4/1.2.3.4/udp/4001/quic-v1")) == DialRank.DirectQuic
