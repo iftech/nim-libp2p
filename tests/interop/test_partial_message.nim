@@ -123,7 +123,7 @@ suite "Gossipsub Partial Message Interop Tests with Nim nodes":
       ourAddress,
       $otherPeer.switch.peerInfo.addrs[0],
       otherPeer.switch.peerInfo.peerId,
-      timeout = 10.seconds, # reduce timeout so test doesn't spend time unnecessarily
+      timeout = 2.seconds, # reduce timeout so test doesn't spend time unnecessarily
     )
 
     # other peer just subscribes without publishing anything
