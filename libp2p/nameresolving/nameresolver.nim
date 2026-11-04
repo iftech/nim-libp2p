@@ -5,7 +5,7 @@
 
 import std/[sets, sequtils, strutils, tables]
 import chronos, chronicles
-import ../[multiaddress, multicodec]
+import ../[multiaddress, peerid]
 
 logScope:
   topics = "libp2p name-resolution"
@@ -13,7 +13,7 @@ logScope:
 const
   MaxDnsLookups* = 32 ## Total resolver calls across all branches of one expansion.
   MaxDnsaddrRecursion* = 4 ## Maximum DNSADDR lookups along one branch.
-  MaxDnsaddrRecords* = 16 ## TXT records inspected per response, including invalid ones.
+  MaxDnsaddrRecords* = 16 ## Matching DNSADDR records expanded per response.
   MaxResolvedAddresses* = 100
     ## Outputs per expansion and IP records inspected per lookup.
 
@@ -22,6 +22,7 @@ type
 
   ResolutionState = ref object
     dnsaddrOnly: bool
+    expectedPeer: MultiAddress
     lookups: int
     visited: Table[MultiAddress, int]
     addresses: OrderedSet[MultiAddress]
@@ -70,16 +71,36 @@ proc getHostname*(ma: MultiAddress): string =
       firstIp = ($part).split('/', 2)[2]
   firstIp
 
+proc matchExpectedPeer(
+    address, expectedPeer: MultiAddress
+): MultiAddress {.raises: [MaError].} =
+  # Return the peerless address for suffix matching, or empty for another peer.
+  if expectedPeer.isEmpty or address.isEmpty:
+    return address
+  let last = address[^1].valueOr:
+    raise maErr error
+  if not P2PPattern.match(last):
+    return address
+  if last != expectedPeer:
+    trace "DNSADDR record names another peer", address, expectedPeer
+    return MultiAddress()
+  address[0 ..^ 2].valueOr:
+    raise maErr error
+
 proc expand(
     self: NameResolver, address: MultiAddress, depth: int, state: ResolutionState
 ) {.async: (raises: [CancelledError, MaError, TransportAddressError]).} =
   if state.addresses.len >= MaxResolvedAddresses:
+    trace "Resolution stopped at output limit", address, limit = MaxResolvedAddresses
     return
 
   var
     prefix, component, suffix: MultiAddress
     suffixLength = 0
-  for partResult in address:
+  let matchingAddress = address.matchExpectedPeer(state.expectedPeer)
+  if matchingAddress.isEmpty:
+    return
+  for partResult in matchingAddress:
     let part = partResult.valueOr:
       raise maErr error
     if not component.isEmpty:
@@ -96,7 +117,13 @@ proc expand(
     return
 
   let isDnsaddr = DNSADDR.match(component)
-  if state.lookups >= MaxDnsLookups or (isDnsaddr and depth >= MaxDnsaddrRecursion):
+  if state.lookups >= MaxDnsLookups:
+    trace "Resolution stopped at lookup limit",
+      address = component, limit = MaxDnsLookups
+    return
+  if isDnsaddr and depth >= MaxDnsaddrRecursion:
+    trace "DNSADDR resolution stopped at recursion limit",
+      address = component, limit = MaxDnsaddrRecursion
     return
   # Revisit only when a shorter path leaves more DNSADDR recursion budget.
   # This also cuts cycles and duplicate branches without an expansion queue.
@@ -108,25 +135,35 @@ proc expand(
 
   if isDnsaddr:
     let records = await self.resolveTxt("_dnsaddr." & component.getHostname())
-    for i in 0 ..< min(records.len, MaxDnsaddrRecords):
+    var accepted = 0
+    for record in records:
       if state.addresses.len >= MaxResolvedAddresses:
+        trace "Resolution stopped at output limit",
+          address = component, limit = MaxResolvedAddresses
         break
-      let record = records[i]
       if not record.startsWith("dnsaddr="):
         continue
       let entry = MultiAddress.init(record.substr(8)).valueOr:
         continue
-      if entry.isEmpty:
+      let matchingEntry = entry.matchExpectedPeer(state.expectedPeer)
+      if matchingEntry.isEmpty:
         continue
       if suffixLength > 0:
-        let length = entry.len.valueOr:
+        let length = matchingEntry.len.valueOr:
           raise maErr error
         if length < suffixLength:
+          trace "DNSADDR suffix mismatch", address = entry, suffix
           continue
-        var tail = entry[length - suffixLength ..< length].valueOr:
+        let tail = matchingEntry[length - suffixLength ..< length].valueOr:
           raise maErr error
         if tail != suffix:
+          trace "DNSADDR suffix mismatch", address = entry, suffix
           continue
+      if accepted >= MaxDnsaddrRecords:
+        trace "DNSADDR resolution stopped at record limit",
+          address = component, limit = MaxDnsaddrRecords
+        break
+      inc accepted
       await self.expand(prefix & entry, depth + 1, state)
   else:
     let domain =
@@ -138,8 +175,13 @@ proc expand(
         Domain.AF_UNSPEC
     # Only the IP component is replaced; the original transport/port stays intact.
     let records = await self.resolveIp(component.getHostname(), Port(0), domain)
+    if records.len > MaxResolvedAddresses:
+      trace "IP resolution stopped at record limit",
+        address = component, limit = MaxResolvedAddresses
     for i in 0 ..< min(records.len, MaxResolvedAddresses):
       if state.addresses.len >= MaxResolvedAddresses:
+        trace "Resolution stopped at output limit",
+          address = component, limit = MaxResolvedAddresses
         break
       let resolved = MultiAddress.init(records[i]).valueOr:
         raise maErr error
@@ -148,13 +190,21 @@ proc expand(
       await self.expand(prefix & ip & suffix, depth, state)
 
 proc resolveDnsAddr*(
-    self: NameResolver, ma: MultiAddress, depth: int = 0
+    self: NameResolver,
+    ma: MultiAddress,
+    depth: int = 0,
+    peerId: Opt[PeerId] = Opt.none(PeerId),
 ): Future[seq[MultiAddress]] {.
     async: (raises: [CancelledError, MaError, TransportAddressError])
 .} =
   ## Expand DNSADDR records with exact suffix matching, leaving IP names unresolved.
+  ## When peerId is supplied, skip other peers before recursion and match suffixes
+  ## without the terminal peer ID. Records without peer IDs remain eligible.
   ## Preserve answer order, deduplicate outputs, and return partial results at limits.
   let state = ResolutionState(dnsaddrOnly: true)
+  if peerId.isSome:
+    state.expectedPeer = MultiAddress.init("/p2p/" & $peerId.get()).valueOr:
+      raise maErr error
   await self.expand(ma, depth, state)
   state.addresses.toSeq
 

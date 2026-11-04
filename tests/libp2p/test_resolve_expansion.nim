@@ -5,7 +5,7 @@
 
 import std/sequtils
 import chronos
-import ../../libp2p/nameresolving/nameresolver
+import ../../libp2p/[nameresolving/nameresolver, peerid]
 import ../tools/[unittest, multiaddress, resolver]
 
 type CountingResolver = ref object of MockResolver
@@ -58,15 +58,17 @@ suite "Multiaddress resolution":
     const peer = "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN"
     let resolver = CountingResolver()
     let good = "/ip4/192.0.2.1/tcp/4001/p2p/" & peer
-    resolver.txtResponses["_dnsaddr.peers.test"] = @[
-      "unrelated",
-      "dnsaddr=",
-      "dnsaddr=invalid",
-      "dnsaddr=/ip4/192.0.2.2/tcp/4002/p2p/" & peer,
-      "dnsaddr=/ip4/192.0.2.3/tcp/4001",
-      "dnsaddr=" & good,
-      "dnsaddr=" & good,
-    ]
+    resolver.txtResponses["_dnsaddr.peers.test"] =
+      newSeqWith(MaxDnsaddrRecords, "dnsaddr=/ip4/192.0.2.2/tcp/4002/p2p/" & peer) &
+      @[
+        "unrelated",
+        "dnsaddr=",
+        "dnsaddr=invalid",
+        "dnsaddr=/ip4/192.0.2.2/tcp/4002/p2p/" & peer,
+        "dnsaddr=/ip4/192.0.2.3/tcp/4001",
+        "dnsaddr=" & good,
+        "dnsaddr=" & good,
+      ]
     check (
       await resolver.resolveMAddress(
         ma("/p2p-circuit/dnsaddr/peers.test/tcp/4001/p2p/" & peer)
@@ -129,16 +131,33 @@ suite "Multiaddress resolution":
     check addresses.len == (MaxDnsLookups - 1) div 2
     check resolver.txtQueries.len + resolver.ipQueries.len == MaxDnsLookups
 
-  asyncTest "TXT record processing is bounded even for irrelevant entries":
+  asyncTest "irrelevant TXT records do not consume the matching-record budget":
     let resolver = CountingResolver()
     resolver.txtResponses["_dnsaddr.root.test"] =
       (0 ..< MaxDnsaddrRecords).mapIt("irrelevant " & $it)
     resolver.txtResponses["_dnsaddr.root.test"].add("dnsaddr=/ip4/192.0.2.1")
-    check (await resolver.resolveDnsAddr(ma("/dnsaddr/root.test"))).len == 0
+    check (await resolver.resolveDnsAddr(ma("/dnsaddr/root.test"))) ==
+      @[ma("/ip4/192.0.2.1")]
     resolver.txtResponses["_dnsaddr.root.test"] =
       (1 .. MaxDnsaddrRecords + 1).mapIt("dnsaddr=/ip4/192.0.2." & $it)
     check (await resolver.resolveDnsAddr(ma("/dnsaddr/root.test"))).len ==
       MaxDnsaddrRecords
+
+  asyncTest "expected peers prune branches before budgets and allow peerless children":
+    let peer = PeerId.init("QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN").tryGet()
+    let other = PeerId.init("QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa").tryGet()
+    let resolver = CountingResolver()
+    resolver.txtResponses["_dnsaddr.root.test"] = (0 ..< MaxDnsaddrRecords + 1).mapIt(
+      "dnsaddr=/dnsaddr/other" & $it & ".test/p2p/" & $other
+    )
+    resolver.txtResponses["_dnsaddr.root.test"].add(
+      "dnsaddr=/dnsaddr/child.test/p2p/" & $peer
+    )
+    resolver.txtResponses["_dnsaddr.child.test"] = @["dnsaddr=/ip4/192.0.2.1/tcp/4001"]
+    check (
+      await resolver.resolveDnsAddr(ma("/dnsaddr/root.test"), peerId = Opt.some(peer))
+    ) == @[ma("/ip4/192.0.2.1/tcp/4001")]
+    check resolver.txtQueries == @["_dnsaddr.root.test", "_dnsaddr.child.test"]
 
   asyncTest "output limit is shared across branches and stops further lookups":
     let resolver = CountingResolver()
