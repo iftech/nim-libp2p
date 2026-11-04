@@ -5,10 +5,10 @@
 
 import std/[algorithm, sequtils]
 import chronos, results
-import ../../../libp2p/[peerid, protocols/kademlia, protocols/kademlia/memory_store]
+import ../../../libp2p/[peerid, protocols/kademlia]
 import ../../tools/[unittest, crypto]
 
-export sequtils, chronos, results, peerid, kademlia, memory_store, unittest, crypto
+export sequtils, chronos, results, peerid, kademlia, unittest, crypto
 
 const
   Now: UnixTimestamp = 1_000
@@ -50,21 +50,20 @@ proc sameProviders(got, want: seq[StoredProvider]): bool =
 func providedKey(b: byte): Key =
   Key.fromBytes(@[b])
 
+const
+  pk1 = providedKey(1)
+  pk2 = providedKey(2)
+  pkNone = Opt.none(Key)
+
+converter toOptInt*(n: int): Opt[int] =
+  Opt.some(n)
+
+func `==`*[T](r: LPResult[T], value: T): bool =
+  r.isOk() and r.get() == value
+
 template provideAll(store: KadStore, bytes: openArray[byte]) =
   for b in bytes:
     check (await store.addProvided(providedKey(b))).get()
-
-proc listProvidedFrom(
-    store: KadStore, start: Opt[Key], limit: int
-): Future[seq[Key]] {.async.} =
-  var keys: seq[Key]
-  var after = start
-  while true:
-    let page = (await store.listProvided(after, limit)).get()
-    if page.len == 0:
-      return keys
-    keys.add(page)
-    after = Opt.some(page[^1])
 
 proc valueKeys(values: seq[StoredValue]): seq[Key] =
   var keys: seq[Key]
@@ -83,7 +82,7 @@ template kadStoreTestSuite*(
 
       check:
         (await store.putValue(value, Now)).get()
-        (await store.getValue(value.key, Now)).get().get() == value
+        (await store.getValue(value.key, Now)).get() == value
         (await store.getValue(recordKey(2), Now)).get().isNone()
 
     asyncTest "putValue replaces the value of the key":
@@ -93,7 +92,7 @@ template kadStoreTestSuite*(
       check:
         (await store.putValue(storedValue(1), Now)).get()
         (await store.putValue(replacement, Now)).get()
-        (await store.getValue(replacement.key, Now)).get().get() == replacement
+        (await store.getValue(replacement.key, Now)).get() == replacement
 
     asyncTest "getValue and listValues hide a value with expiresAt <= now":
       let store = factory(KadStoreLimits())
@@ -121,7 +120,7 @@ template kadStoreTestSuite*(
         (await store.getValue(recordKey(1), Now - 1)).get().isNone()
 
     asyncTest "putValue deletes expired values and keeps live ones":
-      let store = factory(KadStoreLimits(maxValues: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxValues: 2))
       check:
         (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
         (await store.putValue(storedValue(2), Now - 1)).get()
@@ -133,7 +132,7 @@ template kadStoreTestSuite*(
         (await store.getValue(recordKey(2), Now)).get().isSome()
 
     asyncTest "a full store refuses a new key and accepts a known key":
-      let store = factory(KadStoreLimits(maxValues: Opt.some(1)))
+      let store = factory(KadStoreLimits(maxValues: 1))
 
       check:
         (await store.putValue(storedValue(1), Now)).get()
@@ -142,14 +141,14 @@ template kadStoreTestSuite*(
         (await store.getValue(recordKey(2), Now)).get().isNone()
 
     asyncTest "a full store drops expired values to accept a new key":
-      let store = factory(KadStoreLimits(maxValues: Opt.some(1)))
+      let store = factory(KadStoreLimits(maxValues: 1))
       check:
         (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
         (await store.putValue(storedValue(2), Now)).get()
         (await store.getValue(recordKey(1), Now - 1)).get().isNone()
 
     asyncTest "a full store drops a value stored after an earlier drop":
-      let store = factory(KadStoreLimits(maxValues: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxValues: 2))
       check:
         (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
         (await store.putValue(storedValue(2), Now - 1)).get()
@@ -159,7 +158,7 @@ template kadStoreTestSuite*(
         (await store.getValue(recordKey(2), Now + 1)).get().isSome()
 
     asyncTest "delValue frees capacity":
-      let store = factory(KadStoreLimits(maxValues: Opt.some(1)))
+      let store = factory(KadStoreLimits(maxValues: 1))
       check (await store.putValue(storedValue(1), Now)).get()
 
       check (await store.delValue(recordKey(1))).isOk()
@@ -277,7 +276,7 @@ template kadStoreTestSuite*(
         (await store.providers(key)) == @[storedProvider(peers[0])]
 
     asyncTest "a new provider at the total cap evicts the provider that expires first":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(3)
       check:
         (await store.add(key, peers[0], Later + 1)) == AddProviderOutcome.added
@@ -291,7 +290,7 @@ template kadStoreTestSuite*(
           @[storedProvider(peers[2], Later + 2)]
 
     asyncTest "a refresh moves the provider back in the eviction order":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(3)
       check:
         (await store.add(key, peers[0], Later)) == AddProviderOutcome.added
@@ -305,7 +304,7 @@ template kadStoreTestSuite*(
         )
 
     asyncTest "a re-advertisement at the total cap evicts nothing":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(2)
       for peerId in peers:
         check (await store.add(key, peerId)) == AddProviderOutcome.added
@@ -317,7 +316,7 @@ template kadStoreTestSuite*(
         )
 
     asyncTest "a full store evicts nothing for a provider that expires no later":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(1)))
+      let store = factory(KadStoreLimits(maxProviders: 1))
       let peers = PeerId.random(3)
       check (await store.add(key, peers[0])) == AddProviderOutcome.added
 
@@ -327,7 +326,7 @@ template kadStoreTestSuite*(
         (await store.providers(key)) == @[storedProvider(peers[0])]
 
     asyncTest "a store with a total cap of 0 gives storeFull":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(0)))
+      let store = factory(KadStoreLimits(maxProviders: 0))
 
       check:
         (await store.add(key, PeerId.random())) == AddProviderOutcome.storeFull
@@ -338,20 +337,19 @@ template kadStoreTestSuite*(
       let expired = storedProvider(peers[0], expiresAt = Now)
       let fresh = storedProvider(peers[1])
 
-      let totalCapped = factory(KadStoreLimits(maxProviders: Opt.some(1)))
+      let totalCapped = factory(KadStoreLimits(maxProviders: 1))
       check:
-        (await totalCapped.addProvider(key, expired, Now - 1, Unlimited)).get() ==
+        (await totalCapped.addProvider(key, expired, Now - 1, Unlimited)) ==
           AddProviderOutcome.added
-        (await totalCapped.addProvider(key, fresh, Now, Unlimited)).get() ==
+        (await totalCapped.addProvider(key, fresh, Now, Unlimited)) ==
           AddProviderOutcome.added
 
       let keyCapped = factory(KadStoreLimits())
       check:
-        (await keyCapped.addProvider(key, expired, Now - 1, 1)).get() ==
+        (await keyCapped.addProvider(key, expired, Now - 1, 1)) ==
           AddProviderOutcome.added
-        (await keyCapped.addProvider(key, fresh, Now, 1)).get() ==
-          AddProviderOutcome.added
-        (await keyCapped.getProviders(key, Now, Unlimited)).get() == @[fresh]
+        (await keyCapped.addProvider(key, fresh, Now, 1)) == AddProviderOutcome.added
+        (await keyCapped.getProviders(key, Now, Unlimited)) == @[fresh]
 
     asyncTest "a full key drops a provider stored after an earlier drop":
       let store = factory(KadStoreLimits())
@@ -369,7 +367,7 @@ template kadStoreTestSuite*(
         )
 
     asyncTest "a full key drops a provider added after a drop at the total cap":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(1)))
+      let store = factory(KadStoreLimits(maxProviders: 1))
       let peers = PeerId.random(3)
       check:
         (await store.add(key, peers[0], expiresAt = Now, now = Now - 1)) ==
@@ -394,7 +392,7 @@ template kadStoreTestSuite*(
           res.isOfError(c.cause)
 
     asyncTest "removeProvider removes only that peer and frees capacity":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(3)
       for peerId in peers[0 .. 1]:
         check (await store.add(key, peerId)) == AddProviderOutcome.added
@@ -446,7 +444,7 @@ template kadStoreTestSuite*(
       check (await store.providers(key)) == @[storedProvider(peerId)]
 
     asyncTest "a refresh to an earlier expiry moves the provider forward in the eviction order":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(3)
       check:
         (await store.add(key, peers[0], Later + 5)) == AddProviderOutcome.added
@@ -460,7 +458,7 @@ template kadStoreTestSuite*(
         )
 
     asyncTest "many refreshes keep the eviction order and the pruning exact":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(5)
       check:
         (await store.add(key, peers[0], Later)) == AddProviderOutcome.added
@@ -488,7 +486,7 @@ template kadStoreTestSuite*(
         )
 
     asyncTest "removeProvider of an evicted provider does not free capacity":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let other = Key.init([8'u8])
       let peers = PeerId.random(4)
       check:
@@ -505,7 +503,7 @@ template kadStoreTestSuite*(
         )
 
     asyncTest "an expiry after removeProvider does not free capacity twice":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(4)
       check:
         (await store.add(key, peers[0], Now, now = Now - 1)) == AddProviderOutcome.added
@@ -529,7 +527,7 @@ template kadStoreTestSuite*(
         RemoveCase(target: key, peerId: peers[1]),
       ]
       for c in cases:
-        let store = factory(KadStoreLimits(maxProviders: Opt.some(1)))
+        let store = factory(KadStoreLimits(maxProviders: 1))
         check (await store.add(key, peers[0])) == AddProviderOutcome.added
 
         check:
@@ -540,7 +538,7 @@ template kadStoreTestSuite*(
           (await store.providers(key)).len == 0
 
     asyncTest "an expired provider drop keeps the live providers and counts them exactly":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(3)))
+      let store = factory(KadStoreLimits(maxProviders: 3))
       let peers = PeerId.random(5)
       check:
         (await store.add(key, peers[0], expiresAt = Now)) == AddProviderOutcome.added
@@ -566,7 +564,7 @@ template kadStoreTestSuite*(
         )
 
     asyncTest "a refreshed provider at the total cap keeps the count unchanged":
-      let store = factory(KadStoreLimits(maxProviders: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProviders: 2))
       let peers = PeerId.random(3)
       check:
         (await store.add(key, peers[0])) == AddProviderOutcome.added
@@ -585,48 +583,44 @@ template kadStoreTestSuite*(
     asyncTest "addProvided stores the key":
       let store = factory(KadStoreLimits())
 
-      check (await store.addProvided(providedKey(1))).get()
+      check (await store.addProvided(pk1)).get()
 
       check:
-        (await store.hasProvided(providedKey(1))).get()
-        not (await store.hasProvided(providedKey(2))).get()
+        (await store.hasProvided(pk1)).get()
+        not (await store.hasProvided(pk2)).get()
 
     asyncTest "a re-add refreshes the key without an eviction":
-      let store = factory(KadStoreLimits(maxProvided: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProvided: 2))
       store.provideAll([1'u8, 2, 2])
 
-      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
-        @[providedKey(1), providedKey(2)]
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2]
 
       store.provideAll([1'u8, 3])
 
-      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
-        @[providedKey(1), providedKey(3)]
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, providedKey(3)]
 
     asyncTest "a new key in a full store evicts the oldest key":
-      let store = factory(KadStoreLimits(maxProvided: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProvided: 2))
       store.provideAll([1'u8, 2, 3])
 
-      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
-        @[providedKey(2), providedKey(3)]
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk2, providedKey(3)]
 
     asyncTest "delProvided removes the key and frees capacity":
-      let store = factory(KadStoreLimits(maxProvided: Opt.some(2)))
+      let store = factory(KadStoreLimits(maxProvided: 2))
       store.provideAll([1'u8, 2])
 
       check:
-        (await store.delProvided(providedKey(2))).isOk()
+        (await store.delProvided(pk2)).isOk()
         (await store.addProvided(providedKey(3))).get()
 
-      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
-        @[providedKey(1), providedKey(3)]
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, providedKey(3)]
 
     asyncTest "a store with maxProvided 0 stores no provided key":
-      let store = factory(KadStoreLimits(maxProvided: Opt.some(0)))
+      let store = factory(KadStoreLimits(maxProvided: 0))
 
-      check not (await store.addProvided(providedKey(1))).get()
+      check not (await store.addProvided(pk1)).get()
 
-      check not (await store.hasProvided(providedKey(1))).get()
+      check not (await store.hasProvided(pk1)).get()
 
     asyncTest "delProvided of an absent key succeeds and keeps the other keys":
       let store = factory(KadStoreLimits())
@@ -634,40 +628,41 @@ template kadStoreTestSuite*(
 
       check (await store.delProvided(providedKey(3))).isOk()
 
-      check (await store.listProvided(Opt.none(Key), Unlimited)).get() ==
-        @[providedKey(1), providedKey(2)]
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2]
 
     asyncTest "provided keys do not expire":
       let store = factory(KadStoreLimits())
-      check (await store.addProvided(providedKey(1))).isOk()
+      check (await store.addProvided(pk1)).isOk()
 
       check:
-        (await store.getProviders(providedKey(1), high(UnixTimestamp), Unlimited)).get().len ==
-          0
+        (await store.getProviders(pk1, high(UnixTimestamp), Unlimited)).get().len == 0
         (await store.listValues(Opt.none(RecordKey), high(UnixTimestamp), Unlimited)).get().len ==
           0
-        (await store.hasProvided(providedKey(1))).get()
+        (await store.hasProvided(pk1)).get()
 
     asyncTest "listProvided returns every key exactly once across pages":
       let store = factory(KadStoreLimits())
       store.provideAll(ProvidedKeyBytes)
 
-      let listed = await store.listProvidedFrom(Opt.none(Key), PageSize)
+      let keys = ProvidedKeyBytes.sorted().mapIt(providedKey(it))
+      let first = (await store.listProvided(pkNone, PageSize)).get()
 
       check:
-        listed == ProvidedKeyBytes.sorted().mapIt(providedKey(it))
-        (await store.listProvided(Opt.none(Key), 0)).get().len == 0
+        first == keys[0 ..< PageSize]
+        (await store.listProvided(Opt.some(first[^1]), Unlimited)) ==
+          keys[PageSize ..^ 1]
+        (await store.listProvided(Opt.some(keys[^1]), Unlimited)).get().len == 0
+        (await store.listProvided(pkNone, 0)).get().len == 0
 
     asyncTest "listProvided pages past keys deleted between pages":
       let store = factory(KadStoreLimits())
       store.provideAll(ProvidedKeyBytes)
 
-      let first = (await store.listProvided(Opt.none(Key), PageSize)).get()
+      let first = (await store.listProvided(pkNone, PageSize)).get()
       let rest = ProvidedKeyBytes.sorted().mapIt(providedKey(it))[PageSize ..^ 1]
 
       check:
         (await store.delProvided(first[^1])).isOk()
         (await store.delProvided(rest[0])).isOk()
 
-      check (await store.listProvidedFrom(Opt.some(first[^1]), PageSize)) ==
-        rest[1 ..^ 1]
+      check (await store.listProvided(Opt.some(first[^1]), Unlimited)) == rest[1 ..^ 1]

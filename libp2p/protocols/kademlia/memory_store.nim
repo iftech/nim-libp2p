@@ -9,15 +9,12 @@ import ../../[peerid, results]
 import ../../utils/opt
 import ./[key_value, protobuf, store, types]
 
+export store
+
 const MinExpirySlack = 16
   ## stale heap slots tolerated before a compaction on a small store
 
 type
-  KadStoreLimits* = object
-    maxValues*: Opt[int]
-    maxProviders*: Opt[int]
-    maxProvided*: Opt[int]
-
   ProviderSlot = object
     key: Key
     peerId: PeerId

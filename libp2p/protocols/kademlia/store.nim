@@ -37,6 +37,11 @@ type
     storeFull
       ## the store holds its total cap of live providers and none expires before the new one
 
+  KadStoreLimits* = object
+    maxValues*: Opt[int]
+    maxProviders*: Opt[int]
+    maxProvided*: Opt[int]
+
   KadStore* = ref object of RootObj
 
 method getValue*(
