@@ -14,7 +14,7 @@ type
   ResolverService = ref object of Service
     fail, cancelled: bool
     entered: AsyncEvent
-    gate: Future[void]
+    gate, stopGate: Future[void]
 
 method start(self: LifecycleResolver) {.gcsafe.} =
   self.stopped = false
@@ -39,6 +39,10 @@ method start(
 method stop(
     self: ResolverService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
+  check not LifecycleResolver(switch.nameResolver).stopped
+  if not self.stopGate.isNil:
+    self.entered.fire()
+    await self.stopGate.join()
   check not LifecycleResolver(switch.nameResolver).stopped
 
 suite "Switch resolver lifecycle":
@@ -98,6 +102,25 @@ suite "Switch resolver lifecycle":
     check service.cancelled
     check resolver.stopped
     service.gate.complete()
+
+  asyncTest "cancelled shutdown drains services before stopping the resolver":
+    let resolver = LifecycleResolver()
+    let node =
+      makeStandardSwitchBuilder(TcpAutoAddress).withNameResolver(resolver).build()
+    let service = ResolverService(
+      entered: newAsyncEvent(), stopGate: newFuture[void]("resolver service stop gate")
+    )
+    node.services.add(service)
+    await node.start()
+    let stopping = node.stop()
+    await service.entered.wait()
+    let cancelling = stopping.cancelAndWait()
+    await sleepAsync(1.milliseconds)
+    check not stopping.finished()
+    check not resolver.stopped
+    service.stopGate.complete()
+    await cancelling
+    check resolver.stopped
 
   asyncTest "stateless resolvers implement no-op lifecycle methods":
     let resolvers: seq[NameResolver] = @[

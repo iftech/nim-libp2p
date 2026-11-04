@@ -363,8 +363,9 @@ proc withNameResolver*(
     b: SwitchBuilder, nameResolver: sink NameResolver
 ): SwitchBuilder =
   ## The next successful build transfers resolver lifecycle to the switch.
-  ## Do not share it with independently managed switches. The builder clears
-  ## its resolver after that build; subsequent builds need another resolver.
+  ## `sink` does not prevent reference aliases: a stateful resolver must belong
+  ## to exactly one independently managed switch. The builder clears its resolver
+  ## after that build; subsequent builds have no resolver unless one is supplied.
   b.nameResolver = nameResolver
   b
 

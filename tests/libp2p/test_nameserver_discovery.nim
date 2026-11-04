@@ -19,12 +19,14 @@ options ndots:5
 """
     ) == @[initTAddress("10.0.0.2:53"), initTAddress("[fd00::2]:53")]
 
-  test "skip malformed and scoped nameservers":
+  test "skip malformed, scoped and IPv6 link-local nameservers":
     check parseNameServers(
       """
 nameserver
 nameserver not-an-address
 nameserver fe80::1%eth0
+nameserver fe80::1
+nameserver febf::1
 nameserver 10.0.0.2
 """
     ) == @[initTAddress("10.0.0.2:53")]
@@ -48,4 +50,5 @@ nameserver 10.0.0.4
     check:
       parseNameServers("").len == 0
       parseNameServers("search example.com\n").len == 0
+      parseNameServers("nameserver fe80::1\n").len == 0
       getSystemNameServers().len > 0
