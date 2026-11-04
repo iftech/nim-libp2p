@@ -399,9 +399,10 @@ proc isStopping*(s: Switch): bool =
   ## True from the beginning of shutdown until the next start.
   s.stopping
 
-proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
-  ## Stop listening on every transport, and
-  ## close every active connections
+proc stopImpl(s: Switch) {.async: (raises: [CancelledError]).} =
+  defer:
+    if not s.nameResolver.isNil:
+      await s.nameResolver.stop()
 
   info "Stopping switch"
 
@@ -448,10 +449,14 @@ proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
 
   s.peerStore.close()
 
-  if not s.nameResolver.isNil:
-    await s.nameResolver.stop()
-
   info "Switch stopped"
+
+proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
+  ## Stop transports and active connections. Caller cancellation waits for teardown.
+  let stopping = s.stopImpl()
+  # Shield teardown, then propagate its result (including internal cancellation).
+  await noCancel allFutures(stopping)
+  await stopping
 
 proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   ## Start listening on every transport

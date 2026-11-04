@@ -5,6 +5,9 @@
 
 import std/[sets, sequtils, strutils], chronos, chronicles, ./dnsmessage
 
+when not defined(windows):
+  import stew/io2
+
 import nameresolver
 import ../crypto/rng, ../utils/future
 
@@ -23,6 +26,8 @@ when defined(windows):
 #include <iphlpapi.h>"""
     ErrorSuccess = 0'u32
     ErrorBufferOverflow = 111'u32
+    MaxAdapterQueryAttempts = 3
+    IfOperStatusUp = 1'u32
     AfUnspec = 0'u32
     AfInet = 2'u16
     AfInet6 = 23'u16
@@ -56,6 +61,7 @@ when defined(windows):
       importc: "IP_ADAPTER_ADDRESSES", header: WindowsDnsHeaders, bycopy
     .} = object
       next {.importc: "Next".}: ptr IpAdapterAddresses
+      operStatus {.importc: "OperStatus".}: uint32
       firstDnsServerAddress {.importc: "FirstDnsServerAddress".}:
         ptr IpAdapterDnsServerAddress
 
@@ -82,7 +88,10 @@ proc parseNameServers*(conf: string): seq[TransportAddress] =
       if '%' in host:
         continue
       try:
-        servers.add(initTAddress((if ':' in host: "[" & host & "]" else: host) & ":53"))
+        let server = initTAddress((if ':' in host: "[" & host & "]" else: host) & ":53")
+        if server.family == AddressFamily.IPv6 and server.isLinkLocal():
+          continue
+        servers.add(server)
       except TransportAddressError:
         discard
     if servers.len >= 3:
@@ -121,6 +130,8 @@ when defined(windows):
     else:
       return
 
+    if server.family == AddressFamily.IPv6 and server.isLinkLocal():
+      return
     if server notin servers:
       servers.add(server)
 
@@ -131,23 +142,29 @@ when defined(windows):
         size == 0:
       return @[]
 
-    let addresses = cast[ptr IpAdapterAddresses](alloc0(int(size)))
-    if addresses.isNil:
-      return @[]
-    defer:
-      dealloc(addresses)
+    for attempt in 0 ..< MaxAdapterQueryAttempts:
+      let addresses = cast[ptr IpAdapterAddresses](alloc0(int(size)))
+      if addresses.isNil:
+        return @[]
+      defer:
+        dealloc(addresses)
 
-    if getAdaptersAddresses(AfUnspec, 0, nil, addresses, addr size) != ErrorSuccess:
-      return @[]
+      let status = getAdaptersAddresses(AfUnspec, 0, nil, addresses, addr size)
+      if status == ErrorBufferOverflow:
+        continue
+      if status != ErrorSuccess:
+        return @[]
 
-    var adapter = addresses
-    while not adapter.isNil:
-      var server = adapter[].firstDnsServerAddress
-      while not server.isNil:
-        servers.addWindowsNameServer(server[].address)
-        server = server[].next
-      adapter = adapter[].next
-    return servers
+      var adapter = addresses
+      while not adapter.isNil:
+        if adapter[].operStatus == IfOperStatusUp:
+          var server = adapter[].firstDnsServerAddress
+          while not server.isNil:
+            servers.addWindowsNameServer(server[].address)
+            server = server[].next
+        adapter = adapter[].next
+      return servers
+    return @[]
 
 proc getSystemNameServers*(): seq[TransportAddress] =
   ## Best-effort system nameserver discovery, falling back to
@@ -156,11 +173,8 @@ proc getSystemNameServers*(): seq[TransportAddress] =
   when defined(windows):
     servers = getWindowsNameServers()
   else:
-    var conf: string
-    try:
-      conf = readFile("/etc/resolv.conf")
-    except IOError, OSError:
-      discard
+    let conf = io2.readAllChars("/etc/resolv.conf").valueOr:
+      ""
     servers = parseNameServers(conf)
   if servers.len == 0:
     return DefaultDnsServers
