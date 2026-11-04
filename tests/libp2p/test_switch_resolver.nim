@@ -99,7 +99,7 @@ suite "Switch resolver lifecycle":
     check resolver.stopped
     service.gate.complete()
 
-  asyncTest "stateless resolvers inherit no-op lifecycle methods":
+  asyncTest "stateless resolvers implement no-op lifecycle methods":
     let resolvers: seq[NameResolver] = @[
       NameResolver(DnsResolver.new(@[initTAddress("192.0.2.1:53")], rng())),
       NameResolver(MockResolver.new()),

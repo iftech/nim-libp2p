@@ -17,6 +17,12 @@ type MockResolver* = ref object of NameResolver
   # key: address, isipv6?
   ipResponses*: Table[(string, bool), seq[string]]
 
+method start*(self: MockResolver) {.gcsafe.} =
+  discard
+
+method stop*(self: MockResolver) {.async: (raises: []).} =
+  discard
+
 method resolveIp*(
     self: MockResolver, address: string, port: Port, domain: Domain = Domain.AF_UNSPEC
 ): Future[seq[TransportAddress]] {.

@@ -24,6 +24,12 @@ proc stall(self: StallingResolver) {.async: (raises: [CancelledError]).} =
     self.cancelled = true
     raise e
 
+method start*(self: StallingResolver) {.gcsafe.} =
+  discard
+
+method stop*(self: StallingResolver) {.async: (raises: []).} =
+  discard
+
 method resolveIp*(
     self: StallingResolver,
     address: string,
@@ -61,6 +67,12 @@ type StubNameResolver* = ref object of NameResolver
 proc responseForCall[T](script: seq[T], callIndex: int): T =
   ## Entries answer consecutive calls, the last entry answers every call after it.
   script[min(callIndex, script.high)]
+
+method start*(self: StubNameResolver) {.gcsafe.} =
+  discard
+
+method stop*(self: StubNameResolver) {.async: (raises: []).} =
+  discard
 
 method resolveIp*(
     self: StubNameResolver,
