@@ -890,11 +890,7 @@ suite "Dialer":
 
     # Twice: the second dial gets its turn only if the first freed the lock.
     for _ in 0 .. 1:
-      let dial = src.connect(
-        dst,
-        forceDial = true,
-        reuseConnection = false,
-      )
+      let dial = src.connect(dst, forceDial = true, reuseConnection = false)
       # `join`, not `wait`: a cancel waits out a dial parked in `noCancel`.
       if not await dial.join().withTimeout(closeTimeout * 2):
         fail()

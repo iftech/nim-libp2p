@@ -562,9 +562,9 @@ proc cleanup*(peerStore: PeerStore, peerId: PeerId) =
     peerStore.toClean.delete(0)
     peerStore.del(oldest)
 
-proc retireStream(stream: Stream, identified: bool, closeTimeout: Duration) {.
-    async: (raises: [])
-.} =
+proc retireStream(
+    stream: Stream, identified: bool, closeTimeout: Duration
+) {.async: (raises: []).} =
   ## `noCancel` swallows the caller's deadline, so the close carries its own.
   if identified:
     if await noCancel stream.closeWithEOF().withTimeout(closeTimeout):
