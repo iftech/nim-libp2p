@@ -45,6 +45,10 @@ type
       workerEntered, workerRelease: ThreadSignalPtr
       workerGateReleased: Atomic[bool]
 
+  PendingRequest = object
+    req: ptr SharedRequest
+    fut: Future[seq[TransportAddress]].Raising([CancelledError])
+
   SystemResolver* = ref object of NameResolver
     ## Resolves names through the OS resolver (getaddrinfo), offloaded to
     ## lazily-created worker threads.
@@ -52,12 +56,7 @@ type
     shared: ptr SharedState
     workers: seq[Thread[ptr SharedState]]
     workerCount: int
-    pending: seq[
-      tuple[
-        req: ptr SharedRequest,
-        fut: Future[seq[TransportAddress]].Raising([CancelledError]),
-      ]
-    ]
+    pending: seq[PendingRequest]
     dispatcherFut: Future[void].Raising([])
     stopFut: Future[void].Raising([])
     stopped: bool
@@ -273,7 +272,7 @@ method resolveIp*(
     discard req.state.compareExchange(expected, ord(RequestState.Discarded))
 
   fut.cancelCallback = cancellation
-  self.pending.add((req, fut))
+  self.pending.add(PendingRequest(req: req, fut: fut))
 
   shared[].lock.acquire()
   if shared[].queueTail.isNil:
