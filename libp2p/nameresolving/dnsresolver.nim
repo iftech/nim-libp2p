@@ -203,6 +203,12 @@ proc getDnsResponse(
   finally:
     await sock.closeWait()
 
+method start*(self: DnsResolver) {.gcsafe.} =
+  discard
+
+method stop*(self: DnsResolver) {.async: (raises: []).} =
+  discard
+
 method resolveIp*(
     self: DnsResolver, address: string, port: Port, domain: Domain = Domain.AF_UNSPEC
 ): Future[seq[TransportAddress]] {.
