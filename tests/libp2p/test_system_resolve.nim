@@ -35,12 +35,15 @@ suite "System name resolution":
     check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
 
   asyncTest "factory preserves explicit DNS servers":
-    let servers = @[initTAddress("192.0.2.1:5353")]
-    let resolver = newNameResolver(rng(), servers)
-    defer:
-      await resolver.stop()
-    check resolver of DnsResolver
-    check DnsResolver(resolver).nameServers == servers
+    for servers in [@[initTAddress("192.0.2.1:5353")], newSeq[TransportAddress]()]:
+      let resolver = newNameResolver(rng(), servers)
+      defer:
+        await resolver.stop()
+      check resolver of DnsResolver
+      check DnsResolver(resolver).nameServers == servers
+      if servers.len == 0:
+        check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
+        check (await resolver.resolveTxt("_dnsaddr.test.io")).len == 0
 
   asyncTest "requested family and port are preserved":
     let resolver = SystemResolver.new(rng())

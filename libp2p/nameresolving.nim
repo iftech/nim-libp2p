@@ -23,12 +23,12 @@ import ./crypto/rng
 
 export nameresolver, dnsresolver, systemresolver
 
-proc newNameResolver*(
-    rng: Rng, nameServers: seq[TransportAddress] = @[]
-): NameResolver =
-  ## Use explicit DNS servers when supplied; otherwise resolve IPs through the OS.
+proc newNameResolver*(rng: Rng, nameServers: seq[TransportAddress]): NameResolver =
+  ## Use only the supplied DNS servers. An empty list produces no DNS results.
+  DnsResolver.new(nameServers, rng)
+
+proc newNameResolver*(rng: Rng): NameResolver =
+  ## Resolve IPs through the OS. Discovers TXT nameservers synchronously during
+  ## construction, which can block the calling thread while reading system config.
   ## Requires threads. Outside a switch, call stop() to release its workers.
-  if nameServers.len > 0:
-    DnsResolver.new(nameServers, rng)
-  else:
-    SystemResolver.new(rng)
+  SystemResolver.new(rng)
