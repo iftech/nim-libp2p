@@ -261,14 +261,6 @@ proc dial*(
 
   dial(s, other.peerInfo, proto, forceDial)
 
-proc add*(
-    s: Switch, service: Service
-) {.deprecated: "externally created services should not be added to Switch".} =
-  if service.isNil:
-    return
-
-  s.services.add(service)
-
 const
   MissingHandlerCause* = "Protocol has to define a handle method or proc"
   MissingCodecCause* = "Protocol has to define a codec string"
