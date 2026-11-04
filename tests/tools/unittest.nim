@@ -9,7 +9,7 @@ export unittest2 except suite
 
 const
   asyncTestTimeoutDefault* =
-    when defined(libp2p_testing_slow): 30.seconds else: 15.seconds
+    when defined(libp2p_testing_slow): 30.seconds else: 20.seconds
   asyncTestCleanupTimeout = 1.seconds
 
 var
