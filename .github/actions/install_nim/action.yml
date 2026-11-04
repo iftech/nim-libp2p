@@ -82,7 +82,7 @@ runs:
 
         ncpu=
         MAKE_CMD="make"
-        case '${{ inputs.os }}' in
+        case '${{ runner.os }}' in
         'Linux')
           ncpu=$(nproc)
           ;;
@@ -104,7 +104,7 @@ runs:
       uses: actions/cache/restore@v5
       with:
         path: '${{ github.workspace }}/nim'
-        key: ${{ inputs.os }}-${{ inputs.cpu }}-nim-${{ inputs.nim_ref }}-cache-${{ env.cache_nonce }}-${{ env.NIMBLE_COMMIT }}
+        key: ${{ inputs.os }}-${{ inputs.cpu }}-nim-${{ inputs.nim_ref }}-slim-cache-${{ env.cache_nonce }}-${{ env.NIMBLE_COMMIT }}
 
     - name: Build Nim and Nimble
       shell: ${{ inputs.shell }}
@@ -126,6 +126,8 @@ runs:
           QUICK_AND_DIRTY_COMPILER=1 QUICK_AND_DIRTY_NIMBLE=1 CC=gcc \
           bash build_nim.sh nim csources dist/nimble NimBinaries
 
+        # Drop build leftovers (~2.2 GB, mostly csources) before caching.
+        rm -rf "$tmpdir"/nim/csources* "$tmpdir/nim/.git" "$tmpdir/nim/nimcache" "$tmpdir/nim/tests"
         mv "$tmpdir/nim" "${{ github.workspace }}/nim"
 
     - name: Save Nim to cache
