@@ -102,8 +102,9 @@ suite "Circuit Relay V2":
         sent[] == msgs
         not conn.closed()
       await conn.close()
+      check not conn.stream.wasResetLocally()
 
-    asyncTest "write past the data limit raises, closes and blocks later writes":
+    asyncTest "write past the data limit raises, resets and blocks later writes":
       let sent = new seq[seq[byte]]
       let conn = recordingRelayConn(sent)
 
@@ -113,6 +114,7 @@ suite "Circuit Relay V2":
       check:
         sent[].len == 0
         conn.closed()
+        conn.stream.wasResetLocally()
 
       expect LPStreamClosedError:
         await conn.write(newSeq[byte](1))
@@ -129,6 +131,7 @@ suite "Circuit Relay V2":
       check:
         sent[].len == 1
         conn.closed()
+        conn.stream.wasResetLocally()
 
     asyncTest "write after close raises LPStreamClosedError and sends nothing":
       let sent = new seq[seq[byte]]
@@ -141,6 +144,16 @@ suite "Circuit Relay V2":
       check:
         sent[].len == 0
         conn.dataSent == 0
+
+    asyncTest "duration limit resets the wrapped stream":
+      const limitDuration = 1'u32
+      let conn = RelayConnection.new(
+        TestBufferStream.new(nil), limitDuration = limitDuration, limitData = 0
+      )
+
+      checkUntilTimeout:
+        conn.stream.wasResetLocally()
+      await conn.close()
 
     asyncTest "limitData 0 means no limit":
       let sent = new seq[seq[byte]]

@@ -28,7 +28,7 @@ method write*(
 
   self.dataSent.inc(msg.len)
   if self.limitData != 0 and self.dataSent > self.limitData:
-    await self.close()
+    await self.reset()
     raise newException(
       LPStreamLimitError,
       "relay data limit exceeded: " & $self.dataSent & " > " & $self.limitData,
@@ -68,7 +68,7 @@ proc new*(
       try:
         await stream.join().wait(limitDuration.seconds())
       except AsyncTimeoutError:
-        await stream.close()
+        await stream.reset()
       except CancelledError:
         discard # cancelled by close/reset; teardown already underway
 
