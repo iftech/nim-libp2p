@@ -2,7 +2,8 @@
         test_multiformat_exts test_integration test_autotls_docker_integration \
         bench_dial bench_kad_find_closest \
         bench_dial bench_pubsub_queues \
-        setup lock gen_multicodec format clean-nim
+        setup lock gen_multicodec format clean-nim \
+        lint
 
 NIM_VERSION  ?= 2.2.10
 NPH_VERSION  ?= 0.7.0
@@ -175,3 +176,8 @@ clean-nim:
 	[ ! -d nimbledeps ] || rm -rf nimbledeps
 	[ ! -d tests/nimbledeps ] || rm -rf tests/nimbledeps
 	rm nimble.paths tests/nimble.paths 2>/dev/null || true
+
+lint:
+	nimble list -i 2>/dev/null | grep -qx lint || \
+		nimble install https://github.com/iftech/nim-lint@#develop
+	nim r linter.nim
