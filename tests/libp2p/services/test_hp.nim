@@ -8,7 +8,6 @@
 import std/sequtils
 import chronos
 import ../../../libp2p/[builders, switch, wire, services/autorelayservice]
-import ../../../libp2p/utils/collections
 import ../../../libp2p/services/hpservice {.all.}
 import ../../../libp2p/protocols/connectivity/relay/[relay, client]
 import ../../../libp2p/protocols/connectivity/dcutr/client as dcutr_client
@@ -52,7 +51,7 @@ suite "Hole Punching":
 
     check hpService.reachabilityObservers == autonatService.reachabilityObservers
 
-  asyncTest "tryStartingDirectConn filters, ranks and batches the dials":
+  asyncTest "tryStartingDirectConn filters and ranks the dials":
     type DirectCase = object
       name: string
       book: seq[MultiAddress]
@@ -63,8 +62,7 @@ suite "Hole Punching":
 
     let
       dcutrClient = DcutrClient.new(connectTimeout = 100.milliseconds)
-      cap = dcutrClient.maxDialableAddrs
-      peerId = PeerId.random(rng()).tryGet()
+      peerId = PeerId.random()
       nonPublic = @[
         ma("/ip4/8.8.4.4/tcp/4001/p2p-circuit"),
         ma("/ip4/192.168.1.5/tcp/4001"),
@@ -74,30 +72,17 @@ suite "Hole Punching":
       public = toSeq(1 .. 50).mapIt(ma("/ip4/8.8.8." & $it & "/tcp/4001"))
       cases = @[
         DirectCase(
-          name: "every public addr is dialed when all fail",
+          name: "every public addr is dialed in one call when all fail",
           book: nonPublic & public,
           dialed: public,
           expected: false,
         ),
         DirectCase(
-          name: "a verified addr past the first batch is dialed first",
+          name: "a verified addr is dialed first",
           book: public,
           verified: public[^1 .. ^1],
           dialed: public[^1 .. ^1] & public[0 ..< ^1],
           expected: false,
-        ),
-        DirectCase(
-          name: "a success in the first batch skips the next batches",
-          book: public,
-          dialed: public[0 ..< cap],
-          expected: true,
-        ),
-        DirectCase(
-          name: "a silent first batch moves on to the next batch",
-          book: public[0 .. cap],
-          silent: public[0 ..< cap],
-          dialed: public[0 .. cap],
-          expected: true,
         ),
         DirectCase(
           name: "success returns true",
@@ -162,12 +147,9 @@ suite "Hole Punching":
       switch.peerStore[AddressBook][peerId] = c.book
 
       check:
-        (
-          await hp.tryStartingDirectConn(
-            switch, peerId, cap, dcutrClient.connectTimeout
-          )
-        ) == c.expected
-        calls == c.dialed.toChunks(cap)
+        (await hp.tryStartingDirectConn(switch, peerId, dcutrClient.connectTimeout)) ==
+          c.expected
+        calls == (if c.dialed.len == 0: @[] else: @[c.dialed])
         forcedOrReused == newSeqWith(calls.len, false)
 
   template directConnection(restart: bool) =

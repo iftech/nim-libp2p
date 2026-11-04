@@ -7,7 +7,7 @@ import std/[algorithm, tables, sequtils]
 
 import chronos, chronicles
 
-import ../switch, ../wire, ../peerstore, ../utils/collections
+import ../switch, ../wire, ../peerstore
 import ../protocols/rendezvous
 import ../services/[autorelayservice, reachabilityobservers]
 import ../protocols/connectivity/relay/relay
@@ -50,7 +50,7 @@ func natAddrs(switch: Switch): seq[MultiAddress] =
   switch.peerInfo.listenAddrs.mapIt(manager.externalAddrFor(it))
 
 proc directDialAddrs(switch: Switch, peerId: PeerId): seq[MultiAddress] =
-  ## Live public addresses, highest confidence first, so a verified address goes in the first batch.
+  ## Live public addresses, highest confidence first, so a verified address is dialed first.
   let book = switch.peerStore[AddressBook]
   let live = book[peerId]
   book
@@ -62,11 +62,15 @@ proc directDialAddrs(switch: Switch, peerId: PeerId): seq[MultiAddress] =
     .sortedByIt(-ord(it.confidence))
     .mapIt(it.address)
 
-proc tryDialBatch(
-    switch: Switch, peerId: PeerId, addrs: seq[MultiAddress], connectTimeout: Duration
+proc tryStartingDirectConn(
+    self: HPService, switch: Switch, peerId: PeerId, connectTimeout: Duration
 ): Future[bool] {.async: (raises: [CancelledError]).} =
+  ## Dials every live public address in one call; the dialer decides how many run at once.
+  let addrs = switch.directDialAddrs(peerId)
+  if addrs.len == 0:
+    return false
+
   trace "Trying to create direct connection", peerId, addrs
-  # one call per batch: the dialer holds a per-peer lock, so it alone can run the dials in parallel
   try:
     await switch.connect(peerId, addrs, forceDial = false, reuseConnection = false).wait(
       connectTimeout
@@ -80,19 +84,6 @@ proc tryDialBatch(
 
   debug "Direct connection created", peerId
   true
-
-proc tryStartingDirectConn(
-    self: HPService,
-    switch: Switch,
-    peerId: PeerId,
-    maxDialableAddrs: int,
-    connectTimeout: Duration,
-): Future[bool] {.async: (raises: [CancelledError]).} =
-  ## Dials every address, `maxDialableAddrs` at a time, so the dialing node has a limit on parallel dials.
-  for batch in switch.directDialAddrs(peerId).toChunks(maxDialableAddrs):
-    if await switch.tryDialBatch(peerId, batch, connectTimeout):
-      return true
-  false
 
 proc closeRelayConn(relayedConn: RawConn) {.async: (raises: [CancelledError]).} =
   await sleepAsync(2000.milliseconds) # grace period before closing relayed connection
@@ -113,9 +104,7 @@ proc newConnectedPeerHandler(
     let relayedConn = incomingRelays[0]
 
     let dcutrClient = DcutrClient.new()
-    if await self.tryStartingDirectConn(
-      switch, peerId, dcutrClient.maxDialableAddrs, dcutrClient.connectTimeout
-    ):
+    if await self.tryStartingDirectConn(switch, peerId, dcutrClient.connectTimeout):
       await closeRelayConn(relayedConn)
       return
 
