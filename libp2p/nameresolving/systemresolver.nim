@@ -15,7 +15,9 @@ import ../crypto/rng
 logScope:
   topics = "libp2p systemresolver"
 
-const MaxSystemAddresses = 100
+const
+  MaxSystemAddresses = 100
+  IPv4MappedMarkerByte = 0xff'u8
 
 type
   RequestState {.pure.} = enum
@@ -70,7 +72,8 @@ proc isV4Mapped(address: TransportAddress): bool =
   for i in 0 ..< 10:
     if address.address_v6[i] != 0:
       return false
-  address.address_v6[10] == 0xff and address.address_v6[11] == 0xff
+  address.address_v6[10] == IPv4MappedMarkerByte and
+    address.address_v6[11] == IPv4MappedMarkerByte
 
 proc workerLoop(shared: ptr SharedState) {.thread.} =
   {.cast(gcsafe).}:
