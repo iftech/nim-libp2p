@@ -359,7 +359,12 @@ proc withAgentVersion*(b: SwitchBuilder, agentVersion: string): SwitchBuilder =
   b.agentVersion = agentVersion
   b
 
-proc withNameResolver*(b: SwitchBuilder, nameResolver: NameResolver): SwitchBuilder =
+proc withNameResolver*(
+    b: SwitchBuilder, nameResolver: sink NameResolver
+): SwitchBuilder =
+  ## The next successful build transfers resolver lifecycle to the switch.
+  ## Do not share it with independently managed switches. The builder clears
+  ## its resolver after that build; subsequent builds need another resolver.
   b.nameResolver = nameResolver
   b
 
@@ -674,4 +679,5 @@ proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
   let switch = b.buildSwitch().valueOrRaise(LPError)
   b.addServices(switch)
   b.mountProtocols(switch).onErrorRaise(LPError)
+  switch.nameResolver = move(b.nameResolver)
   switch

@@ -63,7 +63,7 @@ type
     rejectedConnCloseFuts: seq[Future[void]]
     dialer*: Dialer
     peerStore*: PeerStore
-    nameResolver*: NameResolver
+    nameResolver*: NameResolver ## Lifecycle owned by this switch.
     addressManager*: AddressManager
     started: bool
     stopping: bool
@@ -448,6 +448,9 @@ proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
 
   s.peerStore.close()
 
+  if not s.nameResolver.isNil:
+    await s.nameResolver.stop()
+
   info "Switch stopped"
 
 proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
@@ -459,6 +462,15 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   info "Starting switch for peer", peerInfo = s.peerInfo
   s.stopping = false
 
+  if not s.nameResolver.isNil:
+    s.nameResolver.start()
+  var startFuts: seq[Future[void]]
+  defer:
+    if not s.started:
+      # No startup task may outlive the components and resolver it uses.
+      await noCancel startFuts.cancelAndWait()
+      await noCancel s.stop()
+
   if not s.connManager.isRunning():
     s.connManager.start()
 
@@ -467,16 +479,13 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   s.addressManager.setPeerInfo(s.peerInfo)
   s.addressManager.start()
 
-  # start services and transports without await to prevent any
-  # issues when one needs another to start first.
-  var startFuts: seq[Future[void]]
-
   # the transport loop drains listenAddrs, so a retry after a failed start needs them back
   let listenAddrs = s.peerInfo.listenAddrs
   defer:
     if not s.started:
       s.peerInfo.listenAddrs = listenAddrs
 
+  # Start services and transports together; either may depend on the other.
   for service in s.services:
     startFuts.add(service.start(s))
 
@@ -489,7 +498,6 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
 
   for fut in startFuts:
     if fut.failed:
-      await s.stop()
       raise newException(
         LPError, "starting services and transports failed: " & $fut.error.msg, fut.error
       )
