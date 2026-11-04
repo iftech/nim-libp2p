@@ -229,14 +229,14 @@ proc newStorageKey(self: AutotlsService): LPResult[AutotlsStorageKey] =
     )
   )
 
-type ValidatedAutotlsState* = object
+type ValidatedAutotlsState = object
   ## Parsed state suitable for restoring an AutoTLS service.
   accountKey*: Opt[RsaPrivateKey]
   accountKid*: Kid
   certificate*: Opt[AutotlsCert]
   certificateExpired*: bool
 
-proc validateStoredState*(state: AutotlsStoredState): LPResult[ValidatedAutotlsState] =
+proc validate(state: AutotlsStoredState): LPResult[ValidatedAutotlsState] =
   var validated = ValidatedAutotlsState(
     accountKey: Opt.none(RsaPrivateKey), certificate: Opt.none(AutotlsCert)
   )
@@ -279,14 +279,11 @@ proc restoreState(
   ## Restore state before creating the ACME client so its account identity is
   ## retained across process restarts.
   let storageKey = ?self.newStorageKey()
+  var validated = ValidatedAutotlsState()
 
-  var accountKey = Opt.none(RsaPrivateKey)
-  var accountKid = Kid("")
   let state = ?(await self.storage.load(storageKey))
   state.ifValue(storedState):
-    let validated = ?validateStoredState(storedState)
-    accountKey = validated.accountKey
-    accountKid = validated.accountKid
+    validated = ?storedState.validate()
     validated.certificate.ifValue(certificate):
       self.installCertificate(certificate)
       info "Restored AutoTLS certificate from storage"
@@ -300,8 +297,8 @@ proc restoreState(
     self.acmeClient = ACMEClient.new(
       api = ACMEApi.new(self.config.acmeDirectoryURL, self.config.acmeHttpFlags),
       rng = self.rng,
-      key = accountKey,
-      kid = accountKid,
+      key = validated.accountKey,
+      kid = validated.accountKid,
     )
   ok()
 
@@ -326,7 +323,6 @@ proc saveState(
   ## Save state only after ACME completed issuance. A save failure does not
   ## invalidate the usable in-memory certificate, but is reported to callers.
   let storageKey = ?self.newStorageKey()
-
   let accountKey = self.acmeClient.key.getBytes().valueOr:
     return err("Unable to serialize AutoTLS account key")
   let certificateKey = certKeyPair.getBytes().valueOr:
@@ -648,7 +644,7 @@ method stop*(
     await self.broker.close()
 
 when defined(libp2p_testing):
-  export installCertificate, issueCertificate
+  export installCertificate, issueCertificate, ValidatedAutotlsState, validate
 
   func ipAddress*(config: AutotlsConfig): Opt[IpAddress] =
     config.ipAddress
