@@ -1,5 +1,6 @@
 .PHONY: all build deps cbind clean test \
         test_multiformat_exts test_integration test_autotls_docker_integration \
+        bench_dial bench_kad_find_closest \
         bench_dial bench_pubsub_queues \
         setup lock gen_multicodec format clean-nim
 
@@ -129,6 +130,15 @@ bench_dial: nimble.paths tests/nimble.paths
 	  -o:$(CURDIR)/build/bench_dial \
 	  tests/benchmarks/bench_dial.nim
 	./build/bench_dial
+
+bench_kad_find_closest: nimble.paths tests/nimble.paths
+	mkdir -p $(CURDIR)/build
+	$(NIMC) c $(NIM_FLAGS) \
+	  --nimcache:nimcache/bench_kad_find_closest \
+	  -d:chronicles_log_level=$(BENCH_LOG_LEVEL) \
+	  -o:$(CURDIR)/build/bench_kad_find_closest \
+	  tests/benchmarks/bench_kad_find_closest.nim
+	./build/bench_kad_find_closest
 
 bench_pubsub_queues: nimble.paths tests/nimble.paths
 	mkdir -p $(CURDIR)/build
