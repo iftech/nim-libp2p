@@ -877,34 +877,26 @@ suite "Dialer":
         )
 
   asyncTest "A remote that never closes the identify stream frees the dial":
+    const closeTimeout = 500.milliseconds
     let
       src = makeStandardSwitch(TcpAutoAddress)
       dst = makeStandardSwitch(TcpAutoAddress)
+    src.peerStore.identifyCloseTimeout = closeTimeout
     await src.start()
     await dst.start()
     dst.stallAfterIdentify()
     defer:
       await allFutures(src.stop(), dst.stop())
 
-    let dialer = Dialer.new(
-      src.peerInfo.peerId,
-      src.connManager,
-      src.peerStore,
-      src.transports,
-      src.ms,
-      dialTimeout = 1.seconds,
-    )
-
     # Twice: the second dial gets its turn only if the first freed the lock.
     for _ in 0 .. 1:
-      let dial = dialer.connect(
-        dst.peerInfo.peerId,
-        dst.peerInfo.addrs,
+      let dial = src.connect(
+        dst,
         forceDial = true,
         reuseConnection = false,
       )
       # `join`, not `wait`: a cancel waits out a dial parked in `noCancel`.
-      if not await dial.join().withTimeout(IdentifyCloseTimeout * 2):
+      if not await dial.join().withTimeout(closeTimeout * 2):
         fail()
         return
       await dial

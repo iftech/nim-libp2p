@@ -116,6 +116,7 @@ type
       ## Gate on an inbound peer address: storage, redistribution, hole punch, lookup.
     allowUndialableAddrs*: bool ## Local test setups store a wildcard host too.
     addressTtls*: AddressConfidenceTtls ## Per-confidence TTLs for address expiry.
+    identifyCloseTimeout*: Duration ## Grace for the remote's EOF after identify.
     pruneHandle*: Future[void]
 
 proc new*(
@@ -123,6 +124,7 @@ proc new*(
     identify: Identify,
     capacity = 1000,
     addressTtls = AddressConfidenceTtls(),
+    identifyCloseTimeout = IdentifyCloseTimeout,
 ): PeerStore =
   # Self instead of T to avoid clashing with ifValue[T]'s type param under --lineDir:on
   Self(
@@ -130,6 +132,7 @@ proc new*(
     capacity: capacity,
     addressPolicy: defaultAddressPolicy,
     addressTtls: addressTtls,
+    identifyCloseTimeout: identifyCloseTimeout,
   )
 
 #########################
@@ -559,10 +562,12 @@ proc cleanup*(peerStore: PeerStore, peerId: PeerId) =
     peerStore.toClean.delete(0)
     peerStore.del(oldest)
 
-proc retireStream(stream: Stream, identified: bool) {.async: (raises: []).} =
+proc retireStream(stream: Stream, identified: bool, closeTimeout: Duration) {.
+    async: (raises: [])
+.} =
   ## `noCancel` swallows the caller's deadline, so the close carries its own.
   if identified:
-    if await noCancel stream.closeWithEOF().withTimeout(IdentifyCloseTimeout):
+    if await noCancel stream.closeWithEOF().withTimeout(closeTimeout):
       return
   await noCancel stream.reset()
 
@@ -600,7 +605,7 @@ proc identify*(
   except CancelledError as exc:
     raise exc
   finally:
-    await retireStream(stream, identifyCompleted)
+    await retireStream(stream, identifyCompleted, peerStore.identifyCloseTimeout)
 
 proc getMostObservedProtosAndPorts*(
     self: PeerStore
