@@ -224,7 +224,8 @@ proc new*(
 ): T =
   ## Create a SystemResolver which starts `workers` worker threads on first use.
   ## `txtResolver` handles TXT queries (getaddrinfo cannot); when nil, a
-  ## `DnsResolver` over the system nameservers is used.
+  ## `DnsResolver` over the system nameservers is used. Discovery is synchronous
+  ## during construction and can block the calling thread while reading system config.
   doAssert workers >= 1
 
   T(
