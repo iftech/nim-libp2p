@@ -5,7 +5,7 @@
 
 import std/[algorithm, sequtils]
 import chronos, results
-import ../../../libp2p/[peerid, protocols/kademlia]
+import ../../../libp2p/[cid, multicodec, multihash, peerid, protocols/kademlia]
 import ../../tools/[unittest, crypto]
 
 export sequtils, chronos, results, peerid, kademlia, unittest, crypto
@@ -29,6 +29,11 @@ type
 func recordKey(b: byte): RecordKey =
   RecordKey.init(Key.fromBytes(@[b])).get()
 
+proc providedKey(b: byte): ProvidedKey =
+  ProvidedKey.init(
+    Cid.init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", [b]).get()).get()
+  )
+
 proc storedValue(b: byte, expiresAt = Later): StoredValue =
   StoredValue(
     key: recordKey(b),
@@ -47,13 +52,14 @@ proc sameProviders(got, want: seq[StoredProvider]): bool =
     cmp(a.peerOf(), b.peerOf())
   got.sorted(byPeer) == want.sorted(byPeer)
 
-func providedKey(b: byte): Key =
-  Key.fromBytes(@[b])
+template pk1(): ProvidedKey =
+  providedKey(1)
 
-const
-  pk1 = providedKey(1)
-  pk2 = providedKey(2)
-  pkNone = Opt.none(Key)
+template pk2(): ProvidedKey =
+  providedKey(2)
+
+template pkNone(): Opt[ProvidedKey] =
+  Opt.none(ProvidedKey)
 
 converter toOptInt*(n: int): Opt[int] =
   Opt.some(n)
@@ -616,17 +622,19 @@ template kadStoreTestSuite*(
       let store = factory(KadStoreLimits(maxProvided: 2))
       store.provideAll([1'u8, 2, 2])
 
-      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2]
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2].sorted()
 
       store.provideAll([1'u8, 3])
 
-      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, providedKey(3)]
+      check (await store.listProvided(pkNone, Unlimited)) ==
+        @[pk1, providedKey(3)].sorted()
 
     asyncTest "a new key in a full store evicts the oldest key":
       let store = factory(KadStoreLimits(maxProvided: 2))
       store.provideAll([1'u8, 2, 3])
 
-      check (await store.listProvided(pkNone, Unlimited)) == @[pk2, providedKey(3)]
+      check (await store.listProvided(pkNone, Unlimited)) ==
+        @[pk2, providedKey(3)].sorted()
 
     asyncTest "delProvided removes the key and frees capacity":
       let store = factory(KadStoreLimits(maxProvided: 2))
@@ -636,7 +644,8 @@ template kadStoreTestSuite*(
         (await store.delProvided(pk2)).isOk()
         (await store.addProvided(providedKey(3))).get()
 
-      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, providedKey(3)]
+      check (await store.listProvided(pkNone, Unlimited)) ==
+        @[pk1, providedKey(3)].sorted()
 
     asyncTest "a store with maxProvided 0 stores no provided key":
       let store = factory(KadStoreLimits(maxProvided: 0))
@@ -651,14 +660,15 @@ template kadStoreTestSuite*(
 
       check (await store.delProvided(providedKey(3))).isOk()
 
-      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2]
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2].sorted()
 
     asyncTest "provided keys do not expire":
       let store = factory(KadStoreLimits())
       check (await store.addProvided(pk1)).isOk()
 
       check:
-        (await store.getProviders(pk1, high(UnixTimestamp), Unlimited)).get().len == 0
+        (await store.getProviders(pk1.toKey(), high(UnixTimestamp), Unlimited)).get().len ==
+          0
         (await store.listValues(Opt.none(RecordKey), high(UnixTimestamp), Unlimited)).get().len ==
           0
         (await store.hasProvided(pk1)).get()
@@ -667,7 +677,7 @@ template kadStoreTestSuite*(
       let store = factory(KadStoreLimits())
       store.provideAll(ProvidedKeyBytes)
 
-      let keys = ProvidedKeyBytes.sorted().mapIt(providedKey(it))
+      let keys = ProvidedKeyBytes.mapIt(providedKey(it)).sorted()
       let first = (await store.listProvided(pkNone, PageSize)).get()
 
       check:
@@ -682,7 +692,7 @@ template kadStoreTestSuite*(
       store.provideAll(ProvidedKeyBytes)
 
       let first = (await store.listProvided(pkNone, PageSize)).get()
-      let rest = ProvidedKeyBytes.sorted().mapIt(providedKey(it))[PageSize ..^ 1]
+      let rest = ProvidedKeyBytes.mapIt(providedKey(it)).sorted()[PageSize ..^ 1]
 
       check:
         (await store.delProvided(first[^1])).isOk()

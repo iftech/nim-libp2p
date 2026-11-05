@@ -34,9 +34,6 @@ proc backdateExpiry(records: ProviderRecords) =
   for record in aged:
     records.push(record)
 
-proc makeProvidedCid(seed: byte): Cid =
-  Cid.init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[seed]).get()).get()
-
 proc holdsProviderRecord(kad: KadDHT): bool =
   kad.providerManager.providerRecords.len == 1
 

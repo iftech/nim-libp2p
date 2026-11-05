@@ -95,23 +95,25 @@ method removeProvider*(
   raiseAssert "[KadStore.removeProvider] abstract method not implemented!"
 
 method addProvided*(
-    store: KadStore, key: Key
+    store: KadStore, key: ProvidedKey
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]), base, gcsafe.} =
   ## Stores or refreshes the key and returns ``true``. A full store evicts the key provided least recently; a re-add of a stored key refreshes its position. ``false`` when the cap is below 1.
   raiseAssert "[KadStore.addProvided] abstract method not implemented!"
 
 method delProvided*(
-    store: KadStore, key: Key
+    store: KadStore, key: ProvidedKey
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), base, gcsafe.} =
   raiseAssert "[KadStore.delProvided] abstract method not implemented!"
 
 method hasProvided*(
-    store: KadStore, key: Key
+    store: KadStore, key: ProvidedKey
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]), base, gcsafe.} =
   raiseAssert "[KadStore.hasProvided] abstract method not implemented!"
 
 method listProvided*(
-    store: KadStore, after: Opt[Key], limit: int
-): Future[LPResult[seq[Key]]] {.async: (raises: [CancelledError]), base, gcsafe.} =
-  ## Keyset paging in ``Key`` byte order. ``after`` is exclusive.
+    store: KadStore, after: Opt[ProvidedKey], limit: int
+): Future[LPResult[seq[ProvidedKey]]] {.
+    async: (raises: [CancelledError]), base, gcsafe
+.} =
+  ## Keyset paging in byte order. ``after`` is exclusive.
   raiseAssert "[KadStore.listProvided] abstract method not implemented!"

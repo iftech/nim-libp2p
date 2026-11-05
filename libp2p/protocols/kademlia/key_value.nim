@@ -6,7 +6,7 @@
 
 import std/[hashes, strformat]
 import chronicles, stew/arrayOps
-import ../../results
+import ../../[cid, multihash, results]
 import ../../utils/shortlog
 
 const
@@ -26,6 +26,10 @@ type
   RecordKey* {.requiresInit.} = object
     ## The key of a PUT_VALUE/GET_VALUE record, 1..``MaxRecordKeyLen`` bytes.
     ## Construct with ``RecordKey.init`` or ``RecordKey.fromBytes``.
+    key: Key
+
+  ProvidedKey* {.requiresInit.} = object
+    ## The multihash of a CID that this node provides.
     key: Key
 
   Value* = distinct seq[byte]
@@ -67,6 +71,31 @@ func `<`*(a, b: Key): bool =
 proc `$`*(key: Key): string =
   $seq[byte](key)
 
+template toKey*(mh: MultiHash): Key =
+  Key.fromBytes(mh.data.buffer)
+
+proc toKey*(c: Cid): Key =
+  c.mhash().get().toKey()
+
+template wrappedKeyOps(T: typedesc) =
+  template toBytes*(key: T): seq[byte] =
+    key.toKey().toBytes()
+
+  func len*(key: T): int =
+    key.toKey().len
+
+  func `==`*(a, b: T): bool =
+    a.toKey() == b.toKey()
+
+  func `<`*(a, b: T): bool =
+    a.toKey() < b.toKey()
+
+  func hash*(key: T): Hash =
+    key.toKey().hash()
+
+  func `$`*(key: T): string =
+    $key.toKey()
+
 func default*(
   T: typedesc[RecordKey]
 ): RecordKey {.error: "Use RecordKey.init or RecordKey.fromBytes".}
@@ -84,23 +113,29 @@ func toKey*(key: RecordKey): Key =
   ## The lookup target that routes to the nodes which store the record.
   key.key
 
-template toBytes*(key: RecordKey): seq[byte] =
-  key.toKey().toBytes()
+wrappedKeyOps(RecordKey)
 
-func len*(key: RecordKey): int =
-  key.toKey().len
+func default*(
+  T: typedesc[ProvidedKey]
+): ProvidedKey {.error: "Use ProvidedKey.init or ProvidedKey.fromBytes".}
 
-func `==`*(a, b: RecordKey): bool =
-  a.toKey() == b.toKey()
+proc init*(T: typedesc[ProvidedKey], cid: Cid): ProvidedKey =
+  ## ``mhash`` fails only on a ``Cid`` that no ``Cid.init`` made, such as ``default(Cid)``.
+  ProvidedKey(key: cid.toKey())
 
-func `<`*(a, b: RecordKey): bool =
-  a.toKey() < b.toKey()
+func fromBytes*(
+    T: typedesc[ProvidedKey], bytes: sink seq[byte]
+): LPResult[ProvidedKey] =
+  ## Reads back the bytes of ``toBytes``, for a backend that persists provided keys.
+  if not MultiHash.validate(bytes):
+    return
+      err(fmt"{bytes.len} bytes: {bytes.shortLog}", "provided key is not a multihash")
+  ok(ProvidedKey(key: Key.fromBytes(bytes)))
 
-func hash*(key: RecordKey): Hash =
-  key.toKey().hash()
+func toKey*(key: ProvidedKey): Key =
+  key.key
 
-func `$`*(key: RecordKey): string =
-  $key.toKey()
+wrappedKeyOps(ProvidedKey)
 
 template init*(T: typedesc[Value], bytes: openArray[byte]): Value =
   Value(@bytes)
