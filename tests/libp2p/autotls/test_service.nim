@@ -538,14 +538,16 @@ suite "AutoTLS on a switch":
 
     check switch.addressManager.candidates.anyIt(it.address == wsAddr)
 
-  asyncTest "a switch listening on wss fails to start without a certificate":
+  # RSA key generation can take substantially longer on loaded CI runners.
+  # Leave time for issuance to report its error and for switch cleanup afterward.
+  asyncTest "a switch listening on wss fails to start without a certificate", 90.seconds:
     let acmeApi = ACMEApiStub.new()
     let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
       .withAutotls(
         AutotlsConfig.new(
           ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
           issueRetries = 0,
-          initialCertTimeout = 10.seconds,
+          initialCertTimeout = 60.seconds,
         )
       )
       .build()
