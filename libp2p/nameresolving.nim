@@ -9,8 +9,8 @@
 ## await resolver.stop()
 ## ```
 ##
-## Pass a resolver to `SwitchBuilder.withNameResolver` to let the switch manage
-## its lifecycle. Standalone callers must await `stop()` themselves.
+## Passing a resolver to `SwitchBuilder.withNameResolver` keeps its lifecycle
+## caller-managed. Stop dependent switches before awaiting `SystemResolver.stop()`.
 ##
 ## The OS resolver requires threads. Its TXT queries use discovered system DNS
 ## servers, with DefaultDnsServers as a fallback when discovery finds none.
@@ -23,12 +23,12 @@ import ./crypto/rng
 
 export nameresolver, dnsresolver, systemresolver
 
-proc newNameResolver*(rng: Rng, nameServers: seq[TransportAddress]): NameResolver =
+proc newNameResolver*(rng: Rng, nameServers: seq[TransportAddress]): DnsResolver =
   ## Use only the supplied DNS servers. An empty list produces no DNS results.
   DnsResolver.new(nameServers, rng)
 
-proc newNameResolver*(rng: Rng): NameResolver =
+proc newNameResolver*(rng: Rng): SystemResolver =
   ## Resolve IPs through the OS. Discovers TXT nameservers synchronously during
   ## construction, which can block the calling thread while reading system config.
-  ## Requires threads. Outside a switch, call stop() to release its workers.
+  ## Requires threads. The caller must await stop() to release its workers.
   SystemResolver.new(rng)
