@@ -513,7 +513,10 @@ proc brokerAddrs(
   try:
     return await discoverAddrsFut.wait(self.config.initialAddrTimeout)
   except AsyncTimeoutError:
-    warn "TCP address discovery timed out", timeout = self.config.initialAddrTimeout
+    warn "TCP address discovery timed out",
+      timeout = self.config.initialAddrTimeout,
+      hint =
+        "Check TCP listener and address mapper readiness; increase AutotlsConfig.initialAddrTimeout if discovery needs more time, leaving room in initialCertTimeout for retries and ACME issuance"
     return @[]
   finally:
     discoverAddrsFut.cancelSoon()
