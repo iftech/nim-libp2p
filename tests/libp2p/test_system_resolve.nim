@@ -12,7 +12,7 @@ suite "System name resolution":
   teardown:
     checkTrackers()
 
-  asyncTest "switch resolves localhost and owns the system resolver across restarts":
+  asyncTest "switch resolves localhost with a caller-managed system resolver":
     let resolver = newNameResolver(rng())
     let source =
       makeStandardSwitchBuilder(TcpAutoAddress).withNameResolver(resolver).build()
@@ -20,27 +20,27 @@ suite "System name resolution":
     defer:
       await source.stop()
       await destination.stop()
-    check resolver of SystemResolver
+      await resolver.stop()
     let addresses = await resolver.resolveMAddress(ma("/dns4/localhost/tcp/4001"))
     check ma("/ip4/127.0.0.1/tcp/4001") in addresses
     await source.stop()
-    check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
+    check (await resolver.resolveIp("localhost", 4001.Port)).len > 0
+    await resolver.stop()
     await destination.start()
     await source.start()
+    check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
+    resolver.start()
     let address =
       ma("/dns4/localhost") & destination.peerInfo.addrs[0][1 ..^ 1].tryGet()
     await source.connect(destination.peerInfo.peerId, @[address])
     check source.isConnected(destination.peerInfo.peerId)
     await source.stop()
-    check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
+    check (await resolver.resolveIp("localhost", 4001.Port)).len > 0
 
   asyncTest "factory preserves explicit DNS servers":
     for servers in [@[initTAddress("192.0.2.1:5353")], newSeq[TransportAddress]()]:
       let resolver = newNameResolver(rng(), servers)
-      defer:
-        await resolver.stop()
-      check resolver of DnsResolver
-      check DnsResolver(resolver).nameServers == servers
+      check resolver.nameServers == servers
       if servers.len == 0:
         check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
         check (await resolver.resolveTxt("_dnsaddr.test.io")).len == 0
@@ -164,7 +164,7 @@ suite "System name resolution":
     check (await resolver.resolveIp("localhost", 4003.Port)).len > 0
 
   asyncTest "stop is idempotent and start reopens the worker pool":
-    let resolver: NameResolver = SystemResolver.new(rng())
+    let resolver = SystemResolver.new(rng())
     check (await resolver.resolveIp("localhost", 4001.Port)).len > 0
     await resolver.stop()
     await resolver.stop()

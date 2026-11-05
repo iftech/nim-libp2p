@@ -297,7 +297,7 @@ method resolveTxt*(
     return @[]
   return await self.txtResolver.resolveTxt(address)
 
-method start*(self: SystemResolver) {.gcsafe.} =
+proc start*(self: SystemResolver) {.gcsafe.} =
   ## Worker resources are created lazily by the next IP resolution.
   if self.shared.isNil:
     self.stopped = false
@@ -351,7 +351,7 @@ proc stopWorkers(self: SystemResolver) {.async: (raises: []).} =
   self.shared = nil
   self.workers = @[]
 
-method stop*(self: SystemResolver) {.async: (raises: []).} =
+proc stop*(self: SystemResolver) {.async: (raises: []).} =
   ## Wait for active OS lookups, discard queued lookups, and release workers.
   ## Concurrent callers await the same cleanup; the event loop stays responsive.
   if self.stopFut.isNil:
