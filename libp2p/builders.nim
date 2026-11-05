@@ -29,7 +29,7 @@ import
   upgrademngrs/muxedupgrade,
   address_manager,
   autotls/service,
-  nameresolving/[nameresolver, dnsresolver],
+  nameresolving/nameresolver,
   errors,
   utils/[opt, tlsredact]
 
@@ -89,7 +89,6 @@ type
     protoVersion: string
     agentVersion: string
     nameResolver: NameResolver
-    useDefaultNameResolver: bool
     dialRanking: bool
     dialBackoff: Opt[DialBackoffConfig]
     peerStoreCapacity: Opt[int]
@@ -360,15 +359,8 @@ proc withAgentVersion*(b: SwitchBuilder, agentVersion: string): SwitchBuilder =
   b.agentVersion = agentVersion
   b
 
-proc withNameResolver*(b: SwitchBuilder): SwitchBuilder =
-  ## Build a fresh resolver using system DNS servers; the switch manages its lifecycle.
-  b.useDefaultNameResolver = true
-  b.nameResolver = nil
-  b
-
 proc withNameResolver*(b: SwitchBuilder, nameResolver: NameResolver): SwitchBuilder =
   ## Use a caller-managed resolver. The switch never starts or stops it.
-  b.useDefaultNameResolver = false
   b.nameResolver = nameResolver
   b
 
@@ -585,19 +577,13 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
       )
     )
 
-  let nameResolver =
-    if b.useDefaultNameResolver:
-      NameResolver(DnsResolver.new(getSystemNameServers(), b.rng))
-    else:
-      b.nameResolver
-
   let dialer = Dialer.new(
     peerInfo.peerId,
     connManager,
     peerStore,
     transports,
     ms,
-    nameResolver,
+    b.nameResolver,
     dialRanking = b.dialRanking,
     dialBackoff = b.dialBackoff,
   )
@@ -609,8 +595,7 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
     connManager: connManager,
     peerStore: peerStore,
     dialer: dialer,
-    nameResolver: nameResolver,
-    ownsNameResolver: b.useDefaultNameResolver,
+    nameResolver: b.nameResolver,
     rng: b.rng,
     muxedUpgrade: muxedUpgrade,
     services: services,
