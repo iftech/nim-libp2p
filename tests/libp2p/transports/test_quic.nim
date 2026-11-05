@@ -362,6 +362,27 @@ suite "Quic transport":
       # same port as the IPv6 listener means that listener was reused
       extractPort(serverConn.observedAddr.get()) == dialerIPv6Port
 
+  asyncTest "IPv4 dial reuses an IPv6 wildcard listener":
+    let dialer = await createQuicTransport(
+      isServer = true, addresses = @[ma("/ip6/::/udp/0/quic-v1")]
+    )
+    let server =
+      await createQuicTransport(isServer = true, addresses = @[QuicAutoAddressIP4])
+    defer:
+      await allFutures(dialer.stop(), server.stop())
+
+    let dialerPort = extractPort(dialer.addrs[0])
+
+    let acceptFut = server.accept()
+    let dialerConn = await dialer.dial("", server.addrs[0])
+    let serverConn = await acceptFut
+    defer:
+      await allFutures(dialerConn.close(), serverConn.close())
+
+    check:
+      serverConn.observedAddr.isSome()
+      extractPort(serverConn.observedAddr.get()) == dialerPort
+
   asyncTest "dial uses an IPv6 dial-only endpoint when only an IPv4 listener exists":
     # An IPv4 socket cannot carry an IPv6 dial, so the IPv4 listener cannot be
     # reused and a separate IPv6 dial-only endpoint has to be opened.
