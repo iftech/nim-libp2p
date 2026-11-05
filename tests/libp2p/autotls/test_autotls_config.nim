@@ -30,6 +30,7 @@ suite "AutoTLS Configuration Tests":
       config.renewCheckTime == DefaultRenewCheckTime
       config.renewBufferTime == DefaultRenewBufferTime
       config.initialCertTimeout == DefaultInitialCertTimeout
+      config.initialAddrTimeout == DefaultInitialAddrTimeout
       config.issueRetries == 3
       config.issueRetryTime == 1.seconds
       config.registrationURL == DefaultRegistrationURL
@@ -51,6 +52,7 @@ suite "AutoTLS Configuration Tests":
     let customRenewCheckTime = 7.minutes
     let customRenewBufferTime = 8.minutes
     let customInitialCertTimeout = 9.minutes
+    let customInitialAddrTimeout = 3.seconds
     let customIssueRetries = 7
     let customIssueRetryTime = 5.seconds
     let customRegistrationURL =
@@ -71,6 +73,7 @@ suite "AutoTLS Configuration Tests":
       renewCheckTime = customRenewCheckTime,
       renewBufferTime = customRenewBufferTime,
       initialCertTimeout = customInitialCertTimeout,
+      initialAddrTimeout = customInitialAddrTimeout,
       issueRetries = customIssueRetries,
       issueRetryTime = customIssueRetryTime,
       registrationURL = customRegistrationURL,
@@ -92,6 +95,7 @@ suite "AutoTLS Configuration Tests":
       config.renewCheckTime == customRenewCheckTime
       config.renewBufferTime == customRenewBufferTime
       config.initialCertTimeout == customInitialCertTimeout
+      config.initialAddrTimeout == customInitialAddrTimeout
       config.issueRetries == customIssueRetries
       config.issueRetryTime == customIssueRetryTime
       config.registrationURL == customRegistrationURL
