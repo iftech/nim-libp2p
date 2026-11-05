@@ -114,6 +114,7 @@ jobs:
         run: |
           NIMFLAGS="--mm:${{ needs.pick-platform.outputs.nim_mm }} --opt:speed --styleCheck:usages --styleCheck:error --parallelBuild:0 --threads:on --skipUserCfg"
           NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=INFO"
+          NIMFLAGS="$NIMFLAGS -d:nimNoLentIterators"
           NIMFLAGS="$NIMFLAGS -d:libp2p_multicodec_exts=../tests/libp2p/multiformat_exts/multicodec_exts.nim"
           NIMFLAGS="$NIMFLAGS -d:libp2p_multiaddress_exts=../tests/libp2p/multiformat_exts/multiaddress_exts.nim"
           NIMFLAGS="$NIMFLAGS -d:libp2p_multihash_exts=../tests/libp2p/multiformat_exts/multihash_exts.nim"

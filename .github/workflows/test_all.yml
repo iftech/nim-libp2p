@@ -139,6 +139,7 @@ jobs:
         id: build-test-all
         run: |
           NIMFLAGS="--nimcache:nimcache/test_all --mm:${{ matrix.nim.memory_management }} --opt:speed --styleCheck:usages --styleCheck:error --parallelBuild:0 --threads:on --skipUserCfg"
+          NIMFLAGS="$NIMFLAGS -d:nimNoLentIterators"
           NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=${{ matrix.platform.log_level }}"
           NIMFLAGS="$NIMFLAGS --debugger:native --stacktrace:off --define:nimStackTraceOverride"
           if [[ '${{ matrix.platform.cc }}' == 'clang' ]]; then
@@ -247,7 +248,7 @@ jobs:
           NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=INFO"
           NIMFLAGS="$NIMFLAGS --debugger:native --stacktrace:off --define:nimStackTraceOverride"
           NIMFLAGS="$NIMFLAGS --passC:-fno-omit-frame-pointer --passC:-fsanitize=address --passL:-fsanitize=address"
-          nim c $NIMFLAGS ./tests/test_all
+          nim c $NIMFLAGS -d:nimNoLentIterators ./tests/test_all
 
       - name: Save build cache
         uses: actions/cache/save@v5
