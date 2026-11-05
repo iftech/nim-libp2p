@@ -150,6 +150,34 @@ suite "AutoTLS certificate issuance and renewal":
       acmeApi.requestedUris.len == 1
       certResult.isOfError("ACMEApiStub refused https://acme.example/new-account")
 
+  asyncTest "discovery polls within its budget when issuance retry delay is longer":
+    service = newService(
+      AutotlsConfig.new(
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        initialAddrTimeout = 100.milliseconds,
+        issueRetries = 0,
+        issueRetryTime = 1.seconds,
+      )
+    )
+    var discoveryPasses = 0
+    switch.peerInfo.addressMappers.add(
+      proc(
+          addrs: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        discoveryPasses.inc()
+        if discoveryPasses == 1:
+          return @[]
+        return addrs
+    )
+
+    await service.start(switch)
+    let certResult = await service.getCertWhenReady().wait(10.seconds)
+
+    check:
+      discoveryPasses == 2
+      acmeApi.requestedUris.len == 1
+      certResult.isOfError("ACMEApiStub refused https://acme.example/new-account")
+
   asyncTest "a failed round is retried on the next heartbeat":
     # No retries, so a round is one request.
     service = newService(
