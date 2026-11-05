@@ -8,6 +8,7 @@ import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/bridgestream
 import ../../../tools/unittest
+import ../converters
 
 suite "GossipSub topic stream wire format":
   test "full message reconstructs canonical signature input":
@@ -29,14 +30,10 @@ suite "GossipSub topic stream wire format":
   test "partial data and metadata-only requests restore topic":
     for partial in [
       PartialMessageExtensionRPC(
-        topicID: Opt.some("topic"),
-        groupID: Opt.some(@[1.byte]),
-        partialMessage: Opt.some(@[2.byte]),
+        topicID: "topic", groupID: @[1.byte], partialMessage: @[2.byte]
       ),
       PartialMessageExtensionRPC(
-        topicID: Opt.some("topic"),
-        groupID: Opt.some(@[1.byte]),
-        partsMetadata: Opt.some(@[3.byte]),
+        topicID: "topic", groupID: @[1.byte], partsMetadata: @[3.byte]
       ),
     ]:
       let wire = partial.topicRPC().encode()
@@ -51,10 +48,10 @@ suite "GossipSub topic stream wire format":
       partial: Opt.some(PartialMessageExtensionRPC()),
     ).toRPC("topic").isErr
     check TopicRPC(publish: Opt.some(TopicScopedMessage())).toRPC("topic").isErr
-    check TopicRPC(
-      publish: Opt.some(TopicScopedMessage(data: @[1.byte], topic: Opt.some("")))
-    ).toRPC("topic").isErr
-    check TopicRPC(partial: Opt.some(PartialMessageExtensionRPC(topicID: Opt.some("")))).toRPC(
+    check TopicRPC(publish: Opt.some(TopicScopedMessage(data: @[1.byte], topic: ""))).toRPC(
+      "topic"
+    ).isErr
+    check TopicRPC(partial: Opt.some(PartialMessageExtensionRPC(topicID: ""))).toRPC(
       "topic"
     ).isErr
 
@@ -63,9 +60,7 @@ suite "GossipSub topic stream negotiation":
     checkTrackers()
 
   const topic = "foobar"
-  let subscription = RPCMsg.withSubscriptions(
-    @[SubOpts(topic: Opt.some(topic), subscribe: Opt.some(true))]
-  )
+  let subscription = RPCMsg.withSubscriptions(@[SubOpts(topic: topic, subscribe: true)])
   var violations = 0
   let received = newAsyncEvent()
 
@@ -95,14 +90,13 @@ suite "GossipSub topic stream negotiation":
     for (first, isSupported, expectedViolations) in [
       (subscription, false, 0), # peer without extensions
       (extensionsRPC(Opt.none(bool)), false, 0), # peer with other extensions only
-      (extensionsRPC(Opt.some(false)), false, 0), # peer that denies topic streams
-      (extensionsRPC(Opt.some(true)), true, 1), # peer that advertises topic streams
+      (extensionsRPC(false), false, 0), # peer that denies topic streams
+      (extensionsRPC(true), true, 1), # peer that advertises topic streams
     ]:
       for payload in [
         RPCMsg.withMessages(Message(data: @[1.byte], topic: topic)), # message
         RPCMsg(
-          partialMessageExtension:
-            Opt.some(PartialMessageExtensionRPC(topicID: Opt.some(topic)))
+          partialMessageExtension: Opt.some(PartialMessageExtensionRPC(topicID: topic))
         ), # partial message
       ]:
         let state = newTopicStreams()
@@ -114,7 +108,7 @@ suite "GossipSub topic stream negotiation":
 
   asyncTest "topic stream opened before the first control RPC requires that RPC to advertise support":
     for (first, isSupported, expectedViolations) in [
-      (extensionsRPC(Opt.some(true)), true, 0), # advertises topic streams
+      (extensionsRPC(true), true, 0), # advertises topic streams
       (subscription, false, 1), # denies support after opening the topic stream
     ]:
       let state = newTopicStreams()
@@ -127,7 +121,7 @@ suite "GossipSub topic stream negotiation":
         await remote.close()
 
       # the peer publishes on it before its first control RPC arrives
-      await remote.writeLp(TopicRPCHeader(topic: Opt.some(topic)).encode())
+      await remote.writeLp(TopicRPCHeader(topic: topic).encode())
       await remote.writeLp(Message(data: @[1.byte], topic: topic).topicRPC().encode())
       await received.wait()
       check:
@@ -167,7 +161,7 @@ suite "GossipSub topic stream lifecycle":
     )
     check state.negotiate(
       RPCMsg.withControl(
-        ControlMessage.withExtensions(ControlExtensions(topicStreams: Opt.some(true)))
+        ControlMessage.withExtensions(ControlExtensions(topicStreams: true))
       )
     )
 
@@ -232,7 +226,7 @@ suite "GossipSub topic stream lifecycle":
     let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
     let state = TopicStreams.new(
       TopicStreamsConfig(
-        maxQueuedBytes: TopicRPCHeader(topic: Opt.some("a")).encode().len + payload.len,
+        maxQueuedBytes: TopicRPCHeader(topic: "a").encode().len + payload.len,
         maxQueuedMessages: 1,
       ),
       1024,
@@ -245,7 +239,7 @@ suite "GossipSub topic stream lifecycle":
       await state.stop()
     check state.negotiate(
       RPCMsg.withControl(
-        ControlMessage.withExtensions(ControlExtensions(topicStreams: Opt.some(true)))
+        ControlMessage.withExtensions(ControlExtensions(topicStreams: true))
       )
     )
 
@@ -288,7 +282,7 @@ suite "GossipSub topic stream lifecycle":
         await remote.write(@[2.byte, 10])
         await remote.close()
       else:
-        await remote.writeLp(TopicRPCHeader(topic: Opt.some("a")).encode())
+        await remote.writeLp(TopicRPCHeader(topic: "a").encode())
         case scenario
         of 2: # EOF while reading a frame length.
           await remote.close()
@@ -337,7 +331,7 @@ suite "GossipSub topic stream lifecycle":
       let (remote, local) = bridgedConnections()
       remotes.add(remote)
       readers.add(state.readTopic(local))
-      await remote.writeLp(TopicRPCHeader(topic: Opt.some("a")).encode())
+      await remote.writeLp(TopicRPCHeader(topic: "a").encode())
       if i < 3:
         await remote.writeLp(Message(data: @[1.byte], topic: "a").topicRPC().encode())
         await received.wait()

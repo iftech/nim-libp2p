@@ -38,8 +38,8 @@ suite "GossipSub Component - Topic streams":
       nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
         nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
 
-    discard await nodes[0].publish(topic, "first".toBytes)
-    discard await nodes[1].publish(topic, "second".toBytes)
+    discard await nodes[0].publish(topic, "first")
+    discard await nodes[1].publish(topic, "second")
     checkUntilTimeout:
       received == [1, 1]
 
@@ -49,7 +49,7 @@ suite "GossipSub Component - Topic streams":
 
     nodes[1].subscribe(topic, handlerFor(1))
     waitSubscribeStar(nodes, topic)
-    discard await nodes[0].publish(topic, "third".toBytes)
+    discard await nodes[0].publish(topic, "third")
     checkUntilTimeout:
       received == [1, 2]
 
@@ -85,7 +85,7 @@ suite "GossipSub Component - Topic streams":
     check modern.extensionsState.peerHasTopicStreams(modern.peerId)
     check not legacy.extensionsState.peerHasTopicStreams(legacy.peerId)
 
-    discard await nodes[0].publish(topic, "both".toBytes)
+    discard await nodes[0].publish(topic, "both")
     checkUntilTimeout:
       received[1] == 1 and received[2] == 1
 
@@ -101,7 +101,7 @@ suite "GossipSub Component - Topic streams":
         nodes[1].gossipsub.getOrDefault(topic).len == 1 and
         nodes[2].gossipsub.getOrDefault(topic).len == 1
 
-    discard await nodes[0].publish(topic, "again".toBytes)
+    discard await nodes[0].publish(topic, "again")
     checkUntilTimeout:
       received[1] == 2 and received[2] == 2
 
@@ -176,17 +176,14 @@ suite "GossipSub Component - Topic streams":
     await connect(nodes[0], nodes[1])
     waitSubscribeStar(nodes, topic)
 
-    let msg = Message.init(
-      Opt.some(nodes[0].peerInfo), "reply".toBytes, topic, Opt.some(10'u64)
-    )
+    let msg = Message.init(nodes[0].peerInfo, "reply", topic, 10'u64)
     let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
     const additionalTopic = "additional"
     nodes[0].sendResponse(
       peer,
       RPCMsg(
         messages: @[msg],
-        subscriptions:
-          @[SubOpts(topic: Opt.some(additionalTopic), subscribe: Opt.some(true))],
+        subscriptions: @[SubOpts(topic: additionalTopic, subscribe: true)],
       ),
       MessagePriority.Low,
     )
@@ -208,14 +205,12 @@ suite "GossipSub Component - Topic streams":
     let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
     check peer.extensionsState.peerHasTopicStreams(peer.peerId)
 
-    let msg = Message.init(
-      Opt.some(nodes[0].peerInfo), "invalid stream".toBytes, topic, Opt.some(20'u64)
-    )
+    let msg = Message.init(nodes[0].peerInfo, "invalid stream", topic, 20'u64)
     peer.trackSend(
       peer.sendEncoded(RPCMsg.withMessages(msg).encode(false), MessagePriority.High)
     )
     checkUntilTimeout:
-      not nodes[1].switch.isConnected(nodes[0].peerInfo.peerId)
+      not nodes[1].switch.isConnected(nodes[0].switch)
 
   asyncTest "peer graylisted when its ControlExtensions arrives is disconnected on its topic stream":
     # TODO: iftech/nim-libp2p#3390
@@ -246,7 +241,7 @@ suite "GossipSub Component - Topic streams":
       not nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
       nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
 
-    discard await nodes[1].publish(topic, "data".toBytes)
+    discard await nodes[1].publish(topic, "data")
 
     checkUntilTimeout:
-      not nodes[0].switch.isConnected(nodes[1].peerInfo.peerId)
+      not nodes[0].switch.isConnected(nodes[1].switch)
