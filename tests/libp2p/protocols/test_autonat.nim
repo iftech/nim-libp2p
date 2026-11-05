@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/sequtils
+import std/[importutils, sequtils]
 import chronos
 import
   ../../../libp2p/[
@@ -12,10 +12,12 @@ import
     builders,
     protocols/connectivity/autonat/client,
     protocols/connectivity/autonat/server,
+    stream/bufferstream,
+    utils/future,
     nameresolving/nameresolver,
     nameresolving/mockresolver,
   ]
-import ../../tools/[unittest, crypto, switch_builder, multiaddress]
+import ../../tools/[unittest, crypto, bufferstream, switch_builder, multiaddress]
 
 proc makeAutonatSwitch(nameResolver: NameResolver = nil): Switch =
   return makeStandardSwitchBuilder(TcpAutoAddress)
@@ -77,8 +79,7 @@ proc newSilentRemote(): SilentRemote =
 
   # The remote accepts and never speaks, so a dial to it holds its permit.
   proc onAccept(server: StreamServer, client: StreamTransport) {.async: (raises: []).} =
-    if not accepted.finished():
-      accepted.complete()
+    accepted.completeOnce()
     await noCancel release.wait()
     await client.closeWait()
 
@@ -167,13 +168,19 @@ suite "Autonat":
 
     let request = dialRequest(flooder.peerInfo.peerId, @[remote.ma])
     var floodStreamsOpened: seq[Stream]
-    for _ in 0 ..< floodStreams:
+    let first = await flooder.dial(dst.peerInfo.peerId, @[AutonatCodec])
+    floodStreamsOpened.add(first)
+    try:
+      await first.writeLp(request)
+    except LPStreamError as e:
+      raiseAssert "first flood stream must be admitted: " & e.msg
+    for _ in 1 ..< floodStreams:
       let stream = await flooder.dial(dst.peerInfo.peerId, @[AutonatCodec])
       floodStreamsOpened.add(stream)
-      try:
+      # the per-peer stream limit rejects all but the first stream
+      expect LPStreamError:
         await stream.writeLp(request)
-      except LPStreamError:
-        discard # the per-peer stream limit rejects all but the first stream
+        discard await stream.readLp(1024)
     # optimistic negotiation sends no round trip, so wait until a flood dial holds the permit
     await remote.accepted
 
@@ -184,8 +191,8 @@ suite "Autonat":
     let response = AutonatMsg.decode(await stream.readLp(1024)).get().response.get()
     check:
       Moment.now() - start < dialTimeout
-      response.status.get() == DialRefused
-      response.text.get() == "Too many concurrent dials"
+      response.status == DialRefused
+      response.text == "Too many concurrent dials"
 
     await remote.stop()
     await allFutures(floodStreamsOpened.mapIt(it.close()))
@@ -194,7 +201,7 @@ suite "Autonat":
 
   test "Default stream limits admit one stream per peer and eight in total":
     let
-      autonat = Autonat.new(makeSwitch())
+      autonat = Autonat.new(nil)
       peers = PeerId.random(DefaultMaxIncomingStreamsTotal)
       extraPeer = PeerId.random()
 
@@ -210,7 +217,7 @@ suite "Autonat":
   test "A semaphore above the default raises the total stream limit to match":
     const semSize = DefaultMaxIncomingStreamsTotal * 2
     let
-      autonat = Autonat.new(makeSwitch(), semSize = semSize)
+      autonat = Autonat.new(nil, semSize = semSize)
       peers = PeerId.random(semSize)
 
     for peer in peers:
@@ -219,33 +226,30 @@ suite "Autonat":
 
   asyncTest "Dial is refused when no dial permit is free":
     let
-      holder = makeSwitch()
-      refused = makeSwitch()
-      dst = makeSwitch()
-      remote = newSilentRemote()
+      autonat = Autonat.new(nil, semSize = 1)
+      peerId = PeerId.random()
+      responses = BufferStream.new()
+      stream = TestBufferStream.new(
+        proc(
+            data: sink seq[byte]
+        ) {.async: (raises: [CancelledError, LPStreamError]).} =
+          await responses.pushData(data)
+      )
+    stream.peerId = peerId
+    stream.observedAddr = Opt.some(MultiAddress.init("/ip4/1.2.3.4/tcp/4040").tryGet())
+    privateAccess(Autonat)
+    check autonat.sem.tryAcquire()
 
-    dst.mount(Autonat.new(dst, semSize = 1))
-    await allFutures(holder.start(), refused.start(), dst.start())
-    await holder.connect(dst)
-    await refused.connect(dst)
-
-    let holderStream = await holder.dial(dst.peerInfo.peerId, @[AutonatCodec])
-    await holderStream.writeLp(dialRequest(holder.peerInfo.peerId, @[remote.ma]))
-    # the server dials only after it takes the permit
-    await remote.accepted
-
-    let refusedStream = await refused.dial(dst.peerInfo.peerId, @[AutonatCodec])
-    await refusedStream.writeLp(dialRequest(refused.peerInfo.peerId, @[remote.ma]))
-    let response =
-      AutonatMsg.decode(await refusedStream.readLp(1024)).get().response.get()
+    let handled = autonat.handler(stream, AutonatCodec)
+    await stream.pushData(dialRequest(peerId, @[]))
+    let response = AutonatMsg.decode(await responses.readLp(1024)).get().response.get()
     check:
-      response.status.get() == DialRefused
-      response.text.get() == "Too many concurrent dials"
+      response.status == DialRefused
+      response.text == "Too many concurrent dials"
       response.ma.isNone()
 
-    await remote.stop()
-    await allFutures(holderStream.close(), refusedStream.close())
-    await allFutures(holder.stop(), refused.stop(), dst.stop())
+    await handled
+    await responses.close()
 
   asyncTest "Message without type is handled as Dial":
     let
