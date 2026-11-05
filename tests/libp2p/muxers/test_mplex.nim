@@ -556,7 +556,7 @@ suite "Mplex":
       await handleFut
 
   suite "mplex e2e":
-    asyncTest "read/write receiver", timeout = 20.seconds:
+    asyncTest "read/write receiver":
       let transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
       let listenFut = transport1.start(@[TcpWildcardAddress])
 
@@ -595,7 +595,7 @@ suite "Mplex":
       await listenFut
       await mplexDialFut
 
-    asyncTest "read/write receiver lazy", timeout = 20.seconds:
+    asyncTest "read/write receiver lazy":
       let transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
       let listenFut = transport1.start(@[TcpWildcardAddress])
 

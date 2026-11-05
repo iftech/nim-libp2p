@@ -8,4 +8,5 @@ header:
   - "**/*.nim"
   paths-ignore:
   - "examples/**"
+  - ".nim_runtime/**"
   comment: on-failure

@@ -4,7 +4,8 @@
 {.used.}
 
 import results
-import ../../../libp2p/[peerid, protocols/pubsub/rpc/message]
+import stew/byteutils
+import ../../../libp2p/[peerid, peerinfo, protocols/pubsub/rpc/message]
 
 converter toOptString*(a: string): Opt[string] =
   Opt.some(a)
@@ -26,3 +27,9 @@ converter toOptMessageId*(a: MessageId): Opt[MessageId] =
 
 converter toOptPeerId*(a: PeerId): Opt[PeerId] =
   Opt.some(a)
+
+converter toOptPeerInfo*(a: PeerInfo): Opt[PeerInfo] =
+  Opt.some(a)
+
+converter toSeqByte*(a: string): seq[byte] =
+  a.toBytes()

@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/sequtils
+import std/[importutils, sequtils]
 import chronos
 import
   ../../../libp2p/[
@@ -343,3 +343,37 @@ suite "Autorelay":
     await allFutures(
       stopAutorelaySwitch(switchClient, autorelay), rel1.stop(), rel3.stop()
     )
+
+  func callbackCount(fut: FutureBase): int =
+    # chronos keeps the first callback in `internalCallback`, the rest in `internalCallbacks`
+    ord(not fut.internalCallback.function.isNil()) + fut.internalCallbacks.len
+
+  asyncTest "waitReservationOrPeer leaves no callback on a reservation after a wake-up":
+    const wakeUps = 3
+    let
+      reservations = @[newFuture[void](), newFuture[void]()]
+      peerAvailable = newAsyncEvent()
+    defer:
+      await noCancel allFutures(reservations.mapIt(it.cancelAndWait()))
+
+    for i in 0 ..< wakeUps:
+      checkpoint "wake-up " & $i
+      peerAvailable.fire()
+      await waitReservationOrPeer(reservations, peerAvailable)
+      peerAvailable.clear()
+      check reservations.allIt(not it.finished() and it.callbackCount() == 0)
+
+  asyncTest "waitReservationOrPeer leaves no peerAvailable waiter after a reservation finishes":
+    privateAccess(AsyncEvent)
+    let
+      reservations = @[newFuture[void](), newFuture[void]()]
+      peerAvailable = newAsyncEvent()
+    defer:
+      await noCancel allFutures(reservations.mapIt(it.cancelAndWait()))
+
+    reservations[0].complete()
+    await waitReservationOrPeer(reservations, peerAvailable)
+
+    check:
+      peerAvailable.waiters.len == 0
+      reservations[1].callbackCount() == 0

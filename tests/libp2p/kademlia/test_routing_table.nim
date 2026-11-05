@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, results, algorithm, sets
+import chronos, results, algorithm, sequtils, sets
 import ../../../libp2p/[protocols/kademlia, crypto/crypto]
 import ../../tools/[unittest, crypto]
 
@@ -16,6 +16,15 @@ proc randomTestKey(): Key =
   var buf = newSeqUninit[byte](IdLength)
   rng().generate(buf)
   Key(buf)
+
+var hashCalls = 0
+
+proc countingHasher(
+    input: seq[byte]
+): array[IdLength, byte] {.raises: [], nimcall, noSideEffect, gcsafe.} =
+  {.cast(noSideEffect), cast(gcsafe).}:
+    inc hashCalls
+  noOpHasher(input)
 
 proc keyWithLeadingZeros(n: int): Key =
   ## Key whose XOR distance to an all-zero selfId under `noOpHasher` has
@@ -327,6 +336,72 @@ suite "KadDHT Routing Table":
         )
     )
     check res == expected
+
+  test "findClosest hashes the target and each key once":
+    let selfId = testKey(0)
+    let rt = RoutingTable.new(
+      selfId, config = RoutingTableConfig.new(hasher = Opt.some(countingHasher))
+    )
+    const peerCount = 50
+    for i in 1 .. peerCount:
+      discard rt.insert(testKey(byte(i)))
+
+    hashCalls = 0
+    let res = rt.findClosest(testKey(1), DefaultReplication)
+
+    check:
+      rt.allKeys().len == peerCount
+      res.len == DefaultReplication
+      hashCalls == peerCount + 1
+
+  test "findClosest returns the closest prefix of length count":
+    let rt = RoutingTable.new(
+      testKey(0), config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
+    )
+    let closest = @[testKey(1), testKey(3), testKey(2)]
+    for id in closest:
+      discard rt.insert(id)
+
+    for count in [0, 1, closest.len]:
+      check rt.findClosest(testKey(1), count) == closest[0 ..< count]
+
+  test "findClosest returns nothing for a negative count":
+    let rt = RoutingTable.new(
+      testKey(0), config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
+    )
+    discard rt.insert(testKey(1))
+
+    check rt.findClosest(testKey(1), -1).len == 0
+
+  test "findClosest returns nothing for an empty table":
+    let rt = RoutingTable.new(
+      testKey(0), config = RoutingTableConfig.new(hasher = Opt.some(noOpHasher))
+    )
+
+    check rt.findClosest(testKey(1), DefaultReplication).len == 0
+
+  test "findClosest orders keys of several buckets by their default-hasher distance":
+    let rt = RoutingTable.new(testKey(0))
+    for i in 1 .. DefaultReplication:
+      discard rt.insert(testKey(byte(i)))
+    let keys = rt.allKeys()
+    require:
+      keys.len == DefaultReplication
+      rt.buckets.countIt(it.peers.len > 0) > 1
+
+    let target = testKey(0xAB)
+    let noHasher = Opt.none(XorDHasher)
+    let targetHash = Key.fromBytes(target.hashFor(noHasher))
+    var expected = keys
+    expected.sort(
+      proc(a, b: Key): int =
+        cmp(
+          xorDistance(Key.fromBytes(a.hashFor(noHasher)), targetHash),
+          xorDistance(Key.fromBytes(b.hashFor(noHasher)), targetHash),
+        )
+    )
+
+    check rt.findClosest(target, keys.len) == expected
 
   test "isStale returns true for empty or old keys":
     let registry = PeerRegistry.new()
