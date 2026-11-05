@@ -26,15 +26,6 @@ method resolveIp*(
   ## Resolve the specified address
   raiseAssert "[NameResolver.resolveIp] abstract method not implemented!"
 
-method start*(self: NameResolver) {.base, gcsafe.} =
-  ## Prepare an owned resolver for reuse after stop(). Stateless resolvers need no hook.
-  discard
-
-method stop*(self: NameResolver) {.base, async: (raises: []).} =
-  ## Release owned resources. Must tolerate repeated calls, including before use.
-  ## Stateless resolvers need no hook.
-  discard
-
 proc getHostname*(ma: MultiAddress): string =
   let
     firstPart = ma[0].valueOr:

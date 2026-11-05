@@ -64,7 +64,6 @@ type
     dialer*: Dialer
     peerStore*: PeerStore
     nameResolver*: NameResolver
-    ownsNameResolver*: bool ## Set only for resolvers created by the builder.
     addressManager*: AddressManager
     started: bool
     stopping: bool
@@ -396,19 +395,9 @@ proc isStopping*(s: Switch): bool =
   ## True from the beginning of shutdown until the next start.
   s.stopping
 
-proc stopImpl(s: Switch) {.async: (raises: [CancelledError]).} =
-  defer:
-    if s.ownsNameResolver and not s.nameResolver.isNil:
-      await s.nameResolver.stop()
-
-  var cancelled: ref CancelledError
-  template finishStop(body: untyped) =
-    try:
-      body
-    except CancelledError as exc:
-      # Drain dependants before releasing the resolver, then report cancellation.
-      if cancelled.isNil:
-        cancelled = exc
+proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
+  ## Stop listening on every transport, and
+  ## close every active connections
 
   info "Stopping switch"
 
@@ -419,38 +408,33 @@ proc stopImpl(s: Switch) {.async: (raises: [CancelledError]).} =
     # Stop accepting incoming connections
     await s.acceptFuts.cancelAndWait().wait(1.seconds)
   except CancelledError as exc:
-    cancelled = exc
+    raise exc
   except CatchableError as exc:
     warn "Accept loop cancellation failed",
       err = exc.msg,
       errType = exc.name,
       pendingAccepts = s.acceptFuts.countIt(not it.finished())
 
-  finishStop:
-    await s.upgradeFuts.cancelAndWait()
+  await s.upgradeFuts.cancelAndWait()
   s.upgradeFuts = @[]
 
   await noCancel allFutures(s.rejectedConnCloseFuts)
   s.rejectedConnCloseFuts = @[]
 
   for service in s.services:
-    finishStop:
-      await service.stop(s)
+    await service.stop(s)
 
   # Drain incoming work and services before protocols, keeping established connections.
-  finishStop:
-    await s.ms.stop()
+  await s.ms.stop()
 
   # close and cleanup all connections
-  finishStop:
-    await s.connManager.stop()
+  await s.connManager.stop()
 
   for transp in s.transports:
     try:
       await transp.stop()
     except CancelledError as exc:
-      if cancelled.isNil:
-        cancelled = exc
+      raise exc
     except CatchableError as exc:
       warn "Transport cleanup failed", err = exc.msg
 
@@ -462,16 +446,6 @@ proc stopImpl(s: Switch) {.async: (raises: [CancelledError]).} =
 
   info "Switch stopped"
 
-  if not cancelled.isNil:
-    raise cancelled
-
-proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
-  ## Stop transports and active connections. Caller cancellation waits for teardown.
-  let stopping = s.stopImpl()
-  # Shield teardown, then propagate its result (including internal cancellation).
-  await noCancel allFutures(stopping)
-  await stopping
-
 proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   ## Start listening on every transport
   if s.started:
@@ -481,15 +455,6 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   info "Starting switch for peer", peerInfo = s.peerInfo
   s.stopping = false
 
-  if s.ownsNameResolver and not s.nameResolver.isNil:
-    s.nameResolver.start()
-  var startFuts: seq[Future[void]]
-  defer:
-    if not s.started:
-      # No startup task may outlive the components and resolver it uses.
-      await noCancel startFuts.cancelAndWait()
-      await noCancel s.stop()
-
   if not s.connManager.isRunning():
     s.connManager.start()
 
@@ -498,13 +463,16 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   s.addressManager.setPeerInfo(s.peerInfo)
   s.addressManager.start()
 
+  # start services and transports without await to prevent any
+  # issues when one needs another to start first.
+  var startFuts: seq[Future[void]]
+
   # the transport loop drains listenAddrs, so a retry after a failed start needs them back
   let listenAddrs = s.peerInfo.listenAddrs
   defer:
     if not s.started:
       s.peerInfo.listenAddrs = listenAddrs
 
-  # Start services and transports together; either may depend on the other.
   for service in s.services:
     startFuts.add(service.start(s))
 
@@ -517,6 +485,7 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
 
   for fut in startFuts:
     if fut.failed:
+      await s.stop()
       raise newException(
         LPError, "starting services and transports failed: " & $fut.error.msg, fut.error
       )
