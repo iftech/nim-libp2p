@@ -15,7 +15,8 @@ type
 suite "Errors":
   test "toException carries the formatted error":
     let e = Malformed.toException(DemoError)
-    static: doAssert typeof(e) is ref DemoError
+    static:
+      doAssert typeof(e) is ref DemoError
     check e.msg == "Malformed"
 
   test "valueOrRaise returns the value":
