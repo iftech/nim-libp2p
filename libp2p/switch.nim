@@ -63,7 +63,8 @@ type
     rejectedConnCloseFuts: seq[Future[void]]
     dialer*: Dialer
     peerStore*: PeerStore
-    nameResolver*: NameResolver ## Lifecycle owned by this switch.
+    nameResolver*: NameResolver
+    ownsNameResolver*: bool ## Set only for resolvers created by the builder.
     addressManager*: AddressManager
     started: bool
     stopping: bool
@@ -401,8 +402,17 @@ proc isStopping*(s: Switch): bool =
 
 proc stopImpl(s: Switch) {.async: (raises: [CancelledError]).} =
   defer:
-    if not s.nameResolver.isNil:
+    if s.ownsNameResolver and not s.nameResolver.isNil:
       await s.nameResolver.stop()
+
+  var cancelled: ref CancelledError
+  template finishStop(body: untyped) =
+    try:
+      body
+    except CancelledError as exc:
+      # Drain dependants before releasing the resolver, then report cancellation.
+      if cancelled.isNil:
+        cancelled = exc
 
   info "Stopping switch"
 
@@ -413,33 +423,38 @@ proc stopImpl(s: Switch) {.async: (raises: [CancelledError]).} =
     # Stop accepting incoming connections
     await s.acceptFuts.cancelAndWait().wait(1.seconds)
   except CancelledError as exc:
-    raise exc
+    cancelled = exc
   except CatchableError as exc:
     warn "Accept loop cancellation failed",
       err = exc.msg,
       errType = exc.name,
       pendingAccepts = s.acceptFuts.countIt(not it.finished())
 
-  await s.upgradeFuts.cancelAndWait()
+  finishStop:
+    await s.upgradeFuts.cancelAndWait()
   s.upgradeFuts = @[]
 
   await noCancel allFutures(s.rejectedConnCloseFuts)
   s.rejectedConnCloseFuts = @[]
 
   for service in s.services:
-    await service.stop(s)
+    finishStop:
+      await service.stop(s)
 
   # Drain incoming work and services before protocols, keeping established connections.
-  await s.ms.stop()
+  finishStop:
+    await s.ms.stop()
 
   # close and cleanup all connections
-  await s.connManager.stop()
+  finishStop:
+    await s.connManager.stop()
 
   for transp in s.transports:
     try:
       await transp.stop()
     except CancelledError as exc:
-      raise exc
+      if cancelled.isNil:
+        cancelled = exc
     except CatchableError as exc:
       warn "Transport cleanup failed", err = exc.msg
 
@@ -450,6 +465,9 @@ proc stopImpl(s: Switch) {.async: (raises: [CancelledError]).} =
   s.peerStore.close()
 
   info "Switch stopped"
+
+  if not cancelled.isNil:
+    raise cancelled
 
 proc stop*(s: Switch) {.async: (raises: [CancelledError]).} =
   ## Stop transports and active connections. Caller cancellation waits for teardown.
@@ -467,7 +485,7 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   info "Starting switch for peer", peerInfo = s.peerInfo
   s.stopping = false
 
-  if not s.nameResolver.isNil:
+  if s.ownsNameResolver and not s.nameResolver.isNil:
     s.nameResolver.start()
   var startFuts: seq[Future[void]]
   defer:
