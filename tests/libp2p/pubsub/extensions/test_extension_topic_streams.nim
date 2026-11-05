@@ -58,6 +58,83 @@ suite "GossipSub topic stream wire format":
       "topic"
     ).isErr
 
+suite "GossipSub topic stream negotiation":
+  teardown:
+    checkTrackers()
+
+  const topic = "foobar"
+  let subscription = RPCMsg.withSubscriptions(
+    @[SubOpts(topic: Opt.some(topic), subscribe: Opt.some(true))]
+  )
+  var violations = 0
+  let received = newAsyncEvent()
+
+  proc extensionsRPC(topicStreams: Opt[bool]): RPCMsg =
+    RPCMsg.withControl(
+      ControlMessage.withExtensions(ControlExtensions(topicStreams: topicStreams))
+    )
+
+  proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+    return nil
+
+  proc receive(msg: sink RPCMsg, size: int) {.async: (raises: [CancelledError]).} =
+    received.fire()
+
+  proc violation() {.gcsafe, raises: [].} =
+    inc violations
+
+  proc penalize() {.gcsafe, raises: [].} =
+    discard
+
+  proc newTopicStreams(): TopicStreams =
+    violations = 0
+    received.clear()
+    TopicStreams.new(TopicStreamsConfig(), 1024, dial, receive, violation, penalize)
+
+  test "application payload on control stream is a protocol violation only after the peer advertised support":
+    for (first, isSupported, expectedViolations) in [
+      (subscription, false, 0), # peer without extensions
+      (extensionsRPC(Opt.none(bool)), false, 0), # peer with other extensions only
+      (extensionsRPC(Opt.some(false)), false, 0), # peer that denies topic streams
+      (extensionsRPC(Opt.some(true)), true, 1), # peer that advertises topic streams
+    ]:
+      for payload in [
+        RPCMsg.withMessages(Message(data: @[1.byte], topic: topic)), # message
+        RPCMsg(
+          partialMessageExtension:
+            Opt.some(PartialMessageExtensionRPC(topicID: Opt.some(topic)))
+        ), # partial message
+      ]:
+        let state = newTopicStreams()
+        check:
+          state.negotiate(first)
+          state.isActive() == isSupported
+          state.negotiate(payload) == not isSupported
+          violations == expectedViolations
+
+  asyncTest "topic stream opened before the first control RPC requires that RPC to advertise support":
+    for (first, isSupported, expectedViolations) in [
+      (extensionsRPC(Opt.some(true)), true, 0), # advertises topic streams
+      (subscription, false, 1), # denies support after opening the topic stream
+    ]:
+      let state = newTopicStreams()
+      let (remote, local) = bridgedConnections()
+      # the peer opens a topic stream first, so we assume it supports topic streams
+      let reading = state.readTopic(local)
+      defer:
+        await reading.cancelAndWait()
+        await state.stop()
+        await remote.close()
+
+      # the peer publishes on it before its first control RPC arrives
+      await remote.writeLp(TopicRPCHeader(topic: Opt.some(topic)).encode())
+      await remote.writeLp(Message(data: @[1.byte], topic: topic).topicRPC().encode())
+      await received.wait()
+      check:
+        state.negotiate(first) == isSupported
+        state.isActive() == isSupported
+        violations == expectedViolations
+
 suite "GossipSub topic stream lifecycle":
   teardown:
     checkTrackers()
