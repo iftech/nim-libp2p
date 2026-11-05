@@ -904,7 +904,8 @@ suite "Waggle managed dissemination":
     let a = await newNode()
     let b = await newNode()
     let (_, bm) = await connect(a, b)
-    for malformed in [true, false]:
+    for m in [true, false]:
+      let malformed = m
       let stream = await bm.newStream()
       check await MultistreamSelect.new().select(stream, WaggleCodec)
       if malformed:
