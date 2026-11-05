@@ -4,8 +4,9 @@
 {.used.}
 
 import chronos, tables, stew/byteutils, sequtils
-import ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, rpc/message]
-import ../../../tools/[lifecycle, unittest]
+import
+  ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
+import ../../../tools/[lifecycle, topology, unittest]
 import ../../../../libp2p/protocols/pubsub/rpc/protobuf
 import ../utils
 import ../extensions/my_partial_message
@@ -52,6 +53,31 @@ suite "GossipSub Component - Topic streams":
     discard await nodes[0].publish(topic, "third")
     checkUntilTimeout:
       received == [1, 2]
+
+  asyncTest "forwarded message travels on topic streams":
+    let nodes = generateNodes(
+        3, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    var received = false
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      received = true
+
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    nodes[2].subscribe(topic, onMessage)
+
+    await connectChain(nodes)
+    waitSubscribeChain(nodes, topic)
+    # nodes[1] forwards only to its mesh peers
+    checkUntilTimeout nodes[1].mesh.hasPeerId(topic, nodes[2].peerInfo.peerId)
+
+    discard await nodes[0].publish(topic, "forwarded".toBytes)
+    checkUntilTimeout:
+      received
+      nodes[2].topicStreams(nodes[1].peerInfo.peerId, Direction.In).len == 1
 
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
@@ -147,8 +173,10 @@ suite "GossipSub Component - Topic streams":
     await nodes[1].publishPartial(topic, request.groupId, request.partsMetadata())
     checkUntilTimeout:
       incoming.len == 1
-    check incoming[0].topicID.get() == topic
-    check incoming[0].partialMessage.isNone
+    check:
+      incoming[0].topicID.get() == topic
+      incoming[0].partialMessage.isNone
+      nodes[0].topicStreams(nodes[1].peerInfo.peerId, Direction.In).len == 1
 
     let response =
       MyPartialMessage(groupId: request.groupId, data: {1: "one".toBytes}.toTable)
@@ -156,7 +184,9 @@ suite "GossipSub Component - Topic streams":
     await nodes[0].publishPartial(topic, response.groupId, response.partsMetadata())
     checkUntilTimeout:
       incoming.anyIt(it.partialMessage.isSome)
-    check incoming[^1].partialMessage.get() == "one".toBytes
+    check:
+      incoming[^1].partialMessage.get() == "one".toBytes
+      nodes[1].topicStreams(nodes[0].peerInfo.peerId, Direction.In).len == 1
 
   asyncTest "mixed RPC keeps subscription control separate from application response":
     let nodes = generateNodes(
