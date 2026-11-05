@@ -42,6 +42,7 @@ const
   DefaultRenewCheckTime* = 1.hours
   DefaultRenewBufferTime* = 1.hours
   DefaultInitialCertTimeout* = 2.minutes
+  DefaultInitialAddrTimeout* = 5.seconds
   DefaultIssueRetries = 3
   DefaultIssueRetryTime = 1.seconds
 
@@ -65,6 +66,12 @@ type AutotlsConfig* = object
   renewCheckTime*: Duration
   renewBufferTime*: Duration
   initialCertTimeout*: Duration
+    ## Total WSS startup budget, including waiting for the service to run,
+    ## storage restoration, address discovery, ACME issuance and retries.
+  initialAddrTimeout*: Duration
+    ## TCP address discovery budget per issuance attempt, including address
+    ## mappers. Allow room in initialCertTimeout for all issueRetries + 1
+    ## attempts, retry delays and ACME issuance.
   issueRetries*: int
   issueRetryTime*: Duration
   registrationURL*: Uri
@@ -172,6 +179,7 @@ proc new*(
     finalizeRetryTime: Duration = 1.seconds,
     storage: AutotlsStorage = nil,
     nameResolver: NameResolver = nil,
+    initialAddrTimeout: Duration = DefaultInitialAddrTimeout,
 ): T =
   T(
     nameResolver:
@@ -185,6 +193,7 @@ proc new*(
     renewCheckTime: renewCheckTime,
     renewBufferTime: renewBufferTime,
     initialCertTimeout: initialCertTimeout,
+    initialAddrTimeout: initialAddrTimeout,
     issueRetries: issueRetries,
     issueRetryTime: issueRetryTime,
     registrationURL: registrationURL,
@@ -495,10 +504,12 @@ proc brokerAddrs(
         # be becoming ready. Keep retrying until the discovery deadline.
         await sleepAsync(self.config.issueRetryTime)
 
+  let discoverAddrsFut = discoverAddrs()
   try:
-    return await discoverAddrs().wait(self.config.initialCertTimeout)
+    return await discoverAddrsFut.wait(self.config.initialAddrTimeout)
   except AsyncTimeoutError:
-    warn "TCP address discovery timed out", timeout = self.config.initialCertTimeout
+    discoverAddrsFut.cancelSoon()
+    warn "TCP address discovery timed out", timeout = self.config.initialAddrTimeout
     return @[]
 
 proc issueCertificate(
