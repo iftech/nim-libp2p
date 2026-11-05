@@ -618,7 +618,8 @@ suite "Priority queue byte budgets":
       conn.pendingWrites.len == 2
 
   asyncTest "Worker-held messages stay charged while waiting and writing":
-    for priority in [Medium, Low]:
+    for priorityValue in [Medium, Low]:
+      let priority = priorityValue
       let peer = createTestPeer(maxOutboundBytes = 16)
       let conn = createPendingConnection()
       peer.sendStream = conn

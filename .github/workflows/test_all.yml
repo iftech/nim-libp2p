@@ -191,6 +191,7 @@ jobs:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
       NIM_REF: v2.2.10
     permissions:
+      actions: write
       checks: write
       contents: read
     timeout-minutes: 65
@@ -254,6 +255,17 @@ jobs:
         with:
           path: nimcache
           key: ${{ steps.nimcache-restore.outputs.cache-primary-key }}
+
+      - name: Prune old nimcache entries
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREFIX="nimcache-test_all_asan-linux-amd64-gcc-${{ env.NIM_REF }}-orc"
+          KEEP="${{ steps.nimcache-restore.outputs.cache-primary-key }}"
+          gh cache list --ref "${{ github.ref }}" --limit 100 --json id,key \
+            --jq ".[] | select(.key | startswith(\"$PREFIX\")) | select(.key != \"$KEEP\") | .id" \
+            | xargs -r -n1 gh cache delete
 
       - name: Run tests
         id: run-tests

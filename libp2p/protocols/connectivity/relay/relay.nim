@@ -217,8 +217,13 @@ proc handleConnect(
     srcRelayConn = RelayConnection.new(srcStream, r.limit.duration, r.limit.data)
     dstRelayConn = RelayConnection.new(dstStream, r.limit.duration, r.limit.data)
   defer:
-    await srcRelayConn.close()
-    await dstRelayConn.close()
+    # circuit-v2 spec: a relay that hits a limit resets both legs
+    if srcStream.wasResetLocally() or dstStream.wasResetLocally():
+      await srcRelayConn.reset()
+      await dstRelayConn.reset()
+    else:
+      await srcRelayConn.close()
+      await dstRelayConn.close()
   await bridge(srcRelayConn, dstRelayConn)
 
 proc handleHopStreamV2*(

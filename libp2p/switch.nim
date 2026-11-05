@@ -176,14 +176,14 @@ method connect*(
     forceDial = false,
     reuseConnection = true,
     dir = Direction.Out,
-): Future[void] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+): Future[void] {.base, async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Connects to a peer described by `peerInfo` without opening a stream to it
 
   s.connect(peerInfo.peerId, peerInfo.addrs, forceDial, reuseConnection, dir)
 
 method connect*(
     s, other: Switch, forceDial = false, reuseConnection = true, dir = Direction.Out
-): Future[void] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+): Future[void] {.base, async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Connects to another switch without opening a stream to it
 
   s.connect(other.peerInfo, forceDial, reuseConnection, dir)
@@ -227,14 +227,18 @@ method dial*(
 
 method dial*(
     s: Switch, peerInfo: PeerInfo, protos: seq[string], forceDial = false
-): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+): Future[Stream] {.
+    base, async: (raises: [DialFailedError, CancelledError], raw: true)
+.} =
   ## Connects to a peer described by `peerInfo` and opens a stream with `protos`
 
   s.dial(peerInfo.peerId, peerInfo.addrs, protos, forceDial)
 
 method dial*(
     s, other: Switch, protos: seq[string], forceDial = false
-): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+): Future[Stream] {.
+    base, async: (raises: [DialFailedError, CancelledError], raw: true)
+.} =
   ## Connects to another switch and opens a stream with the specified `protos`
 
   s.dial(other.peerInfo, protos, forceDial)
@@ -260,14 +264,6 @@ proc dial*(
   ## Connects to another switch and opens a stream with the specified `proto`
 
   dial(s, other.peerInfo, proto, forceDial)
-
-proc add*(
-    s: Switch, service: Service
-) {.deprecated: "externally created services should not be added to Switch".} =
-  if service.isNil:
-    return
-
-  s.services.add(service)
 
 const
   MissingHandlerCause* = "Protocol has to define a handle method or proc"

@@ -46,7 +46,9 @@ jobs:
         run: python3 tools/check-nimble-lock.py
 
       - name: Audit Chronicle logs
-        run: python3 tools/audit_logs.py
+        uses: iftech/nim-lint@develop
+        with:
+          config: linter.nim
 
       - name: Check License Header
         uses: apache/skywalking-eyes/header@v0.8.0

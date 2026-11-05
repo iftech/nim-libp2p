@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright (c) Status Research & Development GmbH
+
+import ./[constants, common]
+import chronos
+import ../../../../tests/libp2p/protocols/waggle/utils
+import ../../../../libp2p/builders
+
+const Topic = @[byte 0, 255, 1]
+
+proc managedInterop*(address: string) {.async.} =
+  let
+    client = newInteropPeer(address)
+    peer = client.peer
+    switch = client.switch
+
+  var have = 1.byte
+  var deliveries = 0
+  var waggle: Waggle
+  let subscribed = Future[void].Raising([CancelledError]).init()
+  let confirmed = Future[void].Raising([CancelledError]).init()
+
+  proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+    doAssert event.kind notin {WaggleEventKind.InvalidData, WaggleEventKind.FullQueue}
+    if event.kind == WaggleEventKind.Subscribed:
+      if event.peerId == peer and event.topicId == Topic and not subscribed.finished:
+        subscribed.complete()
+    if event.kind != WaggleEventKind.Received:
+      return
+
+    doAssert event.topicId == Topic
+    if event.message.objectId == @[RustObjectPrefix, 255]:
+      doAssert have == 3 and deliveries == 1
+      doAssert event.message.piecesMetadata == Opt.some(@[byte 3])
+      doAssert event.message.pieces == Opt.some(@[byte 3])
+      doAssert not confirmed.finished
+      confirmed.complete()
+    else:
+      doAssert event.message.objectId == @[byte 1]
+      event.message.pieces.ifValue(pieces):
+        doAssert pieces == @[byte 2]
+
+        inc deliveries
+        have = have or pieces[0]
+        # Pieces may arrive before Rust's subscription on the opposite stream.
+        # The initial publish below includes updates received before then.
+        if subscribed.finished:
+          doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: have)).isOk
+
+  waggle = client.mountWaggle(onEvent)
+
+  defer:
+    await client.stop()
+
+  doAssert waggle.subscribe(Topic).get().added
+
+  await switch.start()
+  await client.connect()
+
+  doAssert await subscribed.withTimeout(EventTimeout),
+    "Timed out waiting for Rust subscription"
+
+  doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: have)).isOk
+  doAssert await confirmed.withTimeout(EventTimeout),
+    "Timed out waiting for Rust reconciliation acknowledgement"
+
+  doAssert have == 3 and deliveries == 1
+  doAssert waggle.publish(Topic, BitShard(id: @[byte 1], have: 3)).get() == 0
+
+  doAssert (
+    await waggle.send(
+      peer,
+      Topic,
+      ObjectPieces(
+        objectId: @[NimObjectPrefix, 255],
+        piecesMetadata: Opt.some(@[byte 3]),
+        pieces: Opt.some(@[byte 3]),
+      ),
+    )
+  ).get()
+
+  doAssert await client.disconnected.withTimeout(EventTimeout),
+    "Timed out waiting for Rust disconnect"
+
+  echo "Nim reconciled complementary pieces with Rust; duplicate payload suppressed"

@@ -218,7 +218,7 @@ proc tryRequestAuthentication*(
     async: (raises: [CancelledError])
 .} =
   let response = (await self.tryGet(uri)).valueOr:
-    return err(error, "Failed to start PeerID Auth")
+    return err(error, "Failed to make PeerID Auth GET request to " & $uri)
 
   let wwwAuthenticate = response.headers.getString("WWW-Authenticate")
   if wwwAuthenticate == "":

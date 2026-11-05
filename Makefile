@@ -1,7 +1,9 @@
 .PHONY: all build deps cbind clean test \
         test_multiformat_exts test_integration test_autotls_docker_integration \
+        bench_dial bench_kad_find_closest \
         bench_dial bench_pubsub_queues \
-        setup lock gen_multicodec format clean-nim
+        setup lock gen_multicodec format clean-nim \
+        lint
 
 NIM_VERSION  ?= 2.2.10
 NPH_VERSION  ?= 0.7.0
@@ -130,6 +132,15 @@ bench_dial: nimble.paths tests/nimble.paths
 	  tests/benchmarks/bench_dial.nim
 	./build/bench_dial
 
+bench_kad_find_closest: nimble.paths tests/nimble.paths
+	mkdir -p $(CURDIR)/build
+	$(NIMC) c $(NIM_FLAGS) \
+	  --nimcache:nimcache/bench_kad_find_closest \
+	  -d:chronicles_log_level=$(BENCH_LOG_LEVEL) \
+	  -o:$(CURDIR)/build/bench_kad_find_closest \
+	  tests/benchmarks/bench_kad_find_closest.nim
+	./build/bench_kad_find_closest
+
 bench_pubsub_queues: nimble.paths tests/nimble.paths
 	mkdir -p $(CURDIR)/build
 	$(NIMC) c $(NIM_FLAGS) \
@@ -165,3 +176,8 @@ clean-nim:
 	[ ! -d nimbledeps ] || rm -rf nimbledeps
 	[ ! -d tests/nimbledeps ] || rm -rf tests/nimbledeps
 	rm nimble.paths tests/nimble.paths 2>/dev/null || true
+
+lint:
+	nimble list -i 2>/dev/null | grep -qx lint || \
+		nimble install https://github.com/iftech/nim-lint@#develop
+	nim r linter.nim

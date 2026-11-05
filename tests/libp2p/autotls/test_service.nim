@@ -4,6 +4,7 @@
 {.used.}
 
 import chronos, json, net, results, sequtils, uri
+import stew/byteutils
 from times import fromUnix, now, initDuration, utc, `+`, `==`
 import
   ../../../libp2p/[
@@ -11,7 +12,9 @@ import
     autotls/broker,
     autotls/utils,
     autotls/acme/client,
+    crypto/crypto,
     crypto/rsa,
+    transports/tls/certificate,
     switch,
     wire,
   ]
@@ -54,6 +57,11 @@ suite "AutoTLS certificate issuance and renewal":
       running: newAsyncEvent(),
       config: config,
       rng: rng(),
+      storage:
+        if config.storage.isNil:
+          AutotlsStorage(AutotlsMemoryStorage.new())
+        else:
+          config.storage,
     )
 
   proc installCert(service: AutotlsService, expiresIn: times.Duration) =
@@ -221,10 +229,12 @@ suite "AutoTLS certificate issuance and renewal":
 
     acmeApi.scriptChallenge(ChallengeToken)
 
-    var config = AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      issueRetries = 0,
+      dnsRetries = 0,
+      nameResolver = StubNameResolver.new(),
     )
-    config.nameResolver = StubNameResolver.new()
     service = newService(config)
     await service.start(switch)
 
@@ -271,14 +281,163 @@ suite "AutoTLS certificate issuance and renewal":
       resolver.ipQueries == @["127-0-0-1." & baseDomain]
       parseJson(authClient.payloads[0])["value"].getStr == keyAuth
 
+  asyncTest "persisted state prevents issuance after a process restart":
+    const OrderExpires = "2099-01-01T00:00:00Z"
+    let certPem = tlsCertPemGenerator()
+    let certServer = startTestHttpServer(certPem)
+    defer:
+      await certServer.stop()
+
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      acmeDirectoryURL = parseUri(certServer.url),
+      registrationURL = parseUri(certServer.url),
+      storage = AutotlsMemoryStorage.new(),
+      renewCheckTime = RenewCheckTime,
+      issueRetries = 0,
+      dnsRetries = 0,
+    )
+    acmeApi.directoryURL = parseUri(certServer.url)
+    acmeApi.scriptChallenge(ChallengeToken)
+    acmeApi.scriptCertificate(certServer.url, OrderExpires)
+
+    # The first service stands in for the original process and uses the stub
+    # API to issue the certificate. Its account and certificate are saved.
+    service = newService(config)
+    let keyAuth = service.acmeClient.genKeyAuthorization(ChallengeToken)
+    service.config.nameResolver =
+      StubNameResolver.new(txtRecords = @[keyAuth], ipAddresses = @[NodeIP])
+    await service.start(switch)
+    let issued = (await service.getCertWhenReady()).get()
+    await service.stop(switch)
+    let connectionCount = certServer.connectionCount
+
+    # The fixed HTTP response cannot sign the issuance CSR. Replace its test
+    # certificate and key with a matching pair before exercising restoration.
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    var saved = (await config.storage.load(storageKey)).get().get()
+    check saved.certificatePem == certPem
+    let pair = generateX509(
+      KeyPair.random(PKScheme.RSA, rng()).get(), encodingFormat = EncodingFormat.PEM
+    )
+    saved.certificatePem = string.fromBytes(pair.certificate)
+    saved.certificateKeyPem = string.fromBytes(pair.privateKey)
+    check (await config.storage.save(storageKey, saved)).isOk()
+
+    # A fresh service has no injected ACME client. It must restore both the
+    # certificate and account from storage before it could contact ACME.
+    service = AutotlsService.new(rng(), config)
+    await service.start(switch)
+    let restored = (await service.getCertWhenReady()).get()
+    # Nothing signals a heartbeat that decided against renewing, so wait out
+    # several rounds in which an unwanted issuance could have started.
+    await sleepAsync(3 * RenewCheckTime)
+
+    check:
+      restored.expiry == issued.expiry
+      service.acmeClient.key == accountKey
+      service.acmeClient.kid == AccountURL
+      certServer.connectionCount == connectionCount
+
+  asyncTest "account identity survives a failed issuance and restart":
+    let certServer = startTestHttpServer("not an ACME directory")
+    defer:
+      await certServer.stop()
+
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      acmeDirectoryURL = parseUri(certServer.url),
+      registrationURL = parseUri(certServer.url),
+      storage = AutotlsMemoryStorage.new(),
+      issueRetries = 0,
+    )
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let oldCert = tlsCertPemGenerator(fromUnix(1600000000))
+    let oldState =
+      AutotlsStoredState(certificatePem: oldCert, certificateKeyPem: "expired key")
+    check (await config.storage.save(storageKey, oldState)).isOk()
+
+    # Registration succeeds, but the following order request fails.
+    acmeApi.queueRegister()
+    service = newService(config)
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let saved = (await service.storage.load(storageKey)).get().get()
+    check:
+      saved.accountKey == accountKey.getBytes().get()
+      saved.accountKid == AccountURL
+      saved.certificatePem == oldState.certificatePem
+      saved.certificateKeyPem == oldState.certificateKeyPem
+    await service.stop(switch)
+
+    service = AutotlsService.new(rng(), config)
+    await service.start(switch)
+    check:
+      service.acmeClient.key == accountKey
+      service.acmeClient.kid == AccountURL
+
+  asyncTest "an unknown account is cleared from memory and storage":
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      issueRetries = 0,
+    )
+    service = newService(config)
+    service.acmeClient.kid = AccountURL
+    acmeApi.mockedResponses.add(
+      HTTPResponse(
+        body: %*{"type": ACMEAccountDoesNotExist, "detail": "account missing"}
+      )
+    )
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let saved = (await service.storage.load(storageKey)).get().get()
+    check:
+      service.acmeClient.kid.len == 0
+      saved.accountKid.len == 0
+      saved.accountKey == accountKey.getBytes().get()
+
+  asyncTest "account key is saved before registration":
+    let config =
+      AutotlsConfig.new(ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0)
+    service = newService(config)
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let saved = (await service.storage.load(storageKey)).get().get()
+    check:
+      saved.accountKey == accountKey.getBytes().get()
+      saved.accountKid.len == 0
+
   asyncTest "the certificate is not requested until the DNS records are published":
     acmeApi.scriptChallenge(ChallengeToken)
 
-    var config = AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      issueRetries = 0,
+      dnsRetries = 0,
+      # The A record resolves, so only the missing TXT record holds issuance back.
+      nameResolver = StubNameResolver.new(ipAddresses = @[NodeIP]),
     )
-    # The A record resolves, so only the missing TXT record holds issuance back.
-    config.nameResolver = StubNameResolver.new(ipAddresses = @[NodeIP])
     service = newService(config)
     await service.start(switch)
 
@@ -319,12 +478,12 @@ suite "AutoTLS on a switch":
     let authClient = PeerIDAuthClientStub.new()
     acmeApi.scriptChallenge("some-token")
 
-    var config = AutotlsConfig.new(
+    let config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
       issueRetries = 0,
       dnsRetries = 0,
+      nameResolver = StubNameResolver.new(),
     )
-    config.nameResolver = StubNameResolver.new()
     let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
       .withAutotls(config)
       .build()
