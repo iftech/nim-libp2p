@@ -15,7 +15,6 @@ const
   Later: UnixTimestamp = Now + 60
   Unlimited = high(int)
   PageSize = 3
-  ProvidedKeyBytes = [7'u8, 2, 9, 4, 1, 8, 3, 6, 5, 10]
 
 type
   RemoveCase = object
@@ -58,6 +57,12 @@ template pk1(): ProvidedKey =
 template pk2(): ProvidedKey =
   providedKey(2)
 
+template pk3(): ProvidedKey =
+  providedKey(3)
+
+proc pagedKeys(): seq[ProvidedKey] =
+  @[7'u8, 2, 9, 4, 1, 8, 3, 6, 5, 10].mapIt(providedKey(it))
+
 template pkNone(): Opt[ProvidedKey] =
   Opt.none(ProvidedKey)
 
@@ -67,9 +72,9 @@ converter toOptInt*(n: int): Opt[int] =
 func `==`*[T](r: LPResult[T], value: T): bool =
   r.isOk() and r.get() == value
 
-template provideAll(store: KadStore, bytes: openArray[byte]) =
-  for b in bytes:
-    check (await store.addProvided(providedKey(b))).get()
+template provideAll(store: KadStore, keys: openArray[ProvidedKey]) =
+  for key in keys:
+    check (await store.addProvided(key)).get()
 
 proc valueKeys(values: seq[StoredValue]): seq[Key] =
   var keys: seq[Key]
@@ -620,32 +625,29 @@ template kadStoreTestSuite*(
 
     asyncTest "a re-add refreshes the key without an eviction":
       let store = factory(KadStoreLimits(maxProvided: 2))
-      store.provideAll([1'u8, 2, 2])
+      store.provideAll([pk1, pk2, pk2])
 
       check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2].sorted()
 
-      store.provideAll([1'u8, 3])
+      store.provideAll([pk1, pk3])
 
-      check (await store.listProvided(pkNone, Unlimited)) ==
-        @[pk1, providedKey(3)].sorted()
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk3].sorted()
 
     asyncTest "a new key in a full store evicts the oldest key":
       let store = factory(KadStoreLimits(maxProvided: 2))
-      store.provideAll([1'u8, 2, 3])
+      store.provideAll([pk1, pk2, pk3])
 
-      check (await store.listProvided(pkNone, Unlimited)) ==
-        @[pk2, providedKey(3)].sorted()
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk2, pk3].sorted()
 
     asyncTest "delProvided removes the key and frees capacity":
       let store = factory(KadStoreLimits(maxProvided: 2))
-      store.provideAll([1'u8, 2])
+      store.provideAll([pk1, pk2])
 
       check:
         (await store.delProvided(pk2)).isOk()
-        (await store.addProvided(providedKey(3))).get()
+        (await store.addProvided(pk3)).get()
 
-      check (await store.listProvided(pkNone, Unlimited)) ==
-        @[pk1, providedKey(3)].sorted()
+      check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk3].sorted()
 
     asyncTest "a store with maxProvided 0 stores no provided key":
       let store = factory(KadStoreLimits(maxProvided: 0))
@@ -656,9 +658,9 @@ template kadStoreTestSuite*(
 
     asyncTest "delProvided of an absent key succeeds and keeps the other keys":
       let store = factory(KadStoreLimits())
-      store.provideAll([1'u8, 2])
+      store.provideAll([pk1, pk2])
 
-      check (await store.delProvided(providedKey(3))).isOk()
+      check (await store.delProvided(pk3)).isOk()
 
       check (await store.listProvided(pkNone, Unlimited)) == @[pk1, pk2].sorted()
 
@@ -675,9 +677,10 @@ template kadStoreTestSuite*(
 
     asyncTest "listProvided returns every key exactly once across pages":
       let store = factory(KadStoreLimits())
-      store.provideAll(ProvidedKeyBytes)
+      let provided = pagedKeys()
+      store.provideAll(provided)
 
-      let keys = ProvidedKeyBytes.mapIt(providedKey(it)).sorted()
+      let keys = provided.sorted()
       let first = (await store.listProvided(pkNone, PageSize)).get()
 
       check:
@@ -689,10 +692,11 @@ template kadStoreTestSuite*(
 
     asyncTest "listProvided pages past keys deleted between pages":
       let store = factory(KadStoreLimits())
-      store.provideAll(ProvidedKeyBytes)
+      let provided = pagedKeys()
+      store.provideAll(provided)
 
       let first = (await store.listProvided(pkNone, PageSize)).get()
-      let rest = ProvidedKeyBytes.mapIt(providedKey(it)).sorted()[PageSize ..^ 1]
+      let rest = provided.sorted()[PageSize ..^ 1]
 
       check:
         (await store.delProvided(first[^1])).isOk()

@@ -26,11 +26,11 @@ type
   RecordKey* {.requiresInit.} = object
     ## The key of a PUT_VALUE/GET_VALUE record, 1..``MaxRecordKeyLen`` bytes.
     ## Construct with ``RecordKey.init`` or ``RecordKey.fromBytes``.
-    key: Key
+    data: seq[byte]
 
   ProvidedKey* {.requiresInit.} = object
-    ## The multihash of a CID that this node provides.
-    key: Key
+    ## The multihash bytes of a CID that this node provides.
+    data: seq[byte]
 
   Value* = distinct seq[byte]
     ## A Kademlia record value. Construct with ``Value.init`` or ``Value.fromBytes``.
@@ -49,27 +49,11 @@ template toBytes*(key: Key): seq[byte] =
   ## Returns the raw bytes used by Kademlia and its wire protocol.
   seq[byte](key)
 
-proc len*(key: Key): int {.inline.} =
-  seq[byte](key).len
-
 proc `[]`*(key: Key, index: int): byte {.inline.} =
   seq[byte](key)[index]
 
 proc `[]=`*(key: var Key, index: int, value: byte) {.inline.} =
   seq[byte](key)[index] = value
-
-proc `==`*(a, b: Key): bool {.borrow.}
-proc hash*(key: Key): Hash {.borrow.}
-
-func `<`*(a, b: Key): bool =
-  ## Byte order. A key sorts before its extension.
-  for i in 0 ..< min(a.len, b.len):
-    if a[i] != b[i]:
-      return a[i] < b[i]
-  a.len < b.len
-
-proc `$`*(key: Key): string =
-  $seq[byte](key)
 
 template toKey*(mh: MultiHash): Key =
   Key.fromBytes(mh.data.buffer)
@@ -77,24 +61,42 @@ template toKey*(mh: MultiHash): Key =
 proc toKey*(c: Cid): Key =
   c.mhash().get().toKey()
 
-template wrappedKeyOps(T: typedesc) =
-  template toBytes*(key: T): seq[byte] =
-    key.toKey().toBytes()
+template raw(key: Key): seq[byte] =
+  seq[byte](key)
 
+template raw(key: RecordKey | ProvidedKey): seq[byte] =
+  key.data
+
+func lessBytes(a, b: openArray[byte]): bool =
+  ## Byte order. A key sorts before its extension.
+  for i in 0 ..< min(a.len, b.len):
+    if a[i] != b[i]:
+      return a[i] < b[i]
+  a.len < b.len
+
+template keyOps(T: typedesc) =
   func len*(key: T): int =
-    key.toKey().len
+    key.raw.len
 
   func `==`*(a, b: T): bool =
-    a.toKey() == b.toKey()
+    a.raw == b.raw
 
   func `<`*(a, b: T): bool =
-    a.toKey() < b.toKey()
+    lessBytes(a.raw, b.raw)
 
   func hash*(key: T): Hash =
-    key.toKey().hash()
+    key.raw.hash()
 
   func `$`*(key: T): string =
-    $key.toKey()
+    $key.raw
+
+  func shortLog*(key: T): string =
+    key.raw.shortLog
+
+  chronicles.formatIt(T):
+    it.shortLog
+
+keyOps(Key)
 
 func default*(
   T: typedesc[RecordKey]
@@ -104,16 +106,19 @@ func init*(T: typedesc[RecordKey], key: Key): LPResult[RecordKey] =
   ## The one place that admits a ``Key`` as a record key.
   if key.len == 0 or key.len > MaxRecordKeyLen:
     return err(fmt"{key.len} not in 1..{MaxRecordKeyLen}", "invalid record key length")
-  ok(RecordKey(key: key))
+  ok(RecordKey(data: key.toBytes()))
 
 func fromBytes*(T: typedesc[RecordKey], bytes: sink seq[byte]): LPResult[RecordKey] =
   RecordKey.init(Key.fromBytes(bytes))
 
+func toBytes*(key: RecordKey): seq[byte] =
+  key.data
+
 func toKey*(key: RecordKey): Key =
   ## The lookup target that routes to the nodes which store the record.
-  key.key
+  Key.fromBytes(key.data)
 
-wrappedKeyOps(RecordKey)
+keyOps(RecordKey)
 
 func default*(
   T: typedesc[ProvidedKey]
@@ -121,7 +126,7 @@ func default*(
 
 proc init*(T: typedesc[ProvidedKey], cid: Cid): ProvidedKey =
   ## ``mhash`` fails only on a ``Cid`` that no ``Cid.init`` made, such as ``default(Cid)``.
-  ProvidedKey(key: cid.toKey())
+  ProvidedKey(data: cid.mhash().get().data.buffer)
 
 func fromBytes*(
     T: typedesc[ProvidedKey], bytes: sink seq[byte]
@@ -130,12 +135,15 @@ func fromBytes*(
   if not MultiHash.validate(bytes):
     return
       err(fmt"{bytes.len} bytes: {bytes.shortLog}", "provided key is not a multihash")
-  ok(ProvidedKey(key: Key.fromBytes(bytes)))
+  ok(ProvidedKey(data: bytes))
+
+func toBytes*(key: ProvidedKey): seq[byte] =
+  key.data
 
 func toKey*(key: ProvidedKey): Key =
-  key.key
+  Key.fromBytes(key.data)
 
-wrappedKeyOps(ProvidedKey)
+keyOps(ProvidedKey)
 
 template init*(T: typedesc[Value], bytes: openArray[byte]): Value =
   Value(@bytes)
@@ -166,17 +174,5 @@ proc `$`*(value: Value): string =
 func shortLog*(v: Value): string =
   v.toBytes().shortLog
 
-func shortLog*(k: Key): string =
-  k.toBytes().shortLog
-
-func shortLog*(k: RecordKey): string =
-  k.toBytes().shortLog
-
 chronicles.formatIt(Value):
-  it.shortLog
-
-chronicles.formatIt(Key):
-  it.shortLog
-
-chronicles.formatIt(RecordKey):
   it.shortLog
