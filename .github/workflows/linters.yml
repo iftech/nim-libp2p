@@ -45,8 +45,10 @@ jobs:
       - name: Check Nimble lock versions
         run: python3 tools/check-nimble-lock.py
 
-      - name: Audit Chronicle logs
-        uses: iftech/nim-lint@develop
+      - name: Run nim-lint checks
+        # `chronicles_linter` imports lint/types, which was moved in nim-lint
+        # after this revision. Keep the action pinned until it uses the public API.
+        uses: iftech/nim-lint@8ef975d03084d86411eaa30a50d4f985ab4d66f6
         with:
           config: linter.nim
 
