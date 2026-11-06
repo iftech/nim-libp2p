@@ -4,7 +4,7 @@
 {.used.}
 
 import std/strformat
-import ../../../libp2p/[protocols/kademlia, peerid]
+import ../../../libp2p/[cid, protocols/kademlia, peerid]
 import ./utils
 import ../../tools/[unittest, crypto]
 
@@ -98,9 +98,9 @@ suite "KadDHT Types":
   test "ProvidedKey holds the multihash of its CID":
     let
       cid = makeProvidedCid(1)
-      key = ProvidedKey.init(cid)
+      key = ProvidedKey.init(cid).tryGet()
       same = ProvidedKey.fromBytes(cid.toKey().toBytes()).tryGet()
-      other = ProvidedKey.init(makeProvidedCid(2))
+      other = ProvidedKey.init(makeProvidedCid(2)).tryGet()
 
     check:
       key.toKey() == cid.toKey()
@@ -113,9 +113,16 @@ suite "KadDHT Types":
       not (key < same)
       $key == $cid.toKey()
 
+  test "ProvidedKey rejects a CID with no version":
+    let res = ProvidedKey.init(default(Cid))
+
+    check:
+      res.isErr()
+      res.error == "provided key from an invalid cid (Incorrect)"
+
   test "ProvidedKey rejects bytes that are not a multihash":
     let
-      valid = ProvidedKey.init(makeProvidedCid(1)).toBytes()
+      valid = ProvidedKey.init(makeProvidedCid(1)).tryGet().toBytes()
       res = ProvidedKey.fromBytes(@[0xAB.byte, 2, 3])
 
     check:
@@ -131,7 +138,7 @@ suite "KadDHT Types":
 
   test "ProvidedKey is not interchangeable with Key or RecordKey":
     let
-      provided = ProvidedKey.init(makeProvidedCid(1))
+      provided = ProvidedKey.init(makeProvidedCid(1)).tryGet()
       record = RecordKey.init(provided.toKey()).get()
 
     check:
