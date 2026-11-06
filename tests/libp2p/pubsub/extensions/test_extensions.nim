@@ -28,6 +28,17 @@ proc createBehaviorPenaltyProc*(): (ref seq[PeerId], UpdatePeerBehaviorPenaltyPr
 suite "GossipSub Extensions :: State":
   let peerId = PeerId.random()
 
+  test "negotiation does not dispatch RPC payloads":
+    let ext = RecordingExtension()
+    let state = ExtensionsState.new(rng(), externalExtensions = @[Extension(ext)])
+    state.addPeer(peerId)
+    state.negotiateExtensions(
+      peerId, makeRPC(ControlExtensions(testExtension: Opt.some(true)))
+    )
+    check:
+      ext.negotiatedPeers == @[peerId]
+      ext.handledRPC.len == 0
+
   test "default unconfigured state":
     var state = ExtensionsState.new(rng())
 
