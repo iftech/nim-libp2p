@@ -221,10 +221,16 @@ privateAccess(typeof(MemoryKadStore().values))
 privateAccess(typeof(MemoryKadStore().values.byKey.values()))
 
 func mem(kad: KadDHT): MemoryKadStore =
+  doAssert kad.store of MemoryKadStore, "the store of this kad is not a MemoryKadStore"
   MemoryKadStore(kad.store)
 
-func valueCount*(kad: KadDHT): int =
-  kad.mem().values.byKey.len
+proc valueCount*(kad: KadDHT): int =
+  let now = nowUnixSeconds()
+  var n = 0
+  for slot in kad.mem().values.byKey.values():
+    if slot.expiresAt > now:
+      inc n
+  n
 
 proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
   kad.mem().values.byKey.withValue(key, slot):
@@ -233,12 +239,12 @@ proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
   Opt.none(EntryRecord)
 
 proc seedLocalValue*(
-    kad: KadDHT, key: RecordKey, value: Value
+    kad: KadDHT, key: RecordKey, value: Value, ttl = Opt.none(Duration)
 ): Future[bool] {.async: (raises: [CancelledError]).} =
   let stored = StoredValue(
     key: key,
     record: EntryRecord(value: value, time: Timestamp.now()),
-    ttl: kad.config.recordExpirationInterval,
+    ttl: ttl.get(kad.config.recordExpirationInterval),
   )
   (await kad.store.putValue(stored, nowUnixSeconds())).valueOr:
     raiseAssert "seedLocalValue: " & $error

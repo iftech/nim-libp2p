@@ -447,3 +447,19 @@ suite "KadDHT Get":
     check:
       record.isOk()
       record.get().value == value
+
+  asyncTest "GET_VALUE handler does not serve an expired record":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+
+    let key = kads[1].rtable.selfId
+    check await kads[1].seedLocalValue(
+      key, @[1.byte, 2, 3], ttl = Opt.some(ZeroDuration)
+    )
+
+    let record = await kads[0].getValue(key, quorumOverride = Opt.some(1))
+
+    check:
+      record.isErr()
+      kads[1].containsNoData(key)

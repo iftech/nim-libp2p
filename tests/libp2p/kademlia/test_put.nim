@@ -209,27 +209,21 @@ suite "KadDHT Put":
     discard await kads[1].putValue(key, value)
     check kads[0].containsData(key, value)
 
-  asyncTest "PUT_VALUE entries expire after recordExpirationInterval":
-    # Use a short expiration interval so the test doesn't take long.
-    # The stored timestamp has second-level precision, so we use 2s to avoid
-    # sub-second rounding causing premature expiry in the containsData check.
-    let kads = setupKadSwitches(2, recordExpirationInterval = 2.seconds)
+  asyncTest "PUT_VALUE stores the record with ttl recordExpirationInterval":
+    let interval = 7.minutes
+    let kads = setupKadSwitches(2, recordExpirationInterval = interval)
     startAndDeferStop(kads)
 
     await connect(kads[0], kads[1])
 
     let key = kads[0].rtable.selfId
-    let value = @[1.byte, 2, 3, 4, 5]
-    discard await kads[1].putValue(key, value)
+    check (await kads[1].putValue(key, @[1.byte, 2, 3])).isOk()
 
-    # Value is present right after insertion
-    check:
-      kads[0].containsData(key, value)
-      kads[1].containsData(key, value)
-
-    checkUntilTimeout:
-      kads[0].containsNoData(key)
-      kads[1].containsNoData(key)
+    for kad in kads:
+      let stored = (await kad.store.getValue(key, nowUnixSeconds())).get()
+      check:
+        stored.isSome()
+        stored.get().ttl == interval
 
   asyncTest "PUT_VALUE without a key or with an invalid record is not stored":
     let kads = setupKadSwitches(2, validator = RestrictiveValidator())

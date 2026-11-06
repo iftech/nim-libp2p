@@ -388,6 +388,7 @@ proc initKadBase*(
     MemoryKadStore.new(config.storeLimits)
   kad.nsEstimator = NetworkSizeEstimator.new(config.replication)
   kad.rpcSem = newAsyncSemaphore(config.limits.maxConcurrentRpcs)
+  kad.valueLock = newAsyncLock()
   kad.admissionSem = newAsyncSemaphore(config.limits.maxConcurrentProbes)
   kad.livenessSem = newAsyncSemaphore(config.limits.maxConcurrentLivenessProbes)
   kad.isServer = isServer

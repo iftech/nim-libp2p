@@ -101,8 +101,9 @@ proc getValue*(
 
   let best = ?kad.bestValidRecord(key, received, quorum)
 
-  discard
-    await kad.putLocalRecord(key, EntryRecord(value: best.value, time: Timestamp.now()))
+  discard await kad.putBestLocalRecord(
+    key, EntryRecord(value: best.value, time: Timestamp.now())
+  )
 
   # update peers that
   # - don't have best value

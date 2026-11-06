@@ -332,6 +332,31 @@ suite "KadDHT - Limits":
         response.record.isNone()
         response.closerPeers.toHashSet().containsPeer(kads[2])
 
+  asyncTest "getValue returns the best record when the store holds maxValues":
+    var config = testKadConfig()
+    config.storeLimits.maxValues = Opt.some(1)
+    let kads = @[setupKad(config), setupKad()]
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+
+    let
+      existingKey = PeerId.random()
+      lookupKey = kads[1].rtable.selfId
+      existingValue = @[1.byte]
+      lookupValue = @[2.byte]
+
+    check:
+      await kads[0].seedLocalValue(existingKey, existingValue)
+      await kads[1].seedLocalValue(lookupKey, lookupValue)
+
+    let res = await kads[0].getValue(lookupKey, quorumOverride = Opt.some(1))
+
+    check:
+      res.isOk()
+      res.value().value == lookupValue
+      kads[0].containsData(existingKey, existingValue)
+      kads[0].containsNoData(lookupKey)
+
   asyncTest "getValue drops replies larger than maxValueSize":
     let kads = setupKadSwitches(2)
     startAndDeferStop(kads)

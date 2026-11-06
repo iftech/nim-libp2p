@@ -131,7 +131,7 @@ func put(values: Values, value: StoredValue, now: UnixTimestamp): bool =
       return false
     values.keys.insertKey(value.key)
 
-  let expiresAt = now + value.ttl.seconds
+  let expiresAt = now + value.ttl.ceilSeconds()
   values.byKey[value.key] = ValueSlot(value: value, expiresAt: expiresAt)
   values.nextExpiry = min(values.nextExpiry, expiresAt)
   true
