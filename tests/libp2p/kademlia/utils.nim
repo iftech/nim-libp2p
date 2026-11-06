@@ -308,26 +308,33 @@ privateAccess(typeof(MemoryKadStore().values))
 privateAccess(typeof(MemoryKadStore().values.byKey.values()))
 
 func mem(kad: KadDHT): MemoryKadStore =
+  doAssert kad.store of MemoryKadStore, "the store of this kad is not a MemoryKadStore"
   MemoryKadStore(kad.store)
 
-func valueCount*(kad: KadDHT): int =
-  kad.mem().values.byKey.len
+proc valueCount*(kad: KadDHT): int =
+  let now = nowUnixSeconds()
+  var n = 0
+  for value in kad.mem().values.byKey.values():
+    if value.expiresAt > now:
+      inc n
+  n
 
 proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
-  kad.mem().values.byKey.withValue(key, slot):
-    if slot[].expiresAt > nowUnixSeconds():
-      return Opt.some(slot[].value.record)
+  kad.mem().values.byKey.withValue(key, value):
+    if value[].expiresAt > nowUnixSeconds():
+      return Opt.some(value[].record)
   Opt.none(EntryRecord)
 
 proc seedLocalValue*(
-    kad: KadDHT, key: RecordKey, value: Value
-): Future[bool] {.async: (raises: [CancelledError]).} =
+    kad: KadDHT, key: RecordKey, value: Value, expiresAt = Opt.none(UnixTimestamp)
+): bool =
+  let now = nowUnixSeconds()
   let stored = StoredValue(
     key: key,
     record: EntryRecord(value: value, time: Timestamp.now()),
-    ttl: kad.config.recordExpirationInterval,
+    expiresAt: expiresAt.get(now + kad.config.recordExpirationInterval.ceilSeconds()),
   )
-  (await kad.store.putValue(stored, nowUnixSeconds())).valueOr:
+  kad.store.putValue(stored, now).valueOr:
     raiseAssert "seedLocalValue: " & $error
 
 proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
@@ -523,3 +530,25 @@ proc seedLinearMeasurements*(est: NetworkSizeEstimator, netSize: int) =
       est.measurements[i].add(
         NetSizeMeasurement(distance: base + delta, weight: 1.0, timestamp: now)
       )
+
+type StubStore* = ref object of KadStore
+  ## Wraps ``inner`` and fails its reads on ``failReads``.
+  inner*: KadStore
+  failReads*: bool
+
+method getValue*(
+    store: StubStore, key: RecordKey, now: UnixTimestamp
+): LPResult[Opt[StoredValue]] {.gcsafe, raises: [].} =
+  if store.failReads:
+    return err("stub read failed")
+  store.inner.getValue(key, now)
+
+method putValue*(
+    store: StubStore, value: StoredValue, now: UnixTimestamp
+): LPResult[bool] {.gcsafe, raises: [].} =
+  store.inner.putValue(value, now)
+
+proc setupStubKad*(store: StubStore): KadDHT =
+  var config = testKadConfig()
+  config.store = Opt.some(KadStore(store))
+  setupKad(config)

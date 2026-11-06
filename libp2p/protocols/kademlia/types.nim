@@ -155,7 +155,7 @@ proc toPeerIds*(peers: seq[Peer]): seq[PeerId] =
 proc nowUnixSeconds*(): UnixTimestamp {.gcsafe, raises: [].} =
   getTime().toUnix()
 
-func ceilSeconds(d: chronos.Duration): int64 =
+func ceilSeconds*(d: chronos.Duration): int64 =
   ## Rounds up, so a sub-second interval does not truncate to zero.
   let whole = d.seconds()
   if d > whole.seconds():
@@ -650,6 +650,12 @@ proc new*(
   doAssert actualLimits.maxValueSize > 0, "maxValueSize must be > 0"
   doAssert storeLimits.maxValues.isNone or storeLimits.maxValues.get() > 0,
     "maxValues must be > 0; use Opt.none(int) for unlimited"
+  doAssert storeLimits.maxProviders.isNone or storeLimits.maxProviders.get() > 0,
+    "maxProviders must be > 0; use Opt.none(int) for unlimited"
+  doAssert storeLimits.maxProvided.isNone or storeLimits.maxProvided.get() > 0,
+    "maxProvided must be > 0; use Opt.none(int) for unlimited"
+  doAssert recordExpirationInterval > ZeroDuration,
+    "recordExpirationInterval must be > 0"
   doAssert actualLimits.maxConcurrentRpcs > 0, "maxConcurrentRpcs must be > 0"
   doAssert actualLimits.maxConcurrentProbes > 0, "maxConcurrentProbes must be > 0"
   doAssert actualLimits.maxConcurrentLivenessProbes > 0,

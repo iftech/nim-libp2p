@@ -40,7 +40,7 @@ suite "Service Discovery - XPR key binding":
     await connectStar(discos)
 
     let servedKey = discos[2].switch.peerInfo.peerId
-    check await discos[2].seedLocalValue(servedKey, foreignXpr())
+    check discos[2].seedLocalValue(servedKey, foreignXpr())
 
     check (await discos[1].lookupRandom()).len == 0
 

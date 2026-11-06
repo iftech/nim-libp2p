@@ -11,17 +11,6 @@ import ./[protobuf, types, find, rpc, kademlia_metrics, local_record]
 logScope:
   topics = "libp2p kademlia"
 
-proc isBestValue(
-    kad: KadDHT, key: RecordKey, record: EntryRecord
-): Future[bool] {.async: (raises: [CancelledError]).} =
-  ## Returns whether `value` is a better value than what we have locally
-  ## Always returns `true` if we don't have the value locally
-
-  (await kad.getLocalRecord(key)).ifValue(existing):
-    kad.config.selector.select(key, @[record, existing]).ifValue(selectedIdx):
-      return selectedIdx == 0
-  return true
-
 proc dispatchPutVal*(
     kad: KadDHT, peer: PeerId, key: RecordKey, value: Value
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
@@ -54,12 +43,14 @@ proc putValue*(
   if not kad.config.validator.isValid(key, record):
     return err("invalid key/value pair")
 
-  if not await kad.isBestValue(key, record):
+  let isBest = kad.isBestValue(key, record).valueOr:
+    return err(error, "could not compare with the local record")
+  if not isBest:
     return err("Value rejected, we have a better one")
 
   let peers = await kad.findNode(key.toKey())
 
-  let storedLocally = await kad.putLocalRecord(key, record)
+  let storedLocally = kad.putBestLocalRecord(key, record)
 
   var attempted, succeeded, failed, cancelled, pending: int
   var outcome = "cancelled"
@@ -135,12 +126,7 @@ proc handlePutValue*(
       reason = "invalidRecord", messageType = "putValue", stream
     return
 
-  if not await kad.isBestValue(key, entryRecord):
-    trace "Dropping received value, we have a better one"
-    await stream.reset()
-    return
-
-  if not await kad.putLocalRecord(key, entryRecord):
+  if not kad.putBestLocalRecord(key, entryRecord):
     await stream.reset()
     return
 

@@ -26,9 +26,9 @@ proc checkRepairTargets(rejectedRecord: bool) {.async.} =
     key = kads[1].rtable.selfId
     value = @[1.byte, 2, 3]
     validator = SelectiveValidator(acceptedValue: Value.init(value))
-  check await kads[2].seedLocalValue(key, value)
+  check kads[2].seedLocalValue(key, value)
   if rejectedRecord:
-    check await kads[1].seedLocalValue(key, @[9.byte])
+    check kads[1].seedLocalValue(key, @[9.byte])
   kads[2].config.validator = validator
   kads[2].config.limits.maxReceivedSize = 2
 
@@ -53,7 +53,7 @@ suite "KadDHT Get":
       key = kads[0].rtable.selfId
       value = @[1.byte, 2, 3, 4, 5]
 
-    check await kads[0].seedLocalValue(key, value)
+    check kads[0].seedLocalValue(key, value)
 
     check:
       kads[0].containsData(key, value)
@@ -74,7 +74,7 @@ suite "KadDHT Get":
       key = kads[0].rtable.selfId
       value = @[1.byte, 2, 3, 4, 5]
 
-    check await kads[0].seedLocalValue(key, value)
+    check kads[0].seedLocalValue(key, value)
 
     check:
       kads[0].containsData(key, value)
@@ -91,10 +91,10 @@ suite "KadDHT Get":
       bestValue = @[1.byte, 2, 3, 4, 5]
       worstValue = @[1.byte, 2, 3, 4, 6]
 
-    check await kads[1].seedLocalValue(key, bestValue)
-    check await kads[2].seedLocalValue(key, worstValue)
-    check await kads[3].seedLocalValue(key, bestValue)
-    check await kads[4].seedLocalValue(key, bestValue)
+    check kads[1].seedLocalValue(key, bestValue)
+    check kads[2].seedLocalValue(key, worstValue)
+    check kads[3].seedLocalValue(key, bestValue)
+    check kads[4].seedLocalValue(key, bestValue)
 
     check:
       kads[0].containsNoData(key)
@@ -124,7 +124,7 @@ suite "KadDHT Get":
       key = kads[0].rtable.selfId
       value = @[1.byte, 2, 3, 4, 5]
 
-    check await kads[1].seedLocalValue(key, value)
+    check kads[1].seedLocalValue(key, value)
 
     check:
       kads[0].containsNoData(key)
@@ -146,7 +146,7 @@ suite "KadDHT Get":
       key = kads[0].rtable.selfId
       value = @[1.byte, 2, 3, 4, 5]
 
-    check await kads[1].seedLocalValue(key, value)
+    check kads[1].seedLocalValue(key, value)
 
     check:
       kads[0].containsNoData(key)
@@ -198,7 +198,7 @@ suite "KadDHT Get":
     let
       key = kads[1].rtable.selfId
       value = @[1.byte, 2, 3]
-    check await kads[1].seedLocalValue(key, value)
+    check kads[1].seedLocalValue(key, value)
 
     kads[2].config.limits.maxReceivedSize = 1
     check not kads[2].hasKey(kads[1].rtable.selfId)
@@ -214,8 +214,8 @@ suite "KadDHT Get":
       key = kads[1].rtable.selfId
       value = @[1.byte, 2, 3]
       validator = SelectiveValidator(acceptedValue: Value.init(value))
-    check await kads[0].seedLocalValue(key, @[9.byte])
-    check await kads[1].seedLocalValue(key, value)
+    check kads[0].seedLocalValue(key, @[9.byte])
+    check kads[1].seedLocalValue(key, value)
     kads[2].config.validator = validator
     kads[2].config.limits.maxReceivedSize = 1
 
@@ -245,7 +245,7 @@ suite "KadDHT Get":
       key = kads[0].rtable.selfId
       value = @[1.byte, 2, 3, 4, 5]
 
-    check await kads[0].seedLocalValue(key, value)
+    check kads[0].seedLocalValue(key, value)
 
     check:
       kads[2].hasKey(kads[0].rtable.selfId)
@@ -273,9 +273,9 @@ suite "KadDHT Get":
       valueRemote = @[2.byte, 2, 2, 2, 2]
 
     # kad2 and kad3 have different values than kad1
-    check await kads[0].seedLocalValue(key, valueLocal)
-    check await kads[1].seedLocalValue(key, valueRemote)
-    check await kads[2].seedLocalValue(key, valueRemote)
+    check kads[0].seedLocalValue(key, valueLocal)
+    check kads[1].seedLocalValue(key, valueRemote)
+    check kads[2].seedLocalValue(key, valueRemote)
 
     # but when quorum is 0 or 1 we ignore remote values and use local value
 
@@ -416,8 +416,8 @@ suite "KadDHT Get":
     await connectHub(kads[0], kads[1 ..^ 1] & mockKad)
 
     # Compliant nodes have valid records
-    check await kads[1].seedLocalValue(key, value)
-    check await kads[2].seedLocalValue(key, value)
+    check kads[1].seedLocalValue(key, value)
+    check kads[2].seedLocalValue(key, value)
     # mockKad will return mismatched key
 
     let record = await kads[0].getValue(key, quorumOverride = Opt.some(2))
@@ -439,7 +439,7 @@ suite "KadDHT Get":
       value = @[1.byte, 2, 3, 4, 5]
 
     # Insert directly into the store
-    check await kads[1].seedLocalValue(key, value)
+    check kads[1].seedLocalValue(key, value)
 
     check:
       kads[1].containsData(key, value)
@@ -463,9 +463,9 @@ suite "KadDHT Get":
       value = @[1.byte, 2, 3, 4, 5]
 
     # All peers have the record
-    check await kads[1].seedLocalValue(key, value)
-    check await kads[2].seedLocalValue(key, value)
-    check await kads[3].seedLocalValue(key, value)
+    check kads[1].seedLocalValue(key, value)
+    check kads[2].seedLocalValue(key, value)
+    check kads[3].seedLocalValue(key, value)
 
     # Stop one peer before query
     await kads[3].switch.stop()
@@ -487,9 +487,9 @@ suite "KadDHT Get":
       value = @[1.byte, 2, 3, 4, 5]
 
     # All peers have the record
-    check await kads[1].seedLocalValue(key, value)
-    check await kads[2].seedLocalValue(key, value)
-    check await kads[3].seedLocalValue(key, value)
+    check kads[1].seedLocalValue(key, value)
+    check kads[2].seedLocalValue(key, value)
+    check kads[3].seedLocalValue(key, value)
 
     # Stop two peers before query
     await kads[2].switch.stop()
@@ -511,10 +511,26 @@ suite "KadDHT Get":
       key = kads[0].rtable.selfId
       value = @[0.byte, 0xFF, 0, 0xFF]
 
-    check await kads[0].seedLocalValue(key, value)
+    check kads[0].seedLocalValue(key, value)
 
     let record = await kads[1].getValue(key, quorumOverride = Opt.some(1))
 
     check:
       record.isOk()
       record.get().value == value
+
+  asyncTest "GET_VALUE handler does not serve an expired record":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+
+    let key = kads[1].rtable.selfId
+    check kads[1].seedLocalValue(
+      key, @[1.byte, 2, 3], expiresAt = Opt.some(nowUnixSeconds())
+    )
+
+    let record = await kads[0].getValue(key, quorumOverride = Opt.some(1))
+
+    check:
+      record.isErr()
+      kads[1].containsNoData(key)

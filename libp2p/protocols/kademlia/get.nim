@@ -44,7 +44,10 @@ proc getValue*(
   var validCount = 0
 
   # if locally present and not expired, include our own copy
-  (await kad.getLocalRecord(key)).ifValue(localRecord):
+  let local = kad.getLocalRecord(key).valueOr:
+    warn "Get-value: local record read failed", err = error
+    Opt.none(EntryRecord)
+  local.ifValue(localRecord):
     if kad.config.validator.isValid(key, localRecord):
       received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
       validCount.inc()
@@ -122,7 +125,7 @@ proc getValue*(
   let best = ?kad.bestValidRecord(key, received)
 
   discard
-    await kad.putLocalRecord(key, EntryRecord(value: best.value, time: Timestamp.now()))
+    kad.putBestLocalRecord(key, EntryRecord(value: best.value, time: Timestamp.now()))
 
   # update peers that
   # - don't have best value
@@ -150,7 +153,10 @@ method handleGetValue*(
       reason = "missingKey", messageType = "getValue", stream
     return
 
-  let entryRecord = (await kad.getLocalRecord(key)).valueOr:
+  let local = kad.getLocalRecord(key).valueOr:
+    warn "Get-value request: local record read failed", err = error, stream
+    Opt.none(EntryRecord)
+  let entryRecord = local.valueOr:
     let response = Message(
       msgType: Opt.some(MessageType.getValue),
       key: Opt.some(key),

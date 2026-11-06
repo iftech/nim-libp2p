@@ -4,7 +4,6 @@
 ## The default ``KadStore``: plain tables in memory. A ``none`` capacity means no limit.
 
 import std/[heapqueue, sequtils, tables]
-import chronos
 import ../../[peerid, results]
 import ../../utils/opt
 import ./[key_value, protobuf, store, types]
@@ -20,13 +19,9 @@ type
     peerId: PeerId
     expiresAt: UnixTimestamp
 
-  ValueSlot = object
-    value: StoredValue
-    expiresAt: UnixTimestamp
-
   Values = ref object
     cap: Opt[int]
-    byKey: Table[RecordKey, ValueSlot]
+    byKey: Table[RecordKey, StoredValue]
     keys: seq[RecordKey] ## the keys of ``byKey``, sorted
     nextExpiry: UnixTimestamp ## no value expires before this time
 
@@ -106,9 +101,9 @@ func prune(values: Values, now: UnixTimestamp) =
 
   var dead: seq[RecordKey]
   var nextExpiry = high(UnixTimestamp)
-  for key, slot in values.byKey:
-    if slot.expiresAt.isLive(now):
-      nextExpiry = min(nextExpiry, slot.expiresAt)
+  for key, value in values.byKey:
+    if value.expiresAt.isLive(now):
+      nextExpiry = min(nextExpiry, value.expiresAt)
     else:
       dead.add(key)
   for key in dead:
@@ -119,8 +114,8 @@ func prune(values: Values, now: UnixTimestamp) =
 func get(values: Values, key: RecordKey, now: UnixTimestamp): Opt[StoredValue] =
   values.prune(now)
 
-  values.byKey.withValue(key, slot):
-    return Opt.some(slot[].value)
+  values.byKey.withValue(key, value):
+    return Opt.some(value[])
   Opt.none(StoredValue)
 
 func put(values: Values, value: StoredValue, now: UnixTimestamp): bool =
@@ -131,9 +126,8 @@ func put(values: Values, value: StoredValue, now: UnixTimestamp): bool =
       return false
     values.keys.insertKey(value.key)
 
-  let expiresAt = now + value.ttl.seconds
-  values.byKey[value.key] = ValueSlot(value: value, expiresAt: expiresAt)
-  values.nextExpiry = min(values.nextExpiry, expiresAt)
+  values.byKey[value.key] = value
+  values.nextExpiry = min(values.nextExpiry, value.expiresAt)
   true
 
 func drop(values: Values, key: RecordKey) =
@@ -147,29 +141,29 @@ func list(
 
   var live: seq[StoredValue]
   for key in values.keys.page(after, limit):
-    values.byKey.withValue(key, slot):
-      live.add(slot[].value)
+    values.byKey.withValue(key, value):
+      live.add(value[])
   live
 
 method getValue*(
     store: MemoryKadStore, key: RecordKey, now: UnixTimestamp
-): Future[LPResult[Opt[StoredValue]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[Opt[StoredValue]] {.gcsafe, raises: [].} =
   ok(store.values.get(key, now))
 
 method putValue*(
     store: MemoryKadStore, value: StoredValue, now: UnixTimestamp
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[bool] {.gcsafe, raises: [].} =
   ok(store.values.put(value, now))
 
 method delValue*(
     store: MemoryKadStore, key: RecordKey
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[void] {.gcsafe, raises: [].} =
   store.values.drop(key)
   ok()
 
 method listValues*(
     store: MemoryKadStore, after: Opt[RecordKey], now: UnixTimestamp, limit: int
-): Future[LPResult[seq[StoredValue]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[seq[StoredValue]] {.gcsafe, raises: [].} =
   ok(store.values.list(after, now, limit))
 
 func `<`(a, b: ProviderSlot): bool =
@@ -291,7 +285,7 @@ method addProvider*(
     p: StoredProvider,
     now: UnixTimestamp,
     maxPerKey: int,
-): Future[LPResult[AddProviderOutcome]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[AddProviderOutcome] {.gcsafe, raises: [].} =
   let id = p.provider.id.valueOr:
     return err("provider of key " & $key & " has no id", "provider without id")
   let peerId = PeerId.init(id).valueOr:
@@ -301,12 +295,12 @@ method addProvider*(
 
 method getProviders*(
     store: MemoryKadStore, key: Key, now: UnixTimestamp, limit: int
-): Future[LPResult[seq[StoredProvider]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[seq[StoredProvider]] {.gcsafe, raises: [].} =
   ok(store.providers.get(key, now, limit))
 
 method removeProvider*(
     store: MemoryKadStore, key: Key, peerId: PeerId
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[void] {.gcsafe, raises: [].} =
   store.providers.drop(key, peerId)
   ok()
 
@@ -348,21 +342,21 @@ func list(
 
 method addProvided*(
     store: MemoryKadStore, key: ProvidedKey
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[bool] {.gcsafe, raises: [].} =
   ok(store.provided.add(key))
 
 method delProvided*(
     store: MemoryKadStore, key: ProvidedKey
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[void] {.gcsafe, raises: [].} =
   store.provided.drop(key)
   ok()
 
 method hasProvided*(
     store: MemoryKadStore, key: ProvidedKey
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[bool] {.gcsafe, raises: [].} =
   ok(key in store.provided)
 
 method listProvided*(
     store: MemoryKadStore, after: Opt[ProvidedKey], limit: int
-): Future[LPResult[seq[ProvidedKey]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[seq[ProvidedKey]] {.gcsafe, raises: [].} =
   ok(store.provided.list(after, limit))

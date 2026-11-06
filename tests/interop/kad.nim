@@ -3,6 +3,7 @@
 
 import chronos, stew/byteutils
 import ../../libp2p/[switch, builders, peerid, protocols/kademlia, wire]
+import ../../libp2p/protocols/kademlia/store
 import ../tools/[crypto, multiaddress]
 
 proc kadInteropTest*(
@@ -48,7 +49,10 @@ proc kadInteropTest*(
   await sleepAsync(2.seconds)
 
   # Require retrieval from the peer rather than our local copy.
-  kad.dataTable.del(key)
+  let delRes = kad.store.delValue(key)
+  if delRes.isErr():
+    echo "delValue failed: ", delRes.error
+    return false
   let getRes = await kad.getValue(key).wait(timeout)
   if getRes.isErr():
     echo "getValue failed: ", getRes.error
