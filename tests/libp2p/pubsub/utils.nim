@@ -320,12 +320,12 @@ proc getPeerScore*(node: GossipSub, peerId: PeerId): float64 =
 proc getPeerTopicInfo*(node: GossipSub, peerId: PeerId, topic: string): TopicInfo =
   return node.getPeerStats(peerId).topicInfos.getOrDefault(topic)
 
-# Use on the receiving side: an outbound stream has no protocol until the remote confirms it.
-proc topicStreams*(node: GossipSub, peerId: PeerId, dir: Direction): seq[MuxedStream] =
+# Inbound only: an outbound stream has no protocol until the remote confirms it.
+proc topicStreams*(node: GossipSub, peerId: PeerId): seq[MuxedStream] =
   var streams: seq[MuxedStream]
   for mux in node.switch.connManager.getConnections(peerId).get(@[]):
     for stream in mux.getStreams():
-      if stream.protocol == TopicStreamsCodec and stream.dir == dir:
+      if stream.protocol == TopicStreamsCodec and stream.dir == Direction.In:
         streams.add(stream)
   return streams
 

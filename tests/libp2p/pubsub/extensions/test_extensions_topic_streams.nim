@@ -30,11 +30,12 @@ suite "GossipSub Extensions :: Topic streams":
     for config in [Opt.none(TopicStreamsConfig), Opt.some(TopicStreamsConfig())]:
       let state = TopicStreamsExtension.new(config, noopBehaviorPenaltyProc)
       let peer = PeerId.random()
-      check state.negotiateTopicStreams(peer, RPCMsg())
-      check state.negotiateTopicStreams(
-        peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
-      )
-      check not state.peerHasTopicStreams(peer)
+      check:
+        state.negotiateTopicStreams(peer, RPCMsg())
+        state.negotiateTopicStreams(
+          peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+        )
+        not state.peerHasTopicStreams(peer)
 
   test "capability advertisement follows configuration":
     let disabled = ExtensionsState.new(rng())
@@ -60,10 +61,11 @@ suite "GossipSub Extensions :: Topic streams":
       state.initTopicStreams(
         peer, 1024, recorder.dial(), recorder.receive(), recorder.violation()
       )
-      check state.negotiateTopicStreams(
-        peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
-      )
-      check state.peerHasTopicStreams(peer)
+      check:
+        state.negotiateTopicStreams(
+          peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+        )
+        state.peerHasTopicStreams(peer)
 
     let msg = RPCMsg(
       subscriptions: @[SubOpts(topic: Opt.some("a"), subscribe: Opt.some(true))],

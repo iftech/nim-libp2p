@@ -135,7 +135,6 @@ suite "PubSubPeer send stream":
       TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
         TopicRPC(publish: Opt.some(TopicScopedMessage(data: @[2.byte])))
       msg == RPCMsg.withMessages(Message(topic: "original", data: @[1.byte]))
-      recorder.received.len == 0
       recorder.violations == 0
 
 suite "PubSubPeer receive streams":

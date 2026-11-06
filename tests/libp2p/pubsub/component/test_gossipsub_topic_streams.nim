@@ -77,7 +77,7 @@ suite "GossipSub Component - Topic streams":
     discard await nodes[0].publish(topic, "forwarded")
     checkUntilTimeout:
       received
-      nodes[2].topicStreams(nodes[1].peerInfo.peerId, Direction.In).len == 1
+      nodes[2].topicStreams(nodes[1].peerInfo.peerId).len == 1
 
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
@@ -176,7 +176,7 @@ suite "GossipSub Component - Topic streams":
     check:
       incoming[0].topicID.get() == topic
       incoming[0].partialMessage.isNone
-      nodes[0].topicStreams(nodes[1].peerInfo.peerId, Direction.In).len == 1
+      nodes[0].topicStreams(nodes[1].peerInfo.peerId).len == 1
 
     let response =
       MyPartialMessage(groupId: request.groupId, data: {1: "one".toBytes}.toTable)
@@ -186,7 +186,7 @@ suite "GossipSub Component - Topic streams":
       incoming.anyIt(it.partialMessage.isSome)
     check:
       incoming[^1].partialMessage.get() == "one".toBytes
-      nodes[1].topicStreams(nodes[0].peerInfo.peerId, Direction.In).len == 1
+      nodes[1].topicStreams(nodes[0].peerInfo.peerId).len == 1
 
   asyncTest "mixed RPC keeps subscription control separate from application response":
     let nodes = generateNodes(
