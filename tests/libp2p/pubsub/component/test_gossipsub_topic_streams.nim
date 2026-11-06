@@ -8,6 +8,7 @@ import
   ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
 import ../../../tools/[lifecycle, topology, unittest]
 import ../../../../libp2p/protocols/pubsub/rpc/protobuf
+import ../../../../libp2p/utils/future
 import ../utils
 import ../extensions/my_partial_message
 
@@ -61,9 +62,9 @@ suite "GossipSub Component - Topic streams":
       .toGossipSub()
     startAndDeferStop(nodes)
 
-    var received = false
+    let received = newFuture[void]()
     proc onMessage(topic: string, data: seq[byte]) {.async.} =
-      received = true
+      received.completeOnce()
 
     nodes[0].subscribe(topic, voidTopicHandler)
     nodes[1].subscribe(topic, voidTopicHandler)
@@ -75,9 +76,8 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout nodes[1].mesh.hasPeerId(topic, nodes[2].peerInfo.peerId)
 
     discard await nodes[0].publish(topic, "forwarded")
-    checkUntilTimeout:
-      received
-      nodes[2].inboundTopicStreams(nodes[1].peerInfo.peerId).len == 1
+    await received
+    check nodes[2].inboundTopicStreams(nodes[1].peerInfo.peerId).len == 1
 
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
