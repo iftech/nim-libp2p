@@ -117,6 +117,67 @@ suite "AutoTLS certificate issuance and renewal":
       certResult.isErr()
       certResult.error == "ACMEApiStub refused https://acme.example/new-account"
 
+  asyncTest "address discovery can recover on a later issuance attempt":
+    service = newService(
+      AutotlsConfig.new(
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        initialAddrTimeout = 20.milliseconds,
+        initialCertTimeout = 10.seconds,
+        issueRetries = 1,
+        issueRetryTime = 1.milliseconds,
+      )
+    )
+    var discoveryAttempts = 0
+    switch.peerInfo.addressMappers.add(
+      proc(
+          addrs: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        discoveryAttempts.inc()
+        if discoveryAttempts == 1:
+          # Stay blocked until the discovery timeout cancels this attempt.
+          await newAsyncEvent().wait()
+        return addrs
+    )
+
+    await service.start(switch)
+    let certResult =
+      await service.getCertWhenReady().wait(service.config.initialCertTimeout)
+
+    # The second attempt reaches ACME instead of spending the whole certificate
+    # budget on the first address discovery attempt.
+    check:
+      discoveryAttempts == 2
+      acmeApi.requestedUris.len == 1
+      certResult.isOfError("ACMEApiStub refused https://acme.example/new-account")
+
+  asyncTest "discovery polls within its budget when issuance retry delay is longer":
+    service = newService(
+      AutotlsConfig.new(
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        initialAddrTimeout = 100.milliseconds,
+        issueRetries = 0,
+        issueRetryTime = 1.seconds,
+      )
+    )
+    var discoveryPasses = 0
+    switch.peerInfo.addressMappers.add(
+      proc(
+          addrs: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        discoveryPasses.inc()
+        if discoveryPasses == 1:
+          return @[]
+        return addrs
+    )
+
+    await service.start(switch)
+    let certResult = await service.getCertWhenReady().wait(10.seconds)
+
+    check:
+      discoveryPasses == 2
+      acmeApi.requestedUris.len == 1
+      certResult.isOfError("ACMEApiStub refused https://acme.example/new-account")
+
   asyncTest "a failed round is retried on the next heartbeat":
     # No retries, so a round is one request.
     service = newService(
@@ -538,14 +599,16 @@ suite "AutoTLS on a switch":
 
     check switch.addressManager.candidates.anyIt(it.address == wsAddr)
 
-  asyncTest "a switch listening on wss fails to start without a certificate":
+  # RSA key generation can take substantially longer on loaded CI runners.
+  # Leave time for issuance to report its error and for switch cleanup afterward.
+  asyncTest "a switch listening on wss fails to start without a certificate", 90.seconds:
     let acmeApi = ACMEApiStub.new()
     let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
       .withAutotls(
         AutotlsConfig.new(
           ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
           issueRetries = 0,
-          initialCertTimeout = 10.seconds,
+          initialCertTimeout = 60.seconds,
         )
       )
       .build()
@@ -556,6 +619,49 @@ suite "AutoTLS on a switch":
 
     expectMsgContains LPError, "ACMEApiStub refused https://acme.example/new-account":
       await switch.start()
+
+  asyncTest "address discovery retries fail before the WSS certificate deadline":
+    let acmeApi = ACMEApiStub.new()
+    let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
+      .withAutotls(
+        AutotlsConfig.new(
+          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+          issueRetries = 2,
+          issueRetryTime = 1.milliseconds,
+          initialAddrTimeout = 20.milliseconds,
+          initialCertTimeout = 2.seconds,
+        )
+      )
+      .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    var discoveryAttempts = 0
+    var cancelledAttempts = 0
+    switch.peerInfo.addressMappers.add(
+      proc(
+          addrs: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        # Other services also expand configured addresses before TCP binds.
+        if addrs.len == 0 or addrs.anyIt(it == TcpAutoAddress or it == WssAutoAddress):
+          return addrs
+        discoveryAttempts.inc()
+        try:
+          await newAsyncEvent().wait()
+          return addrs
+        finally:
+          cancelledAttempts.inc()
+    )
+    defer:
+      await switch.stop()
+
+    expectMsgContains LPError,
+      "No dialable TCP address available before the address discovery deadline":
+      await switch.start()
+
+    check:
+      discoveryAttempts == 3
+      cancelledAttempts == 3
+      acmeApi.requestedUris.len == 0
 
   asyncTest "a switch listening on wss fails when autotls has no TcpTransport":
     let switch = makeStandardSwitchBuilder(@[WssAutoAddress])

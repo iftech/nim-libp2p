@@ -67,13 +67,16 @@ proc checkModeFollowsSteps(
 
   check nat.autonatV2Service().get().reachabilityObservers.len() == subscribers
 
-  for i, (state, reachability) in reachabilitySteps:
+  for stepIndex, step in reachabilitySteps:
+    let
+      (state, reachability) = step
+      wantServer = serverAfterStep[stepIndex]
     verifier.state = state
     # Replaces the AutoNAT v2 verifier and restarts the verification heartbeat.
     node.addressManager.verifier = verifier
     checkUntilTimeout:
       nat.networkReachability() == reachability
-      kad.isServer == serverAfterStep[i]
+      kad.isServer == wantServer
 
 suite "KadDHT Switch Builder":
   teardown:

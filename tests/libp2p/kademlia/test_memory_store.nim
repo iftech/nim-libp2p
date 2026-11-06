@@ -3,6 +3,7 @@
 
 {.used.}
 
+import ../../../libp2p/protocols/kademlia/memory_store
 import ./kad_store_suite
 
 proc newMemoryStore(limits: KadStoreLimits): KadStore =
