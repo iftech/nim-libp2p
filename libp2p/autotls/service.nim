@@ -42,6 +42,7 @@ const
   DefaultRenewCheckTime* = 1.hours
   DefaultRenewBufferTime* = 1.hours
   DefaultInitialCertTimeout* = 2.minutes
+  DefaultInitialAddrTimeout* = 5.seconds
   DefaultIssueRetries = 3
   DefaultIssueRetryTime = 1.seconds
 
@@ -65,8 +66,16 @@ type AutotlsConfig* = object
   renewCheckTime*: Duration
   renewBufferTime*: Duration
   initialCertTimeout*: Duration
+    ## Total WSS startup budget, including waiting for the service to run,
+    ## storage restoration, address discovery, ACME issuance and retries.
+  initialAddrTimeout*: Duration
+    ## TCP address discovery budget per issuance attempt, including address
+    ## mappers. Allow room in initialCertTimeout for all issueRetries + 1
+    ## attempts, retry delays and ACME issuance.
   issueRetries*: int
   issueRetryTime*: Duration
+    ## Delay between issuance attempts. Also used for discovery polling, capped
+    ## at one fifth of initialAddrTimeout so polling leaves room for retries.
   registrationURL*: Uri
   domainSuffix*: string
   dnsRetries*: int
@@ -172,6 +181,7 @@ proc new*(
     finalizeRetryTime: Duration = 1.seconds,
     storage: AutotlsStorage = nil,
     nameResolver: NameResolver = nil,
+    initialAddrTimeout: Duration = DefaultInitialAddrTimeout,
 ): T =
   T(
     nameResolver:
@@ -185,6 +195,7 @@ proc new*(
     renewCheckTime: renewCheckTime,
     renewBufferTime: renewBufferTime,
     initialCertTimeout: initialCertTimeout,
+    initialAddrTimeout: initialAddrTimeout,
     issueRetries: issueRetries,
     issueRetryTime: issueRetryTime,
     registrationURL: registrationURL,
@@ -438,6 +449,9 @@ proc brokerAddrs(
   if tcpTransports.len == 0:
     return @[]
 
+  let pollInterval =
+    min(self.config.issueRetryTime, self.config.initialAddrTimeout div 5)
+
   proc discoverAddrs(): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
     proc isTcpAddress(address: MultiAddress): bool =
       for transport in tcpTransports:
@@ -483,7 +497,7 @@ proc brokerAddrs(
         else:
           # AsyncEvent is sticky: a stopped transport's onRunning event remains
           # set from an earlier start, so awaiting it would spin immediately.
-          await sleepAsync(self.config.issueRetryTime)
+          await sleepAsync(pollInterval)
       else:
         # Every TCP transport has started. If none bound a listener, they are all
         # dial-only (or their listen addresses were filtered before startup), so
@@ -493,13 +507,19 @@ proc brokerAddrs(
 
         # At least one transport has a bound address, but its mapper may still
         # be becoming ready. Keep retrying until the discovery deadline.
-        await sleepAsync(self.config.issueRetryTime)
+        await sleepAsync(pollInterval)
 
+  let discoverAddrsFut = discoverAddrs()
   try:
-    return await discoverAddrs().wait(self.config.initialCertTimeout)
+    return await discoverAddrsFut.wait(self.config.initialAddrTimeout)
   except AsyncTimeoutError:
-    warn "TCP address discovery timed out", timeout = self.config.initialCertTimeout
+    warn "TCP address discovery timed out",
+      timeout = self.config.initialAddrTimeout,
+      hint =
+        "Check TCP listener and address mapper readiness; increase AutotlsConfig.initialAddrTimeout if discovery needs more time, leaving room in initialCertTimeout for retries and ACME issuance"
     return @[]
+  finally:
+    discoverAddrsFut.cancelSoon()
 
 proc issueCertificate(
     self: AutotlsService, switch: Switch
