@@ -48,7 +48,7 @@ jobs:
       - name: Run nim-lint checks
         # `chronicles_linter` imports lint/types, which was moved in nim-lint
         # after this revision. Keep the action pinned until it uses the public API.
-        uses: iftech/nim-lint@8ef975d03084d86411eaa30a50d4f985ab4d66f6
+        uses: iftech/nim-lint@6fc8fb2c0bf59d7a0c2d5459f6ec119ec4fd3cbe
         with:
           config: linter.nim
 
