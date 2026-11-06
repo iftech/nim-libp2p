@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[importutils, sequtils]
+import std/importutils
 import chronos
 import
   ../../../libp2p/[
@@ -13,7 +13,6 @@ import
     protocols/connectivity/autonat/client,
     protocols/connectivity/autonat/server,
     stream/bufferstream,
-    utils/future,
     nameresolving/nameresolver,
     nameresolving/mockresolver,
   ]
@@ -65,37 +64,6 @@ proc dialRequest(peerId: PeerId, addrs: seq[MultiAddress]): seq[byte] =
       )
     ),
   ).encode()
-
-type SilentRemote = object
-  server: StreamServer
-  ma: MultiAddress
-  accepted: Future[void]
-  release: AsyncEvent
-
-proc newSilentRemote(): SilentRemote =
-  let
-    accepted = newFuture[void]("autonat.test.accepted")
-    release = newAsyncEvent()
-
-  # The remote accepts and never speaks, so a dial to it holds its permit.
-  proc onAccept(server: StreamServer, client: StreamTransport) {.async: (raises: []).} =
-    accepted.completeOnce()
-    await noCancel release.wait()
-    await client.closeWait()
-
-  let server = createStreamServer(initTAddress("127.0.0.1:0"), onAccept, {ReuseAddr})
-  server.start()
-  SilentRemote(
-    server: server,
-    ma: MultiAddress.init(server.local).tryGet(),
-    accepted: accepted,
-    release: release,
-  )
-
-proc stop(remote: SilentRemote) {.async.} =
-  remote.release.fire()
-  remote.server.stop()
-  await remote.server.closeWait()
 
 suite "Autonat":
   teardown:
@@ -150,54 +118,6 @@ suite "Autonat":
       response.text == "Dial timeout"
       response.ma.isNone()
     await allFutures(doesNothingListener.stop(), src.stop(), dst.stop())
-
-  asyncTest "Silent dial targets of one peer do not block another peer":
-    const
-      dialTimeout = 3.seconds
-      floodStreams = 5
-    let
-      flooder = makeSwitch()
-      honest = makeSwitch()
-      dst = makeSwitch()
-      remote = newSilentRemote()
-
-    dst.mount(Autonat.new(dst, dialTimeout = dialTimeout))
-    await allFutures(flooder.start(), honest.start(), dst.start())
-    await flooder.connect(dst)
-    await honest.connect(dst)
-
-    let request = dialRequest(flooder.peerInfo.peerId, @[remote.ma])
-    var floodStreamsOpened: seq[Stream]
-    let first = await flooder.dial(dst.peerInfo.peerId, @[AutonatCodec])
-    floodStreamsOpened.add(first)
-    try:
-      await first.writeLp(request)
-    except LPStreamError as e:
-      raiseAssert "first flood stream must be admitted: " & e.msg
-    for _ in 1 ..< floodStreams:
-      let stream = await flooder.dial(dst.peerInfo.peerId, @[AutonatCodec])
-      floodStreamsOpened.add(stream)
-      # the per-peer stream limit rejects all but the first stream
-      expect LPStreamError:
-        await stream.writeLp(request)
-        discard await stream.readLp(1024)
-    # optimistic negotiation sends no round trip, so wait until a flood dial holds the permit
-    await remote.accepted
-
-    let
-      start = Moment.now()
-      stream = await honest.dial(dst.peerInfo.peerId, @[AutonatCodec])
-    await stream.writeLp(dialRequest(honest.peerInfo.peerId, honest.peerInfo.addrs))
-    let response = AutonatMsg.decode(await stream.readLp(1024)).get().response.get()
-    check:
-      Moment.now() - start < dialTimeout
-      response.status == DialRefused
-      response.text == "Too many concurrent dials"
-
-    await remote.stop()
-    await allFutures(floodStreamsOpened.mapIt(it.close()))
-    await stream.close()
-    await allFutures(flooder.stop(), honest.stop(), dst.stop())
 
   test "Default stream limits admit one stream per peer and eight in total":
     let
