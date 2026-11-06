@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/strformat
 import ../../../libp2p/[protocols/kademlia, peerid]
 import ./utils
 import ../../tools/[unittest, crypto]
@@ -93,3 +94,59 @@ suite "KadDHT Types":
       key.toKey() == Key.fromBytes(@[0xAB.byte, 2, 3])
       $key == "@[171, 2, 3]"
       key.shortLog() == "ab0203"
+
+  test "ProvidedKey holds the multihash of its CID":
+    let
+      cid = makeProvidedCid(1)
+      key = ProvidedKey.init(cid)
+      same = ProvidedKey.fromBytes(cid.toKey().toBytes()).tryGet()
+      other = ProvidedKey.init(makeProvidedCid(2))
+
+    check:
+      key.toKey() == cid.toKey()
+      key.toBytes() == cid.toKey().toBytes()
+      key.len() == cid.toKey().len
+      key == same
+      key.hash() == same.hash()
+      key != other
+      (key < other) != (other < key)
+      not (key < same)
+      $key == $cid.toKey()
+
+  test "ProvidedKey rejects bytes that are not a multihash":
+    let
+      valid = ProvidedKey.init(makeProvidedCid(1)).toBytes()
+      res = ProvidedKey.fromBytes(@[0xAB.byte, 2, 3])
+
+    check:
+      res.isErr()
+      res.error == "provided key is not a multihash (3 bytes: ab0203)"
+    for bytes in [valid[0 ..< valid.high], valid & @[0.byte], valid[0 ..< 2], @[]]:
+      checkpoint(bytes.shortLog)
+      let res = ProvidedKey.fromBytes(bytes)
+      check:
+        res.isErr()
+        res.error ==
+          fmt"provided key is not a multihash ({bytes.len} bytes: {bytes.shortLog})"
+
+  test "ProvidedKey is not interchangeable with Key or RecordKey":
+    let
+      provided = ProvidedKey.init(makeProvidedCid(1))
+      record = RecordKey.init(provided.toKey()).get()
+
+    check:
+      compiles(provided == provided)
+      not compiles(provided == record)
+      not compiles(provided == provided.toKey())
+      not compiles(
+        block:
+          let key: Key = provided
+      )
+      not compiles(
+        block:
+          discard default(ProvidedKey)
+      )
+      not compiles(
+        block:
+          discard ProvidedKey.init(provided.toKey())
+      )
