@@ -13,6 +13,7 @@ import
     protocols/connectivity/autonat/client,
     protocols/connectivity/autonat/server,
     stream/bufferstream,
+    vbuffer,
     nameresolving/nameresolver,
     nameresolving/mockresolver,
   ]
@@ -160,8 +161,12 @@ suite "Autonat":
     privateAccess(Autonat)
     check autonat.sem.tryAcquire()
 
+    var request = initVBuffer()
+    request.writeSeq(dialRequest(peerId, @[]))
+    request.finish()
+
     let handled = autonat.handler(stream, AutonatCodec)
-    await stream.pushData(dialRequest(peerId, @[]))
+    await stream.pushData(request.buffer)
     let response = AutonatMsg.decode(await responses.readLp(1024)).get().response.get()
     check:
       response.status == DialRefused
