@@ -360,6 +360,7 @@ proc withAgentVersion*(b: SwitchBuilder, agentVersion: string): SwitchBuilder =
   b
 
 proc withNameResolver*(b: SwitchBuilder, nameResolver: NameResolver): SwitchBuilder =
+  ## Use a caller-managed resolver. The switch never starts or stops it.
   b.nameResolver = nameResolver
   b
 
