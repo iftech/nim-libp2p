@@ -243,36 +243,47 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       not nodes[1].switch.isConnected(nodes[0].switch)
 
-  asyncTest "peer graylisted when its ControlExtensions arrives is disconnected on its topic stream":
-    # TODO: iftech/nim-libp2p#3390
-    let nodes = generateNodes(
-        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
-      )
-      .toGossipSub()
-    startAndDeferStop(nodes)
+  for controlFirst in [true, false]:
+    asyncTest "graylisted negotiation recovers with control RPC first: " & $controlFirst:
+      let nodes = generateNodes(
+          2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+        )
+        .toGossipSub()
+      startAndDeferStop(nodes)
 
-    nodes[0].subscribe(topic, voidTopicHandler)
-    let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
-    # nodes[1]'s score is 0, so this graylists it
-    nodes[0].parameters.graylistThreshold = 100000.0
-    # the agent label stays "unknown" until identify finishes
-    let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
+      var received = 0
+      proc handler(topic: string, data: seq[byte]) {.async.} =
+        inc received
 
-    # nodes[0] drops nodes[1]'s first RPC, its ControlExtensions
-    await connect(nodes[0], nodes[1])
-    checkUntilTimeout:
-      currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
+      nodes[0].subscribe(topic, handler)
+      let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
+      # nodes[1]'s score is 0, so this graylists it
+      nodes[0].parameters.graylistThreshold = 100000.0
+      # the agent label stays "unknown" until identify finishes
+      let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
 
-    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
-    # nodes[0] negotiates on this subscription, which has no ControlExtensions
-    nodes[1].subscribe(topic, voidTopicHandler)
-    waitSubscribeStar(nodes, topic)
+      # Negotiate capabilities even though ordinary RPC processing is suppressed.
+      await connect(nodes[0], nodes[1])
+      checkUntilTimeout:
+        currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
 
-    check:
-      not nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
-      nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+      nodes[0].parameters.graylistThreshold = originalGraylistThreshold
+      if controlFirst:
+        nodes[1].subscribe(topic, voidTopicHandler)
+        waitSubscribeStar(nodes, topic)
+      else:
+        checkUntilTimeout:
+          nodes[1].gossipsub.getOrDefault(topic).len == 1
 
-    discard await nodes[1].publish(topic, "data")
+      check:
+        nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
+        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
 
-    checkUntilTimeout:
-      not nodes[0].switch.isConnected(nodes[1].switch)
+      discard await nodes[1].publish(topic, "data")
+
+      checkUntilTimeout:
+        received == 1
+      if not controlFirst:
+        nodes[1].subscribe(topic, voidTopicHandler)
+        waitSubscribeStar(nodes, topic)
+      check nodes[0].switch.isConnected(nodes[1].switch)
