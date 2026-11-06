@@ -74,7 +74,7 @@ suite "GossipSub Component - Topic streams":
     # nodes[1] forwards only to its mesh peers
     checkUntilTimeout nodes[1].mesh.hasPeerId(topic, nodes[2].peerInfo.peerId)
 
-    discard await nodes[0].publish(topic, "forwarded".toBytes)
+    discard await nodes[0].publish(topic, "forwarded")
     checkUntilTimeout:
       received
       nodes[2].topicStreams(nodes[1].peerInfo.peerId, Direction.In).len == 1
@@ -168,7 +168,7 @@ suite "GossipSub Component - Topic streams":
     await connect(nodes[0], nodes[1])
     waitSubscribeStar(nodes, topic)
 
-    let request = MyPartialMessage(groupId: "group".toBytes, want: @[1])
+    let request = MyPartialMessage(groupId: "group", want: @[1])
     store.messages[request.groupId] = request
     await nodes[1].publishPartial(topic, request.groupId, request.partsMetadata())
     checkUntilTimeout:

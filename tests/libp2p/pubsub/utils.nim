@@ -593,3 +593,6 @@ proc addDirectPeerStar*[T: PubSub](nodes: seq[T]) {.async.} =
 
 proc pluckPeerId*[T: PubSub](nodes: seq[T]): seq[PeerId] =
   nodes.mapIt(it.peerInfo.peerId)
+
+proc makeRPC*(extensions: ControlExtensions = ControlExtensions()): RPCMsg =
+  RPCMsg.withControl(ControlMessage.withExtensions(extensions))

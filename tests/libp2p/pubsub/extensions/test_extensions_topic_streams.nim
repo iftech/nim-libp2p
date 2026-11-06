@@ -7,19 +7,10 @@ import chronos, results
 import ../../../../libp2p/peerid
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
-import ../../../../libp2p/stream/bridgestream
+import ../../../../libp2p/stream/connection
 import ../../../tools/[unittest, crypto]
-
-proc supported(): RPCMsg =
-  RPCMsg.withControl(
-    ControlMessage.withExtensions(ControlExtensions(topicStreams: Opt.some(true)))
-  )
-
-proc unexpectedViolation() {.gcsafe, raises: [].} =
-  raiseAssert "valid topic streams must not cause a protocol violation"
-
-proc ignoreReceived(msg: sink RPCMsg, size: int) {.async: (raises: [CancelledError]).} =
-  discard
+import ../utils
+import ./extension_recording
 
 suite "GossipSub Extensions :: Topic streams":
   teardown:
@@ -40,7 +31,9 @@ suite "GossipSub Extensions :: Topic streams":
       let state = TopicStreamsExtension.new(config, noopBehaviorPenaltyProc)
       let peer = PeerId.random()
       check state.negotiateTopicStreams(peer, RPCMsg())
-      check state.negotiateTopicStreams(peer, supported())
+      check state.negotiateTopicStreams(
+        peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+      )
       check not state.peerHasTopicStreams(peer)
 
   test "capability advertisement follows configuration":
@@ -57,21 +50,19 @@ suite "GossipSub Extensions :: Topic streams":
     let state =
       TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
     let peers = [PeerId.random(), PeerId.random()]
-    var remotes: seq[Stream]
-    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
-      let (local, remote) = bridgedConnections()
-      remotes.add(remote)
-      return local
-
+    let recorder = TopicStreamsRecorder()
     defer:
       for peer in peers:
         await state.stopTopicStreams(peer)
-      for remote in remotes:
-        await remote.close()
+      await recorder.closeOutgoingStreams()
 
     for peer in peers:
-      state.initTopicStreams(peer, 1024, dial, ignoreReceived, unexpectedViolation)
-      check state.negotiateTopicStreams(peer, supported())
+      state.initTopicStreams(
+        peer, 1024, recorder.dial(), recorder.receive(), recorder.violation()
+      )
+      check state.negotiateTopicStreams(
+        peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+      )
       check state.peerHasTopicStreams(peer)
 
     let msg = RPCMsg(
@@ -86,8 +77,8 @@ suite "GossipSub Extensions :: Topic streams":
       let controlRPC = RPCMsg.decode(state.sendTopicRPC(peer, prepared, true)).get()
       check controlRPC == RPCMsg.withSubscriptions(msg.subscriptions)
 
-    check remotes.len == peers.len
-    for remote in remotes:
+    check recorder.outgoingStreams.len == peers.len
+    for remote in recorder.outgoingStreams:
       check TopicRPCHeader.decode(await remote.readLp(1024)).get() ==
         TopicRPCHeader(topic: Opt.some("a"))
       let publish = TopicRPC.decode(await remote.readLp(1024)).get()
@@ -99,29 +90,25 @@ suite "GossipSub Extensions :: Topic streams":
         )
 
     await allFutures(state.closeTopicStreams("a"))
-    for remote in remotes:
+    for remote in recorder.outgoingStreams:
       var data: byte
       check (await remote.readOnce(addr data, 1)) == 0
+    check recorder.violations == 0
 
   asyncTest "stopping a peer does not remove a replacement transport":
     let state =
       TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
     let peer = PeerId.random()
-    let pending = newAsyncEvent()
-    var cancelled = 0
-    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
-      try:
-        await pending.wait()
-      except CancelledError as exc:
-        inc cancelled
-        raise exc
-      raiseAssert "dial must be cancelled before it completes"
-
+    let recorder = TopicStreamsRecorder()
     defer:
       await state.stopTopicStreams(peer)
 
-    state.initTopicStreams(peer, 1024, dial, ignoreReceived, unexpectedViolation)
-    check state.negotiateTopicStreams(peer, supported())
+    state.initTopicStreams(
+      peer, 1024, recorder.pendingDial(), recorder.receive(), recorder.violation()
+    )
+    check state.negotiateTopicStreams(
+      peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
     discard state.sendTopicRPC(
       peer,
       makePreparedTopicRPC(
@@ -131,8 +118,14 @@ suite "GossipSub Extensions :: Topic streams":
     )
     let stopping = state.stopTopicStreams(peer)
     check not state.peerHasTopicStreams(peer)
-    state.initTopicStreams(peer, 1024, dial, ignoreReceived, unexpectedViolation)
-    check state.negotiateTopicStreams(peer, supported())
+    state.initTopicStreams(
+      peer, 1024, recorder.pendingDial(), recorder.receive(), recorder.violation()
+    )
+    check state.negotiateTopicStreams(
+      peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
     await stopping
-    check cancelled == 1
-    check state.peerHasTopicStreams(peer)
+    check:
+      recorder.cancelledDials == 1
+      state.peerHasTopicStreams(peer)
+      recorder.violations == 0
