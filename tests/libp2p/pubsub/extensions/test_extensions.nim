@@ -9,10 +9,8 @@ import
   ../../../../libp2p/protocols/pubsub/
     [gossipsub/extensions, gossipsub/extensions_types, rpc/messages]
 import ../../../tools/[unittest, crypto]
+import ../utils
 import ./extension_recording
-
-proc makeRPC(extensions: ControlExtensions = ControlExtensions()): RPCMsg =
-  RPCMsg.withControl(ControlMessage.withExtensions(extensions))
 
 proc createBehaviorPenaltyProc*(): (ref seq[PeerId], UpdatePeerBehaviorPenaltyProc) =
   let peers = new seq[PeerId]

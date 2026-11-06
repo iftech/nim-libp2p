@@ -9,8 +9,8 @@ import ./utils
 import ../../../libp2p/stream/bufferstream
 import ../../../libp2p/protocols/pubsub/[pubsubpeer, gossipsub]
 import ../../../libp2p/protocols/pubsub/rpc/messages
-import ../../../libp2p/stream/bridgestream
 import ../../tools/[unittest, bufferstream]
+import ./extensions/extension_recording
 
 type
   FlakyDialer = ref object
@@ -107,42 +107,35 @@ suite "PubSubPeer send stream":
     await peer.stopTasks()
 
   asyncTest "topic stream routing preserves send observer changes":
-    let (local, remote) = bridgedConnections()
     let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
     peer.extensionsState =
       ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
-    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
-      return local
-
-    proc receive(msg: sink RPCMsg, size: int) {.async: (raises: [CancelledError]).} =
-      raiseAssert "send-only test must not receive a payload"
-
-    proc violation() {.gcsafe, raises: [].} =
-      raiseAssert "send observer must not cause a protocol violation"
+    let recorder = TopicStreamsRecorder()
 
     proc onSend(p: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
       msg.messages = @[Message(topic: "changed", data: @[2.byte])]
 
     peer.observers = new(seq[PubSubObserver])
     peer.observers[].add(PubSubObserver(onSend: onSend))
-    peer.extensionsState.initTopicStreams(peer.peerId, 1024, dial, receive, violation)
+    peer.extensionsState.initTopicStreams(
+      peer.peerId, 1024, recorder.dial(), recorder.receive(), recorder.violation()
+    )
     defer:
       await peer.extensionsState.stopTopicStreams(peer.peerId)
       await peer.stopTasks()
-      await remote.close()
+      await recorder.closeOutgoingStreams()
     check peer.extensionsState.negotiateTopicStreams(
-      peer.peerId,
-      RPCMsg.withControl(
-        ControlMessage.withExtensions(ControlExtensions(topicStreams: Opt.some(true)))
-      ),
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
     )
     let msg = RPCMsg.withMessages(Message(topic: "original", data: @[1.byte]))
     peer.send(msg, false, MessagePriority.Medium)
-    check TopicRPCHeader.decode(await remote.readLp(1024)).get() ==
-      TopicRPCHeader(topic: Opt.some("changed"))
-    check TopicRPC.decode(await remote.readLp(1024)).get() ==
-      TopicRPC(publish: Opt.some(TopicScopedMessage(data: @[2.byte])))
-    check msg == RPCMsg.withMessages(Message(topic: "original", data: @[1.byte]))
+    check:
+      TopicRPCHeader.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        TopicRPCHeader(topic: Opt.some("changed"))
+      TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        TopicRPC(publish: Opt.some(TopicScopedMessage(data: @[2.byte])))
+      msg == RPCMsg.withMessages(Message(topic: "original", data: @[1.byte]))
+      recorder.violations == 0
 
 suite "PubSubPeer receive streams":
   teardown:

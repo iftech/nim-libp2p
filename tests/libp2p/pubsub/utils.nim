@@ -15,6 +15,7 @@ import
 import
   ../../../libp2p/[
     switch,
+    muxers/muxer,
     protocols/pubsub/errors,
     protocols/pubsub/pubsub,
     protocols/pubsub/pubsubpeer,
@@ -319,6 +320,15 @@ proc getPeerScore*(node: GossipSub, peerId: PeerId): float64 =
 proc getPeerTopicInfo*(node: GossipSub, peerId: PeerId, topic: string): TopicInfo =
   return node.getPeerStats(peerId).topicInfos.getOrDefault(topic)
 
+# An outbound stream has no protocol until the remote confirms it.
+proc inboundTopicStreams*(node: GossipSub, peerId: PeerId): seq[MuxedStream] =
+  var streams: seq[MuxedStream]
+  for mux in node.switch.connManager.getConnections(peerId).get(@[]):
+    for stream in mux.getStreams():
+      if stream.protocol == TopicStreamsCodec and stream.dir == Direction.In:
+        streams.add(stream)
+  return streams
+
 proc connect*[T: PubSub](dialer: T, target: T) {.async.} =
   doAssert dialer.switch.peerInfo.peerId != target.switch.peerInfo.peerId,
     "Could not connect same peer"
@@ -583,3 +593,6 @@ proc addDirectPeerStar*[T: PubSub](nodes: seq[T]) {.async.} =
 
 proc pluckPeerId*[T: PubSub](nodes: seq[T]): seq[PeerId] =
   nodes.mapIt(it.peerInfo.peerId)
+
+proc makeRPC*(extensions: ControlExtensions = ControlExtensions()): RPCMsg =
+  RPCMsg.withControl(ControlMessage.withExtensions(extensions))
