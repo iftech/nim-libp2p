@@ -13,6 +13,7 @@ export sequtils, chronos, results, peerid, kademlia, unittest, crypto
 const
   Now: UnixTimestamp = 1_000
   Later: UnixTimestamp = Now + 60
+  Lifetime = 60.seconds
   Unlimited = high(int)
   PageSize = 3
   ProvidedKeyBytes = [7'u8, 2, 9, 4, 1, 8, 3, 6, 5, 10]
@@ -26,14 +27,24 @@ type
     provider: Peer
     cause: string
 
+func wholeSeconds(d: Duration): int64 =
+  doAssert d == d.seconds().seconds(), "sub-second durations truncate: " & $d
+  d.seconds()
+
+func `-`(t: UnixTimestamp, d: Duration): UnixTimestamp =
+  t - d.wholeSeconds()
+
+func `+`(t: UnixTimestamp, d: Duration): UnixTimestamp =
+  t + d.wholeSeconds()
+
 func recordKey(b: byte): RecordKey =
   RecordKey.init(Key.fromBytes(@[b])).get()
 
-proc storedValue(b: byte, expiresAt = Later): StoredValue =
+proc storedValue(b: byte, ttl = Lifetime): StoredValue =
   StoredValue(
     key: recordKey(b),
     record: EntryRecord(value: Value.init([b]), time: Timestamp.now()),
-    expiresAt: expiresAt,
+    ttl: ttl,
   )
 
 proc storedProvider(peerId: PeerId, expiresAt = Later): StoredProvider =
@@ -87,48 +98,49 @@ template kadStoreTestSuite*(
 
     asyncTest "putValue replaces the value of the key":
       let store = factory(KadStoreLimits())
-      let replacement = storedValue(1, Later + 1)
+      # a different ttl tells the replacement from the first value
+      let replacement = storedValue(1, Lifetime + 1.seconds)
 
       check:
         (await store.putValue(storedValue(1), Now)).get()
         (await store.putValue(replacement, Now)).get()
         (await store.getValue(replacement.key, Now)).get() == replacement
 
-    asyncTest "getValue and listValues hide a value with expiresAt <= now":
+    asyncTest "getValue and listValues hide a value once its ttl runs out":
       let store = factory(KadStoreLimits())
-      check (await store.putValue(storedValue(1, expiresAt = Now), Now)).get()
+      check (await store.putValue(storedValue(1, ttl = 1.seconds), Now - 1.seconds)).get()
 
       check:
-        (await store.getValue(recordKey(1), Now - 1)).get().isSome()
+        (await store.getValue(recordKey(1), Now - 1.seconds)).get().isSome()
         (await store.getValue(recordKey(1), Now)).get().isNone()
         (await store.listValues(Opt.none(RecordKey), Now, Unlimited)).get().len == 0
 
     asyncTest "getValue deletes the expired value":
       let store = factory(KadStoreLimits())
-      check (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
+      check (await store.putValue(storedValue(1, ttl = 1.seconds), Now - 1.seconds)).get()
 
       check:
         (await store.getValue(recordKey(1), Now)).get().isNone()
-        (await store.getValue(recordKey(1), Now - 1)).get().isNone()
+        (await store.getValue(recordKey(1), Now - 1.seconds)).get().isNone()
 
     asyncTest "listValues deletes the expired values":
       let store = factory(KadStoreLimits())
-      check (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
+      check (await store.putValue(storedValue(1, ttl = 1.seconds), Now - 1.seconds)).get()
 
       check:
         (await store.listValues(Opt.none(RecordKey), Now, Unlimited)).get().len == 0
-        (await store.getValue(recordKey(1), Now - 1)).get().isNone()
+        (await store.getValue(recordKey(1), Now - 1.seconds)).get().isNone()
 
     asyncTest "putValue deletes expired values and keeps live ones":
       let store = factory(KadStoreLimits(maxValues: 2))
       check:
-        (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
-        (await store.putValue(storedValue(2), Now - 1)).get()
+        (await store.putValue(storedValue(1, ttl = 1.seconds), Now - 1.seconds)).get()
+        (await store.putValue(storedValue(2), Now - 1.seconds)).get()
 
       check:
         (await store.putValue(storedValue(3), Now)).get()
         not (await store.putValue(storedValue(4), Now)).get()
-        (await store.getValue(recordKey(1), Now - 1)).get().isNone()
+        (await store.getValue(recordKey(1), Now - 1.seconds)).get().isNone()
         (await store.getValue(recordKey(2), Now)).get().isSome()
 
     asyncTest "a full store refuses a new key and accepts a known key":
@@ -137,25 +149,25 @@ template kadStoreTestSuite*(
       check:
         (await store.putValue(storedValue(1), Now)).get()
         not (await store.putValue(storedValue(2), Now)).get()
-        (await store.putValue(storedValue(1, Later + 1), Now)).get()
+        (await store.putValue(storedValue(1, Lifetime + 1.seconds), Now)).get()
         (await store.getValue(recordKey(2), Now)).get().isNone()
 
     asyncTest "a full store drops expired values to accept a new key":
       let store = factory(KadStoreLimits(maxValues: 1))
       check:
-        (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
+        (await store.putValue(storedValue(1, ttl = 1.seconds), Now - 1.seconds)).get()
         (await store.putValue(storedValue(2), Now)).get()
-        (await store.getValue(recordKey(1), Now - 1)).get().isNone()
+        (await store.getValue(recordKey(1), Now - 1.seconds)).get().isNone()
 
     asyncTest "a full store drops a value stored after an earlier drop":
       let store = factory(KadStoreLimits(maxValues: 2))
       check:
-        (await store.putValue(storedValue(1, expiresAt = Now), Now - 1)).get()
-        (await store.putValue(storedValue(2), Now - 1)).get()
-        (await store.putValue(storedValue(3, expiresAt = Now + 1), Now)).get()
-        (await store.putValue(storedValue(4), Now + 1)).get()
+        (await store.putValue(storedValue(1, ttl = 1.seconds), Now - 1.seconds)).get()
+        (await store.putValue(storedValue(2), Now - 1.seconds)).get()
+        (await store.putValue(storedValue(3, ttl = 1.seconds), Now)).get()
+        (await store.putValue(storedValue(4), Now + 1.seconds)).get()
         (await store.getValue(recordKey(3), Now)).get().isNone()
-        (await store.getValue(recordKey(2), Now + 1)).get().isSome()
+        (await store.getValue(recordKey(2), Now + 1.seconds)).get().isSome()
 
     asyncTest "delValue frees capacity":
       let store = factory(KadStoreLimits(maxValues: 1))
@@ -210,7 +222,7 @@ template kadStoreTestSuite*(
       let store = factory(KadStoreLimits())
       let long = RecordKey.init(Key.fromBytes(@[1'u8, 0])).get()
       check:
-        (await store.putValue(StoredValue(key: long, expiresAt: Later), Now)).get()
+        (await store.putValue(StoredValue(key: long, ttl: Lifetime), Now)).get()
         (await store.putValue(storedValue(1), Now)).get()
 
       check (await store.listValues(Opt.none(RecordKey), Now, Unlimited))

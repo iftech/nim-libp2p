@@ -3,7 +3,6 @@
 
 {.used.}
 
-import std/tables
 import std/times except hours, milliseconds, minutes, seconds
 import chronos
 import ../../../libp2p/[protocols/kademlia, switch, builders, multihash]
@@ -22,8 +21,8 @@ suite "KadDHT Put":
 
     # Both nodes start with empty data tables
     check:
-      kads[0].dataTable.len == 0
-      kads[1].dataTable.len == 0
+      kads[0].valueCount() == 0
+      kads[1].valueCount() == 0
 
     let key = kads[0].rtable.selfId
     let value = @[1.byte, 2, 3, 4, 5]
@@ -46,13 +45,13 @@ suite "KadDHT Put":
     # Both validators reject -> putValue fails, nothing stored
     check:
       (await kads[1].putValue(key, value)).isErr()
-      kads[0].dataTable.len == 0
+      kads[0].valueCount() == 0
 
     # Only receiver accepts -> sender validation still fails
     kads[0].config.validator = PermissiveValidator()
     check:
       (await kads[1].putValue(key, value)).isErr()
-      kads[0].dataTable.len == 0
+      kads[0].valueCount() == 0
 
     # Both validators accept -> putValue succeeds
     kads[1].config.validator = PermissiveValidator()
@@ -72,7 +71,7 @@ suite "KadDHT Put":
     discard await kads[1].putValue(key, value)
 
     # Parse the stored timestamp
-    let storedTime: string = kads[0].dataTable[key].time
+    let storedTime: string = kads[0].localValue(key).get().time
     let now = times.now().utc
     let parsed = storedTime.parse(initTimeFormat("yyyy-MM-dd'T'HH:mm:ss'Z'"), utc())
 
@@ -210,59 +209,21 @@ suite "KadDHT Put":
     discard await kads[1].putValue(key, value)
     check kads[0].containsData(key, value)
 
-  asyncTest "PUT_VALUE entries expire after recordExpirationInterval":
-    # Use a short expiration interval so the test doesn't take long.
-    # The stored timestamp has second-level precision, so we use 2s to avoid
-    # sub-second rounding causing premature expiry in the containsData check.
-    let kads = setupKadSwitches(
-      2,
-      recordExpirationInterval = 2.seconds,
-      cleanupDataEntriesInterval = 100.milliseconds,
-    )
+  asyncTest "PUT_VALUE stores the record with ttl recordExpirationInterval":
+    let interval = 7.minutes
+    let kads = setupKadSwitches(2, recordExpirationInterval = interval)
     startAndDeferStop(kads)
 
     await connect(kads[0], kads[1])
 
     let key = kads[0].rtable.selfId
-    let value = @[1.byte, 2, 3, 4, 5]
-    discard await kads[1].putValue(key, value)
+    check (await kads[1].putValue(key, @[1.byte, 2, 3])).isOk()
 
-    # Value is present right after insertion
-    check:
-      kads[0].containsData(key, value)
-      kads[1].containsData(key, value)
-
-    # Wait until both the expiration interval AND a cleanup cycle have elapsed
-    checkUntilTimeout:
-      kads[0].containsNoData(key)
-      kads[1].containsNoData(key)
-
-  asyncTest "isExpired returns correct values for various intervals":
-    let now = times.now().utc
-    let oneHourAgo = now - times.initDuration(hours = 1)
-    let twoDaysAgo = now - times.initDuration(hours = 48)
-
-    let freshRecord = EntryRecord(value: @[1.byte], time: now.format(TimestampFormat))
-    let oldRecord =
-      EntryRecord(value: @[1.byte], time: oneHourAgo.format(TimestampFormat))
-    let veryOldRecord =
-      EntryRecord(value: @[1.byte], time: twoDaysAgo.format(TimestampFormat))
-
-    # Fresh record should not be expired even with short intervals
-    check not isExpired(freshRecord, 30.minutes)
-    check not isExpired(freshRecord, 24.hours)
-
-    # 1-hour-old record: expired with 30-minute TTL, not with 2-hour TTL
-    check isExpired(oldRecord, 30.minutes)
-    check not isExpired(oldRecord, 2.hours)
-
-    # 2-day-old record: always expired for any sane TTL including default 24h
-    check isExpired(veryOldRecord, 24.hours)
-    check isExpired(veryOldRecord, 2.hours)
-
-    # Record with an unparseable timestamp is treated as expired
-    let badRecord = EntryRecord(value: @[1.byte], time: "not-a-timestamp")
-    check isExpired(badRecord, 24.hours)
+    for kad in kads:
+      let stored = (await kad.store.getValue(key, nowUnixSeconds())).get()
+      check:
+        stored.isSome()
+        stored.get().ttl == interval
 
   asyncTest "PUT_VALUE without a key or with an invalid record is not stored":
     let kads = setupKadSwitches(2, validator = RestrictiveValidator())
