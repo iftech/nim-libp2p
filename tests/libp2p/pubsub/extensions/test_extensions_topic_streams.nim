@@ -9,7 +9,6 @@ import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
 import ../../../../libp2p/stream/connection
 import ../../../tools/[unittest, crypto]
-import ../utils
 import ./extension_recording
 
 suite "GossipSub Extensions :: Topic streams":
@@ -51,7 +50,7 @@ suite "GossipSub Extensions :: Topic streams":
     let state =
       TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
     let peers = [PeerId.random(), PeerId.random()]
-    let recorder = TopicStreamsRecorder()
+    let recorder = TopicStreamsRecorder.new()
     defer:
       for peer in peers:
         await state.stopTopicStreams(peer)
@@ -101,7 +100,7 @@ suite "GossipSub Extensions :: Topic streams":
     let state =
       TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
     let peer = PeerId.random()
-    let recorder = TopicStreamsRecorder()
+    let recorder = TopicStreamsRecorder.new()
     defer:
       await state.stopTopicStreams(peer)
 

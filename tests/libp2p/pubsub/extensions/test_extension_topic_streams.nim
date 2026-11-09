@@ -8,7 +8,7 @@ import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/bridgestream
 import ../../../tools/[unittest, bufferstream]
-import ../utils
+import ../converters
 import ./extension_recording
 
 suite "GossipSub topic stream wire format":
@@ -79,7 +79,7 @@ suite "GossipSub topic stream negotiation":
           partialMessageExtension: Opt.some(PartialMessageExtensionRPC(topicID: topic))
         ), # partial message
       ]:
-        let recorder = TopicStreamsRecorder()
+        let recorder = TopicStreamsRecorder.new()
         let state = TopicStreams.new(recorder)
         check:
           state.negotiate(first)
@@ -93,7 +93,7 @@ suite "GossipSub topic stream negotiation":
         # advertises topic streams
       (subscription, false, 1), # denies support after opening the topic stream
     ]:
-      let recorder = TopicStreamsRecorder()
+      let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(recorder)
       let (remote, local) = bridgedConnections()
       # the peer opens a topic stream first, so we assume it supports topic streams
@@ -106,8 +106,7 @@ suite "GossipSub topic stream negotiation":
       # the peer publishes on it before its first control RPC arrives
       await remote.writeLp(TopicRPCHeader(topic: topic).encode())
       await remote.writeLp(Message(data: @[1.byte], topic: topic).topicRPC().encode())
-      checkUntilTimeout:
-        recorder.received.len == 1
+      discard await recorder.received.popFirst()
       check:
         state.negotiate(first) == isSupported
         state.isActive() == isSupported
@@ -118,7 +117,7 @@ suite "GossipSub topic stream lifecycle":
     checkTrackers()
 
   asyncTest "independent topic writers, replacement, and bounded queue":
-    let recorder = TopicStreamsRecorder()
+    let recorder = TopicStreamsRecorder.new()
     let state =
       TopicStreams.new(recorder, TopicStreamsConfig(maxStreams: 3, maxQueuedBytes: 128))
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
@@ -162,7 +161,7 @@ suite "GossipSub topic stream lifecycle":
     check (await recorder.outgoingStreams[3].readOnce(addr data, 1)) == 0
 
   asyncTest "closing a pending writer cancels its dial and releases queue capacity":
-    let recorder = TopicStreamsRecorder()
+    let recorder = TopicStreamsRecorder.new()
     let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
     let state = TopicStreams.new(
       TopicStreamsConfig(
@@ -192,7 +191,7 @@ suite "GossipSub topic stream lifecycle":
 
   asyncTest "reader errors release streams and preserve violation handling":
     for scenario in 0 .. 6:
-      let recorder = TopicStreamsRecorder()
+      let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(recorder, maxMessageSize = 32)
       let (remote, local) = bridgedConnections()
       let reading = state.readTopic(local)
@@ -230,7 +229,7 @@ suite "GossipSub topic stream lifecycle":
         recorder.violations == (if scenario in [5, 6]: 1 else: 0)
 
   asyncTest "fourth reader for a topic is rejected and stop closes the others":
-    let recorder = TopicStreamsRecorder()
+    let recorder = TopicStreamsRecorder.new()
     let state = TopicStreams.new(recorder)
     var remotes: seq[Stream]
     var readers: seq[Future[void]]
@@ -248,8 +247,7 @@ suite "GossipSub topic stream lifecycle":
       await remote.writeLp(TopicRPCHeader(topic: "a").encode())
       if i < 3:
         await remote.writeLp(Message(data: @[1.byte], topic: "a").topicRPC().encode())
-        checkUntilTimeout:
-          recorder.received.len == i + 1
+        discard await recorder.received.popFirst()
       else:
         await readers[i]
         check local.closed()
@@ -277,7 +275,7 @@ suite "GossipSub topic stream send side":
       (maxMessageSize, 1), # largest frame the peer accepts
       (maxMessageSize + 1, 0), # frame the peer would penalize
     ]:
-      let recorder = TopicStreamsRecorder()
+      let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(recorder, maxMessageSize = maxMessageSize)
       defer:
         await state.stop()
@@ -298,19 +296,20 @@ suite "GossipSub topic stream send side":
       # frames[0] in flight and frames[1] queued fill the message budget
       TopicStreamsConfig(maxQueuedMessages: 2),
     ]:
-      var written: seq[seq[byte]]
+      let written = newAsyncQueue[seq[byte]]()
       let frameWritten = newAsyncEvent()
       proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
         return TestBufferStream.new(
           proc(
               data: sink seq[byte]
           ) {.async: (raises: [CancelledError, LPStreamError]).} =
-            written.add(data[1 ..^ 1]) # without the 1-byte length prefix
-            if written[^1] == frames[0]:
+            let frame = data[1 ..^ 1] # without the 1-byte length prefix
+            await written.put(frame)
+            if frame == frames[0]:
               await frameWritten.wait()
         )
 
-      let recorder = TopicStreamsRecorder()
+      let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(
         config,
         1024,
@@ -325,16 +324,17 @@ suite "GossipSub topic stream send side":
 
       state.sendTopic(topic, frames[0], true) # in flight until frameWritten fires
       state.sendTopic(topic, frames[1], true) # queued behind frames[0]
-      check written == @[header, frames[0]]
+      check:
+        (await written.popFirst()) == header
+        (await written.popFirst()) == frames[0]
+        written.len == 0
 
       state.sendTopic(topic, frames[2], true) # dropped: the budget is full
       frameWritten.fire() # frames[0]'s write completes and releases its budget
-      checkUntilTimeout:
-        written == @[header, frames[0], frames[1]]
+      check (await written.popFirst()) == frames[1]
 
       state.sendTopic(topic, frames[3], true) # accepted: the budget has room again
-      checkUntilTimeout:
-        written == @[header, frames[0], frames[1], frames[3]]
       check:
+        (await written.popFirst()) == frames[3]
         recorder.penalties == 0
         recorder.violations == 0

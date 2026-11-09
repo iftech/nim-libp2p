@@ -9,7 +9,6 @@ import
   ../../../../libp2p/protocols/pubsub/
     [gossipsub/extensions, gossipsub/extensions_types, rpc/messages]
 import ../../../tools/[unittest, crypto]
-import ../utils
 import ./extension_recording
 
 proc createBehaviorPenaltyProc*(): (ref seq[PeerId], UpdatePeerBehaviorPenaltyProc) =

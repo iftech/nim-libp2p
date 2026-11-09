@@ -8,6 +8,9 @@ import
   ../../../../libp2p/protocols/pubsub/
     [gossipsub/extensions_types, gossipsub/extension_topic_streams, rpc/messages]
 
+proc makeRPC*(extensions: ControlExtensions = ControlExtensions()): RPCMsg =
+  return RPCMsg.withControl(ControlMessage.withExtensions(extensions))
+
 type RecordingExtension* = ref object of Extension
   # basic implementation that records method calls.
   heartbeatCount*: int
@@ -40,9 +43,12 @@ type TopicStreamsRecorder* = ref object
   # records the calls TopicStreams makes to its callbacks.
   outgoingStreams*: seq[Stream] # remote end of each dialed stream
   cancelledDials*: int
-  received*: seq[RPCMsg]
+  received*: AsyncQueue[RPCMsg]
   violations*: int
   penalties*: int
+
+proc new*(T: typedesc[TopicStreamsRecorder]): T =
+  return T(received: newAsyncQueue[RPCMsg]())
 
 proc dial*(recorder: TopicStreamsRecorder): TopicStreamDial =
   return proc(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
@@ -61,7 +67,7 @@ proc pendingDial*(recorder: TopicStreamsRecorder): TopicStreamDial =
 
 proc receive*(recorder: TopicStreamsRecorder): TopicStreamReceive =
   return proc(msg: sink RPCMsg, size: int) {.async: (raises: [CancelledError]).} =
-    recorder.received.add(msg)
+    await recorder.received.put(msg)
 
 proc violation*(recorder: TopicStreamsRecorder): proc() {.gcsafe, raises: [].} =
   return proc() {.gcsafe, raises: [].} =

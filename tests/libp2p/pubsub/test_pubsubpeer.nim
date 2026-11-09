@@ -110,7 +110,7 @@ suite "PubSubPeer send stream":
     let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
     peer.extensionsState =
       ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
-    let recorder = TopicStreamsRecorder()
+    let recorder = TopicStreamsRecorder.new()
 
     proc onSend(p: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
       msg.messages = @[Message(topic: "changed", data: @[2.byte])]

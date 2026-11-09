@@ -174,7 +174,7 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       incoming.len == 1
     check:
-      incoming[0].topicID.get() == topic
+      incoming[0].topicID == topic
       incoming[0].partialMessage.isNone
       nodes[0].inboundTopicStreams(nodes[1].peerInfo.peerId).len == 1
 
@@ -185,7 +185,7 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       incoming.anyIt(it.partialMessage.isSome)
     check:
-      incoming[^1].partialMessage.get() == "one".toBytes
+      incoming[^1].partialMessage == "one".toBytes
       nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 1
 
   asyncTest "mixed RPC keeps subscription control separate from application response":
