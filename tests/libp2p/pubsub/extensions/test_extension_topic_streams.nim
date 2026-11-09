@@ -11,6 +11,8 @@ import ../../../tools/[unittest, bufferstream]
 import ../converters
 import ./extension_recording
 
+const topic = "foobar"
+
 suite "GossipSub topic stream wire format":
   test "full message reconstructs canonical signature input":
     let message = Message(
@@ -60,7 +62,6 @@ suite "GossipSub topic stream negotiation":
   teardown:
     checkTrackers()
 
-  const topic = "foobar"
   let subscription = RPCMsg.withSubscriptions(@[SubOpts(topic: topic, subscribe: true)])
 
   test "application payload on control stream is a protocol violation only after the peer advertised support":
@@ -256,7 +257,6 @@ suite "GossipSub topic stream lifecycle":
       recorder.penalties == 1
       recorder.violations == 0
     await state.stop()
-    await allFutures(readers)
     for remote in remotes:
       var data: byte
       check (await remote.readOnce(addr data, 1)) == 0
@@ -265,7 +265,6 @@ suite "GossipSub topic stream send side":
   teardown:
     checkTrackers()
 
-  const topic = "foobar"
   let header = TopicRPCHeader(topic: topic).encode()
 
   asyncTest "frame over the maximum message size is dropped":
@@ -338,3 +337,36 @@ suite "GossipSub topic stream send side":
         (await written.popFirst()) == frames[3]
         recorder.penalties == 0
         recorder.violations == 0
+
+suite "GossipSub topic stream receive side":
+  teardown:
+    checkTrackers()
+
+  let header = TopicRPCHeader(topic: topic).encode()
+  let message = Message(data: @[1.byte], topic: topic)
+  let frame = message.topicRPC().encode()
+
+  asyncTest "reader delivers one more frame after a protocol violation":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder)
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    let reader = state.readTopic(nodeEnd)
+    defer:
+      await reader.cancelAndWait()
+      await state.stop()
+      await peerEnd.close()
+
+    await peerEnd.writeLp(header)
+    await peerEnd.writeLp(frame)
+    check (await recorder.received.popFirst()).messages == @[message]
+
+    # reader now waits for its next frame, past its check for a stopped transport
+    # the peer opened a topic stream, so denying support is a protocol violation
+    check:
+      not state.negotiate(makeRPC(ControlExtensions(topicStreams: false)))
+      recorder.violations == 1
+
+    await peerEnd.writeLp(frame)
+    # TODO: iftech/nim-libp2p#3403
+    check (await recorder.received.popFirst()).messages == @[message]
+    await reader # ends on its own after the frame, without the peer closing the stream

@@ -276,3 +276,43 @@ suite "GossipSub Component - Topic streams":
 
     checkUntilTimeout:
       not nodes[0].switch.isConnected(nodes[1].switch)
+
+  asyncTest "a message on an open topic stream still reaches the topic handler after GossipSub stops":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let firstMessage = "first".toBytes
+    let secondMessage = "second".toBytes
+    let handled = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await handled.put(data)
+
+    nodes[0].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    checkUntilTimeout:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
+
+    # opened from the switch to force the race with a message in flight as nodes[0] stops
+    # GossipSub would close this stream within a round trip
+    let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await stream.close()
+    await stream.writeLp(TopicRPCHeader(topic: topic).encode())
+    await stream.writeLp(
+      Message.init(nodes[1].peerInfo, firstMessage, topic, 1'u64).topicRPC().encode()
+    )
+    check (await handled.popFirst()) == firstMessage
+
+    await nodes[0].stop() # the switch keeps running
+    var data: byte
+    # nodes[0] never writes on this stream, so reading 0 bytes means it closed its side
+    check (await stream.readOnce(addr data, 1)) == 0
+
+    # TODO: iftech/nim-libp2p#3404
+    await stream.writeLp(
+      Message.init(nodes[1].peerInfo, secondMessage, topic, 2'u64).topicRPC().encode()
+    )
+    check (await handled.popFirst()) == secondMessage
