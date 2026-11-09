@@ -62,7 +62,7 @@ suite "GossipSub Component - Topic streams":
       .toGossipSub()
     startAndDeferStop(nodes)
 
-    let received = newFuture[void]()
+    let received = newFuture[void]("forwardedMessageReceived")
     proc onMessage(topic: string, data: seq[byte]) {.async.} =
       received.completeOnce()
 
@@ -72,8 +72,9 @@ suite "GossipSub Component - Topic streams":
 
     await connectChain(nodes)
     waitSubscribeChain(nodes, topic)
-    # nodes[1] forwards only to its mesh peers
-    checkUntilTimeout nodes[1].mesh.hasPeerId(topic, nodes[2].peerInfo.peerId)
+    checkUntilTimeout:
+      nodes[0].mesh.hasPeerId(topic, nodes[1].peerInfo.peerId)
+      nodes[1].mesh.hasPeerId(topic, nodes[2].peerInfo.peerId)
 
     discard await nodes[0].publish(topic, "forwarded")
     await received
