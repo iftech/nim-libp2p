@@ -287,4 +287,3 @@ let errForException* = chronicles.addCheck("errForException", runErrForException
 let noPayloadWhenElevated* =
   chronicles.addCheck("noPayloadWhenElevated", runNoPayloadWhenElevated)
 let unboundedFields* = chronicles.addCheck("unboundedFields", runUnboundedFields)
-
