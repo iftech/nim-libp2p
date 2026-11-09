@@ -19,7 +19,7 @@ import std/strutils
 
 import compiler/ast
 
-import lint/types
+import lint
 
 type
   MessageSettings* = object ## Settings shared by the message checks.
