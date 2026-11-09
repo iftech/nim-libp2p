@@ -47,6 +47,7 @@ jobs:
 
       - name: Run nim-lint checks
         uses: iftech/nim-lint@1.0.0
+        with:
           config: linter.nim
 
       - name: Check License Header
