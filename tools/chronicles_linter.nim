@@ -177,9 +177,11 @@ proc runMessageMaxSentences(ast: PNode, s: MessageSettings): seq[Finding] =
         inc sentenceCount
 
       if sentenceCount > s.maxSentences:
-        result.add(node.toFinding(
-          "log message must contain no more than " & $s.maxSentences & " sentences"
-        ))
+        result.add(
+          node.toFinding(
+            "log message must contain no more than " & $s.maxSentences & " sentences"
+          )
+        )
         break
 
 proc runFieldNameLength(ast: PNode, s: FieldNameSettings): seq[Finding] =
@@ -187,18 +189,22 @@ proc runFieldNameLength(ast: PNode, s: FieldNameSettings): seq[Finding] =
     for field in logFields(call):
       if field.name.len < s.minLength and field.name notin s.exceptions:
         let kind = if field.named: "field" else: "bare field"
-        result.add(field.value.toFinding(
-          kind & " '" & field.name & "' is too short (needs to be at least " &
-            $s.minLength & " characters long)"
-        ))
+        result.add(
+          field.value.toFinding(
+            kind & " '" & field.name & "' is too short (needs to be at least " &
+              $s.minLength & " characters long)"
+          )
+        )
 
 proc runErrForException(ast: PNode, s: ExceptionSettings): seq[Finding] =
   for call in logCalls(ast):
     for f in logFields(call):
       if f.name in s.aliases and isExceptionText(f.value):
-        result.add(f.value.toFinding(
-          "use `" & s.field & "` for exception text instead of `" & f.name & "`"
-        ))
+        result.add(
+          f.value.toFinding(
+            "use `" & s.field & "` for exception text instead of `" & f.name & "`"
+          )
+        )
 
 proc runNoPayloadWhenElevated(ast: PNode, s: PayloadSettings): seq[Finding] =
   for call in logCalls(ast):
@@ -206,9 +212,9 @@ proc runNoPayloadWhenElevated(ast: PNode, s: PayloadSettings): seq[Finding] =
       continue
     for f in logFields(call):
       if f.name in s.fields:
-        result.add(f.value.toFinding(
-           "elevated log contains payload field `" & f.name & "`"
-        ))
+        result.add(
+          f.value.toFinding("elevated log contains payload field `" & f.name & "`")
+        )
 
 proc literalType(value: PNode): string =
   ## The type name of a literal, or "" when the value is not a literal.
@@ -261,10 +267,12 @@ proc runUnboundedFields(ast: PNode, s: UnboundedSettings): seq[Finding] =
         continue
       if callsAny(f.value, s.escapes) or isBasicType(f.value, s.basicTypes):
         continue
-      result.add(f.value.toFinding(
-        "potentially unbounded log field `" & f.name & "` must use " &
-          s.escapes.join(" or ")
-      ))
+      result.add(
+        f.value.toFinding(
+          "potentially unbounded log field `" & f.name & "` must use " &
+            s.escapes.join(" or ")
+        )
+      )
 
 # --- linter ---------------------------------------------------------------
 
@@ -279,3 +287,4 @@ let errForException* = chronicles.addCheck("errForException", runErrForException
 let noPayloadWhenElevated* =
   chronicles.addCheck("noPayloadWhenElevated", runNoPayloadWhenElevated)
 let unboundedFields* = chronicles.addCheck("unboundedFields", runUnboundedFields)
+
