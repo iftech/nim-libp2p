@@ -19,6 +19,8 @@ logScope:
 const
   AutonatCodec* = "/libp2p/autonat/1.0.0"
   AddressLimit* = 8
+  DefaultMaxIncomingStreamsTotal* = 8
+  DefaultMaxIncomingStreamsPerPeer* = 1
 
 type
   AutonatError* = object of LPError
