@@ -11,6 +11,7 @@ import std/[atomics, locks]
 import chronos, chronos/[threadsync, transports/ipnet], chronicles
 import nameresolver, dnsresolver
 import ../crypto/rng
+import ../results
 
 logScope:
   topics = "libp2p systemresolver"
@@ -172,10 +173,10 @@ proc dispatchLoop(self: SystemResolver) {.async: (raises: []).} =
       continue
     self.drainCompleted()
 
-proc startWorkers(self: SystemResolver) {.raises: [TransportAddressError].} =
+proc startWorkers(self: SystemResolver): LPResult[void] =
   # Allocate workers lazily so unused resolvers consume no threads.
   if not self.shared.isNil:
-    return
+    return ok()
 
   let shared = cast[ptr SharedState](allocShared0(sizeof(SharedState)))
   initLock(shared[].lock)
@@ -185,12 +186,10 @@ proc startWorkers(self: SystemResolver) {.raises: [TransportAddressError].} =
   shared[].lookupContext = self.lookupContext
   shared[].requestSignal = ThreadSignalPtr.new().valueOr:
     shared.destroy()
-    raise
-      newException(TransportAddressError, "Failed to create request signal: " & error)
+    return err(error, "Failed to create request signal")
   shared[].responseSignal = ThreadSignalPtr.new().valueOr:
     shared.destroy()
-    raise
-      newException(TransportAddressError, "Failed to create response signal: " & error)
+    return err(error, "Failed to create response signal")
 
   # createThread passes the address of the Thread object itself to pthread, so
   # every object must already occupy its final, stable sequence slot.
@@ -207,13 +206,12 @@ proc startWorkers(self: SystemResolver) {.raises: [TransportAddressError].} =
     discard shared[].requestSignal.fireSync()
     joinThreads(workers)
     shared.destroy()
-    raise newException(
-      TransportAddressError, "Failed to spawn resolver worker: " & exc.msg, exc
-    )
+    return err(exc, "Failed to spawn resolver worker")
 
   self.shared = shared
   self.workers = workers
   self.dispatcherFut = self.dispatchLoop()
+  ok()
 
 proc new*(
     T: type SystemResolver, rng: Rng, txtResolver: NameResolver = nil, workers: int = 2
@@ -253,7 +251,7 @@ method resolveIp*(
     return @[]
 
   if self.shared.isNil:
-    self.startWorkers()
+    self.startWorkers().onErrorRaise(TransportAddressError)
 
   let
     shared = self.shared
