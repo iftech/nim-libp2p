@@ -6,6 +6,7 @@
 import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
+from ../../../../libp2p/stream/bufferstream import len
 import ../../../../libp2p/stream/bridgestream
 import ../../../tools/[unittest, bufferstream]
 import ../converters
@@ -227,6 +228,51 @@ suite "GossipSub topic stream lifecycle":
         recorder.received.len == 0
         recorder.penalties == (if scenario in [0, 4]: 1 else: 0)
         recorder.violations == (if scenario in [5, 6]: 1 else: 0)
+
+  asyncTest "readers drop frames after a protocol violation on another stream":
+    for waitingForPayload in [true, false]:
+      let recorder = TopicStreamsRecorder.new()
+      let state = TopicStreams.new(recorder)
+      let (remote, local) = bridgedConnections()
+      let (violatingRemote, violatingLocal) = bridgedConnections()
+      let reading = state.readTopic(local)
+      let violating = state.readTopic(violatingLocal)
+      defer:
+        await reading.cancelAndWait()
+        await violating.cancelAndWait()
+        await state.stop()
+        await remote.close()
+        await violatingRemote.close()
+
+      let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
+      await remote.writeLp(TopicRPCHeader(topic: "a").encode())
+      await remote.writeLp(payload)
+      discard await recorder.received.popFirst()
+
+      if waitingForPayload:
+        require payload.len < 128
+        await remote.write(@[byte(payload.len)])
+      while local.len > 0 or not local.reading:
+        await sleepAsync(1.milliseconds)
+      check not reading.finished()
+
+      await violatingRemote.writeLp(TopicRPCHeader(topic: "b").encode())
+      await violatingRemote.write(@[0.byte])
+      await violating.wait(1.seconds)
+      check recorder.violations == 1
+
+      if waitingForPayload:
+        await remote.write(payload)
+      else:
+        # A length alone must suffice to stop the reader without reading a body.
+        await remote.write(@[byte(payload.len)])
+      await reading.wait(1.seconds)
+      check:
+        local.closed()
+        violatingLocal.closed()
+        recorder.received.len == 0
+        recorder.violations == 1
+        recorder.penalties == 0
 
   asyncTest "fourth reader for a topic is rejected and stop closes the others":
     let recorder = TopicStreamsRecorder.new()
