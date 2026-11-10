@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/sequtils
 import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
@@ -11,7 +12,9 @@ import ../../../tools/[unittest, bufferstream]
 import ../converters
 import ./extension_recording
 
-const topic = "foobar"
+const
+  topic = "foobar"
+  otherTopic = "other"
 
 suite "GossipSub topic stream wire format":
   test "full message reconstructs canonical signature input":
@@ -229,37 +232,28 @@ suite "GossipSub topic stream lifecycle":
         recorder.penalties == (if scenario in [0, 4]: 1 else: 0)
         recorder.violations == (if scenario in [5, 6]: 1 else: 0)
 
-  asyncTest "fourth reader for a topic is rejected and stop closes the others":
+  asyncTest "stop closes every reader stream":
     let recorder = TopicStreamsRecorder.new()
     let state = TopicStreams.new(recorder)
-    var remotes: seq[Stream]
+    var peerEnds: seq[Stream]
     var readers: seq[Future[void]]
     defer:
       await state.stop()
-      for reader in readers:
-        await reader.cancelAndWait()
-      for remote in remotes:
-        await remote.close()
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
 
-    for i in 0 .. 3:
-      let (remote, local) = bridgedConnections()
-      remotes.add(remote)
-      readers.add(state.readTopic(local))
-      await remote.writeLp(TopicRPCHeader(topic: "a").encode())
-      if i < 3:
-        await remote.writeLp(Message(data: @[1.byte], topic: "a").topicRPC().encode())
-        discard await recorder.received.popFirst()
-      else:
-        await readers[i]
-        check local.closed()
+    for _ in 0 ..< 3: # the peer opens three topic streams
+      let (peerEnd, nodeEnd) = bridgedConnections()
+      peerEnds.add(peerEnd)
+      readers.add(state.readTopic(nodeEnd))
+      await peerEnd.writeLp(TopicRPCHeader(topic: topic).encode())
+      await peerEnd.writeLp(Message(data: @[1.byte], topic: topic).topicRPC().encode())
+      discard await recorder.received.popFirst()
 
-    check:
-      recorder.penalties == 1
-      recorder.violations == 0
     await state.stop()
-    for remote in remotes:
+    for peerEnd in peerEnds:
       var data: byte
-      check (await remote.readOnce(addr data, 1)) == 0
+      check (await peerEnd.readOnce(addr data, 1)) == 0
 
 suite "GossipSub topic stream send side":
   teardown:
@@ -345,10 +339,8 @@ suite "GossipSub topic stream send side":
     var readers: seq[Future[void]]
     defer:
       await state.stop()
-      for reader in readers:
-        await reader.cancelAndWait()
-      for peerEnd in peerEnds:
-        await peerEnd.close()
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
       await recorder.closeOutgoingStreams()
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
@@ -359,7 +351,7 @@ suite "GossipSub topic stream send side":
       readers.add(state.readTopic(nodeEnd))
 
     # TODO: iftech/nim-libp2p#3406
-    state.sendTopic("other", frames[1], true) # dropped: no stream left to open
+    state.sendTopic(otherTopic, frames[1], true) # dropped: no stream left to open
     state.sendTopic(topic, frames[2], true) # written on the open writer
     check:
       recorder.outgoingStreams.len == 1
@@ -412,10 +404,8 @@ suite "GossipSub topic stream receive side":
       var readers: seq[Future[void]]
       defer:
         await state.stop()
-        for reader in readers:
-          await reader.cancelAndWait()
-        for peerEnd in peerEnds:
-          await peerEnd.close()
+        await allFutures(readers.mapIt(it.cancelAndWait()))
+        await allFutures(peerEnds.mapIt(it.close()))
         await recorder.closeOutgoingStreams()
       check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
@@ -435,3 +425,93 @@ suite "GossipSub topic stream receive side":
         nodeEnd.wasResetLocally()
         recorder.penalties == expectedPenalties
         recorder.violations == 0
+
+  asyncTest "fourth open stream for a topic is reset and penalized":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder)
+    var peerEnds: seq[Stream]
+    var readers: seq[Future[void]]
+    defer:
+      await state.stop()
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
+
+    for _ in 0 ..< 3: # the peer opens three streams for topic
+      let (peerEnd, nodeEnd) = bridgedConnections()
+      peerEnds.add(peerEnd)
+      readers.add(state.readTopic(nodeEnd))
+      await peerEnd.writeLp(header)
+      await peerEnd.writeLp(frame)
+      check (await recorder.received.popFirst()).messages == @[message]
+
+    let (fourthPeerEnd, fourthNodeEnd) = bridgedConnections()
+    peerEnds.add(fourthPeerEnd)
+    await fourthPeerEnd.writeLp(header)
+    await state.readTopic(fourthNodeEnd)
+    check:
+      fourthNodeEnd.wasResetLocally()
+      recorder.penalties == 1
+      recorder.violations == 0
+
+    # the limit counts streams per topic, so another topic is still accepted
+    let (otherPeerEnd, otherNodeEnd) = bridgedConnections()
+    peerEnds.add(otherPeerEnd)
+    readers.add(state.readTopic(otherNodeEnd))
+    await otherPeerEnd.writeLp(TopicRPCHeader(topic: otherTopic).encode())
+    await otherPeerEnd.writeLp(frame)
+    check (await recorder.received.popFirst()).messages ==
+      @[Message(data: message.data, topic: otherTopic)]
+
+    await peerEnds[0].close() # frees a slot for topic once its reader ends
+    await readers[0]
+    let (replacementPeerEnd, replacementNodeEnd) = bridgedConnections()
+    peerEnds.add(replacementPeerEnd)
+    readers.add(state.readTopic(replacementNodeEnd))
+    await replacementPeerEnd.writeLp(header)
+    await replacementPeerEnd.writeLp(frame)
+    check (await recorder.received.popFirst()).messages == @[message]
+
+  asyncTest "incoming budget counts the frame until receive returns":
+    let recorder = TopicStreamsRecorder.new()
+    let frameReceived = newAsyncEvent()
+    proc receive(msg: sink RPCMsg, size: int) {.async: (raises: [CancelledError]).} =
+      await recorder.received.put(msg)
+      await frameReceived.wait()
+
+    let state = TopicStreams.new(
+      # the headers of two streams and one frame fill the budget
+      TopicStreamsConfig(maxIncomingBytes: 2 * header.len + frame.len),
+      1024,
+      recorder.dial(),
+      receive,
+      recorder.violation(),
+      recorder.penalize(),
+    )
+    var peerEnds: seq[Stream]
+    var readers: seq[Future[void]]
+    defer:
+      await state.stop()
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
+
+    for _ in 0 ..< 2: # the peer opens two topic streams
+      let (peerEnd, nodeEnd) = bridgedConnections()
+      peerEnds.add(peerEnd)
+      readers.add(state.readTopic(nodeEnd))
+      await peerEnd.writeLp(header)
+
+    await peerEnds[0].writeLp(frame) # in receive until frameReceived fires
+    check (await recorder.received.popFirst()).messages == @[message]
+    await peerEnds[1].writeLp(frame) # penalized: the budget is full
+    await readers[1]
+    check:
+      recorder.penalties == 1
+      recorder.violations == 0
+
+    frameReceived.fire() # receive returns and releases the frame's bytes
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    peerEnds.add(peerEnd)
+    readers.add(state.readTopic(nodeEnd))
+    await peerEnd.writeLp(header)
+    await peerEnd.writeLp(frame) # accepted: the budget has room again
+    check (await recorder.received.popFirst()).messages == @[message]
