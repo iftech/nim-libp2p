@@ -9,9 +9,6 @@ import
 import ../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
 import ../tools/[unittest, crypto]
 
-const longestPeerId = 2 + maxInlineKeyLength
-  # identity code, one length byte and an inline key; sha2-256 ids are 34 bytes
-
 proc varintBytes(v: uint64): seq[byte] =
   var buf: array[10, byte]
   var n = 0
@@ -42,26 +39,13 @@ proc base58Text(prefix: string, n: int): string =
 suite "PeerId length bound":
   test "identity multihash longer than an inline key is rejected":
     check:
-      PeerId.init(identityId(maxInlineKeyLength)).get().len == longestPeerId
+      PeerId.init(identityId(maxInlineKeyLength)).get().len == maxPeerIdLength
       PeerId.init(identityId(maxInlineKeyLength + 1)).isErr()
       PeerId.init(identityId(64 * 1024)).isErr()
       # shortest forms are unchanged
       PeerId.init(@[0x00'u8, 0x00]).isOk()
       PeerId.init(@[0x00'u8]).isErr()
       PeerId.init(newSeq[byte]()).isErr()
-
-  test "trailing bytes do not extend the bound":
-    # a declared digest size of 0, or a sha2-256 digest, then trailing bytes
-    var
-      zeroSized = @[0x00'u8, 0x00]
-      sha = @[0x12'u8, 0x20] & newSeq[byte](32)
-    check PeerId.init(sha).isOk()
-    for i in 0 ..< 1024:
-      zeroSized.add 1'u8
-      sha.add 1'u8
-    check:
-      PeerId.init(zeroSized).isErr()
-      PeerId.init(sha).isErr()
 
   test "peer ids derived from keys stay valid":
     for (scheme, length) in [

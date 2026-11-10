@@ -36,6 +36,9 @@ const
     multibasePrefixLength +
     base16CharsPerByte * (peerIdCidHeaderLength + maxPeerIdLength)
 
+static:
+  doAssert maxInlineKeyLength < 128, "inline key length must fit in one varint byte"
+
 const
   ShortPeerIdPrefixLength = 6
   ShortPeerIdSuffixLength = 6
