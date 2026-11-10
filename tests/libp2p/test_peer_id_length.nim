@@ -20,9 +20,10 @@ proc varintBytes(v: uint64): seq[byte] =
 
 proc identityId(digestLen: int): seq[byte] =
   ## Identity multihash with a `digestLen`-byte digest
-  result = @[0x00'u8] & varintBytes(uint64(digestLen))
+  var id = @[0x00'u8] & varintBytes(uint64(digestLen))
   for i in 0 ..< digestLen:
-    result.add byte(i and 0xff) or 1
+    id.add byte(i and 0xff) or 1
+  id
 
 proc withP2p(code: MultiCodec, id: openArray[byte]): seq[byte] =
   ## /ip4/127.0.0.1/tcp/1 followed by a /p2p/ (or /ipfs/) component holding `id`
@@ -33,9 +34,10 @@ proc withP2p(code: MultiCodec, id: openArray[byte]): seq[byte] =
 proc base58Text(prefix: string, n: int): string =
   ## `prefix` followed by base58 characters, `n` characters in total
   const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-  result = prefix
-  while result.len < n:
-    result.add alphabet[result.len mod alphabet.len]
+  var text = prefix
+  while text.len < n:
+    text.add alphabet[text.len mod alphabet.len]
+  text
 
 suite "PeerId length bound":
   test "identity multihash longer than an inline key is rejected":
