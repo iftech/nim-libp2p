@@ -244,71 +244,112 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       not nodes[1].switch.isConnected(nodes[0].switch)
 
-  for controlFirst in [true, false]:
-    asyncTest "graylisted negotiation recovers with control RPC first: " & $controlFirst:
-      let
-        negotiated = newFuture[void]("graylistedTopicStreamsNegotiated")
-        subscribed = newFuture[void]("topicStreamPeerSubscribed")
-      var negotiatedPeers = 0
-      proc onNegotiated(peer: PeerId) {.gcsafe, raises: [].} =
-        inc negotiatedPeers
-        if negotiatedPeers == 2:
-          negotiated.completeOnce()
+  asyncTest "graylisted peer recovers with subscription before publication":
+    let negotiated = newFuture[void]("graylistedTopicStreamsNegotiated")
+    var negotiatedPeers = 0
+    proc onNegotiated(peer: PeerId) {.gcsafe, raises: [].} =
+      inc negotiatedPeers
+      if negotiatedPeers == 2:
+        negotiated.completeOnce()
 
-      let nodes = generateNodes(
-          2,
-          gossip = true,
-          topicStreamsConfig = Opt.some(TopicStreamsConfig()),
-          testExtensionConfig =
-            Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
-        )
-        .toGossipSub()
-      startAndDeferStop(nodes)
-
-      let remotePeerId = nodes[0].peerInfo.peerId
-      nodes[1].addObserver(
-        PubSubObserver(
-          onRecv: proc(peer: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
-            if peer.peerId == remotePeerId:
-              for sub in msg.subscriptions:
-                if sub.topic.get() == topic and sub.isSubscribe:
-                  subscribed.completeOnce()
-        )
+    let nodes = generateNodes(
+        2,
+        gossip = true,
+        topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+        testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
       )
+      .toGossipSub()
+    startAndDeferStop(nodes)
 
-      var received = 0
-      proc handler(topic: string, data: seq[byte]) {.async.} =
-        inc received
+    var received = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      inc received
 
-      nodes[0].subscribe(topic, handler)
-      let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
-      # nodes[1]'s score is 0, so this graylists it
-      nodes[0].parameters.graylistThreshold = 100000.0
-      # the agent label stays "unknown" until identify finishes
-      let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
+    nodes[0].subscribe(topic, handler)
+    let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
+    # nodes[1]'s score is 0, so this graylists it
+    nodes[0].parameters.graylistThreshold = 100000.0
+    # the agent label stays "unknown" until identify finishes
+    let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
 
-      # Negotiate capabilities even though ordinary RPC processing is suppressed.
-      await connect(nodes[0], nodes[1])
-      await negotiated
-      check currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
+    # Negotiate capabilities even though ordinary RPC processing is suppressed.
+    await connect(nodes[0], nodes[1])
+    await negotiated
+    check currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
 
-      nodes[0].parameters.graylistThreshold = originalGraylistThreshold
-      if controlFirst:
-        nodes[1].subscribe(topic, voidTopicHandler)
-        waitSubscribeStar(nodes, topic)
-      else:
-        await subscribed
-        check nodes[1].gossipsub.getOrDefault(topic).len == 1
+    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
+    nodes[1].subscribe(topic, voidTopicHandler)
+    waitSubscribeStar(nodes, topic)
 
-      check:
-        nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
-        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+    check:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
+      nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
 
-      discard await nodes[1].publish(topic, "data")
+    discard await nodes[1].publish(topic, "data")
 
-      checkUntilTimeout:
-        received == 1
-      if not controlFirst:
-        nodes[1].subscribe(topic, voidTopicHandler)
-        waitSubscribeStar(nodes, topic)
-      check nodes[0].switch.isConnected(nodes[1].switch)
+    checkUntilTimeout:
+      received == 1
+    check nodes[0].switch.isConnected(nodes[1].switch)
+
+  asyncTest "graylisted peer recovers with publication before subscription":
+    let
+      negotiated = newFuture[void]("graylistedTopicStreamsNegotiated")
+      subscribed = newFuture[void]("topicStreamPeerSubscribed")
+    var negotiatedPeers = 0
+    proc onNegotiated(peer: PeerId) {.gcsafe, raises: [].} =
+      inc negotiatedPeers
+      if negotiatedPeers == 2:
+        negotiated.completeOnce()
+
+    let nodes = generateNodes(
+        2,
+        gossip = true,
+        topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+        testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let remotePeerId = nodes[0].peerInfo.peerId
+    nodes[1].addObserver(
+      PubSubObserver(
+        onRecv: proc(peer: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
+          if peer.peerId == remotePeerId:
+            for sub in msg.subscriptions:
+              if sub.topic.get() == topic and sub.isSubscribe:
+                subscribed.completeOnce()
+      )
+    )
+
+    var received = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      inc received
+
+    nodes[0].subscribe(topic, handler)
+    let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
+    # nodes[1]'s score is 0, so this graylists it
+    nodes[0].parameters.graylistThreshold = 100000.0
+    # the agent label stays "unknown" until identify finishes
+    let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
+
+    # Negotiate capabilities even though ordinary RPC processing is suppressed.
+    await connect(nodes[0], nodes[1])
+    await negotiated
+    check currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
+
+    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
+    # The publisher needs the receiver's subscription, but has not subscribed itself.
+    await subscribed
+    check nodes[1].gossipsub.getOrDefault(topic).len == 1
+
+    check:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
+      nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+
+    discard await nodes[1].publish(topic, "data")
+
+    checkUntilTimeout:
+      received == 1
+    nodes[1].subscribe(topic, voidTopicHandler)
+    waitSubscribeStar(nodes, topic)
+    check nodes[0].switch.isConnected(nodes[1].switch)

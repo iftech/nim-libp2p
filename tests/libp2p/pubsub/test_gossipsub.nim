@@ -33,16 +33,22 @@ suite "GossipSub":
   teardown:
     checkTrackers()
 
-  asyncTest "rpcHandler - graylisted peers only decode the first control RPC":
-    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
-    defer:
-      await teardownGossipSub(gossipSub, conns)
-    let peer = peers[0]
-    gossipSub.parameters.graylistThreshold = 100000.0
+  # Either an explicit advertisement or its absence finalizes capability discovery.
+  for (description, first) in [
+    (
+      "first RPC advertises extensions",
+      RPCMsg.withControl(ControlMessage.withExtensions(ControlExtensions())),
+    ),
+    ("first RPC has no extension advertisement", RPCMsg()),
+  ]:
+    asyncTest "rpcHandler - graylisted peers only decode the first control RPC: " &
+      description:
+      let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+      defer:
+        await teardownGossipSub(gossipSub, conns)
+      let peer = peers[0]
+      gossipSub.parameters.graylistThreshold = 100000.0
 
-    for first in [
-      RPCMsg.withControl(ControlMessage.withExtensions(ControlExtensions())), RPCMsg()
-    ]:
       gossipSub.extensionsState.removePeer(peer.peerId)
       await gossipSub.rpcHandler(peer, first.encode(false))
       check not gossipSub.extensionsState.negotiationPending(peer.peerId)
