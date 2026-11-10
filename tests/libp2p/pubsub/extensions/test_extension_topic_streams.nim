@@ -8,7 +8,7 @@ import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/bridgestream
-import ../../../tools/[unittest, bufferstream]
+import ../../../tools/[unittest, bufferstream, metrics_utils]
 import ../converters
 import ./extension_recording
 
@@ -122,8 +122,9 @@ suite "GossipSub topic stream lifecycle":
 
   asyncTest "independent topic writers, replacement, and bounded queue":
     let recorder = TopicStreamsRecorder.new()
-    let state =
-      TopicStreams.new(recorder, TopicStreamsConfig(maxStreams: 3, maxQueuedBytes: 128))
+    let state = TopicStreams.new(
+      recorder, TopicStreamsConfig(maxOutgoingStreams: 3, maxQueuedBytes: 128)
+    )
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
     defer:
@@ -143,10 +144,13 @@ suite "GossipSub topic stream lifecycle":
 
     state.sendTopic("c", payload, true)
     check recorder.outgoingStreams.len == 3
-    let (incoming, incomingStream) = bridgedConnections()
-    defer:
-      await incoming.close()
-    await state.readTopic(incomingStream)
+    let rejected =
+      metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"])
+    state.sendTopic("d", payload, true)
+    check:
+      recorder.outgoingStreams.len == 3
+      metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"]) ==
+        rejected + 1
     state.sendTopic("a", newSeq[byte](129), true)
     check recorder.penalties == 0
 
@@ -163,6 +167,47 @@ suite "GossipSub topic stream lifecycle":
 
     var data: byte
     check (await recorder.outgoingStreams[3].readOnce(addr data, 1)) == 0
+
+  asyncTest "incoming limit counts pending headers independently of outgoing streams":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(
+      recorder, TopicStreamsConfig(maxIncomingStreams: 3, maxOutgoingStreams: 1)
+    )
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+    var remotes: seq[Stream]
+    var readers: seq[Future[void]]
+    defer:
+      await state.stop()
+      await allFutures(readers)
+      for remote in remotes:
+        await remote.close()
+      await recorder.closeOutgoingStreams()
+
+    state.sendTopic("outgoing", @[1.byte], true)
+    for i in 0 .. 3:
+      let (remote, local) = bridgedConnections()
+      remotes.add(remote)
+      readers.add(state.readTopic(local))
+      if i < 3:
+        check not readers[i].finished()
+      else:
+        await readers[i]
+        check local.closed()
+    check recorder.penalties == 1
+
+    await readers[0].cancelAndWait()
+    let (remote, local) = bridgedConnections()
+    remotes.add(remote)
+    readers.add(state.readTopic(local))
+    await remote.writeLp(TopicRPCHeader(topic: "replacement").encode())
+    await remote.writeLp(
+      Message(data: @[1.byte], topic: "replacement").topicRPC().encode()
+    )
+    discard await recorder.received.popFirst()
+    check:
+      recorder.penalties == 1
+      recorder.violations == 0
+      recorder.outgoingStreams.len == 1
 
   asyncTest "closing a pending writer cancels its dial and releases queue capacity":
     let recorder = TopicStreamsRecorder.new()
@@ -276,8 +321,12 @@ suite "GossipSub topic stream send side":
         await recorder.closeOutgoingStreams()
       check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
+      let rejected =
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["invalid_frame"])
       state.sendTopic(topic, newSeq[byte](frameSize), true)
       check:
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["invalid_frame"]) ==
+          rejected + float64(1 - expectedDials)
         recorder.outgoingStreams.len == expectedDials
         recorder.penalties == 0
         recorder.violations == 0
@@ -322,7 +371,11 @@ suite "GossipSub topic stream send side":
         (await written.popFirst()) == frames[0]
         written.len == 0
 
+      let rejected =
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
       state.sendTopic(topic, frames[2], true) # dropped: the budget is full
+      check metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
+        rejected + 1
       frameWritten.fire() # frames[0]'s write completes and releases its budget
       check (await written.popFirst()) == frames[1]
 

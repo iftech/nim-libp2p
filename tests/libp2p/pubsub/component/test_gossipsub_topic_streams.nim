@@ -56,6 +56,48 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       received == [1, 2]
 
+  asyncTest "full incoming stream budget does not block outgoing delivery":
+    const streamLimit = 3
+    let nodes = generateNodes(
+        2,
+        gossip = true,
+        floodPublish = true,
+        topicStreamsConfig = Opt.some(
+          TopicStreamsConfig(
+            maxIncomingStreams: streamLimit, maxOutgoingStreams: streamLimit
+          )
+        ),
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    var received: array[2, int]
+    proc handlerFor(index: int): TopicHandler =
+      return proc(topic: string, data: seq[byte]) {.async.} =
+        inc received[index]
+
+    for i in 0 .. streamLimit:
+      for j in 0 .. 1:
+        nodes[j].subscribe("topic-" & $i, handlerFor(j))
+
+    await connect(nodes[0], nodes[1])
+    for i in 0 .. streamLimit:
+      waitSubscribeStar(nodes, "topic-" & $i)
+    checkUntilTimeout:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
+        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+
+    for i in 0 ..< streamLimit:
+      discard await nodes[1].publish("topic-" & $i, "incoming")
+    checkUntilTimeout:
+      received[0] == streamLimit
+    check nodes[0].inboundTopicStreams(nodes[1].peerInfo.peerId).len == streamLimit
+
+    discard await nodes[0].publish("topic-" & $streamLimit, "outgoing")
+    checkUntilTimeout:
+      received[1] == 1
+    check nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 1
+
   asyncTest "forwarded message travels on topic streams":
     let nodes = generateNodes(
         3, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())

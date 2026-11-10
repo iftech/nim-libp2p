@@ -4,7 +4,7 @@
 {.push raises: [].}
 
 import std/[tables, deques, sequtils]
-import chronos, chronicles, results
+import chronos, chronicles, results, metrics
 import ../../../stream/connection
 import ../../../peerid
 import ./extensions_types
@@ -20,10 +20,20 @@ const
 logScope:
   topics = "libp2p pubsub topic-streams"
 
+declareCounter(
+  libp2p_gossipsub_topic_stream_frames_rejected,
+  "outgoing topic frames rejected before enqueueing",
+  labels = ["reason"],
+)
+
+when defined(libp2p_testing):
+  export libp2p_gossipsub_topic_stream_frames_rejected
+
 type
   TopicStreamsConfig* = object
     ## Experimental draft libp2p/specs#729. Limits apply per peer.
-    maxStreams*: int = 128 # incoming and outgoing, including pending headers/dials
+    maxIncomingStreams*: int = 64 # includes pending headers
+    maxOutgoingStreams*: int = 64 # includes pending dials
     maxQueuedBytes*: int = 8 * 1024 * 1024 # queued/in-flight data and stream headers
     maxIncomingBytes*: int = 8 * 1024 * 1024 # in-flight frames and retained headers
     maxQueuedMessages*: int = 1024
@@ -69,7 +79,8 @@ type
     updatePeerBehaviorPenalty: UpdatePeerBehaviorPenaltyProc
 
 func validate*(config: TopicStreamsConfig): Result[void, cstring] =
-  if config.maxStreams < 3 or config.maxQueuedBytes <= 0 or config.maxIncomingBytes <= 0 or
+  if config.maxIncomingStreams < 3 or config.maxOutgoingStreams <= 0 or
+      config.maxQueuedBytes <= 0 or config.maxIncomingBytes <= 0 or
       config.maxQueuedMessages <= 0:
     return err("gossipsub: invalid topic stream limits")
   ok()
@@ -199,29 +210,35 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
 
 proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bool) =
   if s.stopped or not s.active:
+    libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["inactive"])
     return
   if data.len == 0 or data.len > s.maxMessageSize:
     trace "dropping invalid outgoing topic frame", topic, size = data.len
+    libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["invalid_frame"])
     return
   if data.len > s.config.maxQueuedBytes - s.queuedBytes or
       s.queuedMessages >= s.config.maxQueuedMessages:
     trace "dropping outgoing topic frame because queue is full", topic
+    libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["queue_full"])
     return
   var w = s.writers.getOrDefault(topic)
   if w == nil:
-    if s.writers.len + s.readers.len >= s.config.maxStreams:
+    if s.writers.len >= s.config.maxOutgoingStreams:
       trace "dropping outgoing topic frame because stream limit is reached", topic
+      libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["stream_limit"])
       return
     let header = TopicRPCHeader(topic: Opt.some(topic)).encode()
     if header.len > s.maxMessageSize or
         header.len > s.config.maxQueuedBytes - s.queuedBytes - data.len:
       trace "dropping outgoing topic frame because header exceeds queue budget", topic
+      libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["header_limit"])
       return
     w = TopicWriter(wake: newAsyncEvent(), header: header, headerBytes: header.len)
     s.queuedBytes += header.len
     s.writers[topic] = w
   elif w.closing:
     trace "dropping outgoing topic frame while writer closes", topic
+    libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["writer_closing"])
     return
   s.queuedBytes += data.len
   inc s.queuedMessages
@@ -271,9 +288,8 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
   if s.stopped:
     await stream.reset()
     return
-  if s.writers.len + s.readers.len >= s.config.maxStreams:
-    if s.readers.len >= s.config.maxStreams:
-      s.penalize("incoming stream limit reached")
+  if s.readers.len >= s.config.maxIncomingStreams:
+    s.penalize("incoming stream limit reached")
     await stream.reset()
     return
   if s.receivedControl and not s.active:
