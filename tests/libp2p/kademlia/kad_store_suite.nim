@@ -332,6 +332,29 @@ template kadStoreTestSuite*(
         (await store.add(key, PeerId.random())) == AddProviderOutcome.storeFull
         (await store.providers(key)).len == 0
 
+    asyncTest "a new record of a peer gets peerFull at the cap per peer":
+      let store = factory(KadStoreLimits(maxProviderRecordsPerPeer: 1))
+      let peerId = PeerId.random()
+      let otherKey = Key.init([8'u8])
+      check (await store.add(key, peerId)) == AddProviderOutcome.added
+
+      check:
+        (await store.add(otherKey, peerId)) == AddProviderOutcome.peerFull
+        (await store.add(key, peerId, Later + 1)) == AddProviderOutcome.refreshed
+        (await store.providers(otherKey)).len == 0
+
+    asyncTest "an expired or removed record frees the quota of its peer":
+      let store = factory(KadStoreLimits(maxProviderRecordsPerPeer: 1))
+      let peerId = PeerId.random()
+      let otherKey = Key.init([8'u8])
+      check (await store.add(key, peerId, expiresAt = Now, now = Now - 1)) ==
+        AddProviderOutcome.added
+
+      check:
+        (await store.add(otherKey, peerId)) == AddProviderOutcome.added
+        (await store.removeProvider(otherKey, peerId)).isOk()
+        (await store.add(key, peerId)) == AddProviderOutcome.added
+
     asyncTest "a full store drops expired providers to accept a new one":
       let peers = PeerId.random(2)
       let expired = storedProvider(peers[0], expiresAt = Now)
