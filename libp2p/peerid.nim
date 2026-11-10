@@ -24,7 +24,12 @@ import ./cid
 
 export results, opt, shortlog, collections
 
-const maxInlineKeyLength* = 42
+const
+  maxInlineKeyLength* = 42
+  maxPeerIdLength* = 2 + maxInlineKeyLength
+    ## Identity multihash header plus the largest inline public key.
+  maxPeerIdTextLength = 1 + 2 * (2 + maxPeerIdLength)
+    ## CIDv1 header and multihash in base16, including the multibase prefix.
 
 const
   ShortPeerIdPrefixLength = 6
@@ -111,8 +116,10 @@ template hash*(pid: PeerId): Hash =
   hash(pid.data)
 
 func validate*(pid: PeerId): bool =
-  ## Validate check if ``pid`` is empty or not.
-  len(pid.data) > 0 and MultiHash.validate(pid.data)
+  ## Check the multihash encoding and key-derived size limit.
+  len(pid.data) > 0 and len(pid.data) <= maxPeerIdLength and MultiHash.validate(
+    pid.data
+  )
 
 func hasPublicKey*(pid: PeerId): bool =
   ## Returns ``true`` if ``pid`` is small enough to hold public key inside.
@@ -188,7 +195,7 @@ proc init*(pid: var PeerId, data: string): bool =
   ## ``libp2p-key`` multibase text.
   ##
   ## Returns ``true`` if peer was successfully initialiazed.
-  if len(data) == 0:
+  if len(data) == 0 or len(data) > maxPeerIdTextLength:
     return false
   if data.startsWith("1") or data.startsWith("Qm"):
     initLegacy(pid, data)
