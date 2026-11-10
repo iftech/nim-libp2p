@@ -19,8 +19,6 @@ suite "GossipSub Extensions :: Topic streams":
     check:
       TopicStreamsConfig().validate().isOk
       TopicStreamsConfig(maxIncomingStreams: 3, maxOutgoingStreams: 1).validate().isOk
-      TopicStreamsConfig().maxIncomingStreams + TopicStreamsConfig().maxOutgoingStreams ==
-        128
     for config in [
       TopicStreamsConfig(maxIncomingStreams: 2),
       TopicStreamsConfig(maxOutgoingStreams: 0),

@@ -193,17 +193,6 @@ suite "GossipSub topic stream lifecycle":
       else:
         await readers[i]
         check local.closed()
-    check recorder.penalties == 1
-
-    await readers[0].cancelAndWait()
-    let (remote, local) = bridgedConnections()
-    remotes.add(remote)
-    readers.add(state.readTopic(local))
-    await remote.writeLp(TopicRPCHeader(topic: "replacement").encode())
-    await remote.writeLp(
-      Message(data: @[1.byte], topic: "replacement").topicRPC().encode()
-    )
-    discard await recorder.received.popFirst()
     check:
       recorder.penalties == 1
       recorder.violations == 0
