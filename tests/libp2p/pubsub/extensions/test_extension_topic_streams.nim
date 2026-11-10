@@ -6,11 +6,21 @@
 import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
-from ../../../../libp2p/stream/bufferstream import len
+from ../../../../libp2p/stream/bufferstream import BufferStream, readOnce, pushData
 import ../../../../libp2p/stream/bridgestream
 import ../../../tools/[unittest, bufferstream]
 import ../converters
 import ./extension_recording
+
+type ReadSignallingStream = ref object of BufferStream
+  reads: AsyncQueue[int]
+
+method readOnce(
+    s: ReadSignallingStream, pbytes: pointer, nbytes: int
+): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
+  let reading = procCall BufferStream(s).readOnce(pbytes, nbytes)
+  await s.reads.addLast(nbytes)
+  return await reading
 
 suite "GossipSub topic stream wire format":
   test "full message reconstructs canonical signature input":
@@ -233,7 +243,8 @@ suite "GossipSub topic stream lifecycle":
     for waitingForPayload in [true, false]:
       let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(recorder)
-      let (remote, local) = bridgedConnections()
+      let local = ReadSignallingStream(reads: newAsyncQueue[int]())
+      local.initStream()
       let (violatingRemote, violatingLocal) = bridgedConnections()
       let reading = state.readTopic(local)
       let violating = state.readTopic(violatingLocal)
@@ -241,19 +252,19 @@ suite "GossipSub topic stream lifecycle":
         await reading.cancelAndWait()
         await violating.cancelAndWait()
         await state.stop()
-        await remote.close()
         await violatingRemote.close()
 
+      let header = TopicRPCHeader(topic: "a").encode()
       let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
-      await remote.writeLp(TopicRPCHeader(topic: "a").encode())
-      await remote.writeLp(payload)
-      discard await recorder.received.popFirst()
+      require header.len < 128 and payload.len < 128
+      check (await local.reads.popFirst()) == 1
+      await local.pushData(@[byte(header.len)] & header)
+      check (await local.reads.popFirst()) == header.len
+      check (await local.reads.popFirst()) == 1
 
       if waitingForPayload:
-        require payload.len < 128
-        await remote.write(@[byte(payload.len)])
-      while local.len > 0 or not local.reading:
-        await sleepAsync(1.milliseconds)
+        await local.pushData(@[byte(payload.len)])
+        check (await local.reads.popFirst()) == payload.len
       check not reading.finished()
 
       await violatingRemote.writeLp(TopicRPCHeader(topic: "b").encode())
@@ -262,10 +273,10 @@ suite "GossipSub topic stream lifecycle":
       check recorder.violations == 1
 
       if waitingForPayload:
-        await remote.write(payload)
+        await local.pushData(payload)
       else:
         # A length alone must suffice to stop the reader without reading a body.
-        await remote.write(@[byte(payload.len)])
+        await local.pushData(@[byte(payload.len)])
       await reading
       check:
         local.closed()
