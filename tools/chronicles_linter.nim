@@ -276,14 +276,11 @@ proc runUnboundedFields(ast: PNode, s: UnboundedSettings): seq[Finding] =
 
 # --- linter ---------------------------------------------------------------
 
-let chronicles* = Linter(name: "chronicles")
+let chronicles* = Linter()
 
-let messageEndsWithPunctuation* =
-  chronicles.addCheck("messageEndsWithPunctuation", runMessageEndsWithPunctuation)
-let messageMaxSentences* =
-  chronicles.addCheck("messageMaxSentences", runMessageMaxSentences)
-let fieldNameLength* = chronicles.addCheck("fieldNameLength", runFieldNameLength)
-let errForException* = chronicles.addCheck("errForException", runErrForException)
-let noPayloadWhenElevated* =
-  chronicles.addCheck("noPayloadWhenElevated", runNoPayloadWhenElevated)
-let unboundedFields* = chronicles.addCheck("unboundedFields", runUnboundedFields)
+let messageEndsWithPunctuation* = chronicles.addCheck(runMessageEndsWithPunctuation)
+let messageMaxSentences* = chronicles.addCheck(runMessageMaxSentences)
+let fieldNameLength* = chronicles.addCheck(runFieldNameLength)
+let errForException* = chronicles.addCheck(runErrForException)
+let noPayloadWhenElevated* = chronicles.addCheck(runNoPayloadWhenElevated)
+let unboundedFields* = chronicles.addCheck(runUnboundedFields)
