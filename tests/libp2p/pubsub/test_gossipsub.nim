@@ -33,36 +33,37 @@ suite "GossipSub":
   teardown:
     checkTrackers()
 
-  # Either an explicit advertisement or its absence finalizes capability discovery.
-  for (description, first) in [
-    (
-      "first RPC advertises extensions",
-      RPCMsg.withControl(ControlMessage.withExtensions(ControlExtensions())),
-    ),
-    ("first RPC has no extension advertisement", RPCMsg()),
-  ]:
-    asyncTest "rpcHandler - graylisted peers only decode the first control RPC: " &
-      description:
-      let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
-      defer:
-        await teardownGossipSub(gossipSub, conns)
-      let peer = peers[0]
-      gossipSub.parameters.graylistThreshold = 100000.0
+  proc checkGraylistedDecoding(first: RPCMsg) {.async.} =
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    let peer = peers[0]
+    gossipSub.parameters.graylistThreshold = 100000.0
 
-      gossipSub.extensionsState.removePeer(peer.peerId)
-      await gossipSub.rpcHandler(peer, first.encode(false))
-      check not gossipSub.extensionsState.negotiationPending(peer.peerId)
-      let
-        decoded = metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"])
-        ignored = currentGraylistedRpcs("unknown")
-        overhead = peer.overheadBytesInSecondWindow
-        data = RPCMsg.withSubs([topic], true).encode(false)
-      await gossipSub.rpcHandler(peer, data)
-      check:
-        metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"]) == decoded
-        currentGraylistedRpcs("unknown") == ignored + 1
-        peer.overheadBytesInSecondWindow == overhead + data.len
-        not gossipSub.gossipsub.hasPeerId(topic, peer.peerId)
+    gossipSub.extensionsState.removePeer(peer.peerId)
+    await gossipSub.rpcHandler(peer, first.encode(false))
+    check not gossipSub.extensionsState.negotiationPending(peer.peerId)
+    let
+      decoded = metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"])
+      ignored = currentGraylistedRpcs("unknown")
+      overhead = peer.overheadBytesInSecondWindow
+      data = RPCMsg.withSubs([topic], true).encode(false)
+    await gossipSub.rpcHandler(peer, data)
+    check:
+      metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"]) == decoded
+      currentGraylistedRpcs("unknown") == ignored + 1
+      peer.overheadBytesInSecondWindow == overhead + data.len
+      not gossipSub.gossipsub.hasPeerId(topic, peer.peerId)
+
+  asyncTest "rpcHandler - graylisted peers stop decoding after an extension advertisement":
+    # Even an empty ControlExtensions records an explicit capability advertisement.
+    await checkGraylistedDecoding(
+      RPCMsg.withControl(ControlMessage.withExtensions(ControlExtensions()))
+    )
+
+  asyncTest "rpcHandler - graylisted peers stop decoding after an RPC without extensions":
+    # Without an advertisement, receivedNonExtCtrlMsg settles negotiation instead.
+    await checkGraylistedDecoding(RPCMsg())
 
   asyncTest "onNewPeer - sets peer stats and budgets and disconnects if bad score":
     # Given a GossipSub instance with one peer
