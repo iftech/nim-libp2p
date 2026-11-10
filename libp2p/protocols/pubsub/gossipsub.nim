@@ -918,7 +918,11 @@ method rpcHandler*(
   let graylisted = g.isGraylisted(peer, peer.score)
   if graylisted:
     await g.rateLimit(peer, msgSize)
+    trace "PubSub RPC ignored",
+      peerId = peer.peerId, reason = "graylisted", score = peer.score
     libp2p_gossipsub_graylisted_rpcs.inc(labelValues = [peer.getAgent()])
+    if not g.extensionsState.negotiationPending(peer.peerId):
+      return
 
   var rpcMsg = RPCMsg.decode(move(data)).valueOr:
     if graylisted:

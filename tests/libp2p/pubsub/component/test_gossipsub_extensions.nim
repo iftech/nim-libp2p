@@ -71,9 +71,11 @@ suite "GossipSub Component - Extensions":
       .toGossipSub()
     startAndDeferStop(nodes)
     nodes[0].parameters.graylistThreshold = 100000.0
+    let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
     await connect(nodes[0], nodes[1])
     checkUntilTimeout:
       negotiatedPeers.len == 2
+      currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
     check negotiatedPeers.sorted() == pluckPeerId(nodes).sorted()
 
   asyncTest "Extensions control is sent before subscriptions on stream open":

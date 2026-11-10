@@ -7,6 +7,8 @@ import chronos, chronos/rateLimit, stew/byteutils, utils, sequtils
 import ../../../libp2p/[muxers/muxer, connmanager, switch]
 import ../../../libp2p/stream/[bufferstream, connection]
 import ../../../libp2p/utils/future
+import ../../../libp2p/utils/protobuf_metrics
+import ../../tools/metrics_utils
 import
   ../../../libp2p/protocols/pubsub/[
     floodsub,
@@ -30,6 +32,31 @@ suite "GossipSub":
 
   teardown:
     checkTrackers()
+
+  asyncTest "rpcHandler - graylisted peers only decode the first control RPC":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    let peer = peers[0]
+    gossipSub.parameters.graylistThreshold = 100000.0
+
+    for first in [
+      RPCMsg.withControl(ControlMessage.withExtensions(ControlExtensions())), RPCMsg()
+    ]:
+      gossipSub.extensionsState.removePeer(peer.peerId)
+      await gossipSub.rpcHandler(peer, first.encode(false))
+      check not gossipSub.extensionsState.negotiationPending(peer.peerId)
+      let
+        decoded = metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"])
+        ignored = currentGraylistedRpcs("unknown")
+        overhead = peer.overheadBytesInSecondWindow
+        data = RPCMsg.withSubs([topic], true).encode(false)
+      await gossipSub.rpcHandler(peer, data)
+      check:
+        metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"]) == decoded
+        currentGraylistedRpcs("unknown") == ignored + 1
+        peer.overheadBytesInSecondWindow == overhead + data.len
+        not gossipSub.gossipsub.hasPeerId(topic, peer.peerId)
 
   asyncTest "onNewPeer - sets peer stats and budgets and disconnects if bad score":
     # Given a GossipSub instance with one peer

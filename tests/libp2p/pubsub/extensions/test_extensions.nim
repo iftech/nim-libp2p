@@ -36,6 +36,17 @@ suite "GossipSub Extensions :: State":
       ext.negotiatedPeers == @[peerId]
       ext.handledRPC.len == 0
 
+  test "negotiation pending resets after peer removal":
+    let state = ExtensionsState.new(rng())
+    for rpc in [makeRPC(), RPCMsg()]:
+      check state.negotiationPending(peerId)
+      state.addPeer(peerId)
+      check state.negotiationPending(peerId)
+      state.negotiateExtensions(peerId, rpc)
+      check not state.negotiationPending(peerId)
+      state.removePeer(peerId)
+      check state.negotiationPending(peerId)
+
   test "default unconfigured state":
     var state = ExtensionsState.new(rng())
 
