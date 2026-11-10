@@ -5,7 +5,7 @@
 
 import std/[sets, sequtils, strutils, tables]
 import chronos, chronicles
-import ../[multiaddress, peerid]
+import ../[multiaddress, peerid, results]
 
 logScope:
   topics = "libp2p name-resolution"
@@ -71,64 +71,59 @@ proc getHostname*(ma: MultiAddress): string =
       firstIp = ($part).split('/', 2)[2]
   firstIp
 
-proc matchExpectedPeer(
-    address, expectedPeer: MultiAddress
-): MultiAddress {.raises: [MaError].} =
+proc matchExpectedPeer(address, expectedPeer: MultiAddress): LPResult[MultiAddress] =
   # Return the peerless address for suffix matching, or empty for another peer.
   if expectedPeer.isEmpty or address.isEmpty:
-    return address
-  let last = address[^1].valueOr:
-    raise maErr error
+    return ok(address)
+  let last = ?address[^1]
   if not P2PPattern.match(last):
-    return address
+    return ok(address)
   if last != expectedPeer:
     trace "DNSADDR record names another peer", address, expectedPeer
-    return MultiAddress()
-  address[0 ..^ 2].valueOr:
-    raise maErr error
+    return ok(MultiAddress())
+  address[0 ..^ 2]
 
 proc expand(
     self: NameResolver, address: MultiAddress, depth: int, state: ResolutionState
-) {.async: (raises: [CancelledError, MaError, TransportAddressError]).} =
+): Future[LPResult[void]] {.async: (raises: [CancelledError, TransportAddressError]).} =
   if state.addresses.len >= MaxResolvedAddresses:
     trace "Resolution stopped at output limit", address, limit = MaxResolvedAddresses
-    return
+    return ok()
 
   var
     prefix, component, suffix: MultiAddress
     suffixLength = 0
-  let matchingAddress = address.matchExpectedPeer(state.expectedPeer)
+  let matchingAddress = ?address.matchExpectedPeer(state.expectedPeer)
   if matchingAddress.isEmpty:
-    return
+    return ok()
   for partResult in matchingAddress:
-    let part = partResult.valueOr:
-      raise maErr error
+    let part = ?partResult
     if not component.isEmpty:
-      suffix &= part
+      ?suffix.append(part)
       inc suffixLength
     elif (if state.dnsaddrOnly: DNSADDR.match(part)
     else: DNS.match(part)):
       component = part
     else:
-      prefix &= part
+      ?prefix.append(part)
 
   if component.isEmpty:
     state.addresses.incl(address)
-    return
+    return ok()
 
   let isDnsaddr = DNSADDR.match(component)
   if state.lookups >= MaxDnsLookups:
     trace "Resolution stopped at lookup limit",
       address = component, limit = MaxDnsLookups
-    return
+    return ok()
   if isDnsaddr and depth >= MaxDnsaddrRecursion:
     trace "DNSADDR resolution stopped at recursion limit",
       address = component, limit = MaxDnsaddrRecursion
-    return
+    return ok()
   # Revisit only when a shorter path leaves more DNSADDR recursion budget.
   # This also cuts cycles and duplicate branches without an expansion queue.
   if state.visited.getOrDefault(address, high(int)) <= depth:
-    return
+    return ok()
   state.visited[address] = depth
   inc state.lookups
   trace "Resolving DNS component", address = component
@@ -145,17 +140,15 @@ proc expand(
         continue
       let entry = MultiAddress.init(record.substr(8)).valueOr:
         continue
-      let matchingEntry = entry.matchExpectedPeer(state.expectedPeer)
+      let matchingEntry = ?entry.matchExpectedPeer(state.expectedPeer)
       if matchingEntry.isEmpty:
         continue
       if suffixLength > 0:
-        let length = matchingEntry.len.valueOr:
-          raise maErr error
+        let length = ?matchingEntry.len
         if length < suffixLength:
           trace "DNSADDR suffix mismatch", address = entry, suffix
           continue
-        let tail = matchingEntry[length - suffixLength ..< length].valueOr:
-          raise maErr error
+        let tail = ?matchingEntry[length - suffixLength ..< length]
         if tail != suffix:
           trace "DNSADDR suffix mismatch", address = entry, suffix
           continue
@@ -164,7 +157,8 @@ proc expand(
           address = component, limit = MaxDnsaddrRecords
         break
       inc accepted
-      await self.expand(prefix & entry, depth + 1, state)
+      let expanded = ?concat(prefix, entry)
+      ?(await self.expand(expanded, depth + 1, state))
   else:
     let domain =
       if DNS4.match(component):
@@ -183,11 +177,11 @@ proc expand(
         trace "Resolution stopped at output limit",
           address = component, limit = MaxResolvedAddresses
         break
-      let resolved = MultiAddress.init(records[i]).valueOr:
-        raise maErr error
-      let ip = resolved[0].valueOr:
-        raise maErr error
-      await self.expand(prefix & ip & suffix, depth, state)
+      let resolved = ?MultiAddress.init(records[i])
+      let ip = ?resolved[0]
+      let expanded = ?concat(?concat(prefix, ip), suffix)
+      ?(await self.expand(expanded, depth, state))
+  ok()
 
 proc resolveDnsAddr*(
     self: NameResolver,
@@ -205,7 +199,7 @@ proc resolveDnsAddr*(
   if peerId.isSome:
     state.expectedPeer = MultiAddress.init("/p2p/" & $peerId.get()).valueOr:
       raise maErr error
-  await self.expand(ma, depth, state)
+  (await self.expand(ma, depth, state)).onErrorRaise(MaError)
   state.addresses.toSeq
 
 proc resolveMAddress*(
@@ -216,5 +210,5 @@ proc resolveMAddress*(
   ## Resolve every DNS component, preserving surrounding protocols and answer order.
   ## All branches share the lookup/output budgets; unresolved branches are omitted.
   let state = ResolutionState()
-  await self.expand(address, 0, state)
+  (await self.expand(address, 0, state)).onErrorRaise(MaError)
   state.addresses.toSeq

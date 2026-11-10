@@ -6,10 +6,23 @@
 import std/sequtils
 import chronos
 import ../../libp2p/[nameresolving/nameresolver, peerid]
+from ../../libp2p/multiaddress import MaError
 import ../tools/[unittest, multiaddress, resolver]
 
 type CountingResolver = ref object of MockResolver
   txtQueries, ipQueries: seq[string]
+
+type InvalidAddressResolver = ref object of MockResolver
+
+method resolveIp*(
+    self: InvalidAddressResolver,
+    address: string,
+    port: Port,
+    domain: Domain = Domain.AF_UNSPEC,
+): Future[seq[TransportAddress]] {.
+    async: (raises: [CancelledError, TransportAddressError])
+.} =
+  @[TransportAddress()]
 
 method resolveTxt*(
     self: CountingResolver, address: string
@@ -159,6 +172,24 @@ suite "Multiaddress resolution":
     ) == @[ma("/ip4/192.0.2.1/tcp/4001")]
     check resolver.txtQueries == @["_dnsaddr.root.test", "_dnsaddr.child.test"]
 
+  asyncTest "expected peer matching preserves transport suffixes with optional peer IDs":
+    let peer = PeerId.init("QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN").tryGet()
+    let other = PeerId.init("QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa").tryGet()
+    let resolver = CountingResolver()
+    let wire = "/ip4/192.0.2.1/tcp/4001"
+    for recordSuffix in ["", "/p2p/" & $peer]:
+      resolver.txtResponses["_dnsaddr.root.test"] = @[
+        "dnsaddr=" & wire & "/p2p/" & $other,
+        "dnsaddr=/ip4/192.0.2.2/tcp/4002" & recordSuffix,
+        "dnsaddr=" & wire & recordSuffix,
+      ]
+      for querySuffix in ["", "/p2p/" & $peer]:
+        check (
+          await resolver.resolveDnsAddr(
+            ma("/dnsaddr/root.test/tcp/4001" & querySuffix), peerId = Opt.some(peer)
+          )
+        ) == @[ma(wire & recordSuffix)]
+
   asyncTest "output limit is shared across branches and stops further lookups":
     let resolver = CountingResolver()
     resolver.txtResponses["_dnsaddr.root.test"] =
@@ -184,3 +215,9 @@ suite "Multiaddress resolution":
     let lookup = resolver.resolveMAddress(ma("/dnsaddr/root.test"))
     await lookup.cancelAndWait()
     check resolver.cancelled
+
+  asyncTest "nested expansion errors retain the public MaError contract":
+    let resolver = InvalidAddressResolver()
+    resolver.txtResponses["_dnsaddr.root.test"] = @["dnsaddr=/dns4/invalid.test"]
+    expect MaError:
+      discard await resolver.resolveMAddress(ma("/dnsaddr/root.test"))

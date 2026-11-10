@@ -28,3 +28,12 @@ template nameResolverSuite*(name: string, resolver, setup, cleanup: untyped) =
         @[ma("/ip4/127.0.0.1/tcp/443/tls/ws")]
       check (await resolver.resolveMAddress(ma("/dns6/::1/udp/4001/quic-v1"))) ==
         @[ma("/ip6/::1/udp/4001/quic-v1")]
+
+    asyncTest "DNS components resolve behind a prefix and without a port":
+      setup
+      defer:
+        cleanup
+      check (await resolver.resolveMAddress(ma("/dns4/127.0.0.1"))) ==
+        @[ma("/ip4/127.0.0.1")]
+      check (await resolver.resolveMAddress(ma("/p2p-circuit/dns6/::1/tcp/4001"))) ==
+        @[ma("/p2p-circuit/ip6/::1/tcp/4001")]
