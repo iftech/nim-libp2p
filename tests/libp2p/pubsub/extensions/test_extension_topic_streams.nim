@@ -258,7 +258,7 @@ suite "GossipSub topic stream lifecycle":
 
       await violatingRemote.writeLp(TopicRPCHeader(topic: "b").encode())
       await violatingRemote.write(@[0.byte])
-      await violating.wait(1.seconds)
+      await violating
       check recorder.violations == 1
 
       if waitingForPayload:
@@ -266,7 +266,7 @@ suite "GossipSub topic stream lifecycle":
       else:
         # A length alone must suffice to stop the reader without reading a body.
         await remote.write(@[byte(payload.len)])
-      await reading.wait(1.seconds)
+      await reading
       check:
         local.closed()
         violatingLocal.closed()
