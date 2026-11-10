@@ -26,10 +26,15 @@ export results, opt, shortlog, collections
 
 const
   maxInlineKeyLength* = 42
-  maxPeerIdLength* = 2 + maxInlineKeyLength
-    ## Identity multihash header plus the largest inline public key.
-  maxPeerIdTextLength = 1 + 2 * (2 + maxPeerIdLength)
-    ## CIDv1 header and multihash in base16, including the multibase prefix.
+  identityMultihashHeaderLength = 2
+    # Single-byte identity codec and digest length (at most 42).
+  peerIdCidHeaderLength = 2 # Single-byte CIDv1 version and libp2p-key codec.
+  multibasePrefixLength = 1
+  base16CharsPerByte = 2
+  maxPeerIdLength* = identityMultihashHeaderLength + maxInlineKeyLength
+  maxPeerIdTextLength =
+    multibasePrefixLength +
+    base16CharsPerByte * (peerIdCidHeaderLength + maxPeerIdLength)
 
 const
   ShortPeerIdPrefixLength = 6
