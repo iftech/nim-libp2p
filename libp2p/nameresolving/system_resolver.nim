@@ -8,18 +8,20 @@
 {.push raises: [].}
 
 import std/[atomics, locks]
-import chronos, chronos/threadsync, chronicles
+import chronos, chronos/[threadsync, transports/ipnet], chronicles
 import nameresolver, dnsresolver
 import ../crypto/rng
 
 logScope:
   topics = "libp2p systemresolver"
 
-const
-  MaxSystemAddresses = 100
-  IPv4MappedMarkerByte = 0xff'u8
+const MaxSystemAddresses = 100
 
 type
+  Lookup = proc(
+    address: string, port: Port, domain: Domain, context: pointer
+  ): seq[TransportAddress] {.nimcall, gcsafe, raises: [TransportAddressError].}
+
   RequestState {.pure.} = enum
     Pending
     Done
@@ -43,9 +45,8 @@ type
     running: Atomic[bool]
     workersRunning: Atomic[int]
     requestSignal, responseSignal: ThreadSignalPtr
-    when defined(libp2p_testing):
-      workerEntered, workerRelease: ThreadSignalPtr
-      workerGateReleased: Atomic[bool]
+    lookup: Lookup
+    lookupContext: pointer
 
   PendingRequest = object
     req: ptr SharedRequest
@@ -62,18 +63,41 @@ type
     dispatcherFut: Future[void].Raising([])
     stopFut: Future[void].Raising([])
     stopped: bool
-    when defined(libp2p_testing):
-      workerEntered, workerRelease: ThreadSignalPtr
-      workerGateReleased: bool
+    lookup: Lookup
+    lookupContext: pointer
 
-proc isV4Mapped(address: TransportAddress): bool =
-  if address.family != AddressFamily.IPv6:
-    return false
-  for i in 0 ..< 10:
-    if address.address_v6[i] != 0:
-      return false
-  address.address_v6[10] == IPv4MappedMarkerByte and
-    address.address_v6[11] == IPv4MappedMarkerByte
+proc settle(req: ptr SharedRequest, state: RequestState) =
+  var expected = ord(RequestState.Pending)
+  discard req.state.compareExchange(expected, ord(state))
+
+proc destroy(shared: ptr SharedState) =
+  if not shared[].requestSignal.isNil:
+    discard shared[].requestSignal.close()
+  if not shared[].responseSignal.isNil:
+    discard shared[].responseSignal.close()
+  deinitLock(shared[].lock)
+  deallocShared(shared)
+
+proc systemLookup(
+    address: string, port: Port, domain: Domain, context: pointer
+): seq[TransportAddress] {.gcsafe, raises: [TransportAddressError].} =
+  resolveTAddress(address, port, domain)
+
+proc resolve(req: ptr SharedRequest, lookup: Lookup, context: pointer) =
+  let host = $cast[cstring](addr req.host[0])
+  try:
+    let resolved = lookup(host, Port(req.port), req.domain, context)
+    for address in resolved:
+      # getaddrinfo can return mapped literals even without AI_V4MAPPED.
+      if req.domain == Domain.AF_INET6 and address.isV4Mapped():
+        continue
+      if req.resultsLen >= MaxSystemAddresses:
+        break
+      req.results[req.resultsLen] = address
+      inc req.resultsLen
+    req.settle(RequestState.Done)
+  except TransportAddressError:
+    req.settle(RequestState.Discarded)
 
 proc workerLoop(shared: ptr SharedState) {.thread.} =
   {.cast(gcsafe).}:
@@ -81,46 +105,22 @@ proc workerLoop(shared: ptr SharedState) {.thread.} =
       discard shared[].requestSignal.waitSync()
       while true:
         var req: ptr SharedRequest
-        shared[].lock.acquire()
-        if shared[].running.load():
-          req = shared[].queueHead
-          if not req.isNil:
-            shared[].queueHead = req.next
-            if shared[].queueHead.isNil:
-              shared[].queueTail = nil
-        shared[].lock.release()
+        withLock shared[].lock:
+          if shared[].running.load():
+            req = shared[].queueHead
+            if not req.isNil:
+              shared[].queueHead = req.next
+              if shared[].queueHead.isNil:
+                shared[].queueTail = nil
         if req.isNil:
           break
 
         if RequestState(req.state.load()) == RequestState.Pending:
-          let host = $cast[cstring](addr req.host[0])
-          when defined(libp2p_testing):
-            let workerRelease = shared[].workerRelease
-            if not workerRelease.isNil:
-              shared[].workerRelease = nil
-              discard shared[].workerEntered.fireSync()
-              let waitResult = workerRelease.waitSync(2.seconds)
-              shared[].workerGateReleased.store(waitResult.isOk and waitResult.get())
-          try:
-            let resolved = resolveTAddress(host, Port(req.port), req.domain)
-            for address in resolved:
-              # getaddrinfo can return mapped literals even without AI_V4MAPPED.
-              if req.domain == Domain.AF_INET6 and address.isV4Mapped():
-                continue
-              if req.resultsLen == MaxSystemAddresses:
-                break
-              req.results[req.resultsLen] = address
-              inc req.resultsLen
-            var expected = ord(RequestState.Pending)
-            discard req.state.compareExchange(expected, ord(RequestState.Done))
-          except TransportAddressError:
-            var expected = ord(RequestState.Pending)
-            discard req.state.compareExchange(expected, ord(RequestState.Discarded))
+          req.resolve(shared[].lookup, shared[].lookupContext)
 
-        shared[].lock.acquire()
-        req.next = shared[].completedHead
-        shared[].completedHead = req
-        shared[].lock.release()
+        withLock shared[].lock:
+          req.next = shared[].completedHead
+          shared[].completedHead = req
         discard shared[].responseSignal.fireSync()
 
     # Wake another idle worker during shutdown, then notify the event-loop
@@ -141,24 +141,28 @@ proc finishRequest(self: SystemResolver, req: ptr SharedRequest) =
     let fut = self.pending[idx].fut
     self.pending.del(idx)
     if not fut.finished():
-      let deliver = RequestState(req.state.load()) == RequestState.Done
-      var res = newSeqOfCap[TransportAddress](if deliver: req.resultsLen else: 0)
-      if deliver:
-        for i in 0 ..< req.resultsLen:
-          res.add(req.results[i])
+      let res =
+        if RequestState(req.state.load()) == RequestState.Done:
+          @(req.results.toOpenArray(0, req.resultsLen - 1))
+        else:
+          @[]
       fut.complete(res)
   deallocShared(req)
 
-proc drainCompleted(self: SystemResolver) =
-  let shared = self.shared
-  shared[].lock.acquire()
-  var cur = shared[].completedHead
-  shared[].completedHead = nil
-  shared[].lock.release()
+proc finishRequests(self: SystemResolver, head: ptr SharedRequest) =
+  var cur = head
   while not cur.isNil:
     let req = cur
     cur = req.next
     self.finishRequest(req)
+
+proc drainCompleted(self: SystemResolver) =
+  let shared = self.shared
+  var head: ptr SharedRequest
+  withLock shared[].lock:
+    head = shared[].completedHead
+    shared[].completedHead = nil
+  self.finishRequests(head)
 
 proc dispatchLoop(self: SystemResolver) {.async: (raises: []).} =
   while not self.stopped:
@@ -177,19 +181,14 @@ proc startWorkers(self: SystemResolver) {.raises: [TransportAddressError].} =
   initLock(shared[].lock)
   shared[].running.store(true)
   shared[].workersRunning.store(0)
-  when defined(libp2p_testing):
-    shared[].workerEntered = self.workerEntered
-    shared[].workerRelease = self.workerRelease
-    shared[].workerGateReleased.store(false)
+  shared[].lookup = self.lookup
+  shared[].lookupContext = self.lookupContext
   shared[].requestSignal = ThreadSignalPtr.new().valueOr:
-    deinitLock(shared[].lock)
-    deallocShared(shared)
+    shared.destroy()
     raise
       newException(TransportAddressError, "Failed to create request signal: " & error)
   shared[].responseSignal = ThreadSignalPtr.new().valueOr:
-    discard shared[].requestSignal.close()
-    deinitLock(shared[].lock)
-    deallocShared(shared)
+    shared.destroy()
     raise
       newException(TransportAddressError, "Failed to create response signal: " & error)
 
@@ -207,10 +206,7 @@ proc startWorkers(self: SystemResolver) {.raises: [TransportAddressError].} =
     shared[].running.store(false)
     discard shared[].requestSignal.fireSync()
     joinThreads(workers)
-    discard shared[].requestSignal.close()
-    discard shared[].responseSignal.close()
-    deinitLock(shared[].lock)
-    deallocShared(shared)
+    shared.destroy()
     raise newException(
       TransportAddressError, "Failed to spawn resolver worker: " & exc.msg, exc
     )
@@ -235,19 +231,18 @@ proc new*(
       else:
         txtResolver,
     workerCount: workers,
+    lookup: systemLookup,
   )
 
-when defined(libp2p_testing):
-  proc setWorkerTestGate*(self: SystemResolver, entered, release: ThreadSignalPtr) =
-    ## Delay the first worker lookup so shutdown behavior can be tested.
-    doAssert self.shared.isNil
-    doAssert not entered.isNil and not release.isNil
-    self.workerEntered = entered
-    self.workerRelease = release
-    self.workerGateReleased = false
+proc setLookup(self: SystemResolver, lookup: Lookup, context: pointer) =
+  # The callback context must outlive all workers, including asynchronous shutdown.
+  doAssert self.shared.isNil
+  doAssert not lookup.isNil
+  self.lookup = lookup
+  self.lookupContext = context
 
-  proc workerTestGateReleased*(self: SystemResolver): bool =
-    self.workerGateReleased
+when defined(libp2p_testing):
+  export setLookup
 
 method resolveIp*(
     self: SystemResolver, address: string, port: Port, domain: Domain = Domain.AF_UNSPEC
@@ -272,19 +267,17 @@ method resolveIp*(
   req.state.store(ord(RequestState.Pending))
 
   proc cancellation(udata: pointer) {.gcsafe, raises: [].} =
-    var expected = ord(RequestState.Pending)
-    discard req.state.compareExchange(expected, ord(RequestState.Discarded))
+    req.settle(RequestState.Discarded)
 
   fut.cancelCallback = cancellation
   self.pending.add(PendingRequest(req: req, fut: fut))
 
-  shared[].lock.acquire()
-  if shared[].queueTail.isNil:
-    shared[].queueHead = req
-  else:
-    shared[].queueTail.next = req
-  shared[].queueTail = req
-  shared[].lock.release()
+  withLock shared[].lock:
+    if shared[].queueTail.isNil:
+      shared[].queueHead = req
+    else:
+      shared[].queueTail.next = req
+    shared[].queueTail = req
   discard shared[].requestSignal.fireSync()
 
   trace "Resolving via getaddrinfo", address, port = uint16(port), domain
@@ -310,9 +303,8 @@ proc stopWorkers(self: SystemResolver) {.async: (raises: []).} =
     return
 
   let shared = self.shared
-  shared[].lock.acquire()
-  shared[].running.store(false)
-  shared[].lock.release()
+  withLock shared[].lock:
+    shared[].running.store(false)
   discard shared[].requestSignal.fireSync()
 
   # Stop the dispatcher before using its signal to await worker exits.
@@ -332,22 +324,12 @@ proc stopWorkers(self: SystemResolver) {.async: (raises: []).} =
 
   # All workers have exited, so joining only releases their thread handles.
   joinThreads(self.workers)
-  when defined(libp2p_testing):
-    self.workerGateReleased = shared[].workerGateReleased.load()
 
   # No worker can touch the shared state anymore: complete whatever is
   # left, with results where the worker managed to produce them.
   self.drainCompleted()
-  var cur = shared[].queueHead
-  while not cur.isNil:
-    let req = cur
-    cur = req.next
-    self.finishRequest(req)
-
-  discard shared[].requestSignal.close()
-  discard shared[].responseSignal.close()
-  deinitLock(shared[].lock)
-  deallocShared(shared)
+  self.finishRequests(shared[].queueHead)
+  shared.destroy()
   self.shared = nil
   self.workers = @[]
 

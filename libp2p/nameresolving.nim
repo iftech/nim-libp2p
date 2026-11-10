@@ -4,7 +4,7 @@
 ## Choose a DNS resolver with explicit servers or an OS-backed resolver:
 ##
 ## ```nim
-## let resolver = newNameResolver(rng)
+## let resolver = SystemResolver.new(rng)
 ## let addresses = await resolver.resolveMAddress(address)
 ## await resolver.stop()
 ## ```
@@ -17,18 +17,6 @@
 
 {.push raises: [].}
 
-import chronos
-import ./nameresolving/[nameresolver, dnsresolver, systemresolver]
-import ./crypto/rng
+import ./nameresolving/[nameresolver, dnsresolver, system_resolver]
 
-export nameresolver, dnsresolver, systemresolver
-
-proc newNameResolver*(rng: Rng, nameServers: seq[TransportAddress]): DnsResolver =
-  ## Use only the supplied DNS servers. An empty list produces no DNS results.
-  DnsResolver.new(nameServers, rng)
-
-proc newNameResolver*(rng: Rng): SystemResolver =
-  ## Resolve IPs through the OS. Discovers TXT nameservers synchronously during
-  ## construction, which can block the calling thread while reading system config.
-  ## Requires threads. The caller must await stop() to release its workers.
-  SystemResolver.new(rng)
+export nameresolver, dnsresolver, system_resolver

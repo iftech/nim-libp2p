@@ -3,58 +3,74 @@
 
 {.used.}
 
-import std/[sequtils, strutils, tables]
+import std/[atomics, sequtils, strutils, tables]
 import chronos, chronos/threadsync
-import ../../libp2p/nameresolving
-import ../tools/[unittest, crypto, multiaddress, resolver, switch_builder]
+import ../../libp2p/nameresolving/[nameresolver, system_resolver]
+import ../tools/[unittest, crypto, multiaddress, resolver]
+import ./suite_name_resolver
+
+nameResolverSuite(
+  "SystemResolver contract",
+  resolver,
+  (let resolver = SystemResolver.new(rng())),
+  (await resolver.stop()),
+)
+
+type LookupGate = object
+  entered, release: ThreadSignalPtr
+  used, released: Atomic[bool]
+
+proc gatedLookup(
+    address: string, port: Port, domain: Domain, context: pointer
+): seq[TransportAddress] {.nimcall, gcsafe, raises: [TransportAddressError].} =
+  let gate = cast[ptr LookupGate](context)
+  if not gate[].used.exchange(true):
+    discard gate[].entered.fireSync()
+    let waitResult = gate[].release.waitSync(2.seconds)
+    gate[].released.store(waitResult.isOk and waitResult.get())
+  resolveTAddress(address, port, domain)
+
+proc installGate(
+    resolver: SystemResolver, entered, release: ThreadSignalPtr
+): ptr LookupGate =
+  result = cast[ptr LookupGate](allocShared0(sizeof(LookupGate)))
+  result[].entered = entered
+  result[].release = release
+  resolver.setLookup(gatedLookup, result)
+
+proc fixedLookup(
+    address: string, port: Port, domain: Domain, context: pointer
+): seq[TransportAddress] {.nimcall, gcsafe, raises: [TransportAddressError].} =
+  case address
+  of "empty":
+    @[]
+  of "error":
+    raise newException(TransportAddressError, "Lookup failed")
+  else:
+    newSeqWith(101, initTAddress("::ffff:127.0.0.1", port)) &
+      newSeqWith(101, initTAddress("::1", port))
 
 suite "System name resolution":
   teardown:
     checkTrackers()
 
-  asyncTest "switch resolves localhost with a caller-managed system resolver":
-    let resolver = newNameResolver(rng())
-    let source =
-      makeStandardSwitchBuilder(TcpAutoAddress).withNameResolver(resolver).build()
-    let destination = makeStandardSwitch(TcpAutoAddress)
-    defer:
-      await source.stop()
-      await destination.stop()
-      await resolver.stop()
-    let addresses = await resolver.resolveMAddress(ma("/dns4/localhost/tcp/4001"))
-    check ma("/ip4/127.0.0.1/tcp/4001") in addresses
-    await source.stop()
-    check (await resolver.resolveIp("localhost", 4001.Port)).len > 0
-    await resolver.stop()
-    await destination.start()
-    await source.start()
-    check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
-    resolver.start()
-    let address =
-      ma("/dns4/localhost") & destination.peerInfo.addrs[0][1 ..^ 1].tryGet()
-    await source.connect(destination.peerInfo.peerId, @[address])
-    check source.isConnected(destination.peerInfo.peerId)
-    await source.stop()
-    check (await resolver.resolveIp("localhost", 4001.Port)).len > 0
-
-  asyncTest "factory preserves explicit DNS servers":
-    for servers in [@[initTAddress("192.0.2.1:5353")], newSeq[TransportAddress]()]:
-      let resolver = newNameResolver(rng(), servers)
-      check resolver.nameServers == servers
-      if servers.len == 0:
-        check (await resolver.resolveIp("localhost", 4001.Port)).len == 0
-        check (await resolver.resolveTxt("_dnsaddr.test.io")).len == 0
-
-  asyncTest "requested family and port are preserved":
+  asyncTest "empty and failed lookups return no addresses":
     let resolver = SystemResolver.new(rng())
+    resolver.setLookup(fixedLookup, nil)
     defer:
       await resolver.stop()
-    let ipv4 = await resolver.resolveIp("localhost", 4001.Port, Domain.AF_INET)
+    for host in ["empty", "error"]:
+      check (await resolver.resolveIp(host, 4001.Port)).len == 0
+
+  asyncTest "result limit applies after mapped IPv4 filtering":
+    let resolver = SystemResolver.new(rng())
+    resolver.setLookup(fixedLookup, nil)
+    defer:
+      await resolver.stop()
+    let addresses = await resolver.resolveIp("many", 4001.Port, Domain.AF_INET6)
     check:
-      ipv4.len > 0
-      ipv4.allIt(it.family == AddressFamily.IPv4 and it.port == 4001.Port)
-    check (await resolver.resolveIp("::1", 4002.Port, Domain.AF_INET6)) ==
-      @[initTAddress("[::1]:4002")]
+      addresses.len == 100
+      addresses.allIt(it == initTAddress("[::1]:4001"))
 
   asyncTest "dns6 rejects IPv4 and mapped IPv4 literals":
     let resolver = SystemResolver.new(rng())
@@ -96,12 +112,13 @@ suite "System name resolution":
       entered = ThreadSignalPtr.new().expect("create worker-entered signal")
       release = ThreadSignalPtr.new().expect("create worker-release signal")
       resolver = SystemResolver.new(rng(), workers = 1)
-    resolver.setWorkerTestGate(entered, release)
+    let gate = resolver.installGate(entered, release)
     defer:
       discard release.fireSync()
       await resolver.stop()
       discard entered.close()
       discard release.close()
+      deallocShared(gate)
 
     let lookup = resolver.resolveIp("localhost", 4001.Port)
     await entered.wait()
@@ -115,12 +132,13 @@ suite "System name resolution":
       entered = ThreadSignalPtr.new().expect("create worker-entered signal")
       release = ThreadSignalPtr.new().expect("create worker-release signal")
       resolver = SystemResolver.new(rng(), workers = 1)
-    resolver.setWorkerTestGate(entered, release)
+    let gate = resolver.installGate(entered, release)
     defer:
       discard release.fireSync()
       await resolver.stop()
       discard entered.close()
       discard release.close()
+      deallocShared(gate)
 
     let inFlight = resolver.resolveIp("localhost", 4001.Port)
     await entered.wait()
@@ -138,7 +156,7 @@ suite "System name resolution":
     await alsoClosing
     await closing
     await releaseFuture
-    check resolver.workerTestGateReleased()
+    check gate[].released.load()
     for lookup in queued:
       check (await lookup).len == 0
     discard await inFlight
@@ -148,12 +166,13 @@ suite "System name resolution":
       entered = ThreadSignalPtr.new().expect("create worker-entered signal")
       release = ThreadSignalPtr.new().expect("create worker-release signal")
       resolver = SystemResolver.new(rng(), workers = 1)
-    resolver.setWorkerTestGate(entered, release)
+    let gate = resolver.installGate(entered, release)
     defer:
       discard release.fireSync()
       await resolver.stop()
       discard entered.close()
       discard release.close()
+      deallocShared(gate)
 
     let inFlight = resolver.resolveIp("localhost", 4001.Port)
     await entered.wait()
