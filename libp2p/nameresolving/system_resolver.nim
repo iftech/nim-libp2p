@@ -93,6 +93,7 @@ proc resolve(req: ptr SharedRequest, lookup: Lookup, context: pointer) =
       if req.domain == Domain.AF_INET6 and address.isV4Mapped():
         continue
       if req.resultsLen >= MaxSystemAddresses:
+        debug "System resolver results truncated", host, limit = MaxSystemAddresses
         break
       req.results[req.resultsLen] = address
       inc req.resultsLen
