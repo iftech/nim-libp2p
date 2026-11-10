@@ -266,6 +266,7 @@ suite "GossipSub topic stream send side":
     checkTrackers()
 
   let header = TopicRPCHeader(topic: topic).encode()
+  let frames = [@[1.byte], @[2.byte], @[3.byte], @[4.byte]]
 
   asyncTest "frame over the maximum message size is dropped":
     # the header must fit under the same limit
@@ -288,7 +289,6 @@ suite "GossipSub topic stream send side":
         recorder.violations == 0
 
   asyncTest "queue budgets count the frame in flight until its write completes":
-    let frames = [@[1.byte], @[2.byte], @[3.byte], @[4.byte]]
     for config in [
       # the header, frames[0] in flight and frames[1] queued fill the byte budget
       TopicStreamsConfig(maxQueuedBytes: header.len + frames[0].len + frames[1].len),
@@ -338,6 +338,35 @@ suite "GossipSub topic stream send side":
         recorder.penalties == 0
         recorder.violations == 0
 
+  asyncTest "frame for a new topic is dropped while readers and writers fill maxStreams":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder, TopicStreamsConfig(maxStreams: 3))
+    var peerEnds: seq[Stream]
+    var readers: seq[Future[void]]
+    defer:
+      await state.stop()
+      for reader in readers:
+        await reader.cancelAndWait()
+      for peerEnd in peerEnds:
+        await peerEnd.close()
+      await recorder.closeOutgoingStreams()
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+    state.sendTopic(topic, frames[0], true) # opens our writer for topic
+    for _ in 0 ..< 2: # the peer opens two topic streams
+      let (peerEnd, nodeEnd) = bridgedConnections()
+      peerEnds.add(peerEnd)
+      readers.add(state.readTopic(nodeEnd))
+
+    # TODO: iftech/nim-libp2p#3406
+    state.sendTopic("other", frames[1], true) # dropped: no stream left to open
+    state.sendTopic(topic, frames[2], true) # written on the open writer
+    check:
+      recorder.outgoingStreams.len == 1
+      (await recorder.outgoingStreams[0].readLp(1024)) == header
+      (await recorder.outgoingStreams[0].readLp(1024)) == frames[0]
+      (await recorder.outgoingStreams[0].readLp(1024)) == frames[2]
+
 suite "GossipSub topic stream receive side":
   teardown:
     checkTrackers()
@@ -370,3 +399,39 @@ suite "GossipSub topic stream receive side":
     # TODO: iftech/nim-libp2p#3403
     check (await recorder.received.popFirst()).messages == @[message]
     await reader # ends on its own after the frame, without the peer closing the stream
+
+  asyncTest "stream over maxStreams is reset, and penalized only when readers alone fill maxStreams":
+    for (writerCount, readerCount, expectedPenalties) in [
+      (0, 3, 1), # readers still waiting for their header fill the limit
+      # TODO: iftech/nim-libp2p#3406
+      (1, 2, 0), # our writer for topic counts toward the limit
+    ]:
+      let recorder = TopicStreamsRecorder.new()
+      let state = TopicStreams.new(recorder, TopicStreamsConfig(maxStreams: 3))
+      var peerEnds: seq[Stream]
+      var readers: seq[Future[void]]
+      defer:
+        await state.stop()
+        for reader in readers:
+          await reader.cancelAndWait()
+        for peerEnd in peerEnds:
+          await peerEnd.close()
+        await recorder.closeOutgoingStreams()
+      check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+      for _ in 0 ..< writerCount:
+        state.sendTopic(topic, frame, true)
+      for _ in 0 ..< readerCount:
+        let (peerEnd, nodeEnd) = bridgedConnections()
+        peerEnds.add(peerEnd)
+        readers.add(state.readTopic(nodeEnd))
+
+      let (peerEnd, nodeEnd) = bridgedConnections()
+      peerEnds.add(peerEnd)
+      # without this header, an accepted stream would also end at the header timeout
+      await peerEnd.writeLp(header)
+      await state.readTopic(nodeEnd)
+      check:
+        nodeEnd.wasResetLocally()
+        recorder.penalties == expectedPenalties
+        recorder.violations == 0
