@@ -58,6 +58,29 @@ suite "GossipSub Component - Extensions":
         let negotiatedPeersSorted = negotiatedPeers.sorted()
         negotiatedPeersSorted == nodesPeerIdSorted
 
+  asyncTest "extensions negotiate while a peer is graylisted":
+    let negotiated = newFuture[void]("graylistedExtensionsNegotiated")
+    var negotiatedPeers: seq[PeerId]
+    proc onNegotiated(peer: PeerId) {.gcsafe, raises: [].} =
+      negotiatedPeers.add(peer)
+      if negotiatedPeers.len == 2:
+        negotiated.completeOnce()
+
+    let nodes = generateNodes(
+        2,
+        gossip = true,
+        testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+    nodes[0].parameters.graylistThreshold = 100000.0
+    let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
+    await connect(nodes[0], nodes[1])
+    await negotiated
+    check:
+      currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
+      negotiatedPeers.sorted() == pluckPeerId(nodes).sorted()
+
   asyncTest "Extensions control is sent before subscriptions on stream open":
     # If node has pre-existing subscriptions on a dial,
     # then it sends the subscriptions control message before extensions control message on a newly opened stream,
