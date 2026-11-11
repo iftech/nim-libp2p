@@ -915,9 +915,18 @@ method rpcHandler*(
 ) {.async: (raises: [CancelledError, PeerMessageDecodeError, PeerRateLimitError]).} =
   let msgSize = data.len
 
-  ignoreGraylistedRPC(g, peer, msgSize)
+  let graylisted = g.isGraylisted(peer, peer.score)
+  if graylisted:
+    await g.rateLimit(peer, msgSize)
+    trace "PubSub RPC ignored",
+      peerId = peer.peerId, reason = "graylisted", score = peer.score
+    libp2p_gossipsub_graylisted_rpcs.inc(labelValues = [peer.getAgent()])
+    if not g.extensionsState.negotiationPending(peer.peerId):
+      return
 
   var rpcMsg = RPCMsg.decode(move(data)).valueOr:
+    if graylisted:
+      return
     trace "PubSub RPC decode failed",
       err = error, peerId = peer.peerId, messageType = "rpc", messageSize = msgSize
     await rateLimit(g, peer, msgSize)
@@ -934,6 +943,10 @@ method rpcHandler*(
   elif g.extensionsState.peerHasTopicStreams(peer.peerId):
     # A topic stream may arrive before an incompatible control protocol is known.
     g.pendingTasks.trackFut(g.disconnectPeer(peer))
+    return
+  if graylisted:
+    # Discard payloads, but retain the actual first control RPC for negotiation.
+    g.extensionsState.negotiateExtensions(peer.peerId, rpcMsg)
     return
   processRPC(g, peer, rpcMsg, msgSize, false)
 
