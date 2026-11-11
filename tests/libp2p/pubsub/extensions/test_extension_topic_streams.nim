@@ -379,7 +379,6 @@ suite "GossipSub topic stream send side":
 
   asyncTest "frame over maxQueuedBytes is dropped even within the maximum message size":
     const maxMessageSize = 1024
-    # a byte budget below the maximum message size
     let config = TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2)
     for (frameSize, expectedDials) in [
       (config.maxQueuedBytes - header.len, 1), # header and frame fill the byte budget
@@ -549,18 +548,14 @@ suite "GossipSub topic stream receive side":
       (await recorder.received.popFirst()).messages == @[messages[1]]
 
   asyncTest "malformed header or frame is a protocol violation":
-    proc lengthPrefixed(data: seq[byte]): seq[byte] =
-      return @[byte(data.len)] & data # every input here fits a 1-byte varint
-
     let frameWithTopic = TopicRPC(
       publish: Opt.some(TopicScopedMessage(data: @[1.byte], topic: topic))
     ).encode()
-    for written in [
-      lengthPrefixed(@[255.byte]), # undecodable header
-      @[0.byte], # zero-length header
-      lengthPrefixed(TopicRPCHeader(topic: "").encode()), # empty topic
-      lengthPrefixed(header) & lengthPrefixed(frameWithTopic),
-        # publish frame that names its topic
+    for writes in [
+      @[@[255.byte]], # undecodable header
+      @[newSeq[byte]()], # zero-length header
+      @[TopicRPCHeader(topic: "").encode()], # empty topic
+      @[header, frameWithTopic], # publish frame that names its topic
     ]:
       let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(recorder)
@@ -571,7 +566,8 @@ suite "GossipSub topic stream receive side":
         await state.stop()
         await peerEnd.close()
 
-      await peerEnd.write(written)
+      for data in writes:
+        await peerEnd.writeLp(data)
       await reader # ends on its own at the violation
       check:
         nodeEnd.wasResetLocally()
@@ -739,3 +735,30 @@ suite "GossipSub topic stream receive side":
     await peerEnd.writeLp(header)
     await peerEnd.writeLp(frame) # accepted: the budget has room again
     check (await recorder.received.popFirst()).messages == @[message]
+
+  asyncTest "frame over maxIncomingBytes is penalized even within the maximum message size":
+    let recorder = TopicStreamsRecorder.new()
+    # the header and one frame fill the incoming budget
+    let state = TopicStreams.new(
+      recorder, TopicStreamsConfig(maxIncomingBytes: header.len + frame.len)
+    )
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    let reader = state.readTopic(nodeEnd)
+    defer:
+      await reader.cancelAndWait()
+      await state.stop()
+      await peerEnd.close()
+
+    await peerEnd.writeLp(header)
+    await peerEnd.writeLp(frame)
+    check (await recorder.received.popFirst()).messages == @[message]
+
+    # TODO: iftech/nim-libp2p#NNNN
+    let largerFrame = Message(data: @[1.byte, 2], topic: topic).topicRPC().encode()
+    await peerEnd.writeLp(largerFrame)
+      # the only frame in flight, far below maxMessageSize
+    await reader # ends on its own at the penalty
+    check:
+      recorder.received.len == 0
+      recorder.penalties == 1
+      recorder.violations == 0
