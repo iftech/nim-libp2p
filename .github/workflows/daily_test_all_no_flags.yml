@@ -42,7 +42,7 @@ jobs:
           shell: bash
           os: macos-15
           cpu: arm64
-          nim_ref: v2.2.12
+          nim_ref: v2.2.14
 
       - name: Restore dependencies from cache
         uses: "./.github/actions/install_test_deps"
@@ -50,7 +50,7 @@ jobs:
           os: macos-15
           cpu: arm64
           cc: clang
-          nim_ref: v2.2.12
+          nim_ref: v2.2.14
 
       - name: Setup deps
         run: make setup

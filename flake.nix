@@ -25,15 +25,27 @@
         overlays = [
           (final: prev: {
             nim-unwrapped-2_2 = prev.nim-unwrapped-2_2.overrideAttrs (old: {
-              version = "2.2.12";
+              version = "2.2.14";
               patches = map (patch:
                 if builtins.baseNameOf patch == "extra-mangling-2.patch"
                 then ./nix/nim-extra-mangling.patch
                 else patch
-              ) old.patches;
+              ) (builtins.filter (patch:
+                builtins.baseNameOf patch != "openssl.patch"
+              ) old.patches);
+              # Preserve Nix's OpenSSL linking without the version-specific patch.
+              postPatch = (old.postPatch or "") + ''
+                substituteInPlace lib/wrappers/openssl.nim \
+                  --replace-fail 'dynlib: DLLSSLName,' "" \
+                  --replace-fail 'dynlib: DLLUtilName,' "" \
+                  --replace-fail 'dynlib:DLLUtilName,' "" \
+                  --replace-fail ', dynlib: DLLUtilName' "" \
+                  --replace-fail ', dynlib:DLLUtilName' ""
+                echo '{.passL: "-lssl -lcrypto".}' >> lib/wrappers/openssl.nim
+              '';
               src = final.fetchurl {
-                url = "https://nim-lang.org/download/nim-2.2.12.tar.xz";
-                hash = "sha256-Jjmgal6np/z1ffHn4e9NGyvuWMesm9ANvSqlvqHlpWo=";
+                url = "https://nim-lang.org/download/nim-2.2.14.tar.xz";
+                hash = "sha256-iSc/g/I3lGX0lMgnHv46Y82eeJITCLhHP0/+1TjbtTY=";
               };
             });
           })

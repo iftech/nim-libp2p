@@ -1,6 +1,6 @@
 .PHONY: all build genbindings deps nixbuild clean
 
-NIM_VERSION ?= 2.2.12
+NIM_VERSION ?= 2.2.14
 
 all: build genbindings
 

@@ -33,7 +33,7 @@ Jump into the [contributing](docs/contributing.md) page to get started, `nim-lib
 
 ## Install
 
-The currently supported Nim versions are v2.2.4 and v2.2.12.
+The minimum supported Nim version is v2.2.6. The default and newest tested version is v2.2.14.
 
 ```
 nimble install libp2p

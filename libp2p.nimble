@@ -7,7 +7,7 @@ description = "LibP2P implementation"
 license = "MIT"
 skipDirs = @["cbind", "examples", "interop", "simulation", "tests", "tools"]
 
-requires "nim >= 2.2.4",
+requires "nim >= 2.2.6",
   "nimcrypto >= 0.6.0", "bearssl >= 0.2.7",
   "https://github.com/vacp2p/nim-boringssl >= 0.0.14", "chronicles >= 0.12.3",
   "chronos >= 4.2.2", "metrics >= 0.2.2", "secp256k1", "stew >= 0.4.2", "results",

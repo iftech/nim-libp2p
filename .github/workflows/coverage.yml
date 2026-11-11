@@ -35,7 +35,7 @@ jobs:
           os: linux-gcc-14
           cpu: amd64
           shell: bash
-          nim_ref: v2.2.12
+          nim_ref: v2.2.14
 
       - name: Use gcc 14
         run: |
@@ -50,7 +50,7 @@ jobs:
           os: linux-gcc-14
           cpu: amd64
           cc: gcc
-          nim_ref: v2.2.12
+          nim_ref: v2.2.14
 
       - name: Setup deps
         run: make setup
