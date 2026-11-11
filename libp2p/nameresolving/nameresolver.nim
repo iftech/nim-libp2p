@@ -101,8 +101,7 @@ proc expand(
     if not component.isEmpty:
       ?suffix.append(part)
       inc suffixLength
-    elif (if state.dnsaddrOnly: DNSADDR.match(part)
-    else: DNS.match(part)):
+    elif DNSADDR.match(part) or (not state.dnsaddrOnly and DNS.match(part)):
       component = part
     else:
       ?prefix.append(part)
