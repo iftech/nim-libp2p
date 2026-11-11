@@ -3,12 +3,11 @@
 
 {.used.}
 
-import std/sequtils
+import std/[importutils, sequtils, tables]
 import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
-from ../../../../libp2p/stream/bufferstream import BufferStream, readOnce, pushData
-import ../../../../libp2p/stream/bridgestream
+import ../../../../libp2p/stream/[bridgestream, bufferstream]
 import ../../../tools/[unittest, bufferstream, metrics_utils]
 import ../converters
 import ./extension_recording
@@ -26,6 +25,27 @@ method readOnce(
 const
   topic = "foobar"
   otherTopic = "other"
+
+type
+  ReadFailureStream = ref object of TestBufferStream
+    readFailure: ref LPStreamError # raised once the peer ends its side
+
+  CloseGateStream = ref object of TestBufferStream
+    closeStarted: Future[void].Raising([CancelledError])
+    allowClose: Future[void].Raising([CancelledError])
+
+method readOnce(
+    s: ReadFailureStream, pbytes: pointer, nbytes: int
+): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
+  let count = await procCall BufferStream(s).readOnce(pbytes, nbytes)
+  if s.readFailure != nil:
+    raise s.readFailure
+  return count
+
+method closeImpl(s: CloseGateStream) {.async: (raises: []).} =
+  s.closeStarted.complete()
+  await noCancel s.allowClose
+  await procCall BufferStream(s).closeImpl()
 
 suite "GossipSub topic stream wire format":
   test "full message reconstructs canonical signature input":
@@ -520,6 +540,108 @@ suite "GossipSub topic stream send side":
     check:
       control.len == 0
       recorder.outgoingStreams.len == 0
+
+  asyncTest "writer ends without a protocol violation when the peer closes or resets the topic stream":
+    privateAccess(TopicStreams)
+    let readFailures: array[2, ref LPStreamError] = [
+      nil, # the peer closes its end
+      newLPStreamResetError(), # the peer resets its end
+    ]
+    for readFailure in readFailures:
+      let written = newAsyncQueue[seq[byte]]()
+      proc recordWrite(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        await written.put(data[1 ..^ 1]) # without the 1-byte length prefix
+
+      var nodeEnds: seq[ReadFailureStream]
+      proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+        let nodeEnd = ReadFailureStream(writeHandler: recordWrite)
+        nodeEnd.initStream()
+        nodeEnds.add(nodeEnd)
+        return nodeEnd
+
+      let recorder = TopicStreamsRecorder.new()
+      let state = TopicStreams.new(
+        TopicStreamsConfig(),
+        1024,
+        dial,
+        recorder.receive(),
+        recorder.violation(),
+        recorder.penalize(),
+      )
+      defer:
+        await state.stop()
+      check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+      state.sendTopic(topic, frames[0], true)
+      check:
+        (await written.popFirst()) == header
+        (await written.popFirst()) == frames[0]
+
+      nodeEnds[0].readFailure = readFailure
+      await nodeEnds[0].pushEof() # the peer ends its side of the stream
+      # wait for the writer to end; until then a new frame is dropped
+      checkUntilTimeout:
+        topic notin state.writers
+      state.sendTopic(topic, frames[1], true)
+      check:
+        nodeEnds.len == 2
+        (await written.popFirst()) == header
+        (await written.popFirst()) == frames[1]
+        recorder.penalties == 0
+        recorder.violations == 0
+
+  asyncTest "frame sent while the old stream closes is dropped, and the next frame opens a new stream":
+    let written = newAsyncQueue[seq[byte]]()
+    proc recordWrite(
+        data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, LPStreamError]).} =
+      await written.put(data[1 ..^ 1]) # without the 1-byte length prefix
+
+    let allowClose = Future[void].Raising([CancelledError]).init()
+    var nodeEnds: seq[CloseGateStream]
+    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+      let nodeEnd = CloseGateStream(
+        writeHandler: recordWrite,
+        closeStarted: Future[void].Raising([CancelledError]).init(),
+        allowClose: allowClose,
+      )
+      nodeEnd.initStream()
+      nodeEnds.add(nodeEnd)
+      return nodeEnd
+
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(
+      # the next frame fits only if the frame dropped while the old stream closes holds no budget
+      TopicStreamsConfig(maxQueuedMessages: 1),
+      1024,
+      dial,
+      recorder.receive(),
+      recorder.violation(),
+      recorder.penalize(),
+    )
+    defer:
+      await state.stop()
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+    state.sendTopic(topic, frames[0], true)
+    check:
+      (await written.popFirst()) == header
+      (await written.popFirst()) == frames[0]
+
+    let closing = state.closeTopic(topic) # GossipSub does not await this close either
+    await nodeEnds[0].closeStarted # the old stream closes until allowClose completes
+    state.sendTopic(topic, frames[1], true) # dropped: the old stream is still closing
+    check nodeEnds.len == 1
+
+    allowClose.complete()
+    await closing
+    state.sendTopic(topic, frames[2], true)
+    check:
+      nodeEnds.len == 2
+      (await written.popFirst()) == header
+      (await written.popFirst()) == frames[2]
 
 suite "GossipSub topic stream receive side":
   teardown:
