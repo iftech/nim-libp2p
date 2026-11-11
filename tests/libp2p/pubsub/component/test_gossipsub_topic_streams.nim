@@ -96,7 +96,7 @@ suite "GossipSub Component - Topic streams":
     await connect(nodes[0], nodes[1])
     waitSubscribe(nodes[0], nodes[1], topic)
 
-    # TODO: iftech/nim-libp2p#NNNN
+    # TODO: iftech/nim-libp2p#3411
     check (await nodes[0].publish(topic, newSeq[byte]())) == 1
     discard await nodes[0].publish(topic, "data")
     check (await received.popFirst()) == "data".toBytes
