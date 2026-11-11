@@ -179,7 +179,14 @@ proc removePeer*(state: ExtensionsState, peerId: PeerId) =
   state.sentExtensions.excl(peerId)
   state.receivedNonExtCtrlMsg.del(peerId)
 
-proc handleRPC*(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
+proc negotiationPending*(state: ExtensionsState, peerId: PeerId): bool =
+  ## Whether the peer's first control-stream RPC has yet to establish capabilities.
+  not (
+    state.peerExtensions.hasKey(peerId) or state.receivedNonExtCtrlMsg.hasKey(peerId)
+  )
+
+proc negotiateExtensions*(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
+  ## Record control-stream capabilities without dispatching the RPC to extensions.
   if rpc.control.isSome() and rpc.control.get().extensions.isSome():
     if state.receivedNonExtCtrlMsg.hasKey(peerId):
       # peer is sending control message that was not the first message transmitted on the stream.
@@ -199,7 +206,8 @@ proc handleRPC*(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
   else:
     state.receivedNonExtCtrlMsg[peerId] = true
 
-  # onHandleRPC event is always called
+proc handleRPC*(state: ExtensionsState, peerId: PeerId, rpc: RPCMsg) =
+  state.negotiateExtensions(peerId, rpc)
   state.onHandleRPC(peerId, rpc)
 
 proc makeControlExtensions*(state: ExtensionsState): ControlExtensions =
