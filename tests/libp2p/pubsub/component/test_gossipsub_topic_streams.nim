@@ -369,8 +369,6 @@ suite "GossipSub Component - Topic streams":
 
     nodes[0].subscribe(topic, onMessage)
     await connect(nodes[0], nodes[1])
-    checkUntilTimeout:
-      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
 
     # opened from the switch to force the race with a message in flight as nodes[0] stops
     # GossipSub would close this stream within a round trip

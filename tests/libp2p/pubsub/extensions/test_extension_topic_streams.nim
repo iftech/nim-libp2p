@@ -239,8 +239,8 @@ suite "GossipSub topic stream lifecycle":
     var readers: seq[Future[void]]
     defer:
       await state.stop()
-      await noCancel allFutures(readers.mapIt(it.cancelAndWait()))
-      await noCancel allFutures(peerEnds.mapIt(it.close()))
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
 
     for _ in 0 ..< 3: # the peer opens three topic streams
       let (peerEnd, nodeEnd) = bridgedConnections()
@@ -339,8 +339,8 @@ suite "GossipSub topic stream send side":
     var readers: seq[Future[void]]
     defer:
       await state.stop()
-      await noCancel allFutures(readers.mapIt(it.cancelAndWait()))
-      await noCancel allFutures(peerEnds.mapIt(it.close()))
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
       await recorder.closeOutgoingStreams()
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
@@ -433,8 +433,8 @@ suite "GossipSub topic stream receive side":
     var readers: seq[Future[void]]
     defer:
       await state.stop()
-      await noCancel allFutures(readers.mapIt(it.cancelAndWait()))
-      await noCancel allFutures(peerEnds.mapIt(it.close()))
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
 
     for _ in 0 ..< 3: # the peer opens three streams for topic
       let (peerEnd, nodeEnd) = bridgedConnections()
@@ -491,8 +491,8 @@ suite "GossipSub topic stream receive side":
     var readers: seq[Future[void]]
     defer:
       await state.stop()
-      await noCancel allFutures(readers.mapIt(it.cancelAndWait()))
-      await noCancel allFutures(peerEnds.mapIt(it.close()))
+      await allFutures(readers.mapIt(it.cancelAndWait()))
+      await allFutures(peerEnds.mapIt(it.close()))
 
     for _ in 0 ..< 2: # the peer opens two topic streams
       let (peerEnd, nodeEnd) = bridgedConnections()
