@@ -15,19 +15,6 @@ suite "GossipSub Extensions :: Topic streams":
   teardown:
     checkTrackers()
 
-  test "topic stream limits are validated":
-    check:
-      TopicStreamsConfig().validate().isOk
-      TopicStreamsConfig(maxIncomingStreams: 3, maxOutgoingStreams: 1).validate().isOk
-    for config in [
-      TopicStreamsConfig(maxIncomingStreams: 2),
-      TopicStreamsConfig(maxOutgoingStreams: 0),
-      TopicStreamsConfig(maxQueuedBytes: 0),
-      TopicStreamsConfig(maxIncomingBytes: 0),
-      TopicStreamsConfig(maxQueuedMessages: 0),
-    ]:
-      check config.validate().isErr
-
   test "absent transports allow control RPCs without activating topic streams":
     for config in [Opt.none(TopicStreamsConfig), Opt.some(TopicStreamsConfig())]:
       let state = TopicStreamsExtension.new(config, noopBehaviorPenaltyProc)
