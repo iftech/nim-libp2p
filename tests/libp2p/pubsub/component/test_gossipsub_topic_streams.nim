@@ -459,12 +459,9 @@ suite "GossipSub Component - Topic streams":
   asyncTest "peer whose topic stream header or frame exceeds a byte limit gets 0.1 behaviour penalty":
     const maxMessageSize = 1024
     let header = TopicRPCHeader(topic: topic).encode()
-    for (topicStreamsConfig, writes) in [
-      # header over maxIncomingBytes
-      (TopicStreamsConfig(maxIncomingBytes: header.len - 1), @[header]),
-      # frame over maxMessageSize
-      (TopicStreamsConfig(), @[header, newSeq[byte](maxMessageSize + 1)]),
-    ]:
+    proc checkPenalty(
+        topicStreamsConfig: TopicStreamsConfig, writes: seq[seq[byte]]
+    ) {.async.} =
       let nodes = generateNodes(
           2,
           gossip = true,
@@ -490,3 +487,11 @@ suite "GossipSub Component - Topic streams":
         (await stream.readOnce(addr data, 1)) == 0
         # TODO: iftech/nim-libp2p#3307
         peer.behaviourPenalty == 0.1
+
+    for (topicStreamsConfig, writes) in [
+      # header over maxIncomingBytes
+      (TopicStreamsConfig(maxIncomingBytes: header.len - 1), @[header]),
+      # frame over maxMessageSize
+      (TopicStreamsConfig(), @[header, newSeq[byte](maxMessageSize + 1)]),
+    ]:
+      await checkPenalty(topicStreamsConfig, writes)
