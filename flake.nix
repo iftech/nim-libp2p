@@ -24,8 +24,13 @@
         inherit system;
         overlays = [
           (final: prev: {
-            nim-unwrapped-2_2 = prev.nim-unwrapped-2_2.overrideAttrs (_: {
+            nim-unwrapped-2_2 = prev.nim-unwrapped-2_2.overrideAttrs (old: {
               version = "2.2.12";
+              patches = map (patch:
+                if builtins.baseNameOf patch == "extra-mangling-2.patch"
+                then ./nix/nim-extra-mangling.patch
+                else patch
+              ) old.patches;
               src = final.fetchurl {
                 url = "https://nim-lang.org/download/nim-2.2.12.tar.xz";
                 hash = "sha256-Jjmgal6np/z1ffHn4e9NGyvuWMesm9ANvSqlvqHlpWo=";
