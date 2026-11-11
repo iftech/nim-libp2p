@@ -26,7 +26,7 @@ suite "GossipSubParams validation":
       .init(topicStreamsConfig = Opt.some(TopicStreamsConfig()))
       .validateParameters().isOk
     check GossipSubParams
-      .init(topicStreamsConfig = Opt.some(TopicStreamsConfig(maxStreams: 2)))
+      .init(topicStreamsConfig = Opt.some(TopicStreamsConfig(maxIncomingStreams: 2)))
       .validateParameters().isErr
 
   test "dOut fails when equal to dLow":

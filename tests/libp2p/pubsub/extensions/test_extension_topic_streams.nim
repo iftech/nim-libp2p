@@ -9,7 +9,7 @@ import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
 from ../../../../libp2p/stream/bufferstream import BufferStream, readOnce, pushData
 import ../../../../libp2p/stream/bridgestream
-import ../../../tools/[unittest, bufferstream]
+import ../../../tools/[unittest, bufferstream, metrics_utils]
 import ../converters
 import ./extension_recording
 
@@ -133,8 +133,9 @@ suite "GossipSub topic stream lifecycle":
 
   asyncTest "independent topic writers, replacement, and bounded queue":
     let recorder = TopicStreamsRecorder.new()
-    let state =
-      TopicStreams.new(recorder, TopicStreamsConfig(maxStreams: 3, maxQueuedBytes: 128))
+    let state = TopicStreams.new(
+      recorder, TopicStreamsConfig(maxOutgoingStreams: 3, maxQueuedBytes: 128)
+    )
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
     defer:
@@ -154,10 +155,13 @@ suite "GossipSub topic stream lifecycle":
 
     state.sendTopic("c", payload, true)
     check recorder.outgoingStreams.len == 3
-    let (incoming, incomingStream) = bridgedConnections()
-    defer:
-      await incoming.close()
-    await state.readTopic(incomingStream)
+    let rejected =
+      metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"])
+    state.sendTopic("d", payload, true)
+    check:
+      recorder.outgoingStreams.len == 3
+      metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"]) ==
+        rejected + 1
     state.sendTopic("a", newSeq[byte](129), true)
     check recorder.penalties == 0
 
@@ -174,6 +178,36 @@ suite "GossipSub topic stream lifecycle":
 
     var data: byte
     check (await recorder.outgoingStreams[3].readOnce(addr data, 1)) == 0
+
+  asyncTest "incoming limit counts pending headers independently of outgoing streams":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(
+      recorder, TopicStreamsConfig(maxIncomingStreams: 3, maxOutgoingStreams: 1)
+    )
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+    var remotes: seq[Stream]
+    var readers: seq[Future[void]]
+    defer:
+      await state.stop()
+      await allFutures(readers)
+      for remote in remotes:
+        await remote.close()
+      await recorder.closeOutgoingStreams()
+
+    state.sendTopic("outgoing", @[1.byte], true)
+    for i in 0 .. 3:
+      let (remote, local) = bridgedConnections()
+      remotes.add(remote)
+      readers.add(state.readTopic(local))
+      if i < 3:
+        check not readers[i].finished()
+      else:
+        await readers[i]
+        check local.closed()
+    check:
+      recorder.penalties == 1
+      recorder.violations == 0
+      recorder.outgoingStreams.len == 1
 
   asyncTest "closing a pending writer cancels its dial and releases queue capacity":
     let recorder = TopicStreamsRecorder.new()
@@ -333,8 +367,12 @@ suite "GossipSub topic stream send side":
         await recorder.closeOutgoingStreams()
       check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
+      let rejected =
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["invalid_frame"])
       state.sendTopic(topic, newSeq[byte](frameSize), true)
       check:
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["invalid_frame"]) ==
+          rejected + float64(1 - expectedDials)
         recorder.outgoingStreams.len == expectedDials
         recorder.penalties == 0
         recorder.violations == 0
@@ -379,7 +417,11 @@ suite "GossipSub topic stream send side":
         (await written.popFirst()) == frames[0]
         written.len == 0
 
+      let rejected =
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
       state.sendTopic(topic, frames[2], true) # dropped: the budget is full
+      check metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
+        rejected + 1
       frameWritten.fire() # frames[0]'s write completes and releases its budget
       check (await written.popFirst()) == frames[1]
 
@@ -389,9 +431,11 @@ suite "GossipSub topic stream send side":
         recorder.penalties == 0
         recorder.violations == 0
 
-  asyncTest "frame for a new topic is dropped while readers and writers fill maxStreams":
+  asyncTest "incoming streams do not consume the outgoing stream budget":
     let recorder = TopicStreamsRecorder.new()
-    let state = TopicStreams.new(recorder, TopicStreamsConfig(maxStreams: 3))
+    let state = TopicStreams.new(
+      recorder, TopicStreamsConfig(maxIncomingStreams: 3, maxOutgoingStreams: 3)
+    )
     var peerEnds: seq[Stream]
     var readers: seq[Future[void]]
     defer:
@@ -407,14 +451,16 @@ suite "GossipSub topic stream send side":
       peerEnds.add(peerEnd)
       readers.add(state.readTopic(nodeEnd))
 
-    # TODO: iftech/nim-libp2p#3406
-    state.sendTopic(otherTopic, frames[1], true) # dropped: no stream left to open
+    state.sendTopic(otherTopic, frames[1], true)
     state.sendTopic(topic, frames[2], true) # written on the open writer
     check:
-      recorder.outgoingStreams.len == 1
+      recorder.outgoingStreams.len == 2
       (await recorder.outgoingStreams[0].readLp(1024)) == header
       (await recorder.outgoingStreams[0].readLp(1024)) == frames[0]
       (await recorder.outgoingStreams[0].readLp(1024)) == frames[2]
+      (await recorder.outgoingStreams[1].readLp(1024)) ==
+        TopicRPCHeader(topic: otherTopic).encode()
+      (await recorder.outgoingStreams[1].readLp(1024)) == frames[1]
 
 suite "GossipSub topic stream receive side":
   teardown:
@@ -450,14 +496,10 @@ suite "GossipSub topic stream receive side":
       recorder.received.len == 0
       nodeEnd.wasResetLocally()
 
-  asyncTest "stream over maxStreams is reset, and penalized only when readers alone fill maxStreams":
-    for (writerCount, readerCount, expectedPenalties) in [
-      (0, 3, 1), # readers still waiting for their header fill the limit
-      # TODO: iftech/nim-libp2p#3406
-      (1, 2, 0), # our writer for topic counts toward the limit
-    ]:
+  asyncTest "stream over maxIncomingStreams is reset and penalized independently of writers":
+    for writerCount in [0, 1]:
       let recorder = TopicStreamsRecorder.new()
-      let state = TopicStreams.new(recorder, TopicStreamsConfig(maxStreams: 3))
+      let state = TopicStreams.new(recorder, TopicStreamsConfig(maxIncomingStreams: 3))
       var peerEnds: seq[Stream]
       var readers: seq[Future[void]]
       defer:
@@ -469,7 +511,7 @@ suite "GossipSub topic stream receive side":
 
       for _ in 0 ..< writerCount:
         state.sendTopic(topic, frame, true)
-      for _ in 0 ..< readerCount:
+      for _ in 0 ..< 3: # readers still waiting for their header fill the limit
         let (peerEnd, nodeEnd) = bridgedConnections()
         peerEnds.add(peerEnd)
         readers.add(state.readTopic(nodeEnd))
@@ -481,7 +523,7 @@ suite "GossipSub topic stream receive side":
       await state.readTopic(nodeEnd)
       check:
         nodeEnd.wasResetLocally()
-        recorder.penalties == expectedPenalties
+        recorder.penalties == 1
         recorder.violations == 0
 
   asyncTest "fourth open stream for a topic is reset and penalized":
