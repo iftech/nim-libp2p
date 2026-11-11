@@ -6,4 +6,4 @@ author = "Status Research & Development GmbH"
 description = "Unified testing perf interop binary for nim-libp2p"
 license = "MIT"
 
-requires "nim == 2.2.10", "file://../..", "redis >= 0.5.0"
+requires "nim == 2.2.12", "file://../..", "redis >= 0.5.0"

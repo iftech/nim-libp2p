@@ -42,7 +42,7 @@ jobs:
           shell: bash
           os: linux
           cpu: amd64
-          nim_ref: v2.2.10
+          nim_ref: v2.2.12
 
       - name: Restore dependencies from cache
         uses: "./.github/actions/install_root_deps"
@@ -50,7 +50,7 @@ jobs:
           os: linux
           cpu: amd64
           cc: gcc
-          nim_ref: v2.2.10
+          nim_ref: v2.2.12
 
       - name: Setup deps
         run: make nimble.paths

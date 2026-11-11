@@ -5,7 +5,7 @@
         setup lock gen_multicodec format clean-nim \
         lint
 
-NIM_VERSION  ?= 2.2.10
+NIM_VERSION  ?= 2.2.12
 NPH_VERSION  ?= 0.7.0
 
 NIMC     ?= nim

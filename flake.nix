@@ -22,6 +22,17 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs {
         inherit system;
+        overlays = [
+          (final: prev: {
+            nim-unwrapped-2_2 = prev.nim-unwrapped-2_2.overrideAttrs (_: {
+              version = "2.2.12";
+              src = final.fetchurl {
+                url = "https://nim-lang.org/download/nim-2.2.12.tar.xz";
+                hash = "sha256-Jjmgal6np/z1ffHn4e9NGyvuWMesm9ANvSqlvqHlpWo=";
+              };
+            });
+          })
+        ];
         config = {
           android_sdk.accept_license = true;
           allowUnfreePredicate = pkg:

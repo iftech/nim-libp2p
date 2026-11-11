@@ -58,7 +58,7 @@ jobs:
         nim:
           - ref: v2.2.4
             memory_management: refc
-          - ref: v2.2.10
+          - ref: v2.2.12
             memory_management: refc
           - ref: devel
             memory_management: refc

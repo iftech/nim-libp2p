@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.5-labs
 # Runs test_autotls_docker.nim inside the containers' network namespace.
-ARG NIM_VERSION=2.2.10
+ARG NIM_VERSION=2.2.12
 ARG NIMBLE_COMMIT=aa8e6ea09ecac774b6fad42552569ce07bef37ec
 FROM nimlang/nim:${NIM_VERSION}
 ARG NIM_VERSION
