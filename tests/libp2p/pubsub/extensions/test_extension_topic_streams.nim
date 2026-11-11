@@ -391,7 +391,9 @@ suite "GossipSub topic stream send side":
 
     # an empty publish payload and a message on the control stream are both protocol violations
     let control = state.sendTopicRPC(
-      makePreparedTopicRPC(RPCMsg.withMessages(Message(topic: topic, data: @[])), false),
+      makePreparedTopicRPC(
+        RPCMsg.withMessages(Message(topic: topic, data: newSeq[byte]())), false
+      ),
       true,
     )
     check:
