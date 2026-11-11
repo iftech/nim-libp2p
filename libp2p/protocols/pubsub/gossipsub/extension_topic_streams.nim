@@ -312,6 +312,8 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
         await stream.readVarint()
       except LPStreamError:
         return
+    if s.stopped:
+      return
     if length == 0:
       s.fail("empty topic RPC frame")
       return
@@ -326,6 +328,8 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
       try:
         await stream.readExactly(addr data[0], size)
       except LPStreamError:
+        return
+      if s.stopped:
         return
       var decoded = TopicRPC.decode(move(data)).valueOr:
         s.fail("invalid topic RPC frame")

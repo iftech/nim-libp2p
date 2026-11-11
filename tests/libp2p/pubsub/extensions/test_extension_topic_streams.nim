@@ -7,10 +7,21 @@ import std/sequtils
 import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
+from ../../../../libp2p/stream/bufferstream import BufferStream, readOnce, pushData
 import ../../../../libp2p/stream/bridgestream
 import ../../../tools/[unittest, bufferstream]
 import ../converters
 import ./extension_recording
+
+type ReadSignallingStream = ref object of BufferStream
+  reads: AsyncQueue[int]
+
+method readOnce(
+    s: ReadSignallingStream, pbytes: pointer, nbytes: int
+): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
+  let reading = procCall BufferStream(s).readOnce(pbytes, nbytes)
+  await s.reads.addLast(nbytes)
+  return await reading
 
 const
   topic = "foobar"
@@ -232,6 +243,52 @@ suite "GossipSub topic stream lifecycle":
         recorder.penalties == (if scenario in [0, 4]: 1 else: 0)
         recorder.violations == (if scenario in [5, 6]: 1 else: 0)
 
+  asyncTest "readers drop frames after a protocol violation on another stream":
+    for waitingForPayload in [true, false]:
+      let recorder = TopicStreamsRecorder.new()
+      let state = TopicStreams.new(recorder)
+      let local = ReadSignallingStream(reads: newAsyncQueue[int]())
+      local.initStream()
+      let (violatingRemote, violatingLocal) = bridgedConnections()
+      let reading = state.readTopic(local)
+      let violating = state.readTopic(violatingLocal)
+      defer:
+        await reading.cancelAndWait()
+        await violating.cancelAndWait()
+        await state.stop()
+        await violatingRemote.close()
+
+      let header = TopicRPCHeader(topic: "a").encode()
+      let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
+      require header.len < 128 and payload.len < 128
+      check (await local.reads.popFirst()) == 1
+      await local.pushData(@[byte(header.len)] & header)
+      check (await local.reads.popFirst()) == header.len
+      check (await local.reads.popFirst()) == 1
+
+      if waitingForPayload:
+        await local.pushData(@[byte(payload.len)])
+        check (await local.reads.popFirst()) == payload.len
+      check not reading.finished()
+
+      await violatingRemote.writeLp(TopicRPCHeader(topic: "b").encode())
+      await violatingRemote.write(@[0.byte])
+      await violating
+      check recorder.violations == 1
+
+      if waitingForPayload:
+        await local.pushData(payload)
+      else:
+        # A length alone must suffice to stop the reader without reading a body.
+        await local.pushData(@[byte(payload.len)])
+      await reading
+      check:
+        local.closed()
+        violatingLocal.closed()
+        recorder.received.len == 0
+        recorder.violations == 1
+        recorder.penalties == 0
+
   asyncTest "stop closes every reader stream":
     let recorder = TopicStreamsRecorder.new()
     let state = TopicStreams.new(recorder)
@@ -367,7 +424,7 @@ suite "GossipSub topic stream receive side":
   let message = Message(data: @[1.byte], topic: topic)
   let frame = message.topicRPC().encode()
 
-  asyncTest "reader delivers one more frame after a protocol violation":
+  asyncTest "reader drops the next frame after a control stream protocol violation":
     let recorder = TopicStreamsRecorder.new()
     let state = TopicStreams.new(recorder)
     let (peerEnd, nodeEnd) = bridgedConnections()
@@ -381,16 +438,17 @@ suite "GossipSub topic stream receive side":
     await peerEnd.writeLp(frame)
     check (await recorder.received.popFirst()).messages == @[message]
 
-    # reader now waits for its next frame, past its check for a stopped transport
+    # The reader is waiting for its next frame when the violation stops the transport.
     # the peer opened a topic stream, so denying support is a protocol violation
     check:
       not state.negotiate(makeRPC(ControlExtensions(topicStreams: false)))
       recorder.violations == 1
 
     await peerEnd.writeLp(frame)
-    # TODO: iftech/nim-libp2p#3403
-    check (await recorder.received.popFirst()).messages == @[message]
-    await reader # ends on its own after the frame, without the peer closing the stream
+    await reader
+    check:
+      recorder.received.len == 0
+      nodeEnd.wasResetLocally()
 
   asyncTest "stream over maxStreams is reset, and penalized only when readers alone fill maxStreams":
     for (writerCount, readerCount, expectedPenalties) in [
