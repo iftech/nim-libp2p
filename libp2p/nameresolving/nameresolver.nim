@@ -12,6 +12,14 @@ logScope:
 
 type NameResolver* = ref object of RootObj
 
+method start*(self: NameResolver) {.base, gcsafe.} =
+  ## Prepare for reuse after stop; resolvers without persistent resources do nothing.
+  discard
+
+method stop*(self: NameResolver) {.base, async: (raises: []).} =
+  ## Release owned resources. Resolvers without persistent resources do nothing.
+  discard
+
 method resolveTxt*(
     self: NameResolver, address: string
 ): Future[seq[string]] {.async: (raises: [CancelledError]), base.} =

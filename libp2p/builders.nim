@@ -29,7 +29,7 @@ import
   upgrademngrs/muxedupgrade,
   address_manager,
   autotls/service,
-  nameresolving/nameresolver,
+  nameresolving/[nameresolver, dnsresolver, system_resolver],
   errors,
   utils/[opt, tlsredact]
 
@@ -73,6 +73,14 @@ type
     bootstrapNodes*: seq[(PeerId, seq[MultiAddress])]
     mode*: KadMode
 
+  NameResolverService = ref object of Service
+    resolver: NameResolver
+
+  NameResolverKind {.pure.} = enum
+    Custom
+    Dns
+    System
+
   SwitchBuilder* = ref object
     privKey: Opt[PrivateKey]
     addresses: seq[MultiAddress]
@@ -89,6 +97,8 @@ type
     protoVersion: string
     agentVersion: string
     nameResolver: NameResolver
+    nameResolverKind: NameResolverKind
+    nameServers: seq[TransportAddress]
     dialRanking: bool
     dialBackoff: Opt[DialBackoffConfig]
     peerStoreCapacity: Opt[int]
@@ -107,6 +117,16 @@ type
     enableWildcardResolver: bool
     addressPolicy: PeerAddressPolicy
     allowUndialableAddrs: bool
+
+method start(
+    self: NameResolverService, switch: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  self.resolver.start()
+
+method stop(
+    self: NameResolverService, switch: Switch
+) {.async: (raises: [CancelledError]).} =
+  await self.resolver.stop()
 
 proc new*(T: type[SwitchBuilder]): T =
   ## Creates a SwitchBuilder
@@ -362,6 +382,26 @@ proc withAgentVersion*(b: SwitchBuilder, agentVersion: string): SwitchBuilder =
 proc withNameResolver*(b: SwitchBuilder, nameResolver: NameResolver): SwitchBuilder =
   ## Use a caller-managed resolver. The switch never starts or stops it.
   b.nameResolver = nameResolver
+  b.nameResolverKind = NameResolverKind.Custom
+  b.nameServers = @[]
+  b
+
+proc withDNSNameResolver*(
+    b: SwitchBuilder, nameServers: seq[TransportAddress]
+): SwitchBuilder =
+  ## Create a switch-managed DNS resolver per build, using the supplied servers.
+  ## Replaces any previously configured resolver; an empty list disables DNS queries.
+  b.nameResolverKind = NameResolverKind.Dns
+  b.nameServers = nameServers
+  b.nameResolver = nil
+  b
+
+proc withSystemNameResolver*(b: SwitchBuilder): SwitchBuilder =
+  ## Create a switch-managed OS resolver per build, with system DNS servers for TXT.
+  ## Replaces any previously configured resolver.
+  b.nameResolverKind = NameResolverKind.System
+  b.nameServers = @[]
+  b.nameResolver = nil
   b
 
 proc withDialRanking*(b: SwitchBuilder, enabled: bool = true): SwitchBuilder =
@@ -556,7 +596,18 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
   let ms = MultistreamSelect.new()
   let muxedUpgrade = MuxedUpgrade.new(muxers, secureManagerInstances, ms, connManager)
 
+  let nameResolver =
+    case b.nameResolverKind
+    of NameResolverKind.Custom:
+      b.nameResolver
+    of NameResolverKind.Dns:
+      NameResolver(DnsResolver.new(b.nameServers, b.rng))
+    of NameResolverKind.System:
+      NameResolver(SystemResolver.new(b.rng))
+
   var services: seq[Service]
+  if b.nameResolverKind != NameResolverKind.Custom:
+    services.add(NameResolverService(resolver: nameResolver))
   var autotlsOpt = Opt.none(AutotlsService)
   b.autotlsConfig.ifValue(config):
     let autotlsService = AutotlsService.new(b.rng, config)
@@ -583,7 +634,7 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
     peerStore,
     transports,
     ms,
-    b.nameResolver,
+    nameResolver,
     dialRanking = b.dialRanking,
     dialBackoff = b.dialBackoff,
   )
@@ -595,7 +646,7 @@ proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
     connManager: connManager,
     peerStore: peerStore,
     dialer: dialer,
-    nameResolver: b.nameResolver,
+    nameResolver: nameResolver,
     rng: b.rng,
     muxedUpgrade: muxedUpgrade,
     services: services,
