@@ -370,6 +370,7 @@ suite "GossipSub topic stream send side":
   teardown:
     checkTrackers()
 
+  const maxMessageSize = 1024
   let header = TopicRPCHeader(topic: topic).encode()
   let frames = [@[1.byte], @[2.byte], @[3.byte], @[4.byte]]
 
@@ -398,7 +399,6 @@ suite "GossipSub topic stream send side":
         recorder.violations == 0
 
   asyncTest "frame over maxQueuedBytes is dropped even within the maximum message size":
-    const maxMessageSize = 1024
     let config = TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2)
     for (frameSize, expectedDials) in [
       (config.maxQueuedBytes - header.len, 1), # header and frame fill the byte budget
@@ -438,7 +438,7 @@ suite "GossipSub topic stream send side":
       let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(
         config,
-        1024,
+        maxMessageSize,
         dial,
         recorder.receive(),
         recorder.violation(),
@@ -556,15 +556,14 @@ suite "GossipSub topic stream send side":
 
       var nodeEnds: seq[ReadFailureStream]
       proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
-        let nodeEnd = ReadFailureStream(writeHandler: recordWrite)
-        nodeEnd.initStream()
+        let nodeEnd = ReadFailureStream.new(recordWrite)
         nodeEnds.add(nodeEnd)
         return nodeEnd
 
       let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(
         TopicStreamsConfig(),
-        1024,
+        maxMessageSize,
         dial,
         recorder.receive(),
         recorder.violation(),
@@ -615,7 +614,7 @@ suite "GossipSub topic stream send side":
     let state = TopicStreams.new(
       # the next frame fits only if the frame dropped while the old stream closes holds no budget
       TopicStreamsConfig(maxQueuedMessages: 1),
-      1024,
+      maxMessageSize,
       dial,
       recorder.receive(),
       recorder.violation(),
