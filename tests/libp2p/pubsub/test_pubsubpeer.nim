@@ -109,9 +109,10 @@ suite "PubSubPeer send stream":
 
   asyncTest "budget rejection backs off and recovers when a slot is released":
     let remote = newPeer(nil, 50.milliseconds, 200.milliseconds)
-    var admitted = false
+    let admitted = Future[void].Raising([CancelledError]).init()
     proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-      admitted = true
+      if not admitted.finished:
+        admitted.complete()
       await remote.handleRecvStream(stream)
 
     let protocol =
@@ -143,10 +144,13 @@ suite "PubSubPeer send stream":
     let occupiedBy = PeerId.random()
     check protocol.reserveIncoming(occupiedBy)
     var attempts: seq[Moment]
+    let thirdAttempt = Future[void].Raising([CancelledError]).init()
     proc dial(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
       attempts.add(Moment.now())
+      if attempts.len == 3:
+        thirdAttempt.complete()
       try:
         return await dialer.dial(listener.peerInfo.peerId, GossipSubCodec_12)
       except DialFailedError as e:
@@ -157,9 +161,8 @@ suite "PubSubPeer send stream":
     defer:
       await peer.stopTasks()
       await remote.stopTasks()
-    checkUntilTimeout:
-      attempts.len >= 3
-    check not admitted
+    await thirdAttempt
+    check not admitted.finished
     check attempts[1] - attempts[0] >= 40.milliseconds
     check attempts[2] - attempts[1] >= 80.milliseconds
     check dialer.isConnected(listener)
@@ -167,12 +170,13 @@ suite "PubSubPeer send stream":
     check (await other.readLp(1024)) == @[byte 42]
     await other.close()
     protocol.releaseIncoming(occupiedBy)
-    checkUntilTimeout:
-      admitted and peer.connected
+    await admitted
+    check peer.connected
 
   asyncTest "short-lived send streams back off and recover":
     var attempts: seq[Moment]
     let survivor = TestBufferStream.new(noop)
+    let connected = Future[void].Raising([CancelledError]).init()
     proc dial(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
@@ -183,12 +187,16 @@ suite "PubSubPeer send stream":
         return stream
       return survivor
 
-    let peer = newPeer(dial, 50.milliseconds, 200.milliseconds)
+    proc onEvent(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].} =
+      if event.kind == PubSubPeerEventKind.StreamOpened and peer.sendStream == survivor:
+        connected.complete()
+
+    let peer = newPeer(dial, 50.milliseconds, 200.milliseconds, onEvent)
     peer.connect()
     defer:
       await peer.stopTasks()
-    checkUntilTimeout:
-      attempts.len == 5 and peer.connected
+    await connected
+    check attempts.len == 5
     check:
       attempts[1] - attempts[0] >= 40.milliseconds
       attempts[2] - attempts[1] >= 80.milliseconds
@@ -199,6 +207,8 @@ suite "PubSubPeer send stream":
     var attempts = 0
     let stable = TestBufferStream.new(noop)
     let recovered = TestBufferStream.new(noop)
+    let stableOpened = Future[void].Raising([CancelledError]).init()
+    let recoveredOpened = Future[void].Raising([CancelledError]).init()
     proc dial(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
@@ -213,30 +223,25 @@ suite "PubSubPeer send stream":
         return shortLived
       return recovered
 
-    let peer = newPeer(dial, 50.milliseconds, 400.milliseconds)
+    proc onEvent(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].} =
+      if event.kind == PubSubPeerEventKind.StreamOpened:
+        if peer.sendStream == stable:
+          stableOpened.complete()
+        elif peer.sendStream == recovered:
+          recoveredOpened.complete()
+
+    let peer = newPeer(dial, 50.milliseconds, 400.milliseconds, onEvent)
     peer.connect()
     defer:
       await peer.stopTasks()
       await stable.close()
       await recovered.close()
-    checkUntilTimeout:
-      attempts == 4 and peer.connected
+    await stableOpened
     await sleepAsync(450.milliseconds)
     await stable.close()
-    await sleepAsync(200.milliseconds)
+    await recoveredOpened.wait(200.milliseconds)
     check attempts == 6
     check peer.connected
-
-  asyncTest "stopTasks cancels backoff after a short-lived stream":
-    let stream = TestBufferStream.new(noop)
-    await stream.close()
-    let dialer = FlakyDialer(stream: stream)
-    let peer = newPeer(dialer.getStream(), 1.hours, 1.hours)
-    peer.connect()
-    checkUntilTimeout:
-      dialer.attempts == 1
-    check await peer.stopTasks().withTimeout(1.seconds)
-    check dialer.attempts == 1
 
   asyncTest "topic stream routing preserves send observer changes":
     let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)

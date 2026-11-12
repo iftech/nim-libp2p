@@ -695,11 +695,11 @@ suite "Multistream :: stream limits":
   asyncTest "confirmation failure and cancellation release the reserved slot":
     for cancelWrite in [false, true]:
       let gate = Future[void].Raising([CancelledError]).init()
-      var confirming = false
+      let confirming = Future[void].Raising([CancelledError]).init()
       proc write(
           data: sink seq[byte]
       ) {.async: (raises: [CancelledError, LPStreamError]).} =
-        confirming = true
+        confirming.complete()
         if cancelWrite:
           await gate
         else:
@@ -713,8 +713,7 @@ suite "Multistream :: stream limits":
       let handling = ms.handle(server, active = true)
       let proposal = codecs & "\n"
       await server.pushData(@[byte proposal.len] & proposal.toBytes())
-      checkUntilTimeout:
-        confirming
+      await confirming
       if cancelWrite:
         check not protocol.canAcceptIncoming(server.peerId)
         await handling.cancelAndWait()
