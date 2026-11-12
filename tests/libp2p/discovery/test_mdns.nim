@@ -11,7 +11,7 @@ import ../../../libp2p/services/mdns
 when not defined(macosx):
   import ../../../libp2p/services/mdns/network
 import ../../../libp2p/nameresolving/dnsmessage
-import ../../tools/[unittest, crypto, multiaddress]
+import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 
 const
   FixturePeerId = "12D3KooWSCxTfVvMBJbpF75PQmnFdxdBfC1ZxAGYbFc3U9MjALXz"
@@ -308,6 +308,46 @@ suite "mDNS discovery":
       finally:
         await service.stop(local)
         await sender.closeWait()
+
+  asyncTest "advertise after ephemeral transport addresses are bound":
+    when defined(macosx):
+      skip()
+    else:
+      const Address = initTAddress("10.20.30.40:0")
+      proc interfaces(
+          family: AddressFamily
+      ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
+        if family == AddressFamily.IPv4:
+          @[InterfaceAddress.init(Address, 24)]
+        else:
+          @[]
+
+      let
+        node = makeStandardSwitch(ma("/ip4/0.0.0.0/tcp/0"))
+        service = MdnsService.new(networkInterfaceProvider = interfaces)
+        listener = MdnsNetwork.new()
+        found = newFuture[MdnsPeer]()
+      defer:
+        await node.stop()
+        await listener.close()
+
+      proc received(
+          packet: seq[byte], context: MdnsReplyContext
+      ) {.async: (raises: []).} =
+        try:
+          for peer in service.peers(parseMessage(packet), PeerId.random()):
+            if peer.peerId == node.peerInfo.peerId:
+              found.completeOnce(peer)
+        except ValueError:
+          discard
+
+      node.services.add(service)
+      let opened = await listener.open(received)
+      require opened.isOk
+      await node.start()
+      let peer = await found
+      check peer.addrs.len > 0
+      check peer.addrs[0] != ma("/ip4/10.20.30.40/tcp/0")
 
   asyncTest "start, receive a DNS-SD TXT response, stop and restart":
     let

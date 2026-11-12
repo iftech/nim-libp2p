@@ -238,7 +238,25 @@ proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
         answers: service.advertisement.answers,
       )
     )
-    await sleepAsync(service.interval)
+    # Transports can still be binding during the first iteration. Retry locally
+    # without sending additional queries until an advertisement is available.
+    var remaining = service.interval
+    while service.advertisement.answers.len == 0 and remaining > 0.seconds:
+      let delay = min(1.seconds, remaining)
+      await sleepAsync(delay)
+      remaining = remaining - delay
+      service.advertisement =
+        service.announcement(service.owner.peerInfo, service.instance)
+      try:
+        service.advertisementBytes = encodeMessage(service.advertisement)
+      except ValueError:
+        debug "mDNS announcement encoding failed", err = getCurrentExceptionMsg()
+        service.advertisement = default(DnsMessage)
+        service.advertisementBytes.setLen(0)
+      if service.advertisement.answers.len > 0:
+        discard await service.network.multicast(service.advertisementBytes)
+    if remaining > 0.seconds:
+      await sleepAsync(remaining)
 
 proc tryStart*(
     service: MdnsService, switch: Switch
