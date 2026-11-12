@@ -552,6 +552,13 @@ suite "GossipSub":
       gossipSub.seen.len == 3
       gossipSub.salt("0".toBytes()) notin gossipSub.seen
 
+  test "invalid topic stream configuration fails GossipSub construction":
+    let params = GossipSubParams.init(
+      topicStreamsConfig = Opt.some(TopicStreamsConfig(maxIncomingStreams: 2))
+    )
+    expect InitializationError:
+      discard GossipSub.init(makeStandardSwitch(), parameters = params, rng = rng())
+
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
     gossipSub.topicsHigh = 10

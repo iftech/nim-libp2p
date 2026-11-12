@@ -7,8 +7,7 @@ import std/sequtils
 import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
-from ../../../../libp2p/stream/bufferstream import BufferStream, readOnce, pushData
-import ../../../../libp2p/stream/bridgestream
+import ../../../../libp2p/stream/[bridgestream, bufferstream]
 import ../../../tools/[unittest, bufferstream, metrics_utils]
 import ../converters
 import ./extension_recording
@@ -350,6 +349,7 @@ suite "GossipSub topic stream send side":
   teardown:
     checkTrackers()
 
+  const maxMessageSize = 1024
   let header = TopicRPCHeader(topic: topic).encode()
   let frames = [@[1.byte], @[2.byte], @[3.byte], @[4.byte]]
 
@@ -372,6 +372,30 @@ suite "GossipSub topic stream send side":
       state.sendTopic(topic, newSeq[byte](frameSize), true)
       check:
         metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["invalid_frame"]) ==
+          rejected + float64(1 - expectedDials)
+        recorder.outgoingStreams.len == expectedDials
+        recorder.penalties == 0
+        recorder.violations == 0
+
+  asyncTest "frame over maxQueuedBytes is dropped even within the maximum message size":
+    let config = TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2)
+    for (frameSize, expectedDials) in [
+      (config.maxQueuedBytes - header.len, 1), # header and frame fill the byte budget
+      # TODO: iftech/nim-libp2p#3418
+      (config.maxQueuedBytes + 1, 0), # frame over the byte budget, the queue is empty
+    ]:
+      let recorder = TopicStreamsRecorder.new()
+      let state = TopicStreams.new(recorder, config, maxMessageSize)
+      defer:
+        await state.stop()
+        await recorder.closeOutgoingStreams()
+      check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+      let rejected =
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
+      state.sendTopic(topic, newSeq[byte](frameSize), true)
+      check:
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
           rejected + float64(1 - expectedDials)
         recorder.outgoingStreams.len == expectedDials
         recorder.penalties == 0
@@ -400,7 +424,7 @@ suite "GossipSub topic stream send side":
       let recorder = TopicStreamsRecorder.new()
       let state = TopicStreams.new(
         config,
-        1024,
+        maxMessageSize,
         dial,
         recorder.receive(),
         recorder.violation(),
@@ -510,6 +534,66 @@ suite "GossipSub topic stream receive side":
   let header = TopicRPCHeader(topic: topic).encode()
   let message = Message(data: @[1.byte], topic: topic)
   let frame = message.topicRPC().encode()
+
+  asyncTest "reader delivers every frame on a topic stream in order":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder)
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    let reader = state.readTopic(nodeEnd)
+    defer:
+      await reader.cancelAndWait()
+      await state.stop()
+      await peerEnd.close()
+
+    let messages = [message, Message(data: @[2.byte], topic: topic)]
+    await peerEnd.writeLp(header)
+    for m in messages:
+      await peerEnd.writeLp(m.topicRPC().encode())
+    check:
+      (await recorder.received.popFirst()).messages == @[messages[0]]
+      (await recorder.received.popFirst()).messages == @[messages[1]]
+
+  asyncTest "malformed header or frame is a protocol violation":
+    let frameWithTopic = TopicRPC(
+      publish: Opt.some(TopicScopedMessage(data: @[1.byte], topic: topic))
+    ).encode()
+    for writes in [
+      @[@[255.byte]], # undecodable header
+      @[newSeq[byte]()], # zero-length header
+      @[TopicRPCHeader(topic: "").encode()], # empty topic
+      @[header, frameWithTopic], # publish frame that names its topic
+    ]:
+      let recorder = TopicStreamsRecorder.new()
+      let state = TopicStreams.new(recorder)
+      let (peerEnd, nodeEnd) = bridgedConnections()
+      let reader = state.readTopic(nodeEnd)
+      defer:
+        await reader.cancelAndWait()
+        await state.stop()
+        await peerEnd.close()
+
+      for data in writes:
+        await peerEnd.writeLp(data)
+      await reader # ends on its own at the violation
+      check:
+        nodeEnd.wasResetLocally()
+        recorder.received.len == 0
+        recorder.penalties == 0
+        recorder.violations == 1
+
+  asyncTest "stream without a header is reset after the header timeout":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder)
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    defer:
+      await state.stop()
+      await peerEnd.close()
+
+    await state.readTopic(nodeEnd)
+    check:
+      nodeEnd.wasResetLocally()
+      recorder.penalties == 0
+      recorder.violations == 0
 
   asyncTest "reader drops the next frame after a control stream protocol violation":
     let recorder = TopicStreamsRecorder.new()
@@ -656,3 +740,30 @@ suite "GossipSub topic stream receive side":
     await peerEnd.writeLp(header)
     await peerEnd.writeLp(frame) # accepted: the budget has room again
     check (await recorder.received.popFirst()).messages == @[message]
+
+  asyncTest "frame over maxIncomingBytes is penalized even within the maximum message size":
+    let recorder = TopicStreamsRecorder.new()
+    # the header and one frame fill the incoming budget
+    let state = TopicStreams.new(
+      recorder, TopicStreamsConfig(maxIncomingBytes: header.len + frame.len)
+    )
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    let reader = state.readTopic(nodeEnd)
+    defer:
+      await reader.cancelAndWait()
+      await state.stop()
+      await peerEnd.close()
+
+    await peerEnd.writeLp(header)
+    await peerEnd.writeLp(frame)
+    check (await recorder.received.popFirst()).messages == @[message]
+
+    # TODO: iftech/nim-libp2p#3418
+    let largerFrame = Message(data: @[1.byte, 2], topic: topic).topicRPC().encode()
+    await peerEnd.writeLp(largerFrame)
+      # the only frame in flight, far below maxMessageSize
+    await reader # ends on its own at the penalty
+    check:
+      recorder.received.len == 0
+      recorder.penalties == 1
+      recorder.violations == 0
