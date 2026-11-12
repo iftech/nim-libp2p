@@ -3,17 +3,19 @@
 
 {.used.}
 
+import std/sequtils
 import chronos
 import ../../../libp2p/[protocols/kademlia, switch, builders]
 import ../../tools/[lifecycle, topology, unittest]
 import ./utils
 
 type SelectiveValidator = ref object of EntryValidator
+  acceptedValue: Value
   calls: int
 
 method isValid(self: SelectiveValidator, key: RecordKey, record: EntryRecord): bool =
   self.calls.inc()
-  record.value == Value.init([1.byte, 2, 3])
+  record.value == self.acceptedValue
 
 proc checkRepairTargets(rejectedRecord: bool) {.async.} =
   let kads = setupKadSwitches(3)
@@ -23,18 +25,19 @@ proc checkRepairTargets(rejectedRecord: bool) {.async.} =
   let
     key = kads[1].rtable.selfId
     value = @[1.byte, 2, 3]
-    validator = SelectiveValidator()
+    validator = SelectiveValidator(acceptedValue: Value.init(value))
   kads[2].dataTable.insert(key, value, Timestamp.now())
   if rejectedRecord:
     kads[1].dataTable.insert(key, @[9.byte], Timestamp.now())
   kads[2].config.validator = validator
   kads[2].config.limits.maxReceivedSize = 2
 
+  let expectedCalls = kads.countIt(not it.containsNoData(key))
   let record = await kads[2].getValue(key, quorumOverride = Opt.some(2))
   check:
     record.get().value == value
     kads[0].containsData(key, value)
-    validator.calls == (if rejectedRecord: 2 else: 1)
+    validator.calls == expectedCalls
 
 suite "KadDHT Get":
   teardown:
@@ -210,17 +213,18 @@ suite "KadDHT Get":
     let
       key = kads[1].rtable.selfId
       value = @[1.byte, 2, 3]
-      validator = SelectiveValidator()
+      validator = SelectiveValidator(acceptedValue: Value.init(value))
     kads[0].dataTable.insert(key, @[9.byte], Timestamp.now())
     kads[1].dataTable.insert(key, value, Timestamp.now())
     kads[2].config.validator = validator
     kads[2].config.limits.maxReceivedSize = 1
 
     check not kads[2].hasKey(kads[1].rtable.selfId)
+    let expectedCalls = kads.countIt(not it.containsNoData(key))
     let record = await kads[2].getValue(key, quorumOverride = Opt.some(1))
     check:
       record.get().value == value
-      validator.calls == 2
+      validator.calls == expectedCalls
 
   asyncTest "Empty replies do not replace repair targets in a full table":
     await checkRepairTargets(false)
