@@ -7,9 +7,10 @@ import std/sequtils
 import chronos
 import ./utils
 import ../../../libp2p/stream/bufferstream
+import ../../../libp2p/protocols/protocol
 import ../../../libp2p/protocols/pubsub/[pubsubpeer, gossipsub]
 import ../../../libp2p/protocols/pubsub/rpc/messages
-import ../../tools/[unittest, bufferstream]
+import ../../tools/[unittest, bufferstream, switch_builder, multiaddress]
 import ./extensions/extension_recording
 
 type
@@ -105,6 +106,137 @@ suite "PubSubPeer send stream":
     check closed == 0
 
     await peer.stopTasks()
+
+  asyncTest "budget rejection backs off and recovers when a slot is released":
+    let remote = newPeer(nil, 50.milliseconds, 200.milliseconds)
+    var admitted = false
+    proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      admitted = true
+      await remote.handleRecvStream(stream)
+
+    let protocol =
+      LPProtocol.new(@[GossipSubCodec_12], handler, maxIncomingStreamsTotal = 1)
+    let listener = makeStandardSwitch(TcpAutoAddress)
+    let dialer = makeStandardSwitch(TcpAutoAddress)
+    listener.mount(protocol)
+    proc echoHandler(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      try:
+        for _ in 0 ..< 2:
+          await stream.writeLp(await stream.readLp(1024))
+      except LPStreamError:
+        discard
+
+    listener.mount(LPProtocol.new(@["/test/other/1"], echoHandler))
+    await listener.start()
+    await dialer.start()
+    defer:
+      await dialer.stop()
+      await listener.stop()
+    let other = await dialer.dial(
+      listener.peerInfo.peerId, listener.peerInfo.addrs, "/test/other/1"
+    )
+    # Complete optimistic negotiation so this idle stream does not block mplex reads.
+    await other.writeLp(@[byte 41])
+    check (await other.readLp(1024)) == @[byte 41]
+    let occupiedBy = PeerId.random()
+    check protocol.reserveIncoming(occupiedBy)
+    var attempts: seq[Moment]
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      attempts.add(Moment.now())
+      try:
+        return await dialer.dial(listener.peerInfo.peerId, GossipSubCodec_12)
+      except DialFailedError as e:
+        raise newException(GetStreamDialError, e.msg)
+
+    let peer = newPeer(dial, 50.milliseconds, 200.milliseconds)
+    peer.connect()
+    defer:
+      await peer.stopTasks()
+      await remote.stopTasks()
+    checkUntilTimeout:
+      attempts.len >= 3
+    check not admitted
+    check attempts[1] - attempts[0] >= 40.milliseconds
+    check attempts[2] - attempts[1] >= 80.milliseconds
+    check dialer.isConnected(listener)
+    await other.writeLp(@[byte 42])
+    check (await other.readLp(1024)) == @[byte 42]
+    await other.close()
+    protocol.releaseIncoming(occupiedBy)
+    checkUntilTimeout:
+      admitted and peer.connected
+
+  asyncTest "short-lived send streams back off and recover":
+    var attempts: seq[Moment]
+    let survivor = TestBufferStream.new(noop)
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      attempts.add(Moment.now())
+      if attempts.len <= 4:
+        let stream = TestBufferStream.new(noop)
+        await stream.close()
+        return stream
+      return survivor
+
+    let peer = newPeer(dial, 50.milliseconds, 200.milliseconds)
+    peer.connect()
+    defer:
+      await peer.stopTasks()
+    checkUntilTimeout:
+      attempts.len == 5 and peer.connected
+    check:
+      attempts[1] - attempts[0] >= 40.milliseconds
+      attempts[2] - attempts[1] >= 80.milliseconds
+      attempts[3] - attempts[2] >= 160.milliseconds
+      attempts[4] - attempts[3] >= 160.milliseconds
+
+  asyncTest "a stable stream resets backoff after earlier failures":
+    var attempts = 0
+    let stable = TestBufferStream.new(noop)
+    let recovered = TestBufferStream.new(noop)
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      inc attempts
+      if attempts <= 3:
+        raise newException(GetStreamDialError, "unreachable")
+      if attempts == 4:
+        return stable
+      if attempts == 5:
+        let shortLived = TestBufferStream.new(noop)
+        await shortLived.close()
+        return shortLived
+      return recovered
+
+    let peer = newPeer(dial, 50.milliseconds, 400.milliseconds)
+    peer.connect()
+    defer:
+      await peer.stopTasks()
+      await stable.close()
+      await recovered.close()
+    checkUntilTimeout:
+      attempts == 4 and peer.connected
+    await sleepAsync(450.milliseconds)
+    await stable.close()
+    await sleepAsync(200.milliseconds)
+    check attempts == 6
+    check peer.connected
+
+  asyncTest "stopTasks cancels backoff after a short-lived stream":
+    let stream = TestBufferStream.new(noop)
+    await stream.close()
+    let dialer = FlakyDialer(stream: stream)
+    let peer = newPeer(dialer.getStream(), 1.hours, 1.hours)
+    peer.connect()
+    checkUntilTimeout:
+      dialer.attempts == 1
+    check await peer.stopTasks().withTimeout(1.seconds)
+    check dialer.attempts == 1
 
   asyncTest "topic stream routing preserves send observer changes":
     let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
