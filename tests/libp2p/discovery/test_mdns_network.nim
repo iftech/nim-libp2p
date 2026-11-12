@@ -4,6 +4,7 @@
 {.used.}
 
 import chronos
+import chronos/transports/osnet
 import ../../../libp2p/[multiaddress, results]
 when not defined(macosx):
   import ../../../libp2p/utils/future
@@ -26,6 +27,14 @@ template requireOpened(network, callback: untyped) =
     if opened.isErr:
       checkpoint "mDNS network startup failed: " & $opened.error
     require opened.isOk
+
+var exposeInterfaces = false
+
+proc changingInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+  if exposeInterfaces:
+    getInterfaces()
+  else:
+    @[]
 
 suite "mDNS network":
   teardown:
@@ -75,6 +84,26 @@ suite "mDNS network":
     await network.close()
     await network.close()
     check not network.isOpen
+
+  asyncTest "refresh joins and leaves interfaces after startup":
+    let network = MdnsNetwork.new(interfacesProvider = changingInterfaces)
+    exposeInterfaces = false
+    requireOpened(network, ignorePacket)
+    defer:
+      exposeInterfaces = false
+      await network.close()
+    check not (await network.multicast(@[1'u8]))
+    exposeInterfaces = true
+    network.refreshInterfaces()
+    check (await network.multicast(@[1'u8]))
+    network.refreshInterfaces() # Repeated refreshes retain existing memberships.
+    check (await network.multicast(@[1'u8]))
+    exposeInterfaces = false
+    network.refreshInterfaces()
+    check not (await network.multicast(@[1'u8]))
+    exposeInterfaces = true
+    network.refreshInterfaces()
+    check (await network.multicast(@[1'u8]))
 
   asyncTest "receive arbitrary bytes and reply to the original sender":
     when defined(macosx):
