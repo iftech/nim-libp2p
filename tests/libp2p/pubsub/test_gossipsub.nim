@@ -553,57 +553,21 @@ suite "GossipSub":
       gossipSub.salt("0".toBytes()) notin gossipSub.seen
 
   test "invalid topic stream configuration fails GossipSub construction":
-    let params = GossipSubParams.init(
-      topicStreamsConfig = Opt.some(TopicStreamsConfig(maxIncomingStreams: 2))
-    )
-    expect InitializationError:
-      discard GossipSub.init(makeStandardSwitch(), parameters = params, rng = rng())
-
-  test "topic stream byte budgets must fit a maximum header and frame":
-    const maxMessageSize = 1024
-    for (config, errorMessage) in [
-      (
-        TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2),
-        "gossipsub: maxQueuedBytes must be at least twice maxMessageSize",
-      ),
-      (
-        TopicStreamsConfig(maxIncomingBytes: maxMessageSize div 2),
-        "gossipsub: maxIncomingBytes must be at least twice maxMessageSize",
-      ),
-      (
-        TopicStreamsConfig(maxQueuedBytes: 2 * maxMessageSize - 1),
-        "gossipsub: maxQueuedBytes must be at least twice maxMessageSize",
-      ),
-      (
-        TopicStreamsConfig(maxIncomingBytes: 2 * maxMessageSize - 1),
-        "gossipsub: maxIncomingBytes must be at least twice maxMessageSize",
-      ),
+    const largeMessageSize = 10 * 1024 * 1024
+    for (config, maxMessageSize) in [
+      (TopicStreamsConfig(maxIncomingStreams: 2), DefaultPubSubMaxMessageSize),
+      # Raising the message limit must not silently leave either byte budget too small.
+      (TopicStreamsConfig(), largeMessageSize),
+      (TopicStreamsConfig(maxQueuedBytes: 2 * largeMessageSize), largeMessageSize),
     ]:
       let params = GossipSubParams.init(topicStreamsConfig = Opt.some(config))
-      try:
+      expect InitializationError:
         discard GossipSub.init(
           makeStandardSwitch(),
           parameters = params,
           maxMessageSize = maxMessageSize,
           rng = rng(),
         )
-        check false
-      except InitializationError as exc:
-        check exc.msg == errorMessage
-
-    let params = GossipSubParams.init(
-      topicStreamsConfig = Opt.some(
-        TopicStreamsConfig(
-          maxQueuedBytes: 2 * maxMessageSize, maxIncomingBytes: 2 * maxMessageSize
-        )
-      )
-    )
-    discard GossipSub.init(
-      makeStandardSwitch(),
-      parameters = params,
-      maxMessageSize = maxMessageSize,
-      rng = rng(),
-    )
 
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())

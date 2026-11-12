@@ -142,8 +142,8 @@ suite "GossipSub topic stream lifecycle":
       await recorder.closeOutgoingStreams()
 
     let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
-    state.sendTopic("a", payload, true)
-    state.sendTopic("b", payload, true)
+    check state.sendTopic("a", payload, true)
+    check state.sendTopic("b", payload, true)
     check recorder.outgoingStreams.len == 2
 
     # Reading b does not depend on consuming a's application payload.
@@ -152,20 +152,20 @@ suite "GossipSub topic stream lifecycle":
     check TopicRPCHeader.decode(headerB).get().topic.get() == "b"
     check TopicRPC.decode(payloadB).isOk
 
-    state.sendTopic("c", payload, true)
+    check state.sendTopic("c", payload, true)
     check recorder.outgoingStreams.len == 3
     let rejected =
       metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"])
-    state.sendTopic("d", payload, true)
+    check not state.sendTopic("d", payload, true)
     check:
       recorder.outgoingStreams.len == 3
       metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"]) ==
         rejected + 1
-    state.sendTopic("a", newSeq[byte](129), true)
+    check not state.sendTopic("a", newSeq[byte](129), true)
     check recorder.penalties == 0
 
     await state.closeTopic("a")
-    state.sendTopic("a", payload, true)
+    check state.sendTopic("a", payload, true)
     check recorder.outgoingStreams.len == 4
     let headerA = await recorder.outgoingStreams[3].readLp(1024)
     let payloadA = await recorder.outgoingStreams[3].readLp(1024)
@@ -193,7 +193,7 @@ suite "GossipSub topic stream lifecycle":
         await remote.close()
       await recorder.closeOutgoingStreams()
 
-    state.sendTopic("outgoing", @[1.byte], true)
+    check state.sendTopic("outgoing", @[1.byte], true)
     for i in 0 .. 3:
       let (remote, local) = bridgedConnections()
       remotes.add(remote)
@@ -226,11 +226,11 @@ suite "GossipSub topic stream lifecycle":
       await state.stop()
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
-    state.sendTopic("a", payload, true)
+    check state.sendTopic("a", payload, true)
     await state.closeTopic("a")
     check recorder.cancelledDials == 1
 
-    state.sendTopic("b", payload, true)
+    check state.sendTopic("b", payload, true)
     await state.stop()
     check:
       recorder.cancelledDials == 2
@@ -465,8 +465,8 @@ suite "GossipSub topic stream send side":
         await state.stop()
       check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
-      state.sendTopic(topic, frames[0], true) # in flight until frameWritten fires
-      state.sendTopic(topic, frames[1], true) # queued behind frames[0]
+      check state.sendTopic(topic, frames[0], true) # in flight until frameWritten fires
+      check state.sendTopic(topic, frames[1], true) # queued behind frames[0]
       check:
         (await written.popFirst()) == header
         (await written.popFirst()) == frames[0]
@@ -474,13 +474,13 @@ suite "GossipSub topic stream send side":
 
       let rejected =
         metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
-      state.sendTopic(topic, frames[2], true) # dropped: the budget is full
+      check not state.sendTopic(topic, frames[2], true) # dropped: the budget is full
       check metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
         rejected + 1
       frameWritten.fire() # frames[0]'s write completes and releases its budget
       check (await written.popFirst()) == frames[1]
 
-      state.sendTopic(topic, frames[3], true) # accepted: the budget has room again
+      check state.sendTopic(topic, frames[3], true) # accepted: the budget has room again
       check:
         (await written.popFirst()) == frames[3]
         recorder.penalties == 0
@@ -500,14 +500,14 @@ suite "GossipSub topic stream send side":
       await recorder.closeOutgoingStreams()
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
-    state.sendTopic(topic, frames[0], true) # opens our writer for topic
+    check state.sendTopic(topic, frames[0], true) # opens our writer for topic
     for _ in 0 ..< 2: # the peer opens two topic streams
       let (peerEnd, nodeEnd) = bridgedConnections()
       peerEnds.add(peerEnd)
       readers.add(state.readTopic(nodeEnd))
 
-    state.sendTopic(otherTopic, frames[1], true)
-    state.sendTopic(topic, frames[2], true) # written on the open writer
+    check state.sendTopic(otherTopic, frames[1], true)
+    check state.sendTopic(topic, frames[2], true) # written on the open writer
     check:
       recorder.outgoingStreams.len == 2
       (await recorder.outgoingStreams[0].readLp(1024)) == header
@@ -666,7 +666,7 @@ suite "GossipSub topic stream receive side":
       check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
       for _ in 0 ..< writerCount:
-        state.sendTopic(topic, frame, true)
+        check state.sendTopic(topic, frame, true)
       for _ in 0 ..< 3: # readers still waiting for their header fill the limit
         let (peerEnd, nodeEnd) = bridgedConnections()
         peerEnds.add(peerEnd)

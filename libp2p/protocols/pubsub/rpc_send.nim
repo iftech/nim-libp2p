@@ -21,7 +21,7 @@ proc sendResponse*(
     priority: MessagePriority,
     useCustomStream: bool = false,
     relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
-): RPCMsg {.raises: [], discardable.} =
+): RPCMsg {.raises: [].} =
   ## Sends a protocol response `msg` (of type `RPCMsg`) to the specified remote
   ## peer. This is an internal, protocol-facing send path - messages that
   ## together exceed `maxMessageSize` are split and sent individually.
@@ -30,7 +30,7 @@ proc sendResponse*(
   ## instead.
 
   trace "sending pubsub response to peer", peer, rpcMsg = msg
-  peer.sendResponse(msg, p.anonymize, priority, useCustomStream, relayedSaltedId)
+  return peer.sendResponse(msg, p.anonymize, priority, useCustomStream, relayedSaltedId)
 
 proc broadcastResponse*(
     p: PubSub,

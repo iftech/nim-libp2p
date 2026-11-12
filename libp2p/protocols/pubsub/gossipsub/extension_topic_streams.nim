@@ -221,7 +221,7 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
 
 proc sendTopic*(
     s: TopicStreams, topic: string, data: sink seq[byte], medium: bool
-): bool {.discardable.} =
+): bool =
   ## Returns whether the frame was admitted to the outgoing queue.
   if s.stopped or not s.active:
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["inactive"])
@@ -399,33 +399,36 @@ func isZero*(msg: PreparedTopicRPC): bool =
   msg.control.len == 0 and msg.payloads.len == 0
 
 proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
-  result.rpc = msg
+  var prepared = PreparedTopicRPC(rpc: msg)
   for i, m in msg.messages:
     if m.data.len > 0:
-      result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode(), i))
+      prepared.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode(), i))
     else:
       trace "empty application message cannot use topic stream", topic = m.topic
   msg.partialMessageExtension.ifValue(partial):
     if partial.topicID.isSome:
-      result.payloads.add((partial.topicID.get(), partial.topicRPC().encode(), -1))
+      prepared.payloads.add((partial.topicID.get(), partial.topicRPC().encode(), -1))
   var control = msg
   control.messages = @[]
   control.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
-  result.control = control.encode(anonymize)
+  prepared.control = control.encode(anonymize)
+
+  return prepared
 
 proc sendTopicRPC*(
     s: TopicStreams, msg: PreparedTopicRPC, medium: bool
 ): TopicSendResult =
-  result.control = msg.control
-  result.accepted = msg.rpc
-  result.accepted.messages = @[]
-  result.accepted.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
+  var sent = TopicSendResult(control: msg.control, accepted: msg.rpc)
+  sent.accepted.messages = @[]
+  sent.accepted.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
   for payload in msg.payloads:
     if s.sendTopic(payload.topic, payload.data, medium):
       if payload.messageIndex >= 0:
-        result.accepted.messages.add(msg.rpc.messages[payload.messageIndex])
+        sent.accepted.messages.add(msg.rpc.messages[payload.messageIndex])
       else:
-        result.accepted.partialMessageExtension = msg.rpc.partialMessageExtension
+        sent.accepted.partialMessageExtension = msg.rpc.partialMessageExtension
+
+  return sent
 
 proc new*(
     T: type TopicStreamsExtension,

@@ -290,13 +290,14 @@ proc broadcast*(
 
   trace "broadcasting messages to peers", peersCount = sendPeers.len, msg
 
+  var sentPeers = 0
   if anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
       let sent = p.send(peer, msg, priority, useCustomStream)
       countBroadcastMetrics(p, @[peer], sent)
       if sent.messages.len > 0 or sent.partialMessageExtension.isSome or
           (msg.messages.len == 0 and msg.partialMessageExtension.isNone):
-        inc result
+        inc sentPeers
   else:
     # Lazily encode each wire format and reuse it across recipients.
     var encoded: seq[byte]
@@ -310,7 +311,7 @@ proc broadcast*(
         countBroadcastMetrics(p, @[peer], sent)
         if sent.messages.len > 0 or sent.partialMessageExtension.isSome or
             (msg.messages.len == 0 and msg.partialMessageExtension.isNone):
-          inc result
+          inc sentPeers
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)
@@ -322,7 +323,9 @@ proc broadcast*(
         var peerEncoded = encoded
         peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
         countBroadcastMetrics(p, @[peer], msg)
-        inc result
+        inc sentPeers
+
+  return sentPeers
 
 proc sendSubs*(
     p: PubSub, peer: PubSubPeer, subTopics: openArray[string], subscribe: bool

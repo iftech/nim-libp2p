@@ -1047,7 +1047,6 @@ proc sendResponse*(
 
   p.routeTopicRPC(msg, anonymize, priority).ifValue(sent):
     return sent
-  result = msg
 
   proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =
     var encoded = encodeRpcMsg(p, toSendMsg, anonymize)
@@ -1067,14 +1066,14 @@ proc sendResponse*(
       else:
         Opt.none(SaltedId)
     send(msg, saltedId) # The whole RPC fits the limits, send it as-is.
-    return
+    return msg
 
   if msg.messages.len == 0:
     # Nothing to split and nothing to send - the RPC only carries non-message
     # data that still exceeds `maxMessageSize`.
     warn "message exceeds maximum message size and contains no messages; message will not be sent",
       encodedSize = msgSize, maxMessageSize = p.maxMessageSize
-    return
+    return msg
 
   # Batch as many messages as possible into a single encoded RPC so that each
   # batch stays within `maxMessageSize`. Non-message fields are carried by the
@@ -1116,6 +1115,8 @@ proc sendResponse*(
 
   if batch.messages.len > 0:
     send(batch)
+
+  return msg
 
 proc canAskIWant*(p: PubSubPeer, msgId: MessageId): bool =
   for sentIHave in p.sentIHaves.mitems():
