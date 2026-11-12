@@ -20,15 +20,21 @@ else:
     const
       membershipOption = posix.IP_ADD_MEMBERSHIP
       ttlOption = posix.IP_MULTICAST_TTL
+      interfaceOption = posix.IP_MULTICAST_IF
+      dropOption = posix.IP_DROP_MEMBERSHIP
   elif defined(linux) or defined(android):
     const
       membershipOption = cint(35)
       ttlOption = cint(33)
+      interfaceOption = cint(32)
+      dropOption = cint(36)
   elif defined(macosx) or defined(ios) or defined(freebsd) or defined(openbsd) or
       defined(netbsd) or defined(dragonfly):
     const
       membershipOption = cint(12)
       ttlOption = cint(10)
+      interfaceOption = cint(9)
+      dropOption = cint(13)
   else:
     {.error: "mDNS IPv4 multicast socket options are unavailable on this platform".}
 
@@ -53,8 +59,12 @@ type
   MdnsNetwork* = ref object
     transport: DatagramTransport
     transport6: DatagramTransport
+    interfaces4: seq[array[4, byte]]
     interfaces6: seq[uint32]
+    multicastLock4: AsyncLock
+    refresher: Future[void].Raising([CancelledError])
     multicastLock6: AsyncLock
+    interfacesProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
     networkInterfaceProvider: NetworkInterfaceProvider
     onPacket: MdnsPacketReceived
     activeOperations: int
@@ -68,10 +78,14 @@ logScope:
 proc new*(
     T: typedesc[MdnsNetwork],
     networkInterfaceProvider: NetworkInterfaceProvider = getAddresses,
+    interfacesProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      getInterfaces,
 ): T =
   T(
+    multicastLock4: newAsyncLock(),
     multicastLock6: newAsyncLock(),
     networkInterfaceProvider: networkInterfaceProvider,
+    interfacesProvider: interfacesProvider,
     idle: newAsyncEvent(),
   )
 
@@ -85,6 +99,8 @@ proc expandAddresses*(
     network: MdnsNetwork, addresses: seq[MultiAddress]
 ): seq[MultiAddress] =
   ## Expand wildcard listen addresses using the configured interface provider.
+  if network.networkInterfaceProvider.isNil:
+    return addresses
   expandWildcardAddresses(network.networkInterfaceProvider, addresses)
 
 template checkSocketOption(status: cint, option: string) =
@@ -96,44 +112,72 @@ template checkSocketOption(status: cint, option: string) =
         osLastError()
     return err(option & " failed (OS error " & $code.int & "): " & osErrorMsg(code))
 
-proc configureMulticast(transport: DatagramTransport): LPResult[void] =
-  # ip_mreq is two network-order IPv4 addresses on both Winsock and POSIX.
-  var membership: array[2, uint32]
-  cast[ptr array[8, uint8]](addr membership)[] = [224'u8, 0, 0, 251, 0, 0, 0, 0]
-  var ttl = 255.cint
+proc membership4(
+    transport: DatagramTransport, address: array[4, byte], join: bool
+): LPResult[void] =
+  var membership: array[8, byte] = [224'u8, 0, 0, 251, 0, 0, 0, 0]
+  for i in 0 .. 3:
+    membership[i + 4] = address[i]
   when defined(windows):
     let status = winlean.setsockopt(
       winlean.SocketHandle(transport.fd),
       0,
-      12,
-      addr membership[0],
+      (if join: 12 else: 13),
+      addr membership,
       winlean.SockLen(sizeof(membership)),
     )
-    checkSocketOption(status, "IP_ADD_MEMBERSHIP")
-    let ttlStatus = winlean.setsockopt(
-      winlean.SocketHandle(transport.fd), 0, 10, addr ttl, winlean.SockLen(sizeof(ttl))
-    )
-    checkSocketOption(ttlStatus, "IP_MULTICAST_TTL")
   else:
     let status = posix.setsockopt(
       posix.SocketHandle(transport.fd),
       posix.IPPROTO_IP,
-      membershipOption,
-      addr membership[0],
+      (if join: membershipOption else: dropOption),
+      addr membership,
       posix.SockLen(sizeof(membership)),
     )
-    checkSocketOption(status, "IP_ADD_MEMBERSHIP")
-    let ttlStatus = posix.setsockopt(
+  checkSocketOption(status, "IPv4 multicast membership")
+  ok()
+
+proc configureMulticast(transport: DatagramTransport): LPResult[void] =
+  var ttl = 255.cint
+  when defined(windows):
+    let status = winlean.setsockopt(
+      winlean.SocketHandle(transport.fd), 0, 10, addr ttl, winlean.SockLen(sizeof(ttl))
+    )
+  else:
+    let status = posix.setsockopt(
       posix.SocketHandle(transport.fd),
       posix.IPPROTO_IP,
       ttlOption,
       addr ttl,
       posix.SockLen(sizeof(ttl)),
     )
-    checkSocketOption(ttlStatus, "IP_MULTICAST_TTL")
+  checkSocketOption(status, "IP_MULTICAST_TTL")
   ok()
 
-proc configureMulticast6(transport: DatagramTransport, index: uint32): LPResult[void] =
+proc selectMulticastInterface4(
+    transport: DatagramTransport, address: array[4, byte]
+): bool =
+  var selected = address
+  when defined(windows):
+    winlean.setsockopt(
+      winlean.SocketHandle(transport.fd),
+      0,
+      9,
+      addr selected,
+      winlean.SockLen(sizeof(selected)),
+    ) == 0
+  else:
+    posix.setsockopt(
+      posix.SocketHandle(transport.fd),
+      posix.IPPROTO_IP,
+      interfaceOption,
+      addr selected,
+      posix.SockLen(sizeof(selected)),
+    ) == 0
+
+proc configureMulticast6(
+    transport: DatagramTransport, index: uint32, join = true
+): LPResult[void] =
   # ipv6_mreq contains the 16-byte group followed by the native interface index.
   type Ipv6Membership = object
     group: array[16, uint8]
@@ -146,9 +190,15 @@ proc configureMulticast6(transport: DatagramTransport, index: uint32): LPResult[
   when defined(windows):
     let socket = winlean.SocketHandle(transport.fd)
     let joined = winlean.setsockopt(
-      socket, 41, 12, addr membership, winlean.SockLen(sizeof(membership))
+      socket,
+      41,
+      (if join: 12 else: 13),
+      addr membership,
+      winlean.SockLen(sizeof(membership)),
     )
     checkSocketOption(joined, "IPV6_JOIN_GROUP")
+    if not join:
+      return ok()
     let hopStatus =
       winlean.setsockopt(socket, 41, 10, addr hops, winlean.SockLen(sizeof(hops)))
     checkSocketOption(hopStatus, "IPV6_MULTICAST_HOPS")
@@ -157,11 +207,13 @@ proc configureMulticast6(transport: DatagramTransport, index: uint32): LPResult[
     let joined = posix.setsockopt(
       socket,
       posix.IPPROTO_IPV6,
-      posix.IPV6_JOIN_GROUP,
+      (if join: posix.IPV6_JOIN_GROUP else: posix.IPV6_LEAVE_GROUP),
       addr membership,
       posix.SockLen(sizeof(membership)),
     )
     checkSocketOption(joined, "IPV6_JOIN_GROUP")
+    if not join:
+      return ok()
     let hopStatus = posix.setsockopt(
       socket,
       posix.IPPROTO_IPV6,
@@ -192,6 +244,56 @@ proc selectMulticastInterface6*(transport: DatagramTransport, index: uint32): bo
       posix.SockLen(sizeof(interfaceIndex)),
     ) == 0
 
+proc refreshInterfaces*(network: MdnsNetwork) =
+  ## Reconcile multicast memberships with the current network interfaces.
+  var wanted4: seq[array[4, byte]]
+  var wanted6: seq[uint32]
+  for iface in network.interfacesProvider():
+    if iface.ifIndex <= 0 or
+        (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
+      continue
+    var has4 = false
+    for address in iface.addresses:
+      case address.host.family
+      of AddressFamily.IPv4:
+        if not has4:
+          wanted4.add(address.host.address_v4)
+          has4 = true
+      of AddressFamily.IPv6:
+        if uint32(iface.ifIndex) notin wanted6:
+          wanted6.add(uint32(iface.ifIndex))
+      else:
+        discard
+  var current4: seq[array[4, byte]]
+  var current6: seq[uint32]
+  if not network.transport.isNil:
+    for address in network.interfaces4:
+      if address notin wanted4:
+        discard membership4(network.transport, address, false)
+    for address in wanted4:
+      if address in network.interfaces4 or
+          membership4(network.transport, address, true).isOk:
+        current4.add(address)
+      else:
+        debug "IPv4 mDNS multicast join failed", address = address
+  if not network.transport6.isNil:
+    for index in network.interfaces6:
+      if index notin wanted6:
+        discard configureMulticast6(network.transport6, index, false)
+    for index in wanted6:
+      if index in network.interfaces6 or
+          configureMulticast6(network.transport6, index).isOk:
+        current6.add(index)
+      else:
+        debug "IPv6 mDNS multicast join failed", interfaceIndex = index
+  network.interfaces4 = current4
+  network.interfaces6 = current6
+
+proc refreshLoop(network: MdnsNetwork) {.async: (raises: [CancelledError]).} =
+  while true:
+    await sleepAsync(30.seconds)
+    network.refreshInterfaces()
+
 proc sendPacket(
     transport: DatagramTransport, packet: seq[byte], destination: TransportAddress
 ): Future[bool] {.async: (raises: [CancelledError]).} =
@@ -204,6 +306,19 @@ proc sendPacket(
   except TransportError:
     debug "mDNS send failed", err = getCurrentExceptionMsg()
   return false
+
+proc multicast4(
+    network: MdnsNetwork, packet: seq[byte]
+): Future[bool] {.async: (raises: [CancelledError]).} =
+  if network.transport.isNil:
+    return false
+  withLock network.multicastLock4:
+    for address in network.interfaces4:
+      if selectMulticastInterface4(network.transport, address):
+        if await network.transport.sendPacket(packet, MdnsDestination):
+          result = true
+      else:
+        debug "IPv4 mDNS multicast interface selection failed", address = address
 
 proc multicast6(
     network: MdnsNetwork, packet: seq[byte]
@@ -235,7 +350,7 @@ proc multicast*(
   if not network.isOpen:
     return false
   trackOperation network:
-    let sent4 = await network.transport.sendPacket(packet, MdnsDestination)
+    let sent4 = await network.multicast4(packet)
     let sent6 = await network.multicast6(packet)
     return sent4 or sent6
 
@@ -249,12 +364,15 @@ proc reply*(
   trackOperation network:
     if not unicast and context.remote.family == AddressFamily.IPv6:
       return await network.multicast6(packet)
-    return await context.transport.sendPacket(
-      packet, if unicast: context.remote else: MdnsDestination
-    )
+    if not unicast:
+      return await network.multicast4(packet)
+    return await context.transport.sendPacket(packet, context.remote)
 
 proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   network.closing = true
+  if not network.refresher.isNil:
+    await noCancel network.refresher.cancelAndWait()
+    network.refresher = nil
   # Ignore new datagrams, but let queued sends and handlers finish before
   # closing their sockets. Chronos does not drain queued sends on close.
   if network.activeOperations > 0:
@@ -265,6 +383,7 @@ proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
     await network.transport6.closeWait()
   network.transport = nil
   network.transport6 = nil
+  network.interfaces4.setLen(0)
   network.interfaces6.setLen(0)
   network.onPacket = nil
   network.closing = false
@@ -315,41 +434,21 @@ proc open*(
   except TransportError as exc:
     debug "IPv4 mDNS unavailable", err = exc.msg
 
-  for iface in getInterfaces():
-    if iface.ifIndex <= 0 or
-        (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
-      continue
-    var hasIPv6 = false
-    for address in iface.addresses:
-      if address.host.family == AddressFamily.IPv6:
-        hasIPv6 = true
-        break
-    if not hasIPv6:
-      continue
-    if network.transport6.isNil:
-      try:
-        network.transport6 = newDatagramTransport6(
-          received,
-          local = MdnsBindAddress6,
-          flags = {ReuseAddr, ReusePort},
-          bufSize = 9000,
-          dualstack = DualStackType.Disabled,
-        )
-      except TransportError as exc:
-        debug "IPv6 mDNS unavailable", interfaceName = iface.name, err = exc.msg
-        break
-    let configured = configureMulticast6(network.transport6, uint32(iface.ifIndex))
-    if configured.isOk:
-      network.interfaces6.add(uint32(iface.ifIndex))
-    else:
-      debug "IPv6 mDNS multicast configuration failed",
-        interfaceName = iface.name, err = configured.error
+  try:
+    network.transport6 = newDatagramTransport6(
+      received,
+      local = MdnsBindAddress6,
+      flags = {ReuseAddr, ReusePort},
+      bufSize = 9000,
+      dualstack = DualStackType.Disabled,
+    )
+  except TransportError as exc:
+    debug "IPv6 mDNS unavailable", err = exc.msg
 
-  if not network.transport6.isNil and network.interfaces6.len == 0:
-    await network.transport6.closeWait()
-    network.transport6 = nil
+  network.refreshInterfaces()
 
   if network.transport.isNil and network.transport6.isNil:
     network.onPacket = nil
     return err("Unable to start mDNS on IPv4 or IPv6")
+  network.refresher = network.refreshLoop()
   return ok()
