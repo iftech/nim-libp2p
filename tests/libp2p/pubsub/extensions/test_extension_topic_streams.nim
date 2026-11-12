@@ -391,8 +391,15 @@ suite "GossipSub topic stream send side":
         await recorder.closeOutgoingStreams()
       check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
+      let rejected =
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
       state.sendTopic(topic, newSeq[byte](frameSize), true)
-      check recorder.outgoingStreams.len == expectedDials
+      check:
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
+          rejected + float64(1 - expectedDials)
+        recorder.outgoingStreams.len == expectedDials
+        recorder.penalties == 0
+        recorder.violations == 0
 
   asyncTest "queue budgets count the frame in flight until its write completes":
     for config in [
