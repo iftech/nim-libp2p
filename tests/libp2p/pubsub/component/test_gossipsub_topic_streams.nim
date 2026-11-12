@@ -12,7 +12,7 @@ import ../../../../libp2p/protocols/pubsub/rpc/protobuf
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/utils/future
 import ../utils
-import ../extensions/my_partial_message
+import ../extensions/[extension_recording, my_partial_message]
 
 suite "GossipSub Component - Topic streams":
   const topic = "foobar"
@@ -518,7 +518,7 @@ suite "GossipSub Component - Topic streams":
         testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
       )
       .toGossipSub()
-    # the peer runs no GossipSub: it holds nodes[0]'s control stream, and the test opens the peer's control stream later
+    # the peer runs no GossipSub; it holds nodes[0]'s control stream, the only stream nodes[0] sends its ControlExtensions on
     let peer = makeStandardSwitch()
     let controlOpened = newFuture[void]("controlStreamOpened")
     let controlProtocol = LPProtocol(codecs: @[GossipSubCodec_13])
@@ -537,6 +537,7 @@ suite "GossipSub Component - Topic streams":
 
     nodes[0].subscribe(topic, onMessage)
     await peer.connect(nodes[0].switch)
+    # a conforming peer publishes only after nodes[0]'s subscription arrives on this control stream
     await controlOpened
 
     const msg = "data"
@@ -554,13 +555,7 @@ suite "GossipSub Component - Topic streams":
       await control.close()
     # testExtension makes nodes[0] report the negotiation through onNegotiated
     await control.writeLp(
-      RPCMsg
-        .withControl(
-          ControlMessage.withExtensions(
-            ControlExtensions(topicStreams: true, testExtension: true)
-          )
-        )
-        .encode(false)
+      makeRPC(ControlExtensions(topicStreams: true, testExtension: true)).encode(false)
     )
     await negotiated
     check nodes[0].peers.getOrDefault(peer.peerInfo.peerId).behaviourPenalty == 0.0
@@ -585,7 +580,7 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       not nodes[0].switch.isConnected(nodes[1].switch)
 
-  asyncTest "peer that opens a topic stream and then a GossipSub 1.2 control stream is disconnected":
+  asyncTest "peer that opens a topic stream before its GossipSub 1.2 control stream is disconnected at its first control RPC":
     let nodes = generateNodes(
         1, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
       )
