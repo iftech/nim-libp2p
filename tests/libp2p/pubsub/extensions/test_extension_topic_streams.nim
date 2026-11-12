@@ -462,6 +462,47 @@ suite "GossipSub topic stream send side":
         TopicRPCHeader(topic: otherTopic).encode()
       (await recorder.outgoingStreams[1].readLp(1024)) == frames[1]
 
+  asyncTest "messages for different topics in one RPC go to their own topic streams":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder)
+    defer:
+      await state.stop()
+      await recorder.closeOutgoingStreams()
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+    # an IWANT reply carries messages for several topics
+    let messages = @[
+      Message(topic: topic, data: @[1.byte]),
+      Message(topic: otherTopic, data: @[2.byte]),
+    ]
+    let control = state.sendTopicRPC(
+      makePreparedTopicRPC(RPCMsg.withMessages(messages), false), false
+    )
+    check:
+      control.len == 0
+      recorder.outgoingStreams.len == 2
+      (await recorder.outgoingStreams[0].readLp(1024)) == header
+      (await recorder.outgoingStreams[0].readLp(1024)) == messages[0].topicRPC().encode()
+      (await recorder.outgoingStreams[1].readLp(1024)) ==
+        TopicRPCHeader(topic: otherTopic).encode()
+      (await recorder.outgoingStreams[1].readLp(1024)) == messages[1].topicRPC().encode()
+
+  test "message with empty data is sent on neither the topic stream nor the control stream":
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder)
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+    # an empty publish payload and a message on the control stream are both protocol violations
+    let control = state.sendTopicRPC(
+      makePreparedTopicRPC(
+        RPCMsg.withMessages(Message(topic: topic, data: newSeq[byte]())), false
+      ),
+      true,
+    )
+    check:
+      control.len == 0
+      recorder.outgoingStreams.len == 0
+
 suite "GossipSub topic stream receive side":
   teardown:
     checkTrackers()

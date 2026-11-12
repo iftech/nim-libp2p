@@ -124,6 +124,26 @@ suite "GossipSub Component - Topic streams":
     await received
     check nodes[2].inboundTopicStreams(nodes[1].peerInfo.peerId).len == 1
 
+  asyncTest "publish counts a topic stream peer that never receives a message with empty data":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let received = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await received.put(data)
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    # TODO: iftech/nim-libp2p#3411
+    check (await nodes[0].publish(topic, newSeq[byte]())) == 1
+    discard await nodes[0].publish(topic, "data")
+    check (await received.popFirst()) == "data"
+
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
       generateNodes(
@@ -444,3 +464,87 @@ suite "GossipSub Component - Topic streams":
     await readerDone.wait()
     await allFutures(nodes[0].pendingTasks)
     check handled.len == 0
+
+  asyncTest "peer that denied support is disconnected when it opens a topic stream":
+    let nodes = (
+      generateNodes(
+        1, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      ) & generateNodes(1, gossip = true)
+    ).toGossipSub()
+    startAndDeferStop(nodes)
+
+    # nodes[1] has no topic streams, so its first control RPC denies support
+    nodes[1].subscribe(topic, voidTopicHandler)
+    # nodes[1] connects, so identify finishes before the dial below, which then does not race nodes[0]'s reset
+    await connect(nodes[1], nodes[0])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    # nodes[0] rejects the stream before reading a header
+    let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await stream.close()
+    checkUntilTimeout:
+      not nodes[0].switch.isConnected(nodes[1].switch)
+
+  asyncTest "peer that writes on a topic stream the node opened is disconnected":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let received = newFuture[void]("messageReceived")
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      received.completeOnce()
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    discard await nodes[0].publish(topic, "data")
+    await received
+    # nodes[1]'s end of the topic stream that nodes[0] opened to deliver the message
+    let stream = nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId)[0]
+    await stream.write(@[1.byte])
+    checkUntilTimeout:
+      not nodes[0].switch.isConnected(nodes[1].switch)
+
+  asyncTest "peer whose topic stream header or frame exceeds a byte limit gets 0.1 behaviour penalty":
+    const maxMessageSize = 1024
+    let header = TopicRPCHeader(topic: topic).encode()
+    proc checkPenalty(
+        topicStreamsConfig: TopicStreamsConfig, writes: seq[seq[byte]]
+    ) {.async.} =
+      let nodes = generateNodes(
+          2,
+          gossip = true,
+          maxMessageSize = maxMessageSize,
+          decayInterval = 1.hours, # the scoring heartbeat decays the behaviour penalty
+          topicStreamsConfig = Opt.some(topicStreamsConfig),
+        )
+        .toGossipSub()
+      startAndDeferStop(nodes)
+
+      await connect(nodes[0], nodes[1])
+      let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
+      check peer.behaviourPenalty == 0.0
+
+      let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+      defer:
+        await stream.close()
+      for data in writes:
+        await stream.writeLp(data)
+      var data: byte
+      check:
+        # nodes[0] ends the stream right after it penalizes nodes[1]
+        (await stream.readOnce(addr data, 1)) == 0
+        # TODO: iftech/nim-libp2p#3307
+        peer.behaviourPenalty == 0.1
+
+    for (topicStreamsConfig, writes) in [
+      # header over maxIncomingBytes
+      (TopicStreamsConfig(maxIncomingBytes: header.len - 1), @[header]),
+      # frame over maxMessageSize
+      (TopicStreamsConfig(), @[header, newSeq[byte](maxMessageSize + 1)]),
+    ]:
+      await checkPenalty(topicStreamsConfig, writes)
