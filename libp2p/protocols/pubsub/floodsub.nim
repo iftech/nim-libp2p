@@ -252,7 +252,7 @@ method publish*(
     return 0
 
   # Try to send to all peers that are known to be interested
-  discard f.broadcast(peers, RPCMsg.withMessages(msg), MessagePriority.Medium)
+  f.broadcast(peers, RPCMsg.withMessages(msg), MessagePriority.Medium)
 
   when defined(libp2p_expensive_metrics):
     libp2p_pubsub_messages_published.inc(labelValues = [topic])

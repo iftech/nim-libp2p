@@ -219,41 +219,38 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
     if s.writers.getOrDefault(topic) == w:
       s.writers.del(topic)
 
-proc sendTopic*(
-    s: TopicStreams, topic: string, data: sink seq[byte], medium: bool
-): bool =
-  ## Returns whether the frame was admitted to the outgoing queue.
+proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bool) =
   if s.stopped or not s.active:
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["inactive"])
-    return false
+    return
   if data.len == 0 or data.len > s.maxMessageSize:
     trace "dropping invalid outgoing topic frame", topic, size = data.len
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["invalid_frame"])
-    return false
+    return
   if data.len > s.config.maxQueuedBytes - s.queuedBytes or
       s.queuedMessages >= s.config.maxQueuedMessages:
     trace "dropping outgoing topic frame because queue is full", topic
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["queue_full"])
-    return false
+    return
   var w = s.writers.getOrDefault(topic)
   if w == nil:
     if s.writers.len >= s.config.maxOutgoingStreams:
       trace "dropping outgoing topic frame because stream limit is reached", topic
       libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["stream_limit"])
-      return false
+      return
     let header = TopicRPCHeader(topic: Opt.some(topic)).encode()
     if header.len > s.maxMessageSize or
         header.len > s.config.maxQueuedBytes - s.queuedBytes - data.len:
       trace "dropping outgoing topic frame because header exceeds queue budget", topic
       libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["header_limit"])
-      return false
+      return
     w = TopicWriter(wake: newAsyncEvent(), header: header, headerBytes: header.len)
     s.queuedBytes += header.len
     s.writers[topic] = w
   elif w.closing:
     trace "dropping outgoing topic frame while writer closes", topic
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["writer_closing"])
-    return false
+    return
   s.queuedBytes += data.len
   inc s.queuedMessages
   if medium:
@@ -264,7 +261,6 @@ proc sendTopic*(
     w.task = s.writeLoop(topic, w)
   else:
     w.wake.fire()
-  true
 
 proc close(w: TopicWriter): Future[void] {.async: (raises: [], raw: true).} =
   w.closing = true
@@ -387,42 +383,30 @@ proc stop*(s: TopicStreams) {.async: (raises: []).} =
   await noCancel allFutures(readers.mapIt(it.stream.close()))
 
 type PreparedTopicRPC* = object
-  control*: seq[byte]
-  rpc: RPCMsg
-  payloads: seq[tuple[topic: string, data: seq[byte], messageIndex: int]]
+  control: seq[byte]
+  payloads: seq[tuple[topic: string, data: seq[byte]]]
 
 func isZero*(msg: PreparedTopicRPC): bool =
   msg.control.len == 0 and msg.payloads.len == 0
 
 proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
-  var prepared = PreparedTopicRPC(rpc: msg)
-  for i, m in msg.messages:
+  for m in msg.messages:
     if m.data.len > 0:
-      prepared.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode(), i))
+      result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
     else:
       trace "empty application message cannot use topic stream", topic = m.topic
   msg.partialMessageExtension.ifValue(partial):
     if partial.topicID.isSome:
-      prepared.payloads.add((partial.topicID.get(), partial.topicRPC().encode(), -1))
+      result.payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
   var control = msg
   control.messages = @[]
   control.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
-  prepared.control = control.encode(anonymize)
+  result.control = control.encode(anonymize)
 
-  return prepared
-
-proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): RPCMsg =
-  var accepted = msg.rpc
-  accepted.messages = @[]
-  accepted.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
+proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): seq[byte] =
   for payload in msg.payloads:
-    if s.sendTopic(payload.topic, payload.data, medium):
-      if payload.messageIndex >= 0:
-        accepted.messages.add(msg.rpc.messages[payload.messageIndex])
-      else:
-        accepted.partialMessageExtension = msg.rpc.partialMessageExtension
-
-  return accepted
+    s.sendTopic(payload.topic, payload.data, medium)
+  msg.control
 
 proc new*(
     T: type TopicStreamsExtension,
@@ -470,7 +454,7 @@ proc readTopicStream*(
 
 proc sendTopicRPC*(
     ext: TopicStreamsExtension, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
-): RPCMsg =
+): seq[byte] =
   ext.peers.withValue(peerId, streams):
     return streams[].sendTopicRPC(msg, medium)
 

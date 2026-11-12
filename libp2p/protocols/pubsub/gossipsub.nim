@@ -1143,18 +1143,20 @@ method publish*(
         RPCMsg.withPreamble(topic, msgId, msg.data.len), peers.mapIt(it.peerId)
       )
 
-  let sent = g.broadcast(
+  g.broadcast(
     peers,
     RPCMsg.withMessages(msg),
     MessagePriority.Medium,
     useCustomStream = pubParams.useCustomStream,
   )
 
-  libp2p_pubsub_messages_published.inc(sent.int64, labelValues = [g.topicLabel(topic)])
+  libp2p_pubsub_messages_published.inc(
+    peers.len.int64, labelValues = [g.topicLabel(topic)]
+  )
 
-  trace "Published message to peers", count = sent
+  trace "Published message to peers", count = peers.len
 
-  return sent
+  return peers.len
 
 proc publishPartial*(
     g: GossipSub,

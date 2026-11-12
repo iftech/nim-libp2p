@@ -595,9 +595,6 @@ proc trackSend*(p: PubSubPeer, fut: Future[void]) =
 proc hasSendStream*(p: PubSubPeer): bool =
   p.sendStream != nil
 
-when defined(libp2p_testing) and defined(libp2p_expensive_metrics):
-  export libp2p_pubsub_sent_messages
-
 template sendMetrics(msg: RPCMsg): untyped =
   when defined(libp2p_expensive_metrics):
     for x in msg.messages:
@@ -960,32 +957,28 @@ proc sendEncoded*(
           action.slowPeerPenaltyDelta, action.priority, msg.len
         )
 
-proc sendTopicRPC*(
-    p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority
-): RPCMsg =
+proc sendTopicRPC*(p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority) =
   if p.stopped:
     return
-  let sent =
+  let control =
     p.extensionsState.sendTopicRPC(p.peerId, msg, priority == MessagePriority.Medium)
-  if msg.control.len > 0:
-    p.trackSend(p.sendEncoded(msg.control, MessagePriority.High))
-  sendMetrics(sent)
-  return sent
+  if control.len > 0:
+    p.trackSend(p.sendEncoded(control, MessagePriority.High))
 
-proc routeTopicRPC*(
+proc routeTopicRPC(
     p: PubSubPeer, msg: RPCMsg, anonymize: bool, priority: MessagePriority
-): Opt[RPCMsg] =
-  ## None requests legacy routing; some reports the RPC after topic admission,
-  ## even when every application payload was rejected.
+): bool =
   if msg.messages.len == 0 and msg.partialMessageExtension.isNone and
       not p.hasObservers():
-    return Opt.none(RPCMsg)
+    return false
   if not p.extensionsState.peerHasTopicStreams(p.peerId):
-    return Opt.none(RPCMsg)
+    return false
   var msgCopy = msg
   if p.hasObservers():
     p.sendObservers(msgCopy)
-  Opt.some(p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority))
+  sendMetrics(msgCopy)
+  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority)
+  true
 
 proc encodeRpcMsg(
     p: PubSubPeer, msg: RPCMsg, anonymize: bool
@@ -1021,7 +1014,7 @@ proc send*(
   ##   High priority messages are sent immediately, medium and low priority messages are queued
   ##   and sent only after all high priority messages have been sent.
 
-  if p.routeTopicRPC(msg, anonymize, priority).isSome:
+  if p.routeTopicRPC(msg, anonymize, priority):
     return
 
   var encoded = encodeRpcMsg(p, msg, anonymize)
@@ -1052,7 +1045,7 @@ proc sendResponse*(
   ## `maxMessageSize`, and individual messages that still exceed
   ## `maxMessageSize`, are dropped with a warning.
 
-  if p.routeTopicRPC(msg, anonymize, priority).isSome:
+  if p.routeTopicRPC(msg, anonymize, priority):
     return
 
   proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =

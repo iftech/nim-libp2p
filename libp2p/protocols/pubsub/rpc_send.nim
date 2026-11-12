@@ -47,15 +47,14 @@ proc broadcastResponse*(
   ## This should not be used for application-published messages; use `broadcast`
   ## instead.
 
+  countBroadcastMetrics(p, sendPeers, msg)
+
   trace "broadcasting responses to peers", peers = sendPeers.len, rpcMsg = msg
 
   # Multiple messages need per-peer splitting on the legacy transport.
   if msg.messages.len > 1 or anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
-      let sent = peer.routeTopicRPC(msg, p.anonymize, priority).valueOr:
-        p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
-        msg
-      countBroadcastMetrics(p, @[peer], sent)
+      p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
   else:
     # Lazily encode each wire format and reuse it across recipients.
     var encoded: seq[byte]
@@ -65,8 +64,7 @@ proc broadcastResponse*(
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if preparedRPC.isZero():
           preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
-        let sent = peer.sendTopicRPC(preparedRPC, priority)
-        countBroadcastMetrics(p, @[peer], sent)
+        peer.sendTopicRPC(preparedRPC, priority)
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)
@@ -76,4 +74,3 @@ proc broadcastResponse*(
             move(peerEncoded), priority, useCustomStream, relayedSaltedId
           )
         )
-        countBroadcastMetrics(p, @[peer], msg)

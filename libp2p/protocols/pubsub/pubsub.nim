@@ -295,22 +295,25 @@ proc broadcast*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
-): int {.raises: [].} =
-  ## Returns the number of peers for which a send was attempted. Topic-stream
-  ## recipients that reject all application payloads before enqueueing are excluded.
+) {.raises: [].} =
+  ## Sends an application-published `msg` (of type `RPCMsg`) to a specified
+  ## group of peers in the PubSub network.
+  ##
+  ## Parameters:
+  ## - `p`: The `PubSub` instance.
+  ## - `sendPeers`: A sequence of `PubSubPeer` instances to which the message should be sent.
+  ## - `msg`: The `RPCMsg` instance that contains the message to be broadcast.
+  ## - `priority`: The message priority level (`High`, `Medium`, or `Low`).
+  ##   High priority messages are sent immediately, medium and low priority messages are queued
+  ##   and sent only after all high priority messages have been sent.
+
+  countBroadcastMetrics(p, sendPeers, msg)
 
   trace "broadcasting messages to peers", peersCount = sendPeers.len, msg
 
-  var sentPeers = 0
   if anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
-      let sent = peer.routeTopicRPC(msg, p.anonymize, priority).valueOr:
-        p.send(peer, msg, priority, useCustomStream)
-        msg
-      countBroadcastMetrics(p, @[peer], sent)
-      if sent.messages.len > 0 or sent.partialMessageExtension.isSome or
-          (msg.messages.len == 0 and msg.partialMessageExtension.isNone):
-        inc sentPeers
+      p.send(peer, msg, priority, useCustomStream)
   else:
     # Lazily encode each wire format and reuse it across recipients.
     var encoded: seq[byte]
@@ -320,11 +323,7 @@ proc broadcast*(
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if preparedRPC.isZero():
           preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
-        let sent = peer.sendTopicRPC(preparedRPC, priority)
-        countBroadcastMetrics(p, @[peer], sent)
-        if sent.messages.len > 0 or sent.partialMessageExtension.isSome or
-            (msg.messages.len == 0 and msg.partialMessageExtension.isNone):
-          inc sentPeers
+        peer.sendTopicRPC(preparedRPC, priority)
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)
@@ -335,10 +334,6 @@ proc broadcast*(
           continue
         var peerEncoded = encoded
         peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
-        countBroadcastMetrics(p, @[peer], msg)
-        inc sentPeers
-
-  return sentPeers
 
 proc sendSubs*(
     p: PubSub, peer: PubSubPeer, subTopics: openArray[string], subscribe: bool
