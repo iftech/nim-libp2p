@@ -267,9 +267,8 @@ proc tryHandleImpl(
     _: type MultistreamSelect,
     stream: Stream,
     protos: seq[string],
-    matchers = newSeq[Matcher](),
-    active: bool = false,
-    admit: Matcher = nil,
+    accept: Matcher,
+    active: bool,
 ): Future[MultiStreamResult[string]] {.
     async: (raises: [CancelledError, LPStreamError])
 .} =
@@ -298,17 +297,14 @@ proc tryHandleImpl(
       else:
         trace "Duplicate multistream handshake rejected", stream
         await stream.writeLp(Na)
-    elif ms.len > 0 and (ms in protos or matchers.anyIt(it(ms))):
-      if admit != nil and not admit(ms):
-        await stream.writeLp(Na)
-        continue
+    elif ms.len > 0 and accept(ms):
       trace "Protocol handler selected", stream, protocol = ms
       await stream.writeLp(ms & "\n")
       stream.protocol = ms
       return ok(ms)
     else:
       trace "Protocol negotiation rejected",
-        stream, protocol = ms, reason = "no handler"
+        stream, protocol = ms, reason = "no available handler"
       await stream.writeLp(Na)
 
   ok("")
@@ -323,7 +319,10 @@ proc tryHandle*(
     async: (raises: [CancelledError, LPStreamError], raw: true)
 .} =
   ## Returns "" when the stream reaches EOF before a proposal matches.
-  MultistreamSelect.tryHandleImpl(stream, protos, matchers, active)
+  proc matches(proto: string): bool {.gcsafe, raises: [].} =
+    proto in protos or matchers.anyIt(it(proto))
+
+  MultistreamSelect.tryHandleImpl(stream, protos, matches, active)
 
 proc handle*(
     _: type MultistreamSelect,
@@ -343,19 +342,6 @@ proc lookupProtocol*(m: MultistreamSelect, proto: string): Opt[LPProtocol] =
     if (h.match != nil and h.match(proto)) or h.protos.contains(proto):
       return Opt.some(h.protocol)
   return Opt.none(LPProtocol)
-
-func allProtosAndMatchers(m: MultistreamSelect): (seq[string], seq[Matcher]) =
-  var
-    protos: seq[string]
-    matchers: seq[Matcher]
-
-  for h in m.handlers:
-    if h.match != nil:
-      matchers.add(h.match)
-    for proto in h.protos:
-      protos.add(proto)
-
-  return (protos, matchers)
 
 proc handle*(
     m: MultistreamSelect, stream: Stream, active: bool = false
@@ -381,8 +367,8 @@ proc handle*(
 
   let negotiated =
     try:
-      let (protos, matchers) = m.allProtosAndMatchers()
-      await MultistreamSelect.tryHandleImpl(stream, protos, matchers, active, admit)
+      let protos = m.handlers.mapIt(it.protos).concat()
+      await MultistreamSelect.tryHandleImpl(stream, protos, admit, active)
     except LPStreamError as e:
       trace "Multistream negotiation failed", err = e.msg, stream
       return
