@@ -99,7 +99,7 @@ suite "GossipSub Component - Topic streams":
     # TODO: iftech/nim-libp2p#3411
     check (await nodes[0].publish(topic, newSeq[byte]())) == 1
     discard await nodes[0].publish(topic, "data")
-    check (await received.popFirst()) == "data".toBytes
+    check (await received.popFirst()) == "data"
 
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
