@@ -11,11 +11,30 @@ import ./utils
 type SelectiveValidator = ref object of EntryValidator
   calls: int
 
-method isValid(
-    self: SelectiveValidator, key: RecordKey, record: EntryRecord
-): bool =
+method isValid(self: SelectiveValidator, key: RecordKey, record: EntryRecord): bool =
   self.calls.inc()
   record.value == Value.init([1.byte, 2, 3])
+
+proc checkRepairTargets(rejectedRecord: bool) {.async.} =
+  let kads = setupKadSwitches(3)
+  startAndDeferStop(kads)
+  await connectHub(kads[0], kads[1 ..^ 1])
+
+  let
+    key = kads[1].rtable.selfId
+    value = @[1.byte, 2, 3]
+    validator = SelectiveValidator()
+  kads[2].dataTable.insert(key, value, Timestamp.now())
+  if rejectedRecord:
+    kads[1].dataTable.insert(key, @[9.byte], Timestamp.now())
+  kads[2].config.validator = validator
+  kads[2].config.limits.maxReceivedSize = 2
+
+  let record = await kads[2].getValue(key, quorumOverride = Opt.some(2))
+  check:
+    record.get().value == value
+    kads[0].containsData(key, value)
+    validator.calls == (if rejectedRecord: 2 else: 1)
 
 suite "KadDHT Get":
   teardown:
@@ -203,27 +222,11 @@ suite "KadDHT Get":
       record.get().value == value
       validator.calls == 2
 
-  asyncTest "Unusable replies do not replace repair targets in a full table":
-    for rejectedRecord in [false, true]:
-      let kads = setupKadSwitches(3)
-      startAndDeferStop(kads)
-      await connectHub(kads[0], kads[1 ..^ 1])
+  asyncTest "Empty replies do not replace repair targets in a full table":
+    await checkRepairTargets(false)
 
-      let
-        key = kads[1].rtable.selfId
-        value = @[1.byte, 2, 3]
-        validator = SelectiveValidator()
-      kads[2].dataTable.insert(key, value, Timestamp.now())
-      if rejectedRecord:
-        kads[1].dataTable.insert(key, @[9.byte], Timestamp.now())
-      kads[2].config.validator = validator
-      kads[2].config.limits.maxReceivedSize = 2
-
-      let record = await kads[2].getValue(key, quorumOverride = Opt.some(2))
-      check:
-        record.get().value == value
-        kads[0].containsData(key, value)
-        validator.calls == (if rejectedRecord: 2 else: 1)
+  asyncTest "Invalid replies do not replace repair targets in a full table":
+    await checkRepairTargets(true)
 
   asyncTest "Get updates routing table with closerPeers (with record)":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
