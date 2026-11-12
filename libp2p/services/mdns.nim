@@ -221,6 +221,7 @@ proc multicast(
     debug "mDNS announcement encoding failed", err = getCurrentExceptionMsg()
 
 proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
+  var firstIteration = true
   while true:
     service.advertisement =
       service.announcement(service.owner.peerInfo, service.instance)
@@ -241,7 +242,8 @@ proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
     # Transports can still be binding during the first iteration. Retry locally
     # without sending additional queries until an advertisement is available.
     var remaining = service.interval
-    while service.advertisement.answers.len == 0 and remaining > 0.seconds:
+    while firstIteration and service.advertisement.answers.len == 0 and
+        remaining > 0.seconds:
       let delay = min(1.seconds, remaining)
       await sleepAsync(delay)
       remaining = remaining - delay
@@ -255,6 +257,7 @@ proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
         service.advertisementBytes.setLen(0)
       if service.advertisement.answers.len > 0:
         discard await service.network.multicast(service.advertisementBytes)
+    firstIteration = false
     if remaining > 0.seconds:
       await sleepAsync(remaining)
 
@@ -339,10 +342,10 @@ method stop*(
   if not service.loop.isNil:
     await noCancel service.loop.cancelAndWait()
     service.loop = nil
-  await noCancel service.multicast(
-    service.announcement(switch.peerInfo, service.instance, 0)
-  )
-  await service.network.close()
+  let goodbye = service.announcement(switch.peerInfo, service.instance, 0)
+  if goodbye.answers.len > 0:
+    await noCancel service.multicast(goodbye)
+  await noCancel service.network.close()
   service.owner = nil
   service.advertisement = default(DnsMessage)
   service.advertisementBytes.setLen(0)
