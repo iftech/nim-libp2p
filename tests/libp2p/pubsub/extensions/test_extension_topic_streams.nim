@@ -381,7 +381,7 @@ suite "GossipSub topic stream send side":
     let config = TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2)
     for (frameSize, expectedDials) in [
       (config.maxQueuedBytes - header.len, 1), # header and frame fill the byte budget
-      # TODO: iftech/nim-libp2p#NNNN
+      # TODO: iftech/nim-libp2p#3418
       (config.maxQueuedBytes + 1, 0), # frame over the byte budget, the queue is empty
     ]:
       let recorder = TopicStreamsRecorder.new()
@@ -582,8 +582,7 @@ suite "GossipSub topic stream receive side":
       await state.stop()
       await peerEnd.close()
 
-    # the header timeout is 1 second
-    await state.readTopic(nodeEnd).wait(2.seconds)
+    await state.readTopic(nodeEnd)
     check:
       nodeEnd.wasResetLocally()
       recorder.penalties == 0
@@ -752,7 +751,7 @@ suite "GossipSub topic stream receive side":
     await peerEnd.writeLp(frame)
     check (await recorder.received.popFirst()).messages == @[message]
 
-    # TODO: iftech/nim-libp2p#NNNN
+    # TODO: iftech/nim-libp2p#3418
     let largerFrame = Message(data: @[1.byte, 2], topic: topic).topicRPC().encode()
     await peerEnd.writeLp(largerFrame)
       # the only frame in flight, far below maxMessageSize
