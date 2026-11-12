@@ -7,7 +7,7 @@ import chronos, tables, stew/byteutils, sequtils
 import ../../../../libp2p/multistream
 import
   ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
-import ../../../tools/[lifecycle, topology, unittest]
+import ../../../tools/[lifecycle, switch_builder, topology, unittest]
 import ../../../../libp2p/protocols/pubsub/rpc/protobuf
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/utils/future
@@ -465,20 +465,21 @@ suite "GossipSub Component - Topic streams":
     await allFutures(nodes[0].pendingTasks)
     check handled.len == 0
 
-  asyncTest "topic stream opened after GossipSub stops is reset":
+  asyncTest "topic stream opened after GossipSub stops ends":
     let nodes = generateNodes(
         2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
       )
       .toGossipSub()
     startAndDeferStop(nodes)
 
-    await connect(nodes[0], nodes[1])
+    # nodes[1] connects, so identify finishes before the dial below, which then does not race nodes[0]'s reset
+    await connect(nodes[1], nodes[0])
     await nodes[0].stop() # the switch keeps running
 
     let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
     defer:
       await stream.close()
-    # an accepted stream that has its header stays open past the header timeout
+    # without this header, an accepted stream would also end at the header timeout
     await stream.writeLp(TopicRPCHeader(topic: topic).encode())
     var data: byte
     # nodes[0] never writes on this stream, so reading 0 bytes means it ended its side
@@ -504,6 +505,121 @@ suite "GossipSub Component - Topic streams":
       await stream.close()
     checkUntilTimeout:
       not nodes[0].switch.isConnected(nodes[1].switch)
+
+  asyncTest "peer that opens a topic stream before its control stream negotiates extensions without penalty":
+    let negotiated = newFuture[void]("extensionsNegotiated")
+    proc onNegotiated(peer: PeerId) {.gcsafe, raises: [].} =
+      negotiated.completeOnce()
+
+    let nodes = generateNodes(
+        1,
+        gossip = true,
+        topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+        testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
+      )
+      .toGossipSub()
+    # the peer runs no GossipSub: it holds nodes[0]'s control stream, and the test opens the peer's control stream later
+    let peer = makeStandardSwitch()
+    let controlOpened = newFuture[void]("controlStreamOpened")
+    let controlProtocol = LPProtocol(codecs: @[GossipSubCodec_13])
+    controlProtocol.handler = proc(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      controlOpened.completeOnce()
+      await stream.join()
+    peer.mount(controlProtocol)
+    startAndDeferStop(nodes)
+    startAndDeferStop(@[peer])
+
+    let handled = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await handled.put(data)
+
+    nodes[0].subscribe(topic, onMessage)
+    await peer.connect(nodes[0].switch)
+    await controlOpened
+
+    const msg = "data"
+    let stream = await peer.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await stream.close()
+    await stream.writeLp(TopicRPCHeader(topic: topic).encode())
+    await stream.writeLp(
+      Message.init(peer.peerInfo, msg, topic, 1'u64).topicRPC().encode()
+    )
+    check (await handled.popFirst()) == msg
+
+    let control = await peer.dial(nodes[0].switch, GossipSubCodec_13)
+    defer:
+      await control.close()
+    # testExtension makes nodes[0] report the negotiation through onNegotiated
+    await control.writeLp(
+      RPCMsg
+        .withControl(
+          ControlMessage.withExtensions(
+            ControlExtensions(topicStreams: true, testExtension: true)
+          )
+        )
+        .encode(false)
+    )
+    await negotiated
+    check nodes[0].peers.getOrDefault(peer.peerInfo.peerId).behaviourPenalty == 0.0
+
+  asyncTest "peer whose control stream runs GossipSub 1.2 is disconnected when it opens a topic stream":
+    let nodes = (
+      generateNodes(
+        1, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      ) & generateNodes(1, gossip = true, codecs = @[GossipSubCodec_12])
+    ).toGossipSub()
+    startAndDeferStop(nodes)
+
+    nodes[0].subscribe(topic, voidTopicHandler)
+    # nodes[1] connects, so identify finishes before the dial below, which then does not race nodes[0]'s reset
+    await connect(nodes[1], nodes[0])
+    # nodes[0]'s control stream to nodes[1] is open, so nodes[0] already knows nodes[1] runs GossipSub 1.2
+    waitSubscribe(nodes[1], nodes[0], topic)
+
+    let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await stream.close()
+    checkUntilTimeout:
+      not nodes[0].switch.isConnected(nodes[1].switch)
+
+  asyncTest "peer that opens a topic stream and then a GossipSub 1.2 control stream is disconnected":
+    let nodes = generateNodes(
+        1, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    # the peer runs no GossipSub, so nodes[0] does not know the peer's control stream protocol when the topic stream arrives
+    let peer = makeStandardSwitch()
+    startAndDeferStop(nodes)
+    startAndDeferStop(@[peer])
+
+    let handled = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await handled.put(data)
+
+    nodes[0].subscribe(topic, onMessage)
+    await peer.connect(nodes[0].switch)
+
+    const msg = "data"
+    let stream = await peer.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await stream.close()
+    await stream.writeLp(TopicRPCHeader(topic: topic).encode())
+    await stream.writeLp(
+      Message.init(peer.peerInfo, msg, topic, 1'u64).topicRPC().encode()
+    )
+    check (await handled.popFirst()) == msg
+
+    let control = await peer.dial(nodes[0].switch, GossipSubCodec_12)
+    defer:
+      await control.close()
+    await control.writeLp(
+      RPCMsg.withSubscriptions(@[SubOpts(topic: topic, subscribe: true)]).encode(false)
+    )
+    checkUntilTimeout:
+      not nodes[0].switch.isConnected(peer)
 
   asyncTest "peer that writes on a topic stream the node opened is disconnected":
     let nodes = generateNodes(
@@ -588,6 +704,35 @@ suite "GossipSub Component - Topic streams":
     nodes[0].unsubscribeAll(topic)
     # nodes[1] stays subscribed, so only nodes[0] can end the stream
     await stream.join()
+
+  asyncTest "topic stream for another topic stays open when the node unsubscribes":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let handled = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await handled.put(data)
+
+    const otherTopic = "other"
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[0].subscribe(otherTopic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[1], nodes[0], otherTopic)
+
+    const firstMsg = "first"
+    discard await nodes[1].publish(otherTopic, firstMsg)
+    check (await handled.popFirst()) == firstMsg
+    let streams = nodes[0].inboundTopicStreams(nodes[1].peerInfo.peerId)
+    nodes[0].unsubscribeAll(topic)
+
+    const secondMsg = "second"
+    discard await nodes[1].publish(otherTopic, secondMsg)
+    check:
+      (await handled.popFirst()) == secondMsg
+      nodes[0].inboundTopicStreams(nodes[1].peerInfo.peerId) == streams
 
   asyncTest "topic stream the node opened ends when the peer unsubscribes without closing it":
     let nodes = generateNodes(
