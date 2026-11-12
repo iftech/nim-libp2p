@@ -509,6 +509,43 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       not nodes[0].switch.isConnected(nodes[1].switch)
 
+  asyncTest "peer that closes a topic stream the node opened gets the next message on a new stream":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let readerDone = newAsyncEvent()
+    let protocol = nodes[1].switch.ms.lookupProtocol(TopicStreamsCodec).get()
+    let handleTopicStream = protocol.handler
+    protocol.handler = proc(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      await handleTopicStream(stream, proto)
+      readerDone.fire()
+
+    let handled = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await handled.put(data)
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    const firstMsg = "first"
+    discard await nodes[0].publish(topic, firstMsg)
+    check (await handled.popFirst()) == firstMsg
+    # nodes[1]'s end of the topic stream that nodes[0] opened to deliver the message
+    let stream = nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId)[0]
+    await stream.close() # as nodes[1]'s GossipSub does when it unsubscribes
+    # nodes[1]'s reader ends once nodes[0] closes its side, so the next message needs a new stream
+    await readerDone.wait()
+
+    const secondMsg = "second"
+    discard await nodes[0].publish(topic, secondMsg)
+    check (await handled.popFirst()) == secondMsg
+
   asyncTest "peer whose topic stream header or frame exceeds a byte limit gets 0.1 behaviour penalty":
     const maxMessageSize = 1024
     let header = TopicRPCHeader(topic: topic).encode()
