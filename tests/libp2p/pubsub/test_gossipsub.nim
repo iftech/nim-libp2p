@@ -559,6 +559,52 @@ suite "GossipSub":
     expect InitializationError:
       discard GossipSub.init(makeStandardSwitch(), parameters = params, rng = rng())
 
+  test "topic stream byte budgets must fit a maximum header and frame":
+    const maxMessageSize = 1024
+    for (config, errorMessage) in [
+      (
+        TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2),
+        "gossipsub: maxQueuedBytes must be at least twice maxMessageSize",
+      ),
+      (
+        TopicStreamsConfig(maxIncomingBytes: maxMessageSize div 2),
+        "gossipsub: maxIncomingBytes must be at least twice maxMessageSize",
+      ),
+      (
+        TopicStreamsConfig(maxQueuedBytes: 2 * maxMessageSize - 1),
+        "gossipsub: maxQueuedBytes must be at least twice maxMessageSize",
+      ),
+      (
+        TopicStreamsConfig(maxIncomingBytes: 2 * maxMessageSize - 1),
+        "gossipsub: maxIncomingBytes must be at least twice maxMessageSize",
+      ),
+    ]:
+      let params = GossipSubParams.init(topicStreamsConfig = Opt.some(config))
+      try:
+        discard GossipSub.init(
+          makeStandardSwitch(),
+          parameters = params,
+          maxMessageSize = maxMessageSize,
+          rng = rng(),
+        )
+        check false
+      except InitializationError as exc:
+        check exc.msg == errorMessage
+
+    let params = GossipSubParams.init(
+      topicStreamsConfig = Opt.some(
+        TopicStreamsConfig(
+          maxQueuedBytes: 2 * maxMessageSize, maxIncomingBytes: 2 * maxMessageSize
+        )
+      )
+    )
+    discard GossipSub.init(
+      makeStandardSwitch(),
+      parameters = params,
+      maxMessageSize = maxMessageSize,
+      rng = rng(),
+    )
+
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
     gossipSub.topicsHigh = 10

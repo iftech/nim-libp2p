@@ -282,7 +282,7 @@ proc readTopicStream*(
 
 proc sendTopicRPC*(
     state: ExtensionsState, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
-): seq[byte] =
+): TopicSendResult =
   state.topicStreamsExtension.sendTopicRPC(peerId, msg, medium)
 
 proc closeTopicStreams*(

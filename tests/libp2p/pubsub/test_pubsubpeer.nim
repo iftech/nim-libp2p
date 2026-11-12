@@ -10,6 +10,8 @@ import ../../../libp2p/stream/bufferstream
 import ../../../libp2p/protocols/pubsub/[pubsubpeer, gossipsub]
 import ../../../libp2p/protocols/pubsub/rpc/messages
 import ../../tools/[unittest, bufferstream]
+when defined(libp2p_expensive_metrics):
+  import ../../tools/metrics_utils
 import ./extensions/extension_recording
 
 type
@@ -136,6 +138,48 @@ suite "PubSubPeer send stream":
         TopicRPC(publish: Opt.some(TopicScopedMessage(data: @[2.byte])))
       msg == RPCMsg.withMessages(Message(topic: "original", data: @[1.byte]))
       recorder.violations == 0
+
+  asyncTest "topic response reports only accepted messages and preserves control":
+    let dialer = FlakyDialer(stream: TestBufferStream.new(noop))
+    let peer = newPeer(dialer.getStream(), 1.milliseconds, 4.milliseconds)
+    peer.connect()
+    checkUntilTimeout:
+      peer.connected
+    peer.extensionsState = ExtensionsState.new(
+      rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig(maxQueuedBytes: 2048))
+    )
+    let recorder = TopicStreamsRecorder.new()
+    peer.extensionsState.initTopicStreams(
+      peer.peerId,
+      1024,
+      recorder.pendingDial(),
+      recorder.receive(),
+      recorder.violation(),
+    )
+    defer:
+      await peer.extensionsState.stopTopicStreams(peer.peerId)
+      await peer.stopTasks()
+    check peer.extensionsState.negotiateTopicStreams(
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: true))
+    )
+    let messages = @[
+      Message(topic: "a", data: newSeq[byte](700)),
+      Message(topic: "b", data: newSeq[byte](700)),
+      Message(topic: "c", data: newSeq[byte](700)),
+    ]
+    let msg = RPCMsg(
+      messages: messages,
+      control:
+        Opt.some(ControlMessage(iwant: @[ControlIWant(messageIDs: @[@[1.byte]])])),
+    )
+    when defined(libp2p_expensive_metrics):
+      let before = metricValue(libp2p_pubsub_sent_messages, [$peer.peerId, "c"])
+    let accepted = peer.sendResponse(msg, false, MessagePriority.Low)
+    check:
+      accepted.messages == messages[0 .. 1]
+      accepted.control == msg.control
+    when defined(libp2p_expensive_metrics):
+      check metricValue(libp2p_pubsub_sent_messages, [$peer.peerId, "c"]) == before
 
 suite "PubSubPeer receive streams":
   teardown:

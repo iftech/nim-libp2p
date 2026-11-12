@@ -32,6 +32,8 @@ when defined(libp2p_testing):
 type
   TopicStreamsConfig* = object
     ## Experimental draft libp2p/specs#729. Limits apply per peer.
+    ## Byte budgets must each be at least twice maxMessageSize to hold one
+    ## maximum-size header and frame. Existing streams share these budgets.
     maxIncomingStreams*: int = 64 # includes pending headers
     maxOutgoingStreams*: int = 64 # includes pending dials
     maxQueuedBytes*: int = 8 * 1024 * 1024 # queued/in-flight data and stream headers
@@ -83,6 +85,15 @@ func validate*(config: TopicStreamsConfig): Result[void, cstring] =
       config.maxQueuedBytes <= 0 or config.maxIncomingBytes <= 0 or
       config.maxQueuedMessages <= 0:
     return err("gossipsub: invalid topic stream limits")
+  ok()
+
+func validate*(config: TopicStreamsConfig, maxMessageSize: int): Result[void, cstring] =
+  ?config.validate()
+  # Headers and frames are each bounded by maxMessageSize and share the budget.
+  if maxMessageSize > config.maxQueuedBytes div 2:
+    return err("gossipsub: maxQueuedBytes must be at least twice maxMessageSize")
+  if maxMessageSize > config.maxIncomingBytes div 2:
+    return err("gossipsub: maxIncomingBytes must be at least twice maxMessageSize")
   ok()
 
 proc new*(
@@ -208,38 +219,41 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
     if s.writers.getOrDefault(topic) == w:
       s.writers.del(topic)
 
-proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bool) =
+proc sendTopic*(
+    s: TopicStreams, topic: string, data: sink seq[byte], medium: bool
+): bool {.discardable.} =
+  ## Returns whether the frame was admitted to the outgoing queue.
   if s.stopped or not s.active:
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["inactive"])
-    return
+    return false
   if data.len == 0 or data.len > s.maxMessageSize:
     trace "dropping invalid outgoing topic frame", topic, size = data.len
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["invalid_frame"])
-    return
+    return false
   if data.len > s.config.maxQueuedBytes - s.queuedBytes or
       s.queuedMessages >= s.config.maxQueuedMessages:
     trace "dropping outgoing topic frame because queue is full", topic
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["queue_full"])
-    return
+    return false
   var w = s.writers.getOrDefault(topic)
   if w == nil:
     if s.writers.len >= s.config.maxOutgoingStreams:
       trace "dropping outgoing topic frame because stream limit is reached", topic
       libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["stream_limit"])
-      return
+      return false
     let header = TopicRPCHeader(topic: Opt.some(topic)).encode()
     if header.len > s.maxMessageSize or
         header.len > s.config.maxQueuedBytes - s.queuedBytes - data.len:
       trace "dropping outgoing topic frame because header exceeds queue budget", topic
       libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["header_limit"])
-      return
+      return false
     w = TopicWriter(wake: newAsyncEvent(), header: header, headerBytes: header.len)
     s.queuedBytes += header.len
     s.writers[topic] = w
   elif w.closing:
     trace "dropping outgoing topic frame while writer closes", topic
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["writer_closing"])
-    return
+    return false
   s.queuedBytes += data.len
   inc s.queuedMessages
   if medium:
@@ -250,6 +264,7 @@ proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bo
     w.task = s.writeLoop(topic, w)
   else:
     w.wake.fire()
+  true
 
 proc close(w: TopicWriter): Future[void] {.async: (raises: [], raw: true).} =
   w.closing = true
@@ -273,9 +288,11 @@ proc readHeader(
     s: TopicStreams, reader: TopicReader
 ): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError]).} =
   let length = await reader.stream.readVarint()
-  if length > uint64(s.maxMessageSize) or
-      length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
-    raise newException(MaxSizeError, "topic header exceeds byte limit")
+  if length > uint64(s.maxMessageSize):
+    raise newException(MaxSizeError, "topic header exceeds maximum message size")
+  if length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
+    trace "resetting topic stream because incoming header budget is full"
+    raise newException(LPStreamError, "topic header exceeds remaining byte budget")
   let size = int(length)
   s.incomingBytes += size
   reader.headerBytes = size
@@ -333,9 +350,12 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
     if length == 0:
       s.fail("empty topic RPC frame")
       return
-    if length > uint64(s.maxMessageSize) or
-        length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
-      s.penalize("incoming frame exceeds byte limit", reader.topic)
+    if length > uint64(s.maxMessageSize):
+      s.penalize("incoming frame exceeds maximum message size", reader.topic)
+      return
+    if length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
+      trace "resetting topic stream because incoming frame budget is full",
+        topic = reader.topic
       return
     let size = int(length)
     s.incomingBytes += size
@@ -368,29 +388,44 @@ proc stop*(s: TopicStreams) {.async: (raises: []).} =
 
 type PreparedTopicRPC* = object
   control: seq[byte]
-  payloads: seq[tuple[topic: string, data: seq[byte]]]
+  rpc: RPCMsg
+  payloads: seq[tuple[topic: string, data: seq[byte], messageIndex: int]]
+
+type TopicSendResult* = object
+  control*: seq[byte]
+  accepted*: RPCMsg
 
 func isZero*(msg: PreparedTopicRPC): bool =
   msg.control.len == 0 and msg.payloads.len == 0
 
 proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
-  for m in msg.messages:
+  result.rpc = msg
+  for i, m in msg.messages:
     if m.data.len > 0:
-      result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
+      result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode(), i))
     else:
       trace "empty application message cannot use topic stream", topic = m.topic
   msg.partialMessageExtension.ifValue(partial):
     if partial.topicID.isSome:
-      result.payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
+      result.payloads.add((partial.topicID.get(), partial.topicRPC().encode(), -1))
   var control = msg
   control.messages = @[]
   control.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
   result.control = control.encode(anonymize)
 
-proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): seq[byte] =
+proc sendTopicRPC*(
+    s: TopicStreams, msg: PreparedTopicRPC, medium: bool
+): TopicSendResult =
+  result.control = msg.control
+  result.accepted = msg.rpc
+  result.accepted.messages = @[]
+  result.accepted.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
   for payload in msg.payloads:
-    s.sendTopic(payload.topic, payload.data, medium)
-  msg.control
+    if s.sendTopic(payload.topic, payload.data, medium):
+      if payload.messageIndex >= 0:
+        result.accepted.messages.add(msg.rpc.messages[payload.messageIndex])
+      else:
+        result.accepted.partialMessageExtension = msg.rpc.partialMessageExtension
 
 proc new*(
     T: type TopicStreamsExtension,
@@ -438,7 +473,7 @@ proc readTopicStream*(
 
 proc sendTopicRPC*(
     ext: TopicStreamsExtension, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
-): seq[byte] =
+): TopicSendResult =
   ext.peers.withValue(peerId, streams):
     return streams[].sendTopicRPC(msg, medium)
 

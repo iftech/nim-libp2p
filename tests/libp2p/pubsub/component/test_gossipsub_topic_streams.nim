@@ -7,7 +7,8 @@ import chronos, tables, stew/byteutils, sequtils
 import ../../../../libp2p/multistream
 import
   ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
-import ../../../tools/[lifecycle, topology, unittest]
+import ../../../tools/[lifecycle, topology, unittest, metrics_utils]
+import ../extensions/extension_recording
 import ../../../../libp2p/protocols/pubsub/rpc/protobuf
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/utils/future
@@ -124,7 +125,7 @@ suite "GossipSub Component - Topic streams":
     await received
     check nodes[2].inboundTopicStreams(nodes[1].peerInfo.peerId).len == 1
 
-  asyncTest "publish counts a topic stream peer that never receives a message with empty data":
+  asyncTest "publish excludes a topic stream peer when no application frame is accepted":
     let nodes = generateNodes(
         2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
       )
@@ -139,10 +140,68 @@ suite "GossipSub Component - Topic streams":
     await connect(nodes[0], nodes[1])
     waitSubscribe(nodes[0], nodes[1], topic)
 
-    # TODO: iftech/nim-libp2p#3411
-    check (await nodes[0].publish(topic, newSeq[byte]())) == 1
+    check (await nodes[0].publish(topic, newSeq[byte]())) == 0
     discard await nodes[0].publish(topic, "data")
     check (await received.popFirst()) == "data"
+
+  asyncTest "publish excludes frames rejected by the outgoing byte budget":
+    for withObserver in [false, true]:
+      let nodes = generateNodes(
+          2,
+          gossip = true,
+          maxMessageSize = 1024,
+          topicStreamsConfig =
+            Opt.some(TopicStreamsConfig(maxQueuedBytes: 2048, maxIncomingBytes: 2048)),
+        )
+        .toGossipSub()
+      startAndDeferStop(nodes)
+      nodes[1].subscribe(topic, voidTopicHandler)
+      await connect(nodes[0], nodes[1])
+      waitSubscribe(nodes[0], nodes[1], topic)
+      let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
+      let recorder = TopicStreamsRecorder.new()
+      peer.extensionsState.initTopicStreams(
+        peer.peerId,
+        1024,
+        recorder.pendingDial(),
+        recorder.receive(),
+        recorder.violation(),
+      )
+      check peer.extensionsState.negotiateTopicStreams(
+        peer.peerId, makeRPC(ControlExtensions(topicStreams: true))
+      )
+      if withObserver:
+        nodes[0].addObserver(
+          PubSubObserver(
+            onSend: proc(peer: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
+              discard
+          )
+        )
+
+      let published =
+        metricValue(libp2p_pubsub_messages_published, [nodes[0].topicLabel(topic)])
+      let broadcast =
+        metricValue(libp2p_pubsub_broadcast_messages, [nodes[0].topicLabel(topic)])
+      let rejected =
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
+      when defined(libp2p_expensive_metrics):
+        let sent = metricValue(libp2p_pubsub_sent_messages, [$peer.peerId, topic])
+      for i in 0 .. 2:
+        var data = newSeq[byte](700)
+        data[0] = byte(i)
+        check (await nodes[0].publish(topic, data)) == (if i < 2: 1 else: 0)
+      check:
+        metricValue(libp2p_pubsub_messages_published, [nodes[0].topicLabel(topic)]) ==
+          published + 2
+        metricValue(libp2p_pubsub_broadcast_messages, [nodes[0].topicLabel(topic)]) ==
+          broadcast + 2
+        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
+          rejected + 1
+      when defined(libp2p_expensive_metrics):
+        check metricValue(libp2p_pubsub_sent_messages, [$peer.peerId, topic]) == sent + 2
+
+      await allFutures(peer.extensionsState.closeTopicStreams(topic))
+      check (await nodes[0].publish(topic, @[9.byte])) == 1
 
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
@@ -546,7 +605,7 @@ suite "GossipSub Component - Topic streams":
     discard await nodes[0].publish(topic, secondMsg)
     check (await handled.popFirst()) == secondMsg
 
-  asyncTest "peer whose topic stream header or frame exceeds a byte limit gets 0.1 behaviour penalty":
+  asyncTest "peer whose topic stream header or frame exceeds maximum message size gets 0.1 behaviour penalty":
     const maxMessageSize = 1024
     let header = TopicRPCHeader(topic: topic).encode()
     proc checkPenalty(
@@ -579,8 +638,8 @@ suite "GossipSub Component - Topic streams":
         peer.behaviourPenalty == 0.1
 
     for (topicStreamsConfig, writes) in [
-      # header over maxIncomingBytes
-      (TopicStreamsConfig(maxIncomingBytes: header.len - 1), @[header]),
+      # header over maxMessageSize
+      (TopicStreamsConfig(), @[newSeq[byte](maxMessageSize + 1)]),
       # frame over maxMessageSize
       (TopicStreamsConfig(), @[header, newSeq[byte](maxMessageSize + 1)]),
     ]:

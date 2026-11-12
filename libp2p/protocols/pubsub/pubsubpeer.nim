@@ -595,6 +595,9 @@ proc trackSend*(p: PubSubPeer, fut: Future[void]) =
 proc hasSendStream*(p: PubSubPeer): bool =
   p.sendStream != nil
 
+when defined(libp2p_testing) and defined(libp2p_expensive_metrics):
+  export libp2p_pubsub_sent_messages
+
 template sendMetrics(msg: RPCMsg): untyped =
   when defined(libp2p_expensive_metrics):
     for x in msg.messages:
@@ -957,28 +960,30 @@ proc sendEncoded*(
           action.slowPeerPenaltyDelta, action.priority, msg.len
         )
 
-proc sendTopicRPC*(p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority) =
+proc sendTopicRPC*(
+    p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority
+): RPCMsg {.discardable.} =
   if p.stopped:
     return
-  let control =
+  let sent =
     p.extensionsState.sendTopicRPC(p.peerId, msg, priority == MessagePriority.Medium)
-  if control.len > 0:
-    p.trackSend(p.sendEncoded(control, MessagePriority.High))
+  if sent.control.len > 0:
+    p.trackSend(p.sendEncoded(sent.control, MessagePriority.High))
+  sendMetrics(sent.accepted)
+  sent.accepted
 
 proc routeTopicRPC(
     p: PubSubPeer, msg: RPCMsg, anonymize: bool, priority: MessagePriority
-): bool =
+): Opt[RPCMsg] =
   if msg.messages.len == 0 and msg.partialMessageExtension.isNone and
       not p.hasObservers():
-    return false
+    return Opt.none(RPCMsg)
   if not p.extensionsState.peerHasTopicStreams(p.peerId):
-    return false
+    return Opt.none(RPCMsg)
   var msgCopy = msg
   if p.hasObservers():
     p.sendObservers(msgCopy)
-  sendMetrics(msgCopy)
-  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority)
-  true
+  Opt.some(p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority))
 
 proc encodeRpcMsg(
     p: PubSubPeer, msg: RPCMsg, anonymize: bool
@@ -1003,19 +1008,12 @@ proc send*(
     anonymize: bool,
     priority: MessagePriority,
     useCustomStream: bool = false,
-) {.raises: [].} =
-  ## Sends an application-published `RPCMsg` to this peer, without splitting.
-  ##
-  ## Parameters:
-  ## - `p`: The `PubSubPeer` instance to which the message is to be sent.
-  ## - `msg`: The `RPCMsg` instance representing the message to be sent.
-  ## - `anonymize`: A boolean flag indicating whether the message should be sent with anonymization.
-  ## - `priority`: The message priority level (`High`, `Medium`, or `Low`).
-  ##   High priority messages are sent immediately, medium and low priority messages are queued
-  ##   and sent only after all high priority messages have been sent.
+): RPCMsg {.raises: [], discardable.} =
+  ## Sends without splitting. Returns the application payloads accepted by topic
+  ## streams, or the original RPC for a legacy send attempt. Neither guarantees delivery.
 
-  if p.routeTopicRPC(msg, anonymize, priority):
-    return
+  p.routeTopicRPC(msg, anonymize, priority).ifValue(sent):
+    return sent
 
   var encoded = encodeRpcMsg(p, msg, anonymize)
 
@@ -1026,6 +1024,7 @@ proc send*(
   trace "Sending PubSub RPC",
     peerId = p.peerId, messageType = "rpc", messageSize = encoded.len
   p.trackSend(p.sendEncoded(move(encoded), priority, useCustomStream))
+  msg
 
 proc sendResponse*(
     p: PubSubPeer,
@@ -1034,7 +1033,7 @@ proc sendResponse*(
     priority: MessagePriority,
     useCustomStream: bool = false,
     relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
-) {.raises: [].} =
+): RPCMsg {.raises: [], discardable.} =
   ## Sends a protocol response `RPCMsg` to this peer, batching multi-message
   ## responses together so that none exceed `maxMessageSize`.
   ##
@@ -1044,9 +1043,11 @@ proc sendResponse*(
   ## batch so they are not lost. RPCs without messages that still exceed
   ## `maxMessageSize`, and individual messages that still exceed
   ## `maxMessageSize`, are dropped with a warning.
+  ## Returns the accepted RPC for topic streams, or the original RPC for legacy sends.
 
-  if p.routeTopicRPC(msg, anonymize, priority):
-    return
+  p.routeTopicRPC(msg, anonymize, priority).ifValue(sent):
+    return sent
+  result = msg
 
   proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =
     var encoded = encodeRpcMsg(p, toSendMsg, anonymize)

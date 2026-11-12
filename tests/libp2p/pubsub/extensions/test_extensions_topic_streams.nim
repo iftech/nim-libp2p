@@ -65,7 +65,8 @@ suite "GossipSub Extensions :: Topic streams":
     )
     let prepared = makePreparedTopicRPC(msg, true)
     for peer in peers:
-      let controlRPC = RPCMsg.decode(state.sendTopicRPC(peer, prepared, true)).get()
+      let controlRPC =
+        RPCMsg.decode(state.sendTopicRPC(peer, prepared, true).control).get()
       check controlRPC == RPCMsg.withSubscriptions(msg.subscriptions)
 
     check recorder.outgoingStreams.len == peers.len

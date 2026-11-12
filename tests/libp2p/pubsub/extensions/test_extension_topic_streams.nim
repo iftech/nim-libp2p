@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/sequtils
+import std/[sequtils, strutils]
 import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
@@ -353,6 +353,34 @@ suite "GossipSub topic stream send side":
   let header = TopicRPCHeader(topic: topic).encode()
   let frames = [@[1.byte], @[2.byte], @[3.byte], @[4.byte]]
 
+  asyncTest "minimum valid budgets deliver a maximum-size header and frame":
+    const limit = 64
+    let topic = repeat('a', limit - 2)
+    let header = TopicRPCHeader(topic: topic).encode()
+    let message = Message(topic: topic, data: newSeq[byte](limit - 4))
+    let frame = message.topicRPC().encode()
+    require header.len == limit and frame.len == limit
+    let config =
+      TopicStreamsConfig(maxQueuedBytes: 2 * limit, maxIncomingBytes: 2 * limit)
+    check config.validate(limit).isOk
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(recorder, config, limit)
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+    let (remote, local) = bridgedConnections()
+    let reading = state.readTopic(local)
+    defer:
+      await reading.cancelAndWait()
+      await state.stop()
+      await remote.close()
+      await recorder.closeOutgoingStreams()
+    check state.sendTopic(topic, frame, true)
+    check (await recorder.outgoingStreams[0].readLp(limit)) == header
+    check (await recorder.outgoingStreams[0].readLp(limit)) == frame
+    await remote.writeLp(header)
+    await remote.writeLp(frame)
+    check (await recorder.received.popFirst()).messages == @[message]
+    check recorder.penalties == 0
+
   asyncTest "frame over the maximum message size is dropped":
     # the header must fit under the same limit
     let maxMessageSize = header.len
@@ -369,7 +397,9 @@ suite "GossipSub topic stream send side":
 
       let rejected =
         metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["invalid_frame"])
-      state.sendTopic(topic, newSeq[byte](frameSize), true)
+      check state.sendTopic(topic, newSeq[byte](frameSize), true) == (
+        expectedDials == 1
+      )
       check:
         metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["invalid_frame"]) ==
           rejected + float64(1 - expectedDials)
@@ -377,11 +407,10 @@ suite "GossipSub topic stream send side":
         recorder.penalties == 0
         recorder.violations == 0
 
-  asyncTest "frame over maxQueuedBytes is dropped even within the maximum message size":
+  asyncTest "outgoing byte budget remains a hard limit and reports rejection":
     let config = TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2)
     for (frameSize, expectedDials) in [
       (config.maxQueuedBytes - header.len, 1), # header and frame fill the byte budget
-      # TODO: iftech/nim-libp2p#3418
       (config.maxQueuedBytes + 1, 0), # frame over the byte budget, the queue is empty
     ]:
       let recorder = TopicStreamsRecorder.new()
@@ -393,7 +422,9 @@ suite "GossipSub topic stream send side":
 
       let rejected =
         metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
-      state.sendTopic(topic, newSeq[byte](frameSize), true)
+      check state.sendTopic(topic, newSeq[byte](frameSize), true) == (
+        expectedDials == 1
+      )
       check:
         metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
           rejected + float64(1 - expectedDials)
@@ -503,7 +534,7 @@ suite "GossipSub topic stream send side":
       makePreparedTopicRPC(RPCMsg.withMessages(messages), false), false
     )
     check:
-      control.len == 0
+      control.control.len == 0
       recorder.outgoingStreams.len == 2
       (await recorder.outgoingStreams[0].readLp(1024)) == header
       (await recorder.outgoingStreams[0].readLp(1024)) == messages[0].topicRPC().encode()
@@ -524,7 +555,7 @@ suite "GossipSub topic stream send side":
       true,
     )
     check:
-      control.len == 0
+      control.control.len == 0
       recorder.outgoingStreams.len == 0
 
 suite "GossipSub topic stream receive side":
@@ -727,10 +758,10 @@ suite "GossipSub topic stream receive side":
 
     await peerEnds[0].writeLp(frame) # in receive until frameReceived fires
     check (await recorder.received.popFirst()).messages == @[message]
-    await peerEnds[1].writeLp(frame) # penalized: the budget is full
+    await peerEnds[1].writeLp(frame) # reset without penalty: the budget is full
     await readers[1]
     check:
-      recorder.penalties == 1
+      recorder.penalties == 0
       recorder.violations == 0
 
     frameReceived.fire() # receive returns and releases the frame's bytes
@@ -741,7 +772,30 @@ suite "GossipSub topic stream receive side":
     await peerEnd.writeLp(frame) # accepted: the budget has room again
     check (await recorder.received.popFirst()).messages == @[message]
 
-  asyncTest "frame over maxIncomingBytes is penalized even within the maximum message size":
+  asyncTest "header budget exhaustion resets without penalty":
+    let recorder = TopicStreamsRecorder.new()
+    let state =
+      TopicStreams.new(recorder, TopicStreamsConfig(maxIncomingBytes: header.len))
+    let local = ReadSignallingStream(reads: newAsyncQueue[int]())
+    local.initStream()
+    let reading = state.readTopic(local)
+    let (excessRemote, excessLocal) = bridgedConnections()
+    defer:
+      await reading.cancelAndWait()
+      await state.stop()
+      await excessRemote.close()
+    check (await local.reads.popFirst()) == 1
+    await local.pushData(@[byte(header.len)] & header)
+    check (await local.reads.popFirst()) == header.len
+    check (await local.reads.popFirst()) == 1
+    await excessRemote.writeLp(header)
+    await state.readTopic(excessLocal)
+    check:
+      excessLocal.wasResetLocally()
+      recorder.penalties == 0
+      recorder.violations == 0
+
+  asyncTest "frame within maximum message size exhausts incoming budget without penalty":
     let recorder = TopicStreamsRecorder.new()
     # the header and one frame fill the incoming budget
     let state = TopicStreams.new(
@@ -758,12 +812,12 @@ suite "GossipSub topic stream receive side":
     await peerEnd.writeLp(frame)
     check (await recorder.received.popFirst()).messages == @[message]
 
-    # TODO: iftech/nim-libp2p#3418
     let largerFrame = Message(data: @[1.byte, 2], topic: topic).topicRPC().encode()
     await peerEnd.writeLp(largerFrame)
       # the only frame in flight, far below maxMessageSize
-    await reader # ends on its own at the penalty
+    await reader # resets instead of reading a frame that exceeds the budget
     check:
+      nodeEnd.wasResetLocally()
       recorder.received.len == 0
-      recorder.penalties == 1
+      recorder.penalties == 0
       recorder.violations == 0

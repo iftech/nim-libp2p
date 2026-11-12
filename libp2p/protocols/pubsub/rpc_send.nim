@@ -21,7 +21,7 @@ proc sendResponse*(
     priority: MessagePriority,
     useCustomStream: bool = false,
     relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
-) {.raises: [].} =
+): RPCMsg {.raises: [], discardable.} =
   ## Sends a protocol response `msg` (of type `RPCMsg`) to the specified remote
   ## peer. This is an internal, protocol-facing send path - messages that
   ## together exceed `maxMessageSize` are split and sent individually.
@@ -47,14 +47,13 @@ proc broadcastResponse*(
   ## This should not be used for application-published messages; use `broadcast`
   ## instead.
 
-  countBroadcastMetrics(p, sendPeers, msg)
-
   trace "broadcasting responses to peers", peers = sendPeers.len, rpcMsg = msg
 
   # Multiple messages need per-peer splitting on the legacy transport.
   if msg.messages.len > 1 or anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
-      p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
+      let sent = p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
+      countBroadcastMetrics(p, @[peer], sent)
   else:
     # Lazily encode each wire format and reuse it across recipients.
     var encoded: seq[byte]
@@ -64,7 +63,8 @@ proc broadcastResponse*(
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if preparedRPC.isZero():
           preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
-        peer.sendTopicRPC(preparedRPC, priority)
+        let sent = peer.sendTopicRPC(preparedRPC, priority)
+        countBroadcastMetrics(p, @[peer], sent)
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)
@@ -74,3 +74,4 @@ proc broadcastResponse*(
             move(peerEncoded), priority, useCustomStream, relayedSaltedId
           )
         )
+        countBroadcastMetrics(p, @[peer], msg)

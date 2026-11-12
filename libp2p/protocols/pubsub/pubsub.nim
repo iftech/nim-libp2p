@@ -233,20 +233,9 @@ proc send*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
-) {.raises: [].} =
-  ## Sends an application-published `msg` (of type `RPCMsg`) to the specified
-  ## remote peer in the PubSub network.
-  ##
-  ## The message is sent as-is, without splitting - the application is
-  ## responsible for ensuring the message fits within `maxMessageSize`.
-  ##
-  ## Parameters:
-  ## - `p`: The `PubSub` instance.
-  ## - `peer`: An instance of `PubSubPeer` representing the peer to whom the message should be sent.
-  ## - `msg`: The `RPCMsg` instance that contains the message to be sent.
-  ## - `priority`: The message priority level (`High`, `Medium`, or `Low`).
-  ##   High priority messages are sent immediately, medium and low priority messages are queued
-  ##   and sent only after all high priority messages have been sent.
+): RPCMsg {.raises: [], discardable.} =
+  ## Sends without splitting and returns the RPC accepted by topic streams,
+  ## or the original RPC for a legacy send attempt.
 
   trace "sending pubsub message to peer", peer, msg
   peer.send(msg, p.anonymize, priority, useCustomStream)
@@ -295,25 +284,19 @@ proc broadcast*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
-) {.raises: [].} =
-  ## Sends an application-published `msg` (of type `RPCMsg`) to a specified
-  ## group of peers in the PubSub network.
-  ##
-  ## Parameters:
-  ## - `p`: The `PubSub` instance.
-  ## - `sendPeers`: A sequence of `PubSubPeer` instances to which the message should be sent.
-  ## - `msg`: The `RPCMsg` instance that contains the message to be broadcast.
-  ## - `priority`: The message priority level (`High`, `Medium`, or `Low`).
-  ##   High priority messages are sent immediately, medium and low priority messages are queued
-  ##   and sent only after all high priority messages have been sent.
-
-  countBroadcastMetrics(p, sendPeers, msg)
+): int {.raises: [], discardable.} =
+  ## Returns the number of peers for which a send was attempted. Topic-stream
+  ## recipients that reject all application payloads before enqueueing are excluded.
 
   trace "broadcasting messages to peers", peersCount = sendPeers.len, msg
 
   if anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
-      p.send(peer, msg, priority, useCustomStream)
+      let sent = p.send(peer, msg, priority, useCustomStream)
+      countBroadcastMetrics(p, @[peer], sent)
+      if sent.messages.len > 0 or sent.partialMessageExtension.isSome or
+          (msg.messages.len == 0 and msg.partialMessageExtension.isNone):
+        inc result
   else:
     # Lazily encode each wire format and reuse it across recipients.
     var encoded: seq[byte]
@@ -323,7 +306,11 @@ proc broadcast*(
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if preparedRPC.isZero():
           preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
-        peer.sendTopicRPC(preparedRPC, priority)
+        let sent = peer.sendTopicRPC(preparedRPC, priority)
+        countBroadcastMetrics(p, @[peer], sent)
+        if sent.messages.len > 0 or sent.partialMessageExtension.isSome or
+            (msg.messages.len == 0 and msg.partialMessageExtension.isNone):
+          inc result
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)
@@ -334,6 +321,8 @@ proc broadcast*(
           continue
         var peerEncoded = encoded
         peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
+        countBroadcastMetrics(p, @[peer], msg)
+        inc result
 
 proc sendSubs*(
     p: PubSub, peer: PubSubPeer, subTopics: openArray[string], subscribe: bool
