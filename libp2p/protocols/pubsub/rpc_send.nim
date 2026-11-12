@@ -21,7 +21,7 @@ proc sendResponse*(
     priority: MessagePriority,
     useCustomStream: bool = false,
     relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
-): RPCMsg {.raises: [].} =
+) {.raises: [].} =
   ## Sends a protocol response `msg` (of type `RPCMsg`) to the specified remote
   ## peer. This is an internal, protocol-facing send path - messages that
   ## together exceed `maxMessageSize` are split and sent individually.
@@ -30,7 +30,7 @@ proc sendResponse*(
   ## instead.
 
   trace "sending pubsub response to peer", peer, rpcMsg = msg
-  return peer.sendResponse(msg, p.anonymize, priority, useCustomStream, relayedSaltedId)
+  peer.sendResponse(msg, p.anonymize, priority, useCustomStream, relayedSaltedId)
 
 proc broadcastResponse*(
     p: PubSub,
@@ -52,7 +52,9 @@ proc broadcastResponse*(
   # Multiple messages need per-peer splitting on the legacy transport.
   if msg.messages.len > 1 or anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
-      let sent = p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
+      let sent = peer.routeTopicRPC(msg, p.anonymize, priority).valueOr:
+        p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
+        msg
       countBroadcastMetrics(p, @[peer], sent)
   else:
     # Lazily encode each wire format and reuse it across recipients.

@@ -233,9 +233,20 @@ proc send*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
-): RPCMsg {.raises: [], discardable.} =
-  ## Sends without splitting and returns the RPC accepted by topic streams,
-  ## or the original RPC for a legacy send attempt.
+) {.raises: [].} =
+  ## Sends an application-published `msg` (of type `RPCMsg`) to the specified
+  ## remote peer in the PubSub network.
+  ##
+  ## The message is sent as-is, without splitting - the application is
+  ## responsible for ensuring the message fits within `maxMessageSize`.
+  ##
+  ## Parameters:
+  ## - `p`: The `PubSub` instance.
+  ## - `peer`: An instance of `PubSubPeer` representing the peer to whom the message should be sent.
+  ## - `msg`: The `RPCMsg` instance that contains the message to be sent.
+  ## - `priority`: The message priority level (`High`, `Medium`, or `Low`).
+  ##   High priority messages are sent immediately, medium and low priority messages are queued
+  ##   and sent only after all high priority messages have been sent.
 
   trace "sending pubsub message to peer", peer, msg
   peer.send(msg, p.anonymize, priority, useCustomStream)
@@ -284,7 +295,7 @@ proc broadcast*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
-): int {.raises: [], discardable.} =
+): int {.raises: [].} =
   ## Returns the number of peers for which a send was attempted. Topic-stream
   ## recipients that reject all application payloads before enqueueing are excluded.
 
@@ -293,7 +304,9 @@ proc broadcast*(
   var sentPeers = 0
   if anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
-      let sent = p.send(peer, msg, priority, useCustomStream)
+      let sent = peer.routeTopicRPC(msg, p.anonymize, priority).valueOr:
+        p.send(peer, msg, priority, useCustomStream)
+        msg
       countBroadcastMetrics(p, @[peer], sent)
       if sent.messages.len > 0 or sent.partialMessageExtension.isSome or
           (msg.messages.len == 0 and msg.partialMessageExtension.isNone):

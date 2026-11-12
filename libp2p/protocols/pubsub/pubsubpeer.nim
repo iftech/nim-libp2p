@@ -962,19 +962,21 @@ proc sendEncoded*(
 
 proc sendTopicRPC*(
     p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority
-): RPCMsg {.discardable.} =
+): RPCMsg =
   if p.stopped:
     return
   let sent =
     p.extensionsState.sendTopicRPC(p.peerId, msg, priority == MessagePriority.Medium)
-  if sent.control.len > 0:
-    p.trackSend(p.sendEncoded(sent.control, MessagePriority.High))
-  sendMetrics(sent.accepted)
-  sent.accepted
+  if msg.control.len > 0:
+    p.trackSend(p.sendEncoded(msg.control, MessagePriority.High))
+  sendMetrics(sent)
+  return sent
 
-proc routeTopicRPC(
+proc routeTopicRPC*(
     p: PubSubPeer, msg: RPCMsg, anonymize: bool, priority: MessagePriority
 ): Opt[RPCMsg] =
+  ## None requests legacy routing; some reports the RPC after topic admission,
+  ## even when every application payload was rejected.
   if msg.messages.len == 0 and msg.partialMessageExtension.isNone and
       not p.hasObservers():
     return Opt.none(RPCMsg)
@@ -1008,12 +1010,19 @@ proc send*(
     anonymize: bool,
     priority: MessagePriority,
     useCustomStream: bool = false,
-): RPCMsg {.raises: [], discardable.} =
-  ## Sends without splitting. Returns the application payloads accepted by topic
-  ## streams, or the original RPC for a legacy send attempt. Neither guarantees delivery.
+) {.raises: [].} =
+  ## Sends an application-published `RPCMsg` to this peer, without splitting.
+  ##
+  ## Parameters:
+  ## - `p`: The `PubSubPeer` instance to which the message is to be sent.
+  ## - `msg`: The `RPCMsg` instance representing the message to be sent.
+  ## - `anonymize`: A boolean flag indicating whether the message should be sent with anonymization.
+  ## - `priority`: The message priority level (`High`, `Medium`, or `Low`).
+  ##   High priority messages are sent immediately, medium and low priority messages are queued
+  ##   and sent only after all high priority messages have been sent.
 
-  p.routeTopicRPC(msg, anonymize, priority).ifValue(sent):
-    return sent
+  if p.routeTopicRPC(msg, anonymize, priority).isSome:
+    return
 
   var encoded = encodeRpcMsg(p, msg, anonymize)
 
@@ -1024,7 +1033,6 @@ proc send*(
   trace "Sending PubSub RPC",
     peerId = p.peerId, messageType = "rpc", messageSize = encoded.len
   p.trackSend(p.sendEncoded(move(encoded), priority, useCustomStream))
-  msg
 
 proc sendResponse*(
     p: PubSubPeer,
@@ -1033,7 +1041,7 @@ proc sendResponse*(
     priority: MessagePriority,
     useCustomStream: bool = false,
     relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
-): RPCMsg {.raises: [], discardable.} =
+) {.raises: [].} =
   ## Sends a protocol response `RPCMsg` to this peer, batching multi-message
   ## responses together so that none exceed `maxMessageSize`.
   ##
@@ -1043,10 +1051,9 @@ proc sendResponse*(
   ## batch so they are not lost. RPCs without messages that still exceed
   ## `maxMessageSize`, and individual messages that still exceed
   ## `maxMessageSize`, are dropped with a warning.
-  ## Returns the accepted RPC for topic streams, or the original RPC for legacy sends.
 
-  p.routeTopicRPC(msg, anonymize, priority).ifValue(sent):
-    return sent
+  if p.routeTopicRPC(msg, anonymize, priority).isSome:
+    return
 
   proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =
     var encoded = encodeRpcMsg(p, toSendMsg, anonymize)
@@ -1066,14 +1073,14 @@ proc sendResponse*(
       else:
         Opt.none(SaltedId)
     send(msg, saltedId) # The whole RPC fits the limits, send it as-is.
-    return msg
+    return
 
   if msg.messages.len == 0:
     # Nothing to split and nothing to send - the RPC only carries non-message
     # data that still exceeds `maxMessageSize`.
     warn "message exceeds maximum message size and contains no messages; message will not be sent",
       encodedSize = msgSize, maxMessageSize = p.maxMessageSize
-    return msg
+    return
 
   # Batch as many messages as possible into a single encoded RPC so that each
   # batch stays within `maxMessageSize`. Non-message fields are carried by the
@@ -1115,8 +1122,6 @@ proc sendResponse*(
 
   if batch.messages.len > 0:
     send(batch)
-
-  return msg
 
 proc canAskIWant*(p: PubSubPeer, msgId: MessageId): bool =
   for sentIHave in p.sentIHaves.mitems():

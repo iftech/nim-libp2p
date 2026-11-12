@@ -387,13 +387,9 @@ proc stop*(s: TopicStreams) {.async: (raises: []).} =
   await noCancel allFutures(readers.mapIt(it.stream.close()))
 
 type PreparedTopicRPC* = object
-  control: seq[byte]
+  control*: seq[byte]
   rpc: RPCMsg
   payloads: seq[tuple[topic: string, data: seq[byte], messageIndex: int]]
-
-type TopicSendResult* = object
-  control*: seq[byte]
-  accepted*: RPCMsg
 
 func isZero*(msg: PreparedTopicRPC): bool =
   msg.control.len == 0 and msg.payloads.len == 0
@@ -415,20 +411,18 @@ proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
 
   return prepared
 
-proc sendTopicRPC*(
-    s: TopicStreams, msg: PreparedTopicRPC, medium: bool
-): TopicSendResult =
-  var sent = TopicSendResult(control: msg.control, accepted: msg.rpc)
-  sent.accepted.messages = @[]
-  sent.accepted.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
+proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): RPCMsg =
+  var accepted = msg.rpc
+  accepted.messages = @[]
+  accepted.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
   for payload in msg.payloads:
     if s.sendTopic(payload.topic, payload.data, medium):
       if payload.messageIndex >= 0:
-        sent.accepted.messages.add(msg.rpc.messages[payload.messageIndex])
+        accepted.messages.add(msg.rpc.messages[payload.messageIndex])
       else:
-        sent.accepted.partialMessageExtension = msg.rpc.partialMessageExtension
+        accepted.partialMessageExtension = msg.rpc.partialMessageExtension
 
-  return sent
+  return accepted
 
 proc new*(
     T: type TopicStreamsExtension,
@@ -476,7 +470,7 @@ proc readTopicStream*(
 
 proc sendTopicRPC*(
     ext: TopicStreamsExtension, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
-): TopicSendResult =
+): RPCMsg =
   ext.peers.withValue(peerId, streams):
     return streams[].sendTopicRPC(msg, medium)
 

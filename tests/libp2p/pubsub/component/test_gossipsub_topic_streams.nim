@@ -333,7 +333,7 @@ suite "GossipSub Component - Topic streams":
     let msg = Message.init(nodes[0].peerInfo, "reply", topic, 10'u64)
     let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
     const additionalTopic = "additional"
-    discard nodes[0].sendResponse(
+    nodes[0].sendResponse(
       peer,
       RPCMsg(
         messages: @[msg],

@@ -850,7 +850,7 @@ proc onHeartbeat(g: GossipSub) =
     # only ihave from here
     for ihave in control.ihave:
       libp2p_pubsub_broadcast_ihave.inc(labelValues = [g.topicLabel(ihave.topicID)])
-    discard g.sendResponse(peer, RPCMsg.withControl(control), MessagePriority.High)
+    g.sendResponse(peer, RPCMsg.withControl(control), MessagePriority.High)
 
   g.mcache.shift() # shift the cache
 

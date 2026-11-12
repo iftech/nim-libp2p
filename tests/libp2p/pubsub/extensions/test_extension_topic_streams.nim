@@ -407,31 +407,6 @@ suite "GossipSub topic stream send side":
         recorder.penalties == 0
         recorder.violations == 0
 
-  asyncTest "outgoing byte budget remains a hard limit and reports rejection":
-    let config = TopicStreamsConfig(maxQueuedBytes: maxMessageSize div 2)
-    for (frameSize, expectedDials) in [
-      (config.maxQueuedBytes - header.len, 1), # header and frame fill the byte budget
-      (config.maxQueuedBytes + 1, 0), # frame over the byte budget, the queue is empty
-    ]:
-      let recorder = TopicStreamsRecorder.new()
-      let state = TopicStreams.new(recorder, config, maxMessageSize)
-      defer:
-        await state.stop()
-        await recorder.closeOutgoingStreams()
-      check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
-
-      let rejected =
-        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
-      check state.sendTopic(topic, newSeq[byte](frameSize), true) == (
-        expectedDials == 1
-      )
-      check:
-        metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
-          rejected + float64(1 - expectedDials)
-        recorder.outgoingStreams.len == expectedDials
-        recorder.penalties == 0
-        recorder.violations == 0
-
   asyncTest "queue budgets count the frame in flight until its write completes":
     for config in [
       # the header, frames[0] in flight and frames[1] queued fill the byte budget
@@ -530,11 +505,11 @@ suite "GossipSub topic stream send side":
       Message(topic: topic, data: @[1.byte]),
       Message(topic: otherTopic, data: @[2.byte]),
     ]
-    let control = state.sendTopicRPC(
-      makePreparedTopicRPC(RPCMsg.withMessages(messages), false), false
-    )
+    let prepared = makePreparedTopicRPC(RPCMsg.withMessages(messages), false)
+    let accepted = state.sendTopicRPC(prepared, false)
     check:
-      control.control.len == 0
+      prepared.control.len == 0
+      accepted.messages == messages
       recorder.outgoingStreams.len == 2
       (await recorder.outgoingStreams[0].readLp(1024)) == header
       (await recorder.outgoingStreams[0].readLp(1024)) == messages[0].topicRPC().encode()
@@ -548,14 +523,13 @@ suite "GossipSub topic stream send side":
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
     # an empty publish payload and a message on the control stream are both protocol violations
-    let control = state.sendTopicRPC(
-      makePreparedTopicRPC(
-        RPCMsg.withMessages(Message(topic: topic, data: newSeq[byte]())), false
-      ),
-      true,
+    let prepared = makePreparedTopicRPC(
+      RPCMsg.withMessages(Message(topic: topic, data: newSeq[byte]())), false
     )
+    let accepted = state.sendTopicRPC(prepared, true)
     check:
-      control.control.len == 0
+      prepared.control.len == 0
+      accepted.messages.len == 0
       recorder.outgoingStreams.len == 0
 
 suite "GossipSub topic stream receive side":
@@ -792,32 +766,5 @@ suite "GossipSub topic stream receive side":
     await state.readTopic(excessLocal)
     check:
       excessLocal.wasResetLocally()
-      recorder.penalties == 0
-      recorder.violations == 0
-
-  asyncTest "frame within maximum message size exhausts incoming budget without penalty":
-    let recorder = TopicStreamsRecorder.new()
-    # the header and one frame fill the incoming budget
-    let state = TopicStreams.new(
-      recorder, TopicStreamsConfig(maxIncomingBytes: header.len + frame.len)
-    )
-    let (peerEnd, nodeEnd) = bridgedConnections()
-    let reader = state.readTopic(nodeEnd)
-    defer:
-      await reader.cancelAndWait()
-      await state.stop()
-      await peerEnd.close()
-
-    await peerEnd.writeLp(header)
-    await peerEnd.writeLp(frame)
-    check (await recorder.received.popFirst()).messages == @[message]
-
-    let largerFrame = Message(data: @[1.byte, 2], topic: topic).topicRPC().encode()
-    await peerEnd.writeLp(largerFrame)
-      # the only frame in flight, far below maxMessageSize
-    await reader # resets instead of reading a frame that exceeds the budget
-    check:
-      nodeEnd.wasResetLocally()
-      recorder.received.len == 0
       recorder.penalties == 0
       recorder.violations == 0

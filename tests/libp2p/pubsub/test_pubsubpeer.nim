@@ -174,7 +174,7 @@ suite "PubSubPeer send stream":
     )
     when defined(libp2p_expensive_metrics):
       let before = metricValue(libp2p_pubsub_sent_messages, [$peer.peerId, "c"])
-    let accepted = peer.sendResponse(msg, false, MessagePriority.Low)
+    let accepted = peer.routeTopicRPC(msg, false, MessagePriority.Low).get()
     check:
       accepted.messages == messages[0 .. 1]
       accepted.control == msg.control

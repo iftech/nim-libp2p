@@ -324,7 +324,7 @@ proc sendExtensionsControl(g: GossipSub, peer: PubSubPeer) =
     return
 
   g.extensionsState.addPeer(peer.peerId)
-  discard g.sendResponse(
+  g.sendResponse(
     peer,
     RPCMsg.withControl(
       ControlMessage.withExtensions(g.extensionsState.makeControlExtensions())
@@ -511,7 +511,7 @@ proc handleControl(g: GossipSub, peer: PubSubPeer, control: ControlMessage) =
         libp2p_pubsub_broadcast_prune.inc(labelValues = [g.topicLabel(prune.topicID)])
 
     trace "sending control message", control = respControl, peer
-    discard g.sendResponse(peer, RPCMsg.withControl(respControl), MessagePriority.High)
+    g.sendResponse(peer, RPCMsg.withControl(respControl), MessagePriority.High)
 
   if messages.len > 0:
     for i, smsg in messages:
@@ -525,7 +525,7 @@ proc handleControl(g: GossipSub, peer: PubSubPeer, control: ControlMessage) =
 
     # iwant replies have lower priority
     trace "sending iwant reply messages", peer
-    discard g.sendResponse(peer, RPCMsg.withMessages(messages), MessagePriority.Low)
+    g.sendResponse(peer, RPCMsg.withMessages(messages), MessagePriority.Low)
 
 proc sendIDontWant(
     g: GossipSub,
@@ -1223,7 +1223,7 @@ proc createExtensionsState(g: GossipSub): ExtensionsState =
     if cfg.onNegotiated.isNil:
       cfg.onNegotiated = proc(peerId: PeerId) {.gcsafe, raises: [].} =
         g.peers.withValue(peerId, peer):
-          discard g.sendResponse(
+          g.sendResponse(
             peer[],
             RPCMsg(testExtension: Opt.some(TestExtensionRPC())),
             MessagePriority.High,
@@ -1239,7 +1239,7 @@ proc createExtensionsState(g: GossipSub): ExtensionsState =
           peerId: PeerId, rpc: PartialMessageExtensionRPC
       ) {.gcsafe, raises: [].} =
         g.peers.withValue(peerId, peer):
-          discard g.sendResponse(
+          g.sendResponse(
             peer[], RPCMsg(partialMessageExtension: Opt.some(rpc)), MessagePriority.Low
           )
 
@@ -1265,7 +1265,7 @@ proc createExtensionsState(g: GossipSub): ExtensionsState =
     if cfg.sendPong.isNil:
       cfg.sendPong = proc(peerId: PeerId, pong: seq[byte]) {.gcsafe, raises: [].} =
         g.peers.withValue(peerId, peer):
-          discard g.sendResponse(peer[], RPCMsg.withPong(pong), MessagePriority.High)
+          g.sendResponse(peer[], RPCMsg.withPong(pong), MessagePriority.High)
 
     g.parameters.pingpongExtensionConfig = Opt.some(cfg)
 
