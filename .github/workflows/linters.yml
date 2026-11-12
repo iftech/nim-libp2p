@@ -22,7 +22,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 2  # In PR, has extra merge commit: ^1 = PR, ^2 = base
+          # The log audit needs the recorded PR base, which may predate the merge parents.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Check NPH formatting

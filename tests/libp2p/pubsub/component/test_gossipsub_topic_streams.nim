@@ -4,6 +4,7 @@
 {.used.}
 
 import chronos, tables, stew/byteutils, sequtils
+import ../../../../libp2p/multistream
 import
   ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
 import ../../../tools/[lifecycle, topology, unittest]
@@ -55,6 +56,48 @@ suite "GossipSub Component - Topic streams":
     discard await nodes[0].publish(topic, "third")
     checkUntilTimeout:
       received == [1, 2]
+
+  asyncTest "full incoming stream budget does not block outgoing delivery":
+    const streamLimit = 3
+    let nodes = generateNodes(
+        2,
+        gossip = true,
+        floodPublish = true,
+        topicStreamsConfig = Opt.some(
+          TopicStreamsConfig(
+            maxIncomingStreams: streamLimit, maxOutgoingStreams: streamLimit
+          )
+        ),
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    var received: array[2, int]
+    proc handlerFor(index: int): TopicHandler =
+      return proc(topic: string, data: seq[byte]) {.async.} =
+        inc received[index]
+
+    for i in 0 .. streamLimit:
+      for j in 0 .. 1:
+        nodes[j].subscribe("topic-" & $i, handlerFor(j))
+
+    await connect(nodes[0], nodes[1])
+    for i in 0 .. streamLimit:
+      waitSubscribeStar(nodes, "topic-" & $i)
+    checkUntilTimeout:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
+        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+
+    for i in 0 ..< streamLimit:
+      discard await nodes[1].publish("topic-" & $i, "incoming")
+    checkUntilTimeout:
+      received[0] == streamLimit
+    check nodes[0].inboundTopicStreams(nodes[1].peerInfo.peerId).len == streamLimit
+
+    discard await nodes[0].publish("topic-" & $streamLimit, "outgoing")
+    checkUntilTimeout:
+      received[1] == 1
+    check nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 1
 
   asyncTest "forwarded message travels on topic streams":
     let nodes = generateNodes(
@@ -374,12 +417,21 @@ suite "GossipSub Component - Topic streams":
     waitSubscribeStar(nodes, topic)
     check nodes[0].switch.isConnected(nodes[1].switch)
 
-  asyncTest "a message on an open topic stream still reaches the topic handler after GossipSub stops":
+  asyncTest "a message on an open topic stream is dropped after GossipSub stops":
     let nodes = generateNodes(
         2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
       )
       .toGossipSub()
     startAndDeferStop(nodes)
+
+    let readerDone = newAsyncEvent()
+    let protocol = nodes[0].switch.ms.lookupProtocol(TopicStreamsCodec).get()
+    let handleTopicStream = protocol.handler
+    protocol.handler = proc(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      await handleTopicStream(stream, proto)
+      readerDone.fire()
 
     let firstMessage = "first".toBytes
     let secondMessage = "second".toBytes
@@ -406,11 +458,12 @@ suite "GossipSub Component - Topic streams":
     # nodes[0] never writes on this stream, so reading 0 bytes means it closed its side
     check (await stream.readOnce(addr data, 1)) == 0
 
-    # TODO: iftech/nim-libp2p#3404
     await stream.writeLp(
       Message.init(nodes[1].peerInfo, secondMessage, topic, 2'u64).topicRPC().encode()
     )
-    check (await handled.popFirst()) == secondMessage
+    await readerDone.wait()
+    await allFutures(nodes[0].pendingTasks)
+    check handled.len == 0
 
   asyncTest "peer that denied support is disconnected when it opens a topic stream":
     let nodes = (
