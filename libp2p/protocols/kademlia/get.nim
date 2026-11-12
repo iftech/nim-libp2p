@@ -24,8 +24,7 @@ proc bestValidRecord(
   for r in received.values():
     let record = r.valueOr:
       continue
-    if kad.config.validator.isValid(key, record):
-      validRecords.add(record)
+    validRecords.add(record)
 
   if validRecords.len() == 0:
     return err("No valid records found")
@@ -40,12 +39,18 @@ proc getValue*(
 ): Future[LPResult[EntryRecord]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Quorum counts valid records for early stopping. An exhausted search returns
   ## the best valid record found, or an error if none was found.
+  # Some entries have passed validation; None entries are kept for repair.
   let received = ReceivedTable()
+  var validCount = 0
 
   # if locally present and not expired, include our own copy
   kad.dataTable.get(key).ifValue(localRecord):
     if not localRecord.isExpired(kad.config.recordExpirationInterval):
-      received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
+      if kad.config.validator.isValid(key, localRecord):
+        received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
+        validCount.inc()
+      else:
+        received[kad.switch.peerInfo.peerId] = Opt.none(EntryRecord)
     else:
       kad.dataTable.del(key)
       trace "Local record expired on read", key = key
@@ -56,18 +61,10 @@ proc getValue*(
   let onReply = proc(
       peer: PeerId, msgOpt: Opt[Message], state: LookupState
   ): Future[void] {.async: (raises: []), gcsafe.} =
-    if not received.hasKey(peer) and received.len >= kad.config.limits.maxReceivedSize:
-      # Missing or invalid records must not prevent later valid replies being stored.
-      var replacePeer = Opt.none(PeerId)
-      for p, r in received:
-        if r.isNone() or not kad.config.validator.isValid(key, r.get()):
-          replacePeer = Opt.some(p)
-          break
-      let p = replacePeer.valueOr:
-        return
-      received.del(p)
-
-    received[peer] = Opt.none(EntryRecord)
+    if received.getOrDefault(peer).isSome():
+      return
+    if received.len < kad.config.limits.maxReceivedSize:
+      received[peer] = Opt.none(EntryRecord)
 
     let reply = msgOpt.valueOr:
       trace "Empty reply"
@@ -96,15 +93,27 @@ proc getValue*(
         reply = reply
       Timestamp.now()
 
-    received[peer] = Opt.some(EntryRecord(value: value, time: time))
+    let entry = EntryRecord(value: value, time: time)
+    if not kad.config.validator.isValid(key, entry):
+      trace "GetValue dropped: record failed validation", peer
+      return
+
+    if not received.hasKey(peer) and received.len >= kad.config.limits.maxReceivedSize:
+      var replacePeer = Opt.none(PeerId)
+      for p, r in received:
+        if r.isNone():
+          replacePeer = Opt.some(p)
+          break
+      let p = replacePeer.valueOr:
+        trace "GetValue: ReceivedTable cap reached, dropping reply",
+          peer = peer, cap = kad.config.limits.maxReceivedSize
+        return
+      received.del(p)
+
+    received[peer] = Opt.some(entry)
+    validCount.inc()
 
   let quorumReached = proc(state: LookupState): bool {.gcsafe.} =
-    var validCount = 0
-    for r in received.values():
-      let record = r.valueOr:
-        continue
-      if kad.config.validator.isValid(key, record):
-        validCount.inc()
     validCount > 0 and validCount >= quorum
 
   let dispatch = proc(
