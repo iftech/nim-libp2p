@@ -465,6 +465,25 @@ suite "GossipSub Component - Topic streams":
     await allFutures(nodes[0].pendingTasks)
     check handled.len == 0
 
+  asyncTest "topic stream opened after GossipSub stops is reset":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    await connect(nodes[0], nodes[1])
+    await nodes[0].stop() # the switch keeps running
+
+    let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await stream.close()
+    # an accepted stream that has its header stays open past the header timeout
+    await stream.writeLp(TopicRPCHeader(topic: topic).encode())
+    var data: byte
+    # nodes[0] never writes on this stream, so reading 0 bytes means it ended its side
+    check (await stream.readOnce(addr data, 1)) == 0
+
   asyncTest "peer that denied support is disconnected when it opens a topic stream":
     let nodes = (
       generateNodes(
@@ -545,6 +564,108 @@ suite "GossipSub Component - Topic streams":
     const secondMsg = "second"
     discard await nodes[0].publish(topic, secondMsg)
     check (await handled.popFirst()) == secondMsg
+
+  asyncTest "topic stream the node opened ends when the node unsubscribes":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let received = newFuture[void]("messageReceived")
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      received.completeOnce()
+
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribeStar(nodes, topic)
+
+    discard await nodes[0].publish(topic, "data")
+    await received
+    # nodes[1]'s end of the topic stream that nodes[0] opened to deliver the message
+    let stream = nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId)[0]
+    nodes[0].unsubscribeAll(topic)
+    # nodes[1] stays subscribed, so only nodes[0] can end the stream
+    await stream.join()
+
+  asyncTest "topic stream the node opened ends when the peer unsubscribes without closing it":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let received = newFuture[void]("messageReceived")
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      received.completeOnce()
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    discard await nodes[0].publish(topic, "data")
+    await received
+    # nodes[1]'s end of the topic stream that nodes[0] opened to deliver the message
+    let stream = nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId)[0]
+    # nodes[1] announces an unsubscribe but stays subscribed, so only nodes[0] can end the stream
+    nodes[1].sendSubs(
+      nodes[1].peers.getOrDefault(nodes[0].peerInfo.peerId), [topic], subscribe = false
+    )
+    await stream.join()
+
+  asyncTest "topic stream the node opened ends when its fanout expires":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let received = newFuture[void]("messageReceived")
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      received.completeOnce()
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    # nodes[0] is not subscribed, so it publishes through fanout
+    discard await nodes[0].publish(topic, "data")
+    await received
+    # nodes[1]'s end of the topic stream that nodes[0] opened to deliver the message
+    let stream = nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId)[0]
+    nodes[0].lastFanoutPubSub[topic] = Moment.now() # expires at the next heartbeat
+    await stream.join()
+
+  asyncTest "topic stream stays open when fanout expires for a topic the node subscribed to since":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let handled = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await handled.put(data)
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    const firstMsg = "first"
+    discard await nodes[0].publish(topic, firstMsg)
+    check (await handled.popFirst()) == firstMsg
+    let streams = nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId)
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[0].lastFanoutPubSub[topic] = Moment.now() # expires at the next heartbeat
+    checkUntilTimeout:
+      not nodes[0].lastFanoutPubSub.hasKey(topic)
+
+    const secondMsg = "second"
+    discard await nodes[0].publish(topic, secondMsg)
+    check:
+      (await handled.popFirst()) == secondMsg
+      nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId) == streams
 
   asyncTest "peer whose topic stream header or frame exceeds a byte limit gets 0.1 behaviour penalty":
     const maxMessageSize = 1024
