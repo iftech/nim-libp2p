@@ -85,7 +85,7 @@ suite "mDNS network":
     check:
       not network.isOpen
       not (await network.multicast(@[1'u8]))
-      not (await network.reply(@[1'u8], default(MdnsReplyContext), true))
+      not (await network.reply(@[1'u8], default(MdnsReplyContext), unicast = true))
     await network.close()
     await network.close()
     check not network.isOpen
@@ -137,7 +137,7 @@ suite "mDNS network":
       ) {.async: (raises: []).} =
         if data == packet:
           contexts.add(context)
-          discard await noCancel network.reply(response, context, true)
+          discard await noCancel network.reply(response, context, unicast = true)
 
       proc senderReceived(
           transport: DatagramTransport, remote: TransportAddress
@@ -167,14 +167,14 @@ suite "mDNS network":
       requireOpened(other, ignorePacket)
       defer:
         await other.close()
-      check not (await other.reply(response, contexts[0], true))
+      check not (await other.reply(response, contexts[0], unicast = true))
       await network.close()
-      check not (await network.reply(response, contexts[0], true))
+      check not (await network.reply(response, contexts[0], unicast = true))
       requireOpened(network, ignorePacket)
       check:
         network.isOpen
-        not (await network.reply(response, contexts[0], true))
-        not (await network.reply(response, default(MdnsReplyContext), true))
+        not (await network.reply(response, contexts[0], unicast = true))
+        not (await network.reply(response, default(MdnsReplyContext), unicast = true))
 
   asyncTest "close drains handlers and packets remain stable across receives":
     when defined(macosx):
@@ -290,7 +290,7 @@ suite "mDNS network":
       ) {.async: (raises: []).} =
         if data == packet:
           legacy = context.isLegacyQuery
-          discard await noCancel network.reply(response, context, false)
+          discard await noCancel network.reply(response, context, unicast = false)
         elif data == response:
           receivedResponse.completeOnce()
 
