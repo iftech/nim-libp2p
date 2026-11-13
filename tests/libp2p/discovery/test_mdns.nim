@@ -8,6 +8,7 @@ import chronos
 import chronos/transports/osnet
 import ../../../libp2p/[switch, peerinfo, utils/future]
 import ../../../libp2p/services/mdns
+import ../../../libp2p/services/mdns/ratelimit
 when not defined(macosx):
   import ../../../libp2p/services/mdns/network
 import ../../../libp2p/nameresolving/dnsmessage
@@ -55,6 +56,22 @@ template requireStarted(service, node: untyped) =
 suite "mDNS discovery":
   teardown:
     checkTrackers()
+
+  test "multicast response limits are independent for IPv4 and IPv6":
+    var limits: MulticastLimits
+    let now = Moment.now()
+    check limits.acquire(false, now)
+    check not limits.acquire(false, now)
+    check limits.acquire(true, now)
+    check not limits.acquire(true, now)
+    limits.finish(false, true, now, MdnsResponseInterval)
+    limits.finish(true, false, now, MdnsResponseInterval)
+    check not limits.acquire(false, now)
+    check limits.acquire(true, now)
+    limits.finish(true, true, now, MdnsResponseInterval)
+    check not limits.acquire(true, now)
+    check limits.acquire(false, now + MdnsResponseInterval)
+    check limits.acquire(true, now + MdnsResponseInterval)
 
   test "DNS-SD records round trip and group peer addresses":
     let
@@ -342,7 +359,7 @@ suite "mDNS discovery":
       ) {.async: (raises: []).} =
         try:
           let message = parseMessage(packet)
-          if message.response and
+          if not context.isIpv6 and message.response and
               service.peers(message, PeerId.random()).anyIt(
                 it.peerId == local.peerInfo.peerId
               ):

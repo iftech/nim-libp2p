@@ -8,7 +8,7 @@ import chronos, chronicles
 import ../[switch, peerinfo, multicodec, address_manager, results, wire]
 import ../nameresolving/dnsmessage
 import ../crypto/rng
-import ./mdns/network
+import ./mdns/[network, ratelimit]
 
 export network.MdnsPort
 
@@ -37,8 +37,7 @@ type
     owner: Switch
     advertisement: DnsMessage
     advertisementBytes: seq[byte]
-    nextResponse: Moment
-    responsePending: bool
+    multicastLimits: MulticastLimits
 
 logScope:
   topics = "libp2p mdns"
@@ -282,9 +281,7 @@ proc received(
       return
     let question = message.questions[matched]
     let unicast = question.unicastResponse or context.isLegacyQuery
-    if service.advertisement.answers.len == 0 or (
-      not unicast and (service.responsePending or Moment.now() < service.nextResponse)
-    ):
+    if service.advertisement.answers.len == 0:
       return
     var packet = service.advertisementBytes
     if unicast:
@@ -302,15 +299,17 @@ proc received(
         debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
         return
     # Chronos requires a non-cancellable datagram callback.
-    if not unicast:
-      service.responsePending = true
+    if unicast:
+      discard await noCancel service.network.reply(packet, context, true)
+      return
+    let ipv6 = context.isIpv6
+    if not service.multicastLimits.acquire(ipv6, Moment.now()):
+      return
+    var sent = false
     try:
-      let sent = await noCancel service.network.reply(packet, context, unicast)
-      if sent and not unicast:
-        service.nextResponse = Moment.now() + MdnsResponseInterval
+      sent = await noCancel service.network.reply(packet, context, false)
     finally:
-      if not unicast:
-        service.responsePending = false
+      service.multicastLimits.finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
 
 proc tryStart*(
     service: MdnsService, switch: Switch
@@ -355,5 +354,5 @@ method stop*(
   service.owner = nil
   service.advertisement = default(DnsMessage)
   service.advertisementBytes.setLen(0)
-  service.nextResponse = default(Moment)
+  service.multicastLimits = default(MulticastLimits)
   info "mDNS discovery stopped"
