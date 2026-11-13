@@ -3,11 +3,11 @@
 
 {.used.}
 
-import chronos, tables, stew/byteutils, sequtils
+import chronos, chronos/ratelimit, tables, stew/byteutils, sequtils
 import ../../../../libp2p/multistream
 import
   ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
-import ../../../tools/[lifecycle, switch_builder, topology, unittest]
+import ../../../tools/[lifecycle, padding, switch_builder, sync, topology, unittest]
 import ../../../../libp2p/protocols/pubsub/rpc/protobuf
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/utils/future
@@ -308,18 +308,17 @@ suite "GossipSub Component - Topic streams":
       not nodes[1].switch.isConnected(nodes[0].switch)
 
   asyncTest "graylisted peer recovers with subscription before publication":
-    let negotiated = newFuture[void]("graylistedTopicStreamsNegotiated")
-    var negotiatedPeers = 0
-    proc onNegotiated(peer: PeerId) {.gcsafe, raises: [].} =
-      inc negotiatedPeers
-      if negotiatedPeers == 2:
-        negotiated.completeOnce()
-
+    let negotiated = newWaitGroup(2)
     let nodes = generateNodes(
         2,
         gossip = true,
         topicStreamsConfig = Opt.some(TopicStreamsConfig()),
-        testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
+        testExtensionConfig = Opt.some(
+          TestExtensionConfig(
+            onNegotiated: proc(peer: PeerId) {.gcsafe, raises: [].} =
+              negotiated.done()
+          )
+        ),
       )
       .toGossipSub()
     startAndDeferStop(nodes)
@@ -337,7 +336,7 @@ suite "GossipSub Component - Topic streams":
 
     # Negotiate capabilities even though ordinary RPC processing is suppressed.
     await connect(nodes[0], nodes[1])
-    await negotiated
+    await negotiated.wait()
     check currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
 
     nodes[0].parameters.graylistThreshold = originalGraylistThreshold
@@ -356,19 +355,18 @@ suite "GossipSub Component - Topic streams":
 
   asyncTest "graylisted peer recovers with publication before subscription":
     let
-      negotiated = newFuture[void]("graylistedTopicStreamsNegotiated")
+      negotiated = newWaitGroup(2)
       subscribed = newFuture[void]("topicStreamPeerSubscribed")
-    var negotiatedPeers = 0
-    proc onNegotiated(peer: PeerId) {.gcsafe, raises: [].} =
-      inc negotiatedPeers
-      if negotiatedPeers == 2:
-        negotiated.completeOnce()
-
     let nodes = generateNodes(
         2,
         gossip = true,
         topicStreamsConfig = Opt.some(TopicStreamsConfig()),
-        testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
+        testExtensionConfig = Opt.some(
+          TestExtensionConfig(
+            onNegotiated: proc(peer: PeerId) {.gcsafe, raises: [].} =
+              negotiated.done()
+          )
+        ),
       )
       .toGossipSub()
     startAndDeferStop(nodes)
@@ -397,7 +395,7 @@ suite "GossipSub Component - Topic streams":
 
     # Negotiate capabilities even though ordinary RPC processing is suppressed.
     await connect(nodes[0], nodes[1])
-    await negotiated
+    await negotiated.wait()
     check currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
 
     nodes[0].parameters.graylistThreshold = originalGraylistThreshold
@@ -416,6 +414,47 @@ suite "GossipSub Component - Topic streams":
     nodes[1].subscribe(topic, voidTopicHandler)
     waitSubscribeStar(nodes, topic)
     check nodes[0].switch.isConnected(nodes[1].switch)
+
+  asyncTest "topic stream frames from a graylisted peer are dropped until its score recovers":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let handled = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await handled.put(data)
+
+    nodes[0].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    # wait for negotiation, so nodes[1]'s ControlExtensions is not counted as a graylisted RPC
+    checkUntilTimeout:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
+        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+
+    let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
+    # nodes[1]'s score is 0, so this graylists it
+    nodes[0].parameters.graylistThreshold = 100000.0
+    let ignored = currentGraylistedRpcs()
+
+    const firstMsg = "first"
+    let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await stream.close()
+    await stream.writeLp(TopicRPCHeader(topic: topic).encode())
+    await stream.writeLp(
+      Message.init(nodes[1].peerInfo, firstMsg, topic, 1'u64).topicRPC().encode()
+    )
+    checkUntilTimeout:
+      currentGraylistedRpcs() > ignored
+
+    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
+    const secondMsg = "second"
+    await stream.writeLp(
+      Message.init(nodes[1].peerInfo, secondMsg, topic, 2'u64).topicRPC().encode()
+    )
+    check (await handled.popFirst()) == secondMsg
 
   asyncTest "a message on an open topic stream is dropped after GossipSub stops":
     let nodes = generateNodes(
@@ -846,3 +885,53 @@ suite "GossipSub Component - Topic streams":
       (TopicStreamsConfig(), @[header, newSeq[byte](maxMessageSize + 1)]),
     ]:
       await checkPenalty(topicStreamsConfig, writes)
+
+  asyncTest "topic stream frames are charged to the overhead rate limit":
+    const budget = 1024
+    let
+      payload = "data".toBytes()
+      frame = Message(data: payload, topic: topic).topicRPC().encode().pad(512)
+    proc checkCharged(graylistThreshold: float64, charged: int) {.async.} =
+      let negotiated = newWaitGroup(2)
+      let nodes = generateNodes(
+          2,
+          gossip = true,
+          topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+          testExtensionConfig = Opt.some(
+            TestExtensionConfig(
+              onNegotiated: proc(peer: PeerId) {.gcsafe, raises: [].} =
+                negotiated.done()
+            )
+          ),
+        )
+        .toGossipSub()
+      startAndDeferStop(nodes)
+
+      await connect(nodes[0], nodes[1])
+      # wait for negotiation, so only the frame below is charged to the bucket
+      await negotiated.wait()
+      nodes[0].parameters.graylistThreshold = graylistThreshold
+      # never refills, so the spent budget is exactly the charge
+      let bucket = TokenBucket.new(budget, ZeroDuration)
+      nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId).overheadRateLimitOpt =
+        Opt.some(bucket)
+
+      let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+      defer:
+        await stream.close()
+      await stream.writeLp(TopicRPCHeader(topic: topic).encode())
+      await stream.writeLp(frame)
+      # nodes[0] charges the frame before it reads the end of the stream and ends its side
+      await stream.closeWrite()
+      var data: byte
+      check:
+        (await stream.readOnce(addr data, 1)) == 0
+        bucket.getAvailableCapacity() == budget - charged
+
+    for (graylistThreshold, charged) in [
+      # below nodes[1]'s score of 0: everything except the payload
+      (-10000.0, frame.len - payload.len),
+      # above nodes[1]'s score of 0: the whole frame
+      (100000.0, frame.len),
+    ]:
+      await checkCharged(graylistThreshold, charged)
