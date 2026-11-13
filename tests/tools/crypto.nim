@@ -18,11 +18,11 @@ template rng*(): Rng =
 
 proc random*(T: typedesc[PeerId]): PeerId =
   ## A random peer id drawn from the shared test rng.
-  PeerId.random(rng()).expect("the rng produces a valid peer id")
+  PeerId.random(rng()).expect("the rng produces a valid peer id") #nolint
 
 proc random*(T: typedesc[PeerId], count: int): seq[PeerId] =
   ## `count` random peer ids drawn from the shared test rng.
-  PeerId.random(count.uint, rng()).expect("the rng produces valid peer ids")
+  PeerId.random(count.uint, rng()).expect("the rng produces valid peer ids") #nolint
 
 proc tlsCertGenerator*(
     kp: Opt[KeyPair] = Opt.none(KeyPair)
