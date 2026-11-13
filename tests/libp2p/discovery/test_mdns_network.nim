@@ -168,7 +168,7 @@ suite "mDNS network":
       ) {.async: (raises: []).} =
         if data == packet:
           contexts.add(context)
-          discard await noCancel network.reply(response, context, unicast = true)
+          check await noCancel network.reply(response, context, unicast = true)
 
       proc senderReceived(
           transport: DatagramTransport, remote: TransportAddress
@@ -290,7 +290,7 @@ suite "mDNS network":
     let sending = network.multicast(@[7'u8, 8, 9])
     exposeInterfaces = false
     network.refreshInterfaces()
-    discard await sending
+    check await sending
     check not (await network.multicast(@[7'u8, 8, 9]))
 
   asyncTest "cancelling a queued multicast send keeps its packet alive":
@@ -302,7 +302,10 @@ suite "mDNS network":
       defer:
         await network.close()
       let sending = network.multicast(@[7'u8, 8, 9])
+      check not sending.finished
       await sending.cancelAndWait()
+      # The shielded write may finish before cancellation reaches the caller.
+      check sending.cancelled or (sending.completed and sending.read())
       await network.close()
       check not network.isOpen
 
@@ -321,7 +324,7 @@ suite "mDNS network":
       ) {.async: (raises: []).} =
         if data == packet:
           legacy = context.isLegacyQuery
-          discard await noCancel network.reply(response, context, unicast = false)
+          check await noCancel network.reply(response, context, unicast = false)
         elif data == response:
           receivedResponse.completeOnce()
 

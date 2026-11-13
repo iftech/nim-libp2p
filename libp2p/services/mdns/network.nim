@@ -173,7 +173,11 @@ proc membership4(
   ok()
 
 proc configureMulticast(transport: DatagramTransport): LPResult[void] =
-  var ttl = MdnsMulticastHopLimit
+  when defined(linux) or defined(android) or defined(windows):
+    var ttl = MdnsMulticastHopLimit
+  else:
+    # Darwin and BSD require a one-byte value for IP_MULTICAST_TTL.
+    var ttl = uint8(MdnsMulticastHopLimit)
   when defined(windows):
     let status = winlean.setsockopt(
       winlean.SocketHandle(transport.fd),
@@ -423,10 +427,10 @@ proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   if network.activeOperations > 0:
     await noCancel network.idle.wait()
   if not network.transport.isNil:
-    await network.transport.closeWait()
+    await noCancel network.transport.closeWait()
     network.transport = nil
   if not network.transport6.isNil:
-    await network.transport6.closeWait()
+    await noCancel network.transport6.closeWait()
     network.transport6 = nil
   network.interfaces4.setLen(0)
   network.interfaces6.setLen(0)
@@ -473,7 +477,7 @@ proc open*(
     )
     let configured = configureMulticast(network.transport)
     if configured.isErr:
-      debug "IPv4 mDNS multicast configuration failed", err = configured.error
+      warn "IPv4 mDNS multicast configuration failed", err = configured.error
       await network.transport.closeWait()
       network.transport = nil
   except TransportError as exc:
