@@ -45,6 +45,34 @@ suite "mDNS network":
   teardown:
     checkTrackers()
 
+  test "sender must belong to an active interface subnet":
+    const
+      Local4 = initTAddress("192.168.10.1:0")
+      Local6 = initTAddress("[fd12:3456::1]:0")
+      Down4 = initTAddress("10.2.0.1:0")
+    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      @[
+        NetworkInterface(
+          ifIndex: 1, state: StatusUp,
+          addresses: @[
+            InterfaceAddress.init(Local4, 24), InterfaceAddress.init(Local6, 64),
+          ],
+        ),
+        NetworkInterface(
+          ifIndex: 2, state: StatusDown,
+          addresses: @[InterfaceAddress.init(Down4, 16)],
+        ),
+      ]
+    let network = MdnsNetwork.new(interfaceProvider = interfaces)
+    check:
+      network.isLocalAddress(initTAddress("192.168.10.42:5353"))
+      network.isLocalAddress(initTAddress("[fd12:3456::42]:5353"))
+      not network.isLocalAddress(initTAddress("192.168.11.42:5353"))
+      not network.isLocalAddress(initTAddress("10.2.0.42:5353"))
+      not network.isLocalAddress(initTAddress("[fd12:3457::42]:5353"))
+      not network.isLocalAddress(initTAddress("0.0.0.0:5353"))
+      not network.isLocalAddress(initTAddress("224.0.0.251:5353"))
+
   test "wildcard expansion uses the supplied interface provider":
     const
       Address4 = initTAddress("10.0.0.1:0")
