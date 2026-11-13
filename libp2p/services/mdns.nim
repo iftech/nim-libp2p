@@ -251,6 +251,8 @@ proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
 proc received(
     service: MdnsService, switch: Switch, datagram: seq[byte], context: MdnsReplyContext
 ) {.async: (raises: []).} =
+  if not service.network.isLocalSource(context):
+    return
   let message =
     try:
       parseMessage(datagram)
@@ -258,8 +260,6 @@ proc received(
       debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
       return
   if message.response:
-    if not service.network.isLocalSource(context):
-      return
     for peer in service.peers(message, switch.peerInfo.peerId):
       service.onPeerFound(peer)
   else:

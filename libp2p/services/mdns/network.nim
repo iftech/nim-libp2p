@@ -72,6 +72,7 @@ type
     transport6: DatagramTransport
     interfaces4: seq[array[4, byte]]
     interfaces6: seq[uint32]
+    localAddresses: seq[InterfaceAddress]
     multicastLock4: AsyncLock
     refresher: Future[void].Raising([CancelledError])
     refreshInterval: Duration
@@ -117,14 +118,9 @@ proc isLocalAddress*(network: MdnsNetwork, remote: TransportAddress): bool =
   if remote.family notin {AddressFamily.IPv4, AddressFamily.IPv6} or
       remote.isUnspecified() or remote.isMulticast():
     return false
-  for iface in network.interfaceProvider():
-    if iface.ifIndex <= 0 or
-        (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
-      continue
-    for address in iface.addresses:
-      if address.host.family == remote.family and address.net.mask.prefix > 0 and
-          address.net.contains(remote):
-        return true
+  for address in network.localAddresses:
+    if address.host.family == remote.family and address.net.contains(remote):
+      return true
   false
 
 proc isLocalSource*(network: MdnsNetwork, context: MdnsReplyContext): bool =
@@ -295,12 +291,15 @@ proc refreshInterfaces*(network: MdnsNetwork) =
   ## Reconcile multicast memberships with the current network interfaces.
   var wanted4: seq[array[4, byte]]
   var wanted6: seq[uint32]
+  var localAddresses: seq[InterfaceAddress]
   for iface in network.interfaceProvider():
     if iface.ifIndex <= 0 or
         (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
       continue
     var has4 = false
     for address in iface.addresses:
+      if address.net.mask.prefix > 0:
+        localAddresses.add(address)
       case address.host.family
       of AddressFamily.IPv4:
         if not has4:
@@ -334,6 +333,7 @@ proc refreshInterfaces*(network: MdnsNetwork) =
         debug "IPv6 mDNS multicast join failed", interfaceIndex = index
   network.interfaces4 = current4
   network.interfaces6 = current6
+  network.localAddresses = localAddresses
 
 proc refreshLoop(network: MdnsNetwork) {.async: (raises: [CancelledError]).} =
   while true:
@@ -434,6 +434,7 @@ proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
     network.transport6 = nil
   network.interfaces4.setLen(0)
   network.interfaces6.setLen(0)
+  network.localAddresses.setLen(0)
   network.onPacket = nil
   network.closing = false
 

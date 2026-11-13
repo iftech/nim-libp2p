@@ -41,6 +41,18 @@ proc countingInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
   inc interfaceQueries
   @[]
 
+proc cachedInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+  const local = initTAddress("192.168.10.1:0")
+  inc interfaceQueries
+  if exposeInterfaces:
+    @[
+      NetworkInterface(
+        ifIndex: 1, state: StatusUp, addresses: @[InterfaceAddress.init(local, 24)]
+      )
+    ]
+  else:
+    @[]
+
 suite "mDNS network":
   teardown:
     checkTrackers()
@@ -64,6 +76,7 @@ suite "mDNS network":
       ]
 
     let network = MdnsNetwork.new(interfaceProvider = interfaces)
+    network.refreshInterfaces()
     check:
       network.isLocalAddress(initTAddress("192.168.10.42:5353"))
       network.isLocalAddress(initTAddress("[fd12:3456::42]:5353"))
@@ -72,6 +85,22 @@ suite "mDNS network":
       not network.isLocalAddress(initTAddress("[fd12:3457::42]:5353"))
       not network.isLocalAddress(initTAddress("0.0.0.0:5353"))
       not network.isLocalAddress(initTAddress("224.0.0.251:5353"))
+
+  test "source subnets are cached until interface refresh":
+    interfaceQueries = 0
+    exposeInterfaces = true
+    let network = MdnsNetwork.new(interfaceProvider = cachedInterfaces)
+    network.refreshInterfaces()
+    exposeInterfaces = false
+    let remote = initTAddress("192.168.10.42:5353")
+    check:
+      network.isLocalAddress(remote)
+      network.isLocalAddress(remote)
+      interfaceQueries == 1
+    network.refreshInterfaces()
+    check:
+      not network.isLocalAddress(remote)
+      interfaceQueries == 2
 
   test "wildcard expansion uses the supplied interface provider":
     const
