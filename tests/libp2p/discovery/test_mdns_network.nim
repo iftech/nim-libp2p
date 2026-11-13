@@ -29,12 +29,17 @@ template requireOpened(network, callback: untyped) =
     require opened.isOk
 
 var exposeInterfaces = false
+var interfaceQueries = 0
 
 proc changingInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
   if exposeInterfaces:
     getInterfaces()
   else:
     @[]
+
+proc countingInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+  inc interfaceQueries
+  @[]
 
 suite "mDNS network":
   teardown:
@@ -105,6 +110,18 @@ suite "mDNS network":
     network.refreshInterfaces()
     check (await network.multicast(@[1'u8]))
 
+  asyncTest "interfaces are refreshed periodically":
+    interfaceQueries = 0
+    let network = MdnsNetwork.new(
+      interfacesProvider = countingInterfaces, refreshInterval = 10.milliseconds
+    )
+    requireOpened(network, ignorePacket)
+    defer:
+      await network.close()
+    check interfaceQueries == 1 # Opening performs the initial refresh.
+    checkUntilTimeout:
+      interfaceQueries >= 2
+
   asyncTest "receive arbitrary bytes and reply to the original sender":
     when defined(macosx):
       skip()
@@ -130,7 +147,9 @@ suite "mDNS network":
         except TransportError as e:
           raiseAssert "Unexpected erro: " & e.msg
 
-      let sender = newDatagramTransport(senderReceived)
+      let sender = newDatagramTransport(
+        senderReceived, local = initTAddress("127.0.0.1:0")
+      )
       defer:
         await sender.closeWait()
       requireOpened(network, received)
@@ -183,7 +202,9 @@ suite "mDNS network":
         elif packet == second:
           secondEntered.fire()
 
-      let sender = newDatagramTransport(ignoreDatagram)
+      let sender = newDatagramTransport(
+        ignoreDatagram, local = initTAddress("127.0.0.1:0")
+      )
       defer:
         await sender.closeWait()
       requireOpened(network, received)
@@ -229,6 +250,19 @@ suite "mDNS network":
         sending.finished
         (await sending)
         not network.isOpen
+
+  asyncTest "refreshing interfaces while a multicast send is queued":
+    let network = MdnsNetwork.new(interfacesProvider = changingInterfaces)
+    exposeInterfaces = true
+    requireOpened(network, ignorePacket)
+    defer:
+      exposeInterfaces = false
+      await network.close()
+    let sending = network.multicast(@[7'u8, 8, 9])
+    exposeInterfaces = false
+    network.refreshInterfaces()
+    discard await sending
+    check not (await network.multicast(@[7'u8, 8, 9]))
 
   asyncTest "cancelling a queued multicast send keeps its packet alive":
     when defined(macosx):

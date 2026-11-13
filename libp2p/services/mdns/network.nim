@@ -14,6 +14,15 @@ import ../../utils/lock
 
 when defined(windows):
   import std/winlean
+  const
+    ipv4AddMembership = 12
+    ipv4DropMembership = 13
+    ipv4MulticastTtl = 10
+    ipv6Protocol = 41
+    ipv6MulticastInterface = 9
+    ipv6MulticastHops = 10
+    ipv6JoinGroup = 12
+    ipv6LeaveGroup = 13
 else:
   import std/posix
   when declared(posix.IP_ADD_MEMBERSHIP) and declared(posix.IP_MULTICAST_TTL):
@@ -40,6 +49,8 @@ else:
 
 const
   MdnsPort* = 5353
+  MdnsMulticastHopLimit = 255.cint
+  MdnsInterfaceRefreshInterval = 30.seconds
   MdnsDestination = initTAddress("224.0.0.251:5353")
   MdnsBindAddress = initTAddress("0.0.0.0:5353")
   MdnsDestination6 = initTAddress("[ff02::fb]:5353")
@@ -63,6 +74,7 @@ type
     interfaces6: seq[uint32]
     multicastLock4: AsyncLock
     refresher: Future[void].Raising([CancelledError])
+    refreshInterval: Duration
     multicastLock6: AsyncLock
     interfacesProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
     networkInterfaceProvider: NetworkInterfaceProvider
@@ -80,12 +92,14 @@ proc new*(
     networkInterfaceProvider: NetworkInterfaceProvider = getAddresses,
     interfacesProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].} =
       getInterfaces,
+    refreshInterval: Duration = MdnsInterfaceRefreshInterval,
 ): T =
   T(
     multicastLock4: newAsyncLock(),
     multicastLock6: newAsyncLock(),
     networkInterfaceProvider: networkInterfaceProvider,
     interfacesProvider: interfacesProvider,
+    refreshInterval: refreshInterval,
     idle: newAsyncEvent(),
   )
 
@@ -122,7 +136,7 @@ proc membership4(
     let status = winlean.setsockopt(
       winlean.SocketHandle(transport.fd),
       0,
-      (if join: 12 else: 13),
+      (if join: ipv4AddMembership else: ipv4DropMembership),
       addr membership,
       winlean.SockLen(sizeof(membership)),
     )
@@ -138,10 +152,14 @@ proc membership4(
   ok()
 
 proc configureMulticast(transport: DatagramTransport): LPResult[void] =
-  var ttl = 255.cint
+  var ttl = MdnsMulticastHopLimit
   when defined(windows):
     let status = winlean.setsockopt(
-      winlean.SocketHandle(transport.fd), 0, 10, addr ttl, winlean.SockLen(sizeof(ttl))
+      winlean.SocketHandle(transport.fd),
+      0,
+      ipv4MulticastTtl,
+      addr ttl,
+      winlean.SockLen(sizeof(ttl)),
     )
   else:
     let status = posix.setsockopt(
@@ -176,6 +194,29 @@ proc selectMulticastInterface4(
     ) == 0
 
 proc configureMulticast6(
+    transport: DatagramTransport
+): LPResult[void] =
+  var hops = MdnsMulticastHopLimit
+  when defined(windows):
+    let status = winlean.setsockopt(
+      winlean.SocketHandle(transport.fd),
+      ipv6Protocol,
+      ipv6MulticastHops,
+      addr hops,
+      winlean.SockLen(sizeof(hops)),
+    )
+  else:
+    let status = posix.setsockopt(
+      posix.SocketHandle(transport.fd),
+      posix.IPPROTO_IPV6,
+      posix.IPV6_MULTICAST_HOPS,
+      addr hops,
+      posix.SockLen(sizeof(hops)),
+    )
+  checkSocketOption(status, "IPV6_MULTICAST_HOPS")
+  ok()
+
+proc membership6(
     transport: DatagramTransport, index: uint32, join = true
 ): LPResult[void] =
   # ipv6_mreq contains the 16-byte group followed by the native interface index.
@@ -186,22 +227,16 @@ proc configureMulticast6(
   var membership: Ipv6Membership
   membership.group = [0xff'u8, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfb]
   membership.interfaceIndex = index
-  var hops = 255.cint
   when defined(windows):
     let socket = winlean.SocketHandle(transport.fd)
     let joined = winlean.setsockopt(
       socket,
-      41,
-      (if join: 12 else: 13),
+      ipv6Protocol,
+      (if join: ipv6JoinGroup else: ipv6LeaveGroup),
       addr membership,
       winlean.SockLen(sizeof(membership)),
     )
     checkSocketOption(joined, "IPV6_JOIN_GROUP")
-    if not join:
-      return ok()
-    let hopStatus =
-      winlean.setsockopt(socket, 41, 10, addr hops, winlean.SockLen(sizeof(hops)))
-    checkSocketOption(hopStatus, "IPV6_MULTICAST_HOPS")
   else:
     let socket = posix.SocketHandle(transport.fd)
     let joined = posix.setsockopt(
@@ -212,16 +247,6 @@ proc configureMulticast6(
       posix.SockLen(sizeof(membership)),
     )
     checkSocketOption(joined, "IPV6_JOIN_GROUP")
-    if not join:
-      return ok()
-    let hopStatus = posix.setsockopt(
-      socket,
-      posix.IPPROTO_IPV6,
-      posix.IPV6_MULTICAST_HOPS,
-      addr hops,
-      posix.SockLen(sizeof(hops)),
-    )
-    checkSocketOption(hopStatus, "IPV6_MULTICAST_HOPS")
   ok()
 
 proc selectMulticastInterface6*(transport: DatagramTransport, index: uint32): bool =
@@ -230,8 +255,8 @@ proc selectMulticastInterface6*(transport: DatagramTransport, index: uint32): bo
   when defined(windows):
     winlean.setsockopt(
       winlean.SocketHandle(transport.fd),
-      41,
-      9,
+      ipv6Protocol,
+      ipv6MulticastInterface,
       addr interfaceIndex,
       winlean.SockLen(sizeof(interfaceIndex)),
     ) == 0
@@ -279,10 +304,10 @@ proc refreshInterfaces*(network: MdnsNetwork) =
   if not network.transport6.isNil:
     for index in network.interfaces6:
       if index notin wanted6:
-        discard configureMulticast6(network.transport6, index, false)
+        discard membership6(network.transport6, index, false)
     for index in wanted6:
       if index in network.interfaces6 or
-          configureMulticast6(network.transport6, index).isOk:
+          membership6(network.transport6, index).isOk:
         current6.add(index)
       else:
         debug "IPv6 mDNS multicast join failed", interfaceIndex = index
@@ -291,7 +316,7 @@ proc refreshInterfaces*(network: MdnsNetwork) =
 
 proc refreshLoop(network: MdnsNetwork) {.async: (raises: [CancelledError]).} =
   while true:
-    await sleepAsync(30.seconds)
+    await sleepAsync(network.refreshInterval)
     network.refreshInterfaces()
 
 proc sendPacket(
@@ -313,10 +338,12 @@ proc multicast4(
   if network.transport.isNil:
     return false
   withLock network.multicastLock4:
-    for address in network.interfaces4:
+    # A refresh can replace the interface list while a send is pending.
+    let interfaces = network.interfaces4
+    for address in interfaces:
       if selectMulticastInterface4(network.transport, address):
         if await network.transport.sendPacket(packet, MdnsDestination):
-          result = true
+          return true
       else:
         debug "IPv4 mDNS multicast interface selection failed", address = address
 
@@ -327,10 +354,11 @@ proc multicast6(
     return false
   # The interface is a socket-wide option; keep it stable until the queued send finishes.
   withLock network.multicastLock6:
-    for index in network.interfaces6:
+    let interfaces = network.interfaces6
+    for index in interfaces:
       if selectMulticastInterface6(network.transport6, index):
         if await network.transport6.sendPacket(packet, MdnsDestination6):
-          result = true
+          return true
       else:
         debug "IPv6 mDNS multicast interface selection failed", interfaceIndex = index
 
@@ -379,10 +407,10 @@ proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
     await noCancel network.idle.wait()
   if not network.transport.isNil:
     await network.transport.closeWait()
+    network.transport = nil
   if not network.transport6.isNil:
     await network.transport6.closeWait()
-  network.transport = nil
-  network.transport6 = nil
+    network.transport6 = nil
   network.interfaces4.setLen(0)
   network.interfaces6.setLen(0)
   network.onPacket = nil
@@ -442,6 +470,11 @@ proc open*(
       bufSize = 9000,
       dualstack = DualStackType.Disabled,
     )
+    let configured = configureMulticast6(network.transport6)
+    if configured.isErr:
+      debug "IPv6 mDNS multicast configuration failed", err = configured.error
+      await network.transport6.closeWait()
+      network.transport6 = nil
   except TransportError as exc:
     debug "IPv6 mDNS unavailable", err = exc.msg
 
