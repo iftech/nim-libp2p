@@ -19,8 +19,7 @@ import compiler/ast
 import lint
 
 type
-  ForbiddenCallSettings* = object
-    ## Settings for the check that forbids calls by name.
+  ForbiddenCallSettings* = object ## Settings for the check that forbids calls by name.
     names*: seq[string] = @["asyncSleep", "wait", "withTimeout"]
       ## Call names to report. Matched against the callee's identifier, so
       ## `withTimeout(x)` and `x.withTimeout` are both caught.

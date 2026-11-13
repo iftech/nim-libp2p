@@ -40,8 +40,7 @@ proc isRng(node: PNode): bool =
   ## True for the test rng: `rng()` and `rng`.
   if node.kind == nkIdent:
     return node.ident.s == "rng"
-  isCall(node) and node.len == 1 and node[0].kind == nkIdent and
-    node[0].ident.s == "rng"
+  isCall(node) and node.len == 1 and node[0].kind == nkIdent and node[0].ident.s == "rng"
 
 proc isPeerIdRandomWithRng(node: PNode): bool =
   ## True for `PeerId.random(rng)` and `PeerId.random(count, rng)`.

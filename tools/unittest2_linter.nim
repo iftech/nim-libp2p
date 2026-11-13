@@ -12,14 +12,13 @@ import compiler/ast
 
 import lint
 
-type
-  CheckFalseSettings* = object
-    ## Settings for the check that forbids `check false`.
-    ##
-    ## `check false` is always a mistake: it either marks a test that was never
-    ## finished or one whose condition was disabled to make it pass. A test
-    ## that is meant to fail should say so with `raiseAssert` and a message
-    ## explaining why.
+type CheckFalseSettings* = object
+  ## Settings for the check that forbids `check false`.
+  ##
+  ## `check false` is always a mistake: it either marks a test that was never
+  ## finished or one whose condition was disabled to make it pass. A test
+  ## that is meant to fail should say so with `raiseAssert` and a message
+  ## explaining why.
 
 # --- AST helpers ----------------------------------------------------------
 
