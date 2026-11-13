@@ -27,6 +27,10 @@ type
       ## Fewest arguments a call must have to be reported. `wait` needs 1:
       ## `Event.wait()` takes no timeout and is not what this check is about,
       ## while `wait(fut, duration)` picks one.
+    literalOnly*: bool = false
+      ## Report only calls whose timeout is a literal duration, such as
+      ## `5.seconds` or `100.millis`. A duration that comes from a config
+      ## field or a parameter is the caller's budget and is not reported.
 
   CompletedCancelSettings* = object
     ## Settings for the check that forbids guarding `cancel` with `completed`.
@@ -57,6 +61,30 @@ proc calleeName(node: PNode): string =
 
 proc isNamedCall(node: PNode, name: string): bool =
   isCall(node) and calleeName(node) == name
+
+proc isLiteralDuration(node: PNode): bool =
+  ## True for a duration literal such as `5.seconds`, `100.millis` or
+  ## `chronos.seconds(5)`.
+  ##
+  ## The first form is a dot expression on an integer literal; the second is a
+  ## call to one of the duration constructors with a literal argument.
+  const units = [
+    "nanoseconds", "microseconds", "milliseconds", "seconds", "minutes", "hours",
+    "nanosecond", "microsecond", "millisecond", "second", "minute", "hour", "millis",
+  ]
+
+  if node.kind == nkDotExpr and node.len == 2 and node[1].kind == nkIdent and
+      node[1].ident.s in units:
+    return node[0].kind in {nkIntLit .. nkUInt64Lit}
+
+  if isCall(node) and node.len == 2 and node[1].kind in {nkIntLit .. nkUInt64Lit}:
+    let callee = node[0]
+    if callee.kind == nkIdent:
+      return callee.ident.s in units
+    if callee.kind == nkDotExpr and callee.len == 2 and callee[1].kind == nkIdent:
+      return callee[1].ident.s in units
+
+  false
 
 proc isCompletedCall(node: PNode): bool =
   ## True for `x.completed()` and `completed(x)`.
@@ -108,13 +136,16 @@ iterator nodes(ast: PNode): PNode =
 proc runForbiddenCall(ast: PNode, s: ForbiddenCallSettings): seq[Finding] =
   for node in nodes(ast):
     let name = calleeName(node)
-    if name.len > 0 and name in s.names and node.len - 1 >= s.minArgs:
-      result.add(
-        node.toFinding(
-          "avoid `" & name & "`: a timeout chosen here hides the caller's " &
-            "budget; pass a deadline in or let the caller bound the operation"
-        )
+    if name.len == 0 or name notin s.names or node.len - 1 < s.minArgs:
+      continue
+    if s.literalOnly and not isLiteralDuration(node[^1]):
+      continue
+    result.add(
+      node.toFinding(
+        "avoid `" & name & "`: a timeout chosen here hides the caller's " &
+          "budget; pass a deadline in or let the caller bound the operation"
       )
+    )
 
 proc runCompletedCancel(ast: PNode, s: CompletedCancelSettings): seq[Finding] =
   for node in nodes(ast):
