@@ -237,9 +237,11 @@ func parseTransportConfig(config: Libp2pConfig): ParsedTransport =
     ParsedTransport(kind: TransportType.Tcp, muxer: config.muxer)
 
 func countEnabled(values: varargs[bool]): int =
+  var count = 0
   for value in values:
     if value:
-      result.inc
+      inc count
+  count
 
 func optDurationMs(ms: int64): Opt[Duration] =
   if ms > 0:
