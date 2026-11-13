@@ -40,6 +40,9 @@ const
 proc packet(hex: string): seq[byte] =
   hex.parseHexStr().mapIt(byte(it))
 
+proc ignoreDatagram(t: DatagramTransport, remote: TransportAddress) {.async: (raises: []).} =
+  discard
+
 template requireStarted(service, node: untyped) =
   block:
     let started = await service.tryStart(node)
@@ -309,7 +312,9 @@ suite "mDNS discovery":
           responses[0].additionals.allIt(not it.cacheFlush)
           service.peers(responses[0], PeerId.random()) ==
             @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
+        # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
         await sleepAsync(MdnsResponseInterval)
+        check responses.len == 1
         await sender.sendTo(destination, encodeMessage(query))
         checkUntilTimeout:
           responses.len >= 2
@@ -335,6 +340,7 @@ suite "mDNS discovery":
         service = MdnsService.new(networkInterfaceProvider = interfaces)
         listener = MdnsNetwork.new()
         found = newFuture[MdnsPeer]()
+        other = PeerId.random()
       defer:
         await node.stop()
         await listener.close()
@@ -343,11 +349,11 @@ suite "mDNS discovery":
           packet: seq[byte], context: MdnsReplyContext
       ) {.async: (raises: []).} =
         try:
-          for peer in service.peers(parseMessage(packet), PeerId.random()):
+          for peer in service.peers(parseMessage(packet), other):
             if peer.peerId == node.peerInfo.peerId:
               found.completeOnce(peer)
         except ValueError:
-          discard
+          raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
       node.services.add(service)
       let opened = await listener.open(received)
@@ -366,12 +372,7 @@ suite "mDNS discovery":
         proc(peer: MdnsPeer) {.gcsafe, raises: [].} =
           found.completeOnce(peer)
       )
-    proc received(
-        t: DatagramTransport, remote: TransportAddress
-    ) {.async: (raises: []).} =
-      discard
-
-    let sender = newDatagramTransport(received, local = initTAddress("127.0.0.1:0"))
+    let sender = newDatagramTransport(ignoreDatagram, local = initTAddress("127.0.0.1:0"))
     try:
       requireStarted(service, local)
       requireStarted(service, local)
@@ -422,12 +423,7 @@ suite "mDNS discovery":
               inc foundCount
               found.completeOnce(peer)
           )
-        proc received(
-            t: DatagramTransport, remote: TransportAddress
-        ) {.async: (raises: []).} =
-          discard
-
-        let sender = newDatagramTransport6(received)
+        let sender = newDatagramTransport6(ignoreDatagram)
         try:
           require sender.selectMulticastInterface6(interfaceIndex)
           requireStarted(service, local)
