@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import lint
-import tools/chronicles_linter
+import tools/[chronicles_linter, code_style_linter]
 
 runLint:
   sources = ["."]
@@ -38,4 +38,9 @@ runLint:
     # values that `audit_logs.py` exempts. See the note in
     # `tools/chronicles_linter.nim`.
     check unboundedFields:
+      severity = hint
+
+  step "Check code style":
+    ignoredPatterns = ["./tools/**/*"]
+    check implicitResult:
       severity = hint
