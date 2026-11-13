@@ -19,7 +19,7 @@ the helper and reports its result through its exit status.
 The Go peer only subscribes and echoes. It stays alive until Nim disconnects,
 so publishing the final echo cannot race shutdown or Nim's stream checks.
 
-From the repository root, with Go 1.25+, Nim 2.2.10, and the repository's
+From the repository root, with Go 1.25+, Nim 2.2.14, and the repository's
 Nim and test dependencies installed (`make setup`):
 
 ```sh
