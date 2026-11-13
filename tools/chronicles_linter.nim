@@ -161,7 +161,8 @@ proc runMessageEndsWithPunctuation(ast: PNode, s: MessageSettings): seq[Finding]
     return
   for call in logCalls(ast):
     let node = messageNode(call)
-    if node != nil and node.strVal.strip()[^1] in s.trailingPunctuation:
+    if node != nil and node.strVal.strip().len > 0 and
+        node.strVal.strip()[^1] in s.trailingPunctuation:
       result.add(node.toFinding("log message must not end with punctuation"))
 
 proc runMessageMaxSentences(ast: PNode, s: MessageSettings): seq[Finding] =
