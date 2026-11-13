@@ -313,7 +313,7 @@ suite "mDNS discovery":
         except ValueError, TransportError:
           raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
-      let sender = newDatagramTransport(received)
+      let sender = newDatagramTransport(received, local = initTAddress("127.0.0.1:0"))
       # Multicast is delivered to all group members even when another local
       # mDNS responder shares port 5353.
       let destination = initTAddress("224.0.0.251", Port(MdnsPort))
@@ -376,7 +376,8 @@ suite "mDNS discovery":
         except TransportError:
           raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
-      let sender = newDatagramTransport(receivedUnicast)
+      let sender =
+        newDatagramTransport(receivedUnicast, local = initTAddress("127.0.0.1:0"))
       defer:
         await sender.closeWait()
         await listener.close()
