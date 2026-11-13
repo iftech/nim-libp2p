@@ -280,11 +280,12 @@ proc received(
         break
     if matched < 0:
       return
-    if service.advertisement.answers.len == 0 or service.responsePending or
-        Moment.now() < service.nextResponse:
-      return
     let question = message.questions[matched]
     let unicast = question.unicastResponse or context.isLegacyQuery
+    if service.advertisement.answers.len == 0 or
+        (not unicast and
+          (service.responsePending or Moment.now() < service.nextResponse)):
+      return
     var packet = service.advertisementBytes
     if unicast:
       var response = service.advertisement
@@ -301,13 +302,15 @@ proc received(
         debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
         return
     # Chronos requires a non-cancellable datagram callback.
-    service.responsePending = true
+    if not unicast:
+      service.responsePending = true
     try:
       let sent = await noCancel service.network.reply(packet, context, unicast)
-      if sent:
+      if sent and not unicast:
         service.nextResponse = Moment.now() + MdnsResponseInterval
     finally:
-      service.responsePending = false
+      if not unicast:
+        service.responsePending = false
 
 proc tryStart*(
     service: MdnsService, switch: Switch

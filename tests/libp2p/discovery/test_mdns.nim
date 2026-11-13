@@ -271,7 +271,7 @@ suite "mDNS discovery":
     check goodbye.answers.allIt(it.ttl == 0)
     check goodbye.additionals.allIt(it.ttl == 0)
 
-  asyncTest "query responses are cached and rate limited":
+  asyncTest "legacy query responses are cached and not rate limited":
     when defined(macosx):
       skip()
     else:
@@ -304,10 +304,11 @@ suite "mDNS discovery":
 
       requireStarted(service, local)
       local.peerInfo.listenAddrs = @[ma("/ip4/10.0.0.1/tcp/4001")]
-      for i in 0 ..< 5:
+      const sendCount = 5
+      for i in 0 ..< sendCount:
         await sender.sendTo(destination, encodeMessage(query))
       checkUntilTimeout:
-        responses.len > 0
+        responses.len >= sendCount
       check:
         responses[0].id == query.id
         responses[0].questions == query.questions
@@ -315,12 +316,71 @@ suite "mDNS discovery":
         responses[0].additionals.allIt(not it.cacheFlush)
         service.peers(responses[0], PeerId.random()) ==
           @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
+
+  asyncTest "multicast query responses are rate limited":
+    when defined(macosx):
+      skip()
+    else:
+      let
+        local = Switch(
+          peerInfo: PeerInfo(
+            peerId: PeerId.random(), listenAddrs: @[ma("/ip4/192.168.1.2/tcp/4001")]
+          ),
+          rng: rng(),
+        )
+        service = MdnsService.new()
+        listener = MdnsNetwork.new()
+        query = DnsMessage(
+          questions: @[DnsQuestion(name: @["_p2p", "_udp", "local"], kind: PTR)]
+        )
+      var responses = 0
+      var unicastResponses = 0
+      proc received(
+          packet: seq[byte], context: MdnsReplyContext
+      ) {.async: (raises: []).} =
+        try:
+          let message = parseMessage(packet)
+          if message.response and service.peers(message, PeerId.random()).anyIt(
+              it.peerId == local.peerInfo.peerId
+          ):
+            inc responses
+        except ValueError:
+          raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
+
+      proc receivedUnicast(
+          transport: DatagramTransport, remote: TransportAddress
+      ) {.async: (raises: []).} =
+        try:
+          discard transport.getMessage()
+          inc unicastResponses
+        except TransportError:
+          raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
+
+      let sender = newDatagramTransport(receivedUnicast)
+      defer:
+        await sender.closeWait()
+        await listener.close()
+        await service.stop(local)
+      requireStarted(service, local)
+      let opened = await listener.open(received)
+      require opened.isOk
+      # Let the initial announcement finish before counting query responses.
+      await sleepAsync(200.milliseconds)
+      responses = 0
+      for i in 0 ..< 5:
+        check await listener.multicast(encodeMessage(query))
+      checkUntilTimeout:
+        responses > 0
+      for i in 0 ..< 2:
+        await sender.sendTo(initTAddress("224.0.0.251:5353"), encodeMessage(query))
+      checkUntilTimeout:
+        unicastResponses >= 2
       # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
       await sleepAsync(MdnsResponseInterval)
-      check responses.len == 1
-      await sender.sendTo(destination, encodeMessage(query))
+      check responses == 1
+      check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
-        responses.len >= 2
+        responses >= 2
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     when defined(macosx):
