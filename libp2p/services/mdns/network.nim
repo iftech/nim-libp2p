@@ -109,6 +109,9 @@ func isOpen*(network: MdnsNetwork): bool =
 func isLegacyQuery*(context: MdnsReplyContext): bool =
   context.remote.port != Port(MdnsPort)
 
+func isIpv6*(context: MdnsReplyContext): bool =
+  context.remote.family == AddressFamily.IPv6
+
 proc isLocalAddress*(network: MdnsNetwork, remote: TransportAddress): bool =
   ## Check whether the sender belongs to an active interface's subnet.
   if remote.family notin {AddressFamily.IPv4, AddressFamily.IPv6} or
