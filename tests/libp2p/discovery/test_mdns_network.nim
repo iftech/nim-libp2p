@@ -53,16 +53,16 @@ suite "mDNS network":
     proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
       @[
         NetworkInterface(
-          ifIndex: 1, state: StatusUp,
-          addresses: @[
-            InterfaceAddress.init(Local4, 24), InterfaceAddress.init(Local6, 64),
-          ],
+          ifIndex: 1,
+          state: StatusUp,
+          addresses:
+            @[InterfaceAddress.init(Local4, 24), InterfaceAddress.init(Local6, 64)],
         ),
         NetworkInterface(
-          ifIndex: 2, state: StatusDown,
-          addresses: @[InterfaceAddress.init(Down4, 16)],
+          ifIndex: 2, state: StatusDown, addresses: @[InterfaceAddress.init(Down4, 16)]
         ),
       ]
+
     let network = MdnsNetwork.new(interfaceProvider = interfaces)
     check:
       network.isLocalAddress(initTAddress("192.168.10.42:5353"))
