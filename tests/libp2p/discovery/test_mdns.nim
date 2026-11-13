@@ -101,7 +101,12 @@ suite "mDNS discovery":
           name: @["peer", "_p2p", "_udp", "local"],
           kind: TXT,
           ttl: 120,
-          strings: @["other=value", "dnsaddr=invalid", text, text],
+          strings: @[
+            "other=value", "dnsaddr=invalid", text, text,
+            "dnsaddr=/ip4/192.168.1.2/tcp/4001",
+            text & "/tcp/4002",
+            text & "/p2p/" & $id,
+          ],
         )
       ],
     )
