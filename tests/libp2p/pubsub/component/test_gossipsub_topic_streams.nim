@@ -573,7 +573,7 @@ suite "GossipSub Component - Topic streams":
         testExtensionConfig = Opt.some(TestExtensionConfig(onNegotiated: onNegotiated)),
       )
       .toGossipSub()
-    # the peer runs no GossipSub; it holds nodes[0]'s control stream, the only stream nodes[0] sends its ControlExtensions on
+    # the peer runs no GossipSub, so it sends no ControlExtensions until the test writes one
     let peer = makeStandardSwitch()
     let controlOpened = newFuture[void]("controlStreamOpened")
     let controlProtocol = LPProtocol(codecs: @[GossipSubCodec_13])
@@ -596,20 +596,20 @@ suite "GossipSub Component - Topic streams":
     await controlOpened
 
     const msg = "data"
-    let stream = await peer.dial(nodes[0].switch, TopicStreamsCodec)
+    let topicStream = await peer.dial(nodes[0].switch, TopicStreamsCodec)
     defer:
-      await stream.close()
-    await stream.writeLp(TopicRPCHeader(topic: topic).encode())
-    await stream.writeLp(
+      await topicStream.close()
+    await topicStream.writeLp(TopicRPCHeader(topic: topic).encode())
+    await topicStream.writeLp(
       Message.init(peer.peerInfo, msg, topic, 1'u64).topicRPC().encode()
     )
     check (await handled.popFirst()) == msg
 
-    let control = await peer.dial(nodes[0].switch, GossipSubCodec_13)
+    let controlStream = await peer.dial(nodes[0].switch, GossipSubCodec_13)
     defer:
-      await control.close()
+      await controlStream.close()
     # testExtension makes nodes[0] report the negotiation through onNegotiated
-    await control.writeLp(
+    await controlStream.writeLp(
       makeRPC(ControlExtensions(topicStreams: true, testExtension: true)).encode(false)
     )
     await negotiated
@@ -635,7 +635,7 @@ suite "GossipSub Component - Topic streams":
     checkUntilTimeout:
       not nodes[0].switch.isConnected(nodes[1].switch)
 
-  asyncTest "peer that opens a topic stream before its GossipSub 1.2 control stream is disconnected at its first control RPC":
+  asyncTest "GossipSub 1.2 peer's topic stream is delivered, then the peer is disconnected at its first RPC":
     let nodes = generateNodes(
         1, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
       )
@@ -754,6 +754,7 @@ suite "GossipSub Component - Topic streams":
     nodes[0].unsubscribeAll(topic)
     # nodes[1] stays subscribed, so only nodes[0] can end the stream
     await stream.join()
+    check nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 0
 
   asyncTest "topic stream for another topic stays open when the node unsubscribes":
     let nodes = generateNodes(
@@ -808,6 +809,7 @@ suite "GossipSub Component - Topic streams":
       nodes[1].peers.getOrDefault(nodes[0].peerInfo.peerId), [topic], subscribe = false
     )
     await stream.join()
+    check nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 0
 
   asyncTest "topic stream the node opened ends when its fanout expires":
     let nodes = generateNodes(
@@ -831,6 +833,7 @@ suite "GossipSub Component - Topic streams":
     let stream = nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId)[0]
     nodes[0].lastFanoutPubSub[topic] = Moment.now() # expires at the next heartbeat
     await stream.join()
+    check nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 0
 
   asyncTest "topic stream stays open when fanout expires for a topic the node subscribed to since":
     let nodes = generateNodes(
