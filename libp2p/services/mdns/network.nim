@@ -109,6 +109,24 @@ func isOpen*(network: MdnsNetwork): bool =
 func isLegacyQuery*(context: MdnsReplyContext): bool =
   context.remote.port != Port(MdnsPort)
 
+proc isLocalAddress*(network: MdnsNetwork, remote: TransportAddress): bool =
+  ## Check whether the sender belongs to an active interface's subnet.
+  if remote.family notin {AddressFamily.IPv4, AddressFamily.IPv6} or
+      remote.isUnspecified() or remote.isMulticast():
+    return false
+  for iface in network.interfaceProvider():
+    if iface.ifIndex <= 0 or
+        (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
+      continue
+    for address in iface.addresses:
+      if address.host.family == remote.family and address.net.mask.prefix > 0 and
+          address.net.contains(remote):
+        return true
+  false
+
+proc isLocalSource*(network: MdnsNetwork, context: MdnsReplyContext): bool =
+  network.isLocalAddress(context.remote)
+
 proc expandAddresses*(
     network: MdnsNetwork, addresses: seq[MultiAddress]
 ): seq[MultiAddress] =

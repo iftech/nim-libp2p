@@ -259,6 +259,8 @@ proc received(
       debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
       return
   if message.response:
+    if not service.network.isLocalSource(context):
+      return
     for peer in service.peers(message, switch.peerInfo.peerId):
       service.onPeerFound(peer)
   else:

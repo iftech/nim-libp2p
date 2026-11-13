@@ -371,7 +371,7 @@ suite "mDNS discovery":
     ) {.async: (raises: []).} =
       discard
 
-    let sender = newDatagramTransport(received)
+    let sender = newDatagramTransport(received, local = initTAddress("127.0.0.1:0"))
     try:
       requireStarted(service, local)
       requireStarted(service, local)
