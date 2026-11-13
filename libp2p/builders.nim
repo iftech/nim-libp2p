@@ -24,7 +24,7 @@ import
     relay/client,
     relay/rtransport,
   ],
-  services/[identify_pusher, natservice, wildcardresolverservice],
+  services/[identify_pusher, natservice, wildcardresolverservice, mdns],
   connmanager,
   upgrademngrs/muxedupgrade,
   address_manager,
@@ -41,7 +41,9 @@ export
   natservice.PortMapperFactory, natservice.NATService, natservice.natConfig,
   natservice.upnpConfig, natservice.natPmpConfig, natservice.explicitIpConfig,
   natservice.autonatConfig, natservice.holePunchingConfig,
-  natservice.AutonatV2ServiceConfig, natservice.AutonatV2Service, natservice.natService
+  natservice.AutonatV2ServiceConfig, natservice.AutonatV2Service, natservice.natService,
+  mdns.MdnsPeer, mdns.MdnsPeerFound, mdns.MdnsService, mdns.MdnsDefaultQueryInterval,
+  mdns.MdnsMinQueryInterval, mdns.MdnsMaxQueryInterval
 
 logScope:
   topics = "libp2p builders"
@@ -103,6 +105,9 @@ type
     rdvConfig: Opt[RendezVousConfig]
     kad: Opt[KadInfo]
     identifyPusherEnabled: bool
+    mdnsEnabled: bool
+    mdnsCallback: MdnsPeerFound
+    mdnsQueryInterval: Duration
     addressManagerConfig: Opt[AddressManagerConfig]
     enableWildcardResolver: bool
     addressPolicy: PeerAddressPolicy
@@ -128,6 +133,7 @@ proc new*(T: type[SwitchBuilder]): T =
     rdvConfig: Opt.none(RendezVousConfig),
     kad: Opt.none(KadInfo),
     identifyPusherEnabled: false,
+    mdnsEnabled: false,
     enableWildcardResolver: true,
     addressPolicy: defaultAddressPolicy,
     allowUndialableAddrs: false,
@@ -145,6 +151,24 @@ proc withPrivateKey*(
 
 proc withWildcardResolver*(b: SwitchBuilder, enabled: bool = true): SwitchBuilder =
   b.enableWildcardResolver = enabled
+  b
+
+proc withMdns*(
+    b: SwitchBuilder,
+    enabled: bool = true,
+    onPeerFound: MdnsPeerFound = nil,
+    queryInterval: Duration = MdnsDefaultQueryInterval,
+): SwitchBuilder =
+  ## Enable mDNS and optionally handle discovered peers. The query interval must
+  ## be between MdnsMinQueryInterval and MdnsMaxQueryInterval, inclusive.
+  if enabled:
+    doAssert queryInterval >= MdnsMinQueryInterval and
+      queryInterval <= MdnsMaxQueryInterval, "mDNS query interval is out of range"
+  ## Each call replaces the full mDNS configuration: passing no `onPeerFound`
+  ## clears a callback registered by an earlier `withMdns` call.
+  b.mdnsEnabled = enabled
+  b.mdnsCallback = onPeerFound
+  b.mdnsQueryInterval = queryInterval
   b
 
 proc withAddresses*(b: SwitchBuilder, addresses: seq[MultiAddress]): SwitchBuilder =
@@ -622,6 +646,11 @@ proc addServices(b: SwitchBuilder, switch: Switch) =
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
+
+  if b.mdnsEnabled:
+    switch.services.add(
+      MdnsService.new(b.mdnsCallback, queryInterval = b.mdnsQueryInterval)
+    )
 
 proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if not switch.peerStore.identify.isNil:
