@@ -190,14 +190,9 @@ proc peers*(service: MdnsService, message: DnsMessage, self: PeerId): seq[MdnsPe
           continue
         let address = MultiAddress.init(text[8 .. ^1]).valueOr:
           continue
-        let parts = ($address).rsplit("/p2p/", maxsplit = 1)
-        if parts.len != 2:
-          continue
-        let id = PeerId.init(parts[1]).valueOr:
+        let (id, base) = parseFullAddress(address).valueOr:
           continue
         if id == self:
-          continue
-        let base = MultiAddress.init(parts[0]).valueOr:
           continue
         if base.contains(multiCodec("p2p")).get(false) or not suitable(base):
           continue
@@ -220,19 +215,21 @@ proc multicast(
   except ValueError:
     debug "mDNS announcement encoding failed", err = getCurrentExceptionMsg()
 
+proc advertise(service: MdnsService) {.async: (raises: [CancelledError]).} =
+  service.advertisement = service.announcement(service.owner.peerInfo, service.instance)
+  try:
+    service.advertisementBytes = encodeMessage(service.advertisement)
+  except ValueError:
+    debug "mDNS announcement encoding failed", err = getCurrentExceptionMsg()
+    service.advertisement = default(DnsMessage)
+    service.advertisementBytes.setLen(0)
+  if service.advertisement.answers.len > 0:
+    discard await service.network.multicast(service.advertisementBytes)
+
 proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
   var firstIteration = true
   while true:
-    service.advertisement =
-      service.announcement(service.owner.peerInfo, service.instance)
-    try:
-      service.advertisementBytes = encodeMessage(service.advertisement)
-    except ValueError:
-      debug "mDNS announcement encoding failed", err = getCurrentExceptionMsg()
-      service.advertisement = default(DnsMessage)
-      service.advertisementBytes.setLen(0)
-    if service.advertisement.answers.len > 0:
-      discard await service.network.multicast(service.advertisementBytes)
+    await service.advertise()
     await service.multicast(
       DnsMessage(
         questions: @[DnsQuestion(name: service.serviceName, kind: PTR)],
@@ -247,19 +244,62 @@ proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
       let delay = min(1.seconds, remaining)
       await sleepAsync(delay)
       remaining = remaining - delay
-      service.advertisement =
-        service.announcement(service.owner.peerInfo, service.instance)
-      try:
-        service.advertisementBytes = encodeMessage(service.advertisement)
-      except ValueError:
-        debug "mDNS announcement encoding failed", err = getCurrentExceptionMsg()
-        service.advertisement = default(DnsMessage)
-        service.advertisementBytes.setLen(0)
-      if service.advertisement.answers.len > 0:
-        discard await service.network.multicast(service.advertisementBytes)
+      await service.advertise()
     firstIteration = false
     if remaining > 0.seconds:
       await sleepAsync(remaining)
+
+proc received(
+    service: MdnsService, switch: Switch, packet: seq[byte], context: MdnsReplyContext
+) {.async: (raises: []).} =
+  try:
+    let message = parseMessage(packet)
+    if message.response:
+      for peer in service.peers(message, switch.peerInfo.peerId):
+        service.onPeerFound(peer)
+    else:
+      # Our periodic query carries our own PTR as a known answer. This also
+      # distinguishes it from queries sent by other services on this host.
+      if not context.isLegacyQuery:
+        for record in message.answers:
+          if record.kind == PTR and sameName(record.name, service.serviceName) and
+              sameName(record.target, @[service.instance] & service.serviceName):
+            return
+      var matched = -1
+      for i, question in message.questions:
+        if sameName(question.name, service.serviceName) or
+            sameName(question.name, @[service.instance] & service.serviceName) or
+            sameName(question.name, @[service.instance, "local"]):
+          matched = i
+          break
+      if matched < 0:
+        return
+      if service.advertisement.answers.len == 0 or service.responsePending or
+          Moment.now() < service.nextResponse:
+        return
+      let question = message.questions[matched]
+      let unicast = question.unicastResponse or context.isLegacyQuery
+      var packet = service.advertisementBytes
+      if unicast:
+        var response = service.advertisement
+        for record in response.answers.mitems:
+          record.cacheFlush = false
+        for record in response.additionals.mitems:
+          record.cacheFlush = false
+        if context.isLegacyQuery:
+          response.id = message.id
+          response.questions = message.questions
+        packet = encodeMessage(response)
+      # Chronos requires a non-cancellable datagram callback.
+      service.responsePending = true
+      try:
+        let sent = await noCancel service.network.reply(packet, context, unicast)
+        if sent:
+          service.nextResponse = Moment.now() + MdnsResponseInterval
+      finally:
+        service.responsePending = false
+  except ValueError:
+    debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
 
 proc tryStart*(
     service: MdnsService, switch: Switch
@@ -269,57 +309,12 @@ proc tryStart*(
   service.owner = switch
   # Random instance labels avoid publishing the peer ID as a DNS host name.
   service.instance = "libp2p-" & $switch.rng.generate(uint64)
-  proc received(packet: seq[byte], context: MdnsReplyContext) {.async: (raises: []).} =
-    try:
-      let message = parseMessage(packet)
-      if message.response:
-        for peer in service.peers(message, switch.peerInfo.peerId):
-          service.onPeerFound(peer)
-      else:
-        # Our periodic query carries our own PTR as a known answer. This also
-        # distinguishes it from queries sent by other services on this host.
-        if not context.isLegacyQuery:
-          for record in message.answers:
-            if record.kind == PTR and sameName(record.name, service.serviceName) and
-                sameName(record.target, @[service.instance] & service.serviceName):
-              return
-        var matched = -1
-        for i, question in message.questions:
-          if sameName(question.name, service.serviceName) or
-              sameName(question.name, @[service.instance] & service.serviceName) or
-              sameName(question.name, @[service.instance, "local"]):
-            matched = i
-            break
-        if matched < 0:
-          return
-        if service.advertisement.answers.len == 0 or service.responsePending or
-            Moment.now() < service.nextResponse:
-          return
-        let question = message.questions[matched]
-        let unicast = question.unicastResponse or context.isLegacyQuery
-        var packet = service.advertisementBytes
-        if unicast:
-          var response = service.advertisement
-          for record in response.answers.mitems:
-            record.cacheFlush = false
-          for record in response.additionals.mitems:
-            record.cacheFlush = false
-          if context.isLegacyQuery:
-            response.id = message.id
-            response.questions = message.questions
-          packet = encodeMessage(response)
-        # Chronos requires a non-cancellable datagram callback.
-        service.responsePending = true
-        try:
-          let sent = await noCancel service.network.reply(packet, context, unicast)
-          if sent:
-            service.nextResponse = Moment.now() + MdnsResponseInterval
-        finally:
-          service.responsePending = false
-    except ValueError:
-      debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
+  proc onPacket(
+      packet: seq[byte], context: MdnsReplyContext
+  ): Future[void].Raising([]) =
+    service.received(switch, packet, context)
 
-  let opened = await service.network.open(received)
+  let opened = await service.network.open(onPacket)
   if opened.isErr:
     service.owner = nil
     return opened
