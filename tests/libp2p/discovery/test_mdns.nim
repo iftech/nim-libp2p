@@ -298,29 +298,29 @@ suite "mDNS discovery":
       # Multicast is delivered to all group members even when another local
       # mDNS responder shares port 5353.
       let destination = initTAddress("224.0.0.251", Port(MdnsPort))
-      try:
-        requireStarted(service, local)
-        local.peerInfo.listenAddrs = @[ma("/ip4/10.0.0.1/tcp/4001")]
-        for i in 0 ..< 5:
-          await sender.sendTo(destination, encodeMessage(query))
-        checkUntilTimeout:
-          responses.len > 0
-        check:
-          responses[0].id == query.id
-          responses[0].questions == query.questions
-          responses[0].answers.allIt(not it.cacheFlush)
-          responses[0].additionals.allIt(not it.cacheFlush)
-          service.peers(responses[0], PeerId.random()) ==
-            @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
-        # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
-        await sleepAsync(MdnsResponseInterval)
-        check responses.len == 1
-        await sender.sendTo(destination, encodeMessage(query))
-        checkUntilTimeout:
-          responses.len >= 2
-      finally:
+      defer:
         await service.stop(local)
         await sender.closeWait()
+
+      requireStarted(service, local)
+      local.peerInfo.listenAddrs = @[ma("/ip4/10.0.0.1/tcp/4001")]
+      for i in 0 ..< 5:
+        await sender.sendTo(destination, encodeMessage(query))
+      checkUntilTimeout:
+        responses.len > 0
+      check:
+        responses[0].id == query.id
+        responses[0].questions == query.questions
+        responses[0].answers.allIt(not it.cacheFlush)
+        responses[0].additionals.allIt(not it.cacheFlush)
+        service.peers(responses[0], PeerId.random()) ==
+          @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
+      # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
+      await sleepAsync(MdnsResponseInterval)
+      check responses.len == 1
+      await sender.sendTo(destination, encodeMessage(query))
+      checkUntilTimeout:
+        responses.len >= 2
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     when defined(macosx):
@@ -373,28 +373,28 @@ suite "mDNS discovery":
           found.completeOnce(peer)
       )
     let sender = newDatagramTransport(ignoreDatagram, local = initTAddress("127.0.0.1:0"))
-    try:
-      requireStarted(service, local)
-      requireStarted(service, local)
-      when defined(macosx):
-        # Hosted macOS runners may not have a usable multicast route.
-        await service.stop(local)
-        await service.stop(local)
-        requireStarted(service, local)
-        skip()
-      else:
-        await sender.sendTo(
-          initTAddress("224.0.0.251", Port(MdnsPort)), packet(SyntheticResponseHex)
-        )
-        checkpoint "No IPv4 mDNS multicast response received"
-        check (await found) ==
-          MdnsPeer(peerId: remoteId, addrs: @[ma("/ip4/192.168.1.2/tcp/12345")])
-        await service.stop(local)
-        await service.stop(local)
-        requireStarted(service, local)
-    finally:
+    defer:
       await service.stop(local)
       await sender.closeWait()
+
+    requireStarted(service, local)
+    requireStarted(service, local)
+    when defined(macosx):
+      # Hosted macOS runners may not have a usable multicast route.
+      await service.stop(local)
+      await service.stop(local)
+      requireStarted(service, local)
+      skip()
+    else:
+      await sender.sendTo(
+        initTAddress("224.0.0.251", Port(MdnsPort)), packet(SyntheticResponseHex)
+      )
+      checkpoint "No IPv4 mDNS multicast response received"
+      check (await found) ==
+        MdnsPeer(peerId: remoteId, addrs: @[ma("/ip4/192.168.1.2/tcp/12345")])
+      await service.stop(local)
+      await service.stop(local)
+      requireStarted(service, local)
 
   asyncTest "receive an IPv6 multicast datagram":
     when defined(macosx):
@@ -424,20 +424,20 @@ suite "mDNS discovery":
               found.completeOnce(peer)
           )
         let sender = newDatagramTransport6(ignoreDatagram)
-        try:
-          require sender.selectMulticastInterface6(interfaceIndex)
-          requireStarted(service, local)
-          await sender.sendTo(
-            initTAddress("[ff02::fb]:5353"),
-            encodeMessage(service.announcement(remote, "ipv6-peer")),
-          )
-          check (await found) ==
-            MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
-          await sleepAsync(MdnsResponseInterval)
-          check foundCount == 1
-        finally:
+        defer:
           await service.stop(local)
           await sender.closeWait()
+
+        require sender.selectMulticastInterface6(interfaceIndex)
+        requireStarted(service, local)
+        await sender.sendTo(
+          initTAddress("[ff02::fb]:5353"),
+          encodeMessage(service.announcement(remote, "ipv6-peer")),
+        )
+        check (await found) ==
+          MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
+        await sleepAsync(MdnsResponseInterval)
+        check foundCount == 1
       else:
         # No active non-loopback interface has an IPv6 address.
         skip()
@@ -469,12 +469,13 @@ suite "mDNS discovery":
             if peer.peerId == first.peerInfo.peerId:
               secondFound.completeOnce()
         )
-      try:
-        requireStarted(firstService, first)
-        requireStarted(secondService, second)
-        checkpoint "mDNS multicast discovery failed; check UDP port 5353 and multicast connectivity"
-        await firstFound
-        await secondFound
-      finally:
+      defer:
         await firstService.stop(first)
         await secondService.stop(second)
+
+      requireStarted(firstService, first)
+      requireStarted(secondService, second)
+      checkpoint "mDNS multicast discovery failed; check UDP port 5353 and multicast connectivity"
+      await firstFound
+      await secondFound
+
