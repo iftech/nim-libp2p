@@ -416,8 +416,17 @@ suite "GossipSub Component - Topic streams":
     check nodes[0].switch.isConnected(nodes[1].switch)
 
   asyncTest "topic stream frames from a graylisted peer are dropped until its score recovers":
+    let negotiated = newWaitGroup(2)
     let nodes = generateNodes(
-        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+        2,
+        gossip = true,
+        topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+        testExtensionConfig = Opt.some(
+          TestExtensionConfig(
+            onNegotiated: proc(peer: PeerId) {.gcsafe, raises: [].} =
+              negotiated.done()
+          )
+        ),
       )
       .toGossipSub()
     startAndDeferStop(nodes)
@@ -429,9 +438,7 @@ suite "GossipSub Component - Topic streams":
     nodes[0].subscribe(topic, onMessage)
     await connect(nodes[0], nodes[1])
     # wait for negotiation, so nodes[1]'s ControlExtensions is not counted as a graylisted RPC
-    checkUntilTimeout:
-      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
-        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+    await negotiated.wait()
 
     let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
     # nodes[1]'s score is 0, so this graylists it
@@ -439,18 +446,27 @@ suite "GossipSub Component - Topic streams":
     let ignored = currentGraylistedRpcs()
 
     const firstMsg = "first"
+    let graylistedStream =
+      await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
+    defer:
+      await graylistedStream.close()
+    await graylistedStream.writeLp(TopicRPCHeader(topic: topic).encode())
+    await graylistedStream.writeLp(
+      Message.init(nodes[1].peerInfo, firstMsg, topic, 1'u64).topicRPC().encode()
+    )
+    # nodes[0] drops the frame before it reads the end of the stream and ends its side
+    await graylistedStream.closeWrite()
+    var data: byte
+    check:
+      (await graylistedStream.readOnce(addr data, 1)) == 0
+      currentGraylistedRpcs() == ignored + 1
+
+    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
+    const secondMsg = "second"
     let stream = await nodes[1].switch.dial(nodes[0].switch, TopicStreamsCodec)
     defer:
       await stream.close()
     await stream.writeLp(TopicRPCHeader(topic: topic).encode())
-    await stream.writeLp(
-      Message.init(nodes[1].peerInfo, firstMsg, topic, 1'u64).topicRPC().encode()
-    )
-    checkUntilTimeout:
-      currentGraylistedRpcs() > ignored
-
-    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
-    const secondMsg = "second"
     await stream.writeLp(
       Message.init(nodes[1].peerInfo, secondMsg, topic, 2'u64).topicRPC().encode()
     )
