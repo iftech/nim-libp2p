@@ -49,6 +49,8 @@ jobs:
         nim:
           - ref: v2.2.6
             memory_management: refc
+          - ref: v2.2.6
+            memory_management: orc
           - ref: v2.2.14
             memory_management: refc
           - ref: v2.2.14
