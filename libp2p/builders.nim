@@ -42,7 +42,8 @@ export
   natservice.upnpConfig, natservice.natPmpConfig, natservice.explicitIpConfig,
   natservice.autonatConfig, natservice.holePunchingConfig,
   natservice.AutonatV2ServiceConfig, natservice.AutonatV2Service, natservice.natService,
-  mdns.MdnsPeer, mdns.MdnsPeerFound
+  mdns.MdnsPeer, mdns.MdnsPeerFound, mdns.MdnsService, mdns.MdnsDefaultQueryInterval,
+  mdns.MdnsMinQueryInterval, mdns.MdnsMaxQueryInterval
 
 logScope:
   topics = "libp2p builders"
@@ -163,6 +164,8 @@ proc withMdns*(
   if enabled:
     doAssert queryInterval >= MdnsMinQueryInterval and
       queryInterval <= MdnsMaxQueryInterval, "mDNS query interval is out of range"
+  ## Each call replaces the full mDNS configuration: passing no `onPeerFound`
+  ## clears a callback registered by an earlier `withMdns` call.
   b.mdnsEnabled = enabled
   b.mdnsCallback = onPeerFound
   b.mdnsQueryInterval = queryInterval
