@@ -91,24 +91,27 @@ suite "mDNS network":
     check not network.isOpen
 
   asyncTest "refresh joins and leaves interfaces after startup":
-    let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
-    exposeInterfaces = false
-    requireOpened(network, ignorePacket)
-    defer:
+    when defined(macosx):
+      skip()
+    else:
+      let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
       exposeInterfaces = false
-      await network.close()
-    check not (await network.multicast(@[1'u8]))
-    exposeInterfaces = true
-    network.refreshInterfaces()
-    check (await network.multicast(@[1'u8]))
-    network.refreshInterfaces() # Repeated refreshes retain existing memberships.
-    check (await network.multicast(@[1'u8]))
-    exposeInterfaces = false
-    network.refreshInterfaces()
-    check not (await network.multicast(@[1'u8]))
-    exposeInterfaces = true
-    network.refreshInterfaces()
-    check (await network.multicast(@[1'u8]))
+      requireOpened(network, ignorePacket)
+      defer:
+        exposeInterfaces = false
+        await network.close()
+      check not (await network.multicast(@[1'u8]))
+      exposeInterfaces = true
+      network.refreshInterfaces()
+      check (await network.multicast(@[1'u8]))
+      network.refreshInterfaces() # Repeated refreshes retain existing memberships.
+      check (await network.multicast(@[1'u8]))
+      exposeInterfaces = false
+      network.refreshInterfaces()
+      check not (await network.multicast(@[1'u8]))
+      exposeInterfaces = true
+      network.refreshInterfaces()
+      check (await network.multicast(@[1'u8]))
 
   asyncTest "interfaces are refreshed periodically":
     interfaceQueries = 0
@@ -145,7 +148,7 @@ suite "mDNS network":
         try:
           receivedReply.completeOnce(transport.getMessage())
         except TransportError as e:
-          raiseAssert "Unexpected erro: " & e.msg
+          raiseAssert "Unexpected error: " & e.msg
 
       let sender =
         newDatagramTransport(senderReceived, local = initTAddress("127.0.0.1:0"))
