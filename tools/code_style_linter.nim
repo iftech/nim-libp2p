@@ -81,4 +81,3 @@ proc runImplicitResult(ast: PNode, s: ImplicitResultSettings): seq[Finding] =
 let codeStyle* = Linter()
 
 let implicitResult* = codeStyle.addCheck(runImplicitResult)
-
