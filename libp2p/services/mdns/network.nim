@@ -76,8 +76,8 @@ type
     refresher: Future[void].Raising([CancelledError])
     refreshInterval: Duration
     multicastLock6: AsyncLock
-    interfacesProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
-    networkInterfaceProvider: NetworkInterfaceProvider
+    interfaceProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
+    addressProvider: NetworkInterfaceProvider
     onPacket: MdnsPacketReceived
     activeOperations: int
     idle: AsyncEvent
@@ -89,16 +89,16 @@ logScope:
 
 proc new*(
     T: typedesc[MdnsNetwork],
-    networkInterfaceProvider: NetworkInterfaceProvider = getAddresses,
-    interfacesProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+    addressProvider: NetworkInterfaceProvider = getAddresses,
+    interfaceProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].} =
       getInterfaces,
     refreshInterval: Duration = MdnsInterfaceRefreshInterval,
 ): T =
   T(
     multicastLock4: newAsyncLock(),
     multicastLock6: newAsyncLock(),
-    networkInterfaceProvider: networkInterfaceProvider,
-    interfacesProvider: interfacesProvider,
+    addressProvider: addressProvider,
+    interfaceProvider: interfaceProvider,
     refreshInterval: refreshInterval,
     idle: newAsyncEvent(),
   )
@@ -113,9 +113,9 @@ proc expandAddresses*(
     network: MdnsNetwork, addresses: seq[MultiAddress]
 ): seq[MultiAddress] =
   ## Expand wildcard listen addresses using the configured interface provider.
-  if network.networkInterfaceProvider.isNil:
+  if network.addressProvider.isNil:
     return addresses
-  expandWildcardAddresses(network.networkInterfaceProvider, addresses)
+  expandWildcardAddresses(network.addressProvider, addresses)
 
 template checkSocketOption(status: cint, option: string) =
   if status != 0:
@@ -193,9 +193,7 @@ proc selectMulticastInterface4(
       posix.SockLen(sizeof(selected)),
     ) == 0
 
-proc configureMulticast6(
-    transport: DatagramTransport
-): LPResult[void] =
+proc configureMulticast6(transport: DatagramTransport): LPResult[void] =
   var hops = MdnsMulticastHopLimit
   when defined(windows):
     let status = winlean.setsockopt(
@@ -229,24 +227,23 @@ proc membership6(
   membership.interfaceIndex = index
   when defined(windows):
     let socket = winlean.SocketHandle(transport.fd)
-    let joined = winlean.setsockopt(
+    let status = winlean.setsockopt(
       socket,
       ipv6Protocol,
       (if join: ipv6JoinGroup else: ipv6LeaveGroup),
       addr membership,
       winlean.SockLen(sizeof(membership)),
     )
-    checkSocketOption(joined, "IPV6_JOIN_GROUP")
   else:
     let socket = posix.SocketHandle(transport.fd)
-    let joined = posix.setsockopt(
+    let status = posix.setsockopt(
       socket,
       posix.IPPROTO_IPV6,
       (if join: posix.IPV6_JOIN_GROUP else: posix.IPV6_LEAVE_GROUP),
       addr membership,
       posix.SockLen(sizeof(membership)),
     )
-    checkSocketOption(joined, "IPV6_JOIN_GROUP")
+  checkSocketOption(status, (if join: "IPV6_JOIN_GROUP" else: "IPV6_LEAVE_GROUP"))
   ok()
 
 proc selectMulticastInterface6*(transport: DatagramTransport, index: uint32): bool =
@@ -273,7 +270,7 @@ proc refreshInterfaces*(network: MdnsNetwork) =
   ## Reconcile multicast memberships with the current network interfaces.
   var wanted4: seq[array[4, byte]]
   var wanted6: seq[uint32]
-  for iface in network.interfacesProvider():
+  for iface in network.interfaceProvider():
     if iface.ifIndex <= 0 or
         (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
       continue
@@ -306,8 +303,7 @@ proc refreshInterfaces*(network: MdnsNetwork) =
       if index notin wanted6:
         discard membership6(network.transport6, index, false)
     for index in wanted6:
-      if index in network.interfaces6 or
-          membership6(network.transport6, index).isOk:
+      if index in network.interfaces6 or membership6(network.transport6, index).isOk:
         current6.add(index)
       else:
         debug "IPv6 mDNS multicast join failed", interfaceIndex = index

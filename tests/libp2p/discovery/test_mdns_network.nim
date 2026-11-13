@@ -91,7 +91,7 @@ suite "mDNS network":
     check not network.isOpen
 
   asyncTest "refresh joins and leaves interfaces after startup":
-    let network = MdnsNetwork.new(interfacesProvider = changingInterfaces)
+    let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
     exposeInterfaces = false
     requireOpened(network, ignorePacket)
     defer:
@@ -113,7 +113,7 @@ suite "mDNS network":
   asyncTest "interfaces are refreshed periodically":
     interfaceQueries = 0
     let network = MdnsNetwork.new(
-      interfacesProvider = countingInterfaces, refreshInterval = 10.milliseconds
+      interfaceProvider = countingInterfaces, refreshInterval = 10.milliseconds
     )
     requireOpened(network, ignorePacket)
     defer:
@@ -147,9 +147,8 @@ suite "mDNS network":
         except TransportError as e:
           raiseAssert "Unexpected erro: " & e.msg
 
-      let sender = newDatagramTransport(
-        senderReceived, local = initTAddress("127.0.0.1:0")
-      )
+      let sender =
+        newDatagramTransport(senderReceived, local = initTAddress("127.0.0.1:0"))
       defer:
         await sender.closeWait()
       requireOpened(network, received)
@@ -202,9 +201,8 @@ suite "mDNS network":
         elif packet == second:
           secondEntered.fire()
 
-      let sender = newDatagramTransport(
-        ignoreDatagram, local = initTAddress("127.0.0.1:0")
-      )
+      let sender =
+        newDatagramTransport(ignoreDatagram, local = initTAddress("127.0.0.1:0"))
       defer:
         await sender.closeWait()
       requireOpened(network, received)
@@ -252,7 +250,7 @@ suite "mDNS network":
         not network.isOpen
 
   asyncTest "refreshing interfaces while a multicast send is queued":
-    let network = MdnsNetwork.new(interfacesProvider = changingInterfaces)
+    let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
     exposeInterfaces = true
     requireOpened(network, ignorePacket)
     defer:
