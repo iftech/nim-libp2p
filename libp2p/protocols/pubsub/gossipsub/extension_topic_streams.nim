@@ -4,7 +4,8 @@
 {.push raises: [].}
 
 import std/[tables, deques, sequtils]
-import chronos, chronicles, results, metrics
+import chronos, chronicles, metrics
+import ../../../results
 import ../../../stream/connection
 import ../../../peerid
 import ./extensions_types
@@ -282,20 +283,20 @@ proc closeTopic*(
 
 proc readHeader(
     s: TopicStreams, reader: TopicReader
-): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError]).} =
+): Future[LPResult[seq[byte]]] {.async: (raises: [CancelledError, LPStreamError]).} =
   let length = await reader.stream.readVarint()
   if length > uint64(s.maxMessageSize):
     raise newException(MaxSizeError, "topic header exceeds maximum message size")
   if length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
     trace "resetting topic stream because incoming header budget is full"
-    raise newException(LPStreamError, "topic header exceeds remaining byte budget")
+    return err("topic header exceeds remaining byte budget")
   let size = int(length)
   s.incomingBytes += size
   reader.headerBytes = size
   var data = newSeqUninit[byte](size)
   if size > 0:
     await reader.stream.readExactly(addr data[0], size)
-  return data
+  return ok(data)
 
 proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledError]).} =
   if s.stopped:
@@ -319,7 +320,8 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
 
   var headerBytes: seq[byte]
   try:
-    headerBytes = await s.readHeader(reader).wait(TopicStreamHeaderTimeout)
+    headerBytes = (await s.readHeader(reader).wait(TopicStreamHeaderTimeout)).valueOr:
+      return
   except MaxSizeError:
     s.penalize("topic stream header exceeds byte limit")
     return
