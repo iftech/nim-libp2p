@@ -2,7 +2,9 @@
 # Copyright (c) Status Research & Development GmbH
 
 import lint
-import tools/[chronicles_linter, code_style_linter]
+import tools/[
+  chronicles_linter, chronos_linter, code_style_linter, libp2p_linter, unittest2_linter,
+]
 
 runLint:
   sources = ["."]
@@ -43,4 +45,23 @@ runLint:
   step "Check code style":
     ignoredPatterns = ["./tools/**/*"]
     check implicitResult:
+      severity = hint
+
+  step "Check chronos usage":
+    check forbiddenCall:
+      severity = hint
+      settings:
+        # `Event.wait()` takes no timeout; only `wait(fut, duration)` picks one.
+        minArgs = 1
+    check completedCancel:
+      severity = hint
+
+  step "Check unittest2 usage":
+    check checkFalse:
+      severity = error
+
+  step "Check nim-libp2p usage":
+    check peerIdRandom:
+      severity = hint
+    check checkUntilTimeout:
       severity = hint
