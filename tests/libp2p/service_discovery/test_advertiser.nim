@@ -15,7 +15,7 @@ import
     protocols/service_discovery/advertiser,
     stream/connection,
   ]
-import ../../tools/[fault_stream, lifecycle, multiaddress, unittest]
+import ../../tools/[fault_stream, lifecycle, multiaddress, padding, unittest]
 import ./utils
 
 proc holdUntil(gate: AsyncEvent) {.async: (raises: [CancelledError]).} =
@@ -290,7 +290,7 @@ suite "Advertiser - caller-supplied advertisement":
   test "rejects an advertisement padded past MaxXPRSize with unknown fields":
     let disco = setupServiceDiscoveryNode()
     let service = makeServiceInfo()
-    let advert = padAdvertisement(makeAdvertisement(service.id).encode(), MaxXPRSize)
+    let advert = pad(makeAdvertisement(service.id).encode(), MaxXPRSize)
 
     # the decoder skips the padding, so only the incoming length rejects this
     check advert.len > MaxXPRSize
