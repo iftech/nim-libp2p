@@ -282,9 +282,9 @@ proc received(
       return
     let question = message.questions[matched]
     let unicast = question.unicastResponse or context.isLegacyQuery
-    if service.advertisement.answers.len == 0 or
-        (not unicast and
-          (service.responsePending or Moment.now() < service.nextResponse)):
+    if service.advertisement.answers.len == 0 or (
+      not unicast and (service.responsePending or Moment.now() < service.nextResponse)
+    ):
       return
     var packet = service.advertisementBytes
     if unicast:

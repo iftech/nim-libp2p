@@ -40,7 +40,9 @@ const
 proc packet(hex: string): seq[byte] =
   hex.parseHexStr().mapIt(byte(it))
 
-proc ignoreDatagram(t: DatagramTransport, remote: TransportAddress) {.async: (raises: []).} =
+proc ignoreDatagram(
+    t: DatagramTransport, remote: TransportAddress
+) {.async: (raises: []).} =
   discard
 
 template requireStarted(service, node: untyped) =
@@ -340,9 +342,10 @@ suite "mDNS discovery":
       ) {.async: (raises: []).} =
         try:
           let message = parseMessage(packet)
-          if message.response and service.peers(message, PeerId.random()).anyIt(
-              it.peerId == local.peerInfo.peerId
-          ):
+          if message.response and
+              service.peers(message, PeerId.random()).anyIt(
+                it.peerId == local.peerInfo.peerId
+              ):
             inc responses
         except ValueError:
           raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
@@ -432,7 +435,8 @@ suite "mDNS discovery":
         proc(peer: MdnsPeer) {.gcsafe, raises: [].} =
           found.completeOnce(peer)
       )
-    let sender = newDatagramTransport(ignoreDatagram, local = initTAddress("127.0.0.1:0"))
+    let sender =
+      newDatagramTransport(ignoreDatagram, local = initTAddress("127.0.0.1:0"))
     defer:
       await service.stop(local)
       await sender.closeWait()
@@ -494,8 +498,9 @@ suite "mDNS discovery":
           initTAddress("[ff02::fb]:5353"),
           encodeMessage(service.announcement(remote, "ipv6-peer")),
         )
-        check (await found) ==
-          MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
+        check (await found) == MdnsPeer(
+          peerId: remote.peerId, addrs: remote.listenAddrs
+        )
         # No condition to wait for: verify the peer is not reported a second time.
         await sleepAsync(MdnsResponseInterval)
         check foundCount == 1
@@ -539,4 +544,3 @@ suite "mDNS discovery":
       checkpoint "mDNS multicast discovery failed; check UDP port 5353 and multicast connectivity"
       await firstFound
       await secondFound
-
