@@ -250,11 +250,11 @@ proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
       await sleepAsync(remaining)
 
 proc received(
-    service: MdnsService, switch: Switch, packet: seq[byte], context: MdnsReplyContext
+    service: MdnsService, switch: Switch, datagram: seq[byte], context: MdnsReplyContext
 ) {.async: (raises: []).} =
   let message =
     try:
-      parseMessage(packet)
+      parseMessage(datagram)
     except ValueError:
       debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
       return
