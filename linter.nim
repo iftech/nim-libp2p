@@ -2,9 +2,11 @@
 # Copyright (c) Status Research & Development GmbH
 
 import lint
-import tools/[
-  chronicles_linter, chronos_linter, code_style_linter, libp2p_linter, unittest2_linter,
-]
+import
+  tools/[
+    chronicles_linter, chronos_linter, code_style_linter, libp2p_linter,
+    unittest2_linter,
+  ]
 
 runLint:
   sources = ["."]
