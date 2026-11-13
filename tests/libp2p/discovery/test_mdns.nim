@@ -436,6 +436,7 @@ suite "mDNS discovery":
         )
         check (await found) ==
           MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
+        # No condition to wait for: verify the peer is not reported a second time.
         await sleepAsync(MdnsResponseInterval)
         check foundCount == 1
       else:
