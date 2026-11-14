@@ -4,7 +4,8 @@
 {.push raises: [].}
 
 import std/[tables, deques, sequtils]
-import chronos, chronicles, results, metrics
+import chronos, chronicles, metrics
+import ../../../results
 import ../../../stream/connection
 import ../../../peerid
 import ./extensions_types
@@ -32,6 +33,8 @@ when defined(libp2p_testing):
 type
   TopicStreamsConfig* = object
     ## Experimental draft libp2p/specs#729. Limits apply per peer.
+    ## Byte budgets must each be at least twice maxMessageSize to hold one
+    ## maximum-size header and frame. Existing streams share these budgets.
     maxIncomingStreams*: int = 64 # includes pending headers
     maxOutgoingStreams*: int = 64 # includes pending dials
     maxQueuedBytes*: int = 8 * 1024 * 1024 # queued/in-flight data and stream headers
@@ -83,6 +86,15 @@ func validate*(config: TopicStreamsConfig): Result[void, cstring] =
       config.maxQueuedBytes <= 0 or config.maxIncomingBytes <= 0 or
       config.maxQueuedMessages <= 0:
     return err("gossipsub: invalid topic stream limits")
+  ok()
+
+func validate*(config: TopicStreamsConfig, maxMessageSize: int): Result[void, cstring] =
+  ?config.validate()
+  # Headers and frames are each bounded by maxMessageSize and share the budget.
+  if maxMessageSize > config.maxQueuedBytes div 2:
+    return err("gossipsub: maxQueuedBytes must be at least twice maxMessageSize")
+  if maxMessageSize > config.maxIncomingBytes div 2:
+    return err("gossipsub: maxIncomingBytes must be at least twice maxMessageSize")
   ok()
 
 proc new*(
@@ -271,18 +283,20 @@ proc closeTopic*(
 
 proc readHeader(
     s: TopicStreams, reader: TopicReader
-): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError]).} =
+): Future[LPResult[seq[byte]]] {.async: (raises: [CancelledError, LPStreamError]).} =
   let length = await reader.stream.readVarint()
-  if length > uint64(s.maxMessageSize) or
-      length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
-    raise newException(MaxSizeError, "topic header exceeds byte limit")
+  if length > uint64(s.maxMessageSize):
+    raise newException(MaxSizeError, "topic header exceeds maximum message size")
+  if length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
+    trace "resetting topic stream because incoming header budget is full"
+    return err("topic header exceeds remaining byte budget")
   let size = int(length)
   s.incomingBytes += size
   reader.headerBytes = size
   var data = newSeqUninit[byte](size)
   if size > 0:
     await reader.stream.readExactly(addr data[0], size)
-  return data
+  return ok(data)
 
 proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledError]).} =
   if s.stopped:
@@ -306,7 +320,8 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
 
   var headerBytes: seq[byte]
   try:
-    headerBytes = await s.readHeader(reader).wait(TopicStreamHeaderTimeout)
+    headerBytes = (await s.readHeader(reader).wait(TopicStreamHeaderTimeout)).valueOr:
+      return
   except MaxSizeError:
     s.penalize("topic stream header exceeds byte limit")
     return
@@ -333,9 +348,12 @@ proc readTopic*(s: TopicStreams, stream: Stream) {.async: (raises: [CancelledErr
     if length == 0:
       s.fail("empty topic RPC frame")
       return
-    if length > uint64(s.maxMessageSize) or
-        length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
-      s.penalize("incoming frame exceeds byte limit", reader.topic)
+    if length > uint64(s.maxMessageSize):
+      s.penalize("incoming frame exceeds maximum message size", reader.topic)
+      return
+    if length > uint64(s.config.maxIncomingBytes - s.incomingBytes):
+      trace "resetting topic stream because incoming frame budget is full",
+        topic = reader.topic
       return
     let size = int(length)
     s.incomingBytes += size

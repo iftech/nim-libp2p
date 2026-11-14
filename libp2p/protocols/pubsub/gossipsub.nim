@@ -1376,6 +1376,8 @@ method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
     )
 
   g.parameters.validateParameters().onErrorRaise(InitializationError)
+  g.parameters.topicStreamsConfig.ifValue(config):
+    config.validate(g.maxMessageSize).onErrorRaise(InitializationError)
 
   # init the floodsub stuff here, we customize timedcache in gossip!
   g.seen =

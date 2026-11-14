@@ -553,11 +553,21 @@ suite "GossipSub":
       gossipSub.salt("0".toBytes()) notin gossipSub.seen
 
   test "invalid topic stream configuration fails GossipSub construction":
-    let params = GossipSubParams.init(
-      topicStreamsConfig = Opt.some(TopicStreamsConfig(maxIncomingStreams: 2))
-    )
-    expect InitializationError:
-      discard GossipSub.init(makeStandardSwitch(), parameters = params, rng = rng())
+    const largeMessageSize = 10 * 1024 * 1024
+    for (config, maxMessageSize) in [
+      (TopicStreamsConfig(maxIncomingStreams: 2), DefaultPubSubMaxMessageSize),
+      # Raising the message limit must not silently leave either byte budget too small.
+      (TopicStreamsConfig(), largeMessageSize),
+      (TopicStreamsConfig(maxQueuedBytes: 2 * largeMessageSize), largeMessageSize),
+    ]:
+      let params = GossipSubParams.init(topicStreamsConfig = Opt.some(config))
+      expect InitializationError:
+        discard GossipSub.init(
+          makeStandardSwitch(),
+          parameters = params,
+          maxMessageSize = maxMessageSize,
+          rng = rng(),
+        )
 
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
