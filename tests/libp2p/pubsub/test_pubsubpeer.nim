@@ -237,7 +237,7 @@ suite "PubSubPeer send stream":
       await stable.close()
       await recovered.close()
     await stableOpened
-    await sleepAsync(450.milliseconds)
+    await sleepAsync(peer.sendStreamRetryMaxDelay + 50.milliseconds)
     await stable.close()
     await recoveredOpened.wait(200.milliseconds)
     check attempts == 6
