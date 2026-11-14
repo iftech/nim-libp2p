@@ -17,7 +17,7 @@ import
     upgrademngrs/upgrade,
     utils/future,
   ]
-import ../tools/[unittest, sync, multiaddress, stream]
+import ../tools/[unittest, sync, multiaddress, stream, bufferstream]
 
 {.push raises: [].}
 
@@ -358,10 +358,13 @@ suite "Multistream select":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector() {.async.} =
+    proc connector(accepted = true) {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, codecs)) == true
+        (await msDial.select(stream, codecs)) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -372,9 +375,7 @@ suite "Multistream select":
     # accept order need not match dial order, so the extra dial must wait
     await handlersEntered.wait()
 
-    # This one will fail during negotiation
-    expect LPStreamEOFError:
-      await connector()
+    await connector(accepted = false)
     # check that the dialers aren't finished
     check:
       (await dialers[0].withTimeout(10.milliseconds)) == false
@@ -519,10 +520,13 @@ suite "Multistream :: stream limits":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector() {.async.} =
+    proc connector(accepted = true) {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, protocol.codecs[0])) == true
+        (await msDial.select(stream, protocol.codecs[0])) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -533,8 +537,7 @@ suite "Multistream :: stream limits":
 
     await reserved.wait()
 
-    expect LPStreamEOFError:
-      await connector()
+    await connector(accepted = false)
 
     await dialers.cancelAndWait()
     await transport2.stop()
@@ -559,10 +562,13 @@ suite "Multistream :: stream limits":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector(proto: string): Future[void] {.async.} =
+    proc connector(proto: string, accepted = true): Future[void] {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, proto)) == true
+        (await msDial.select(stream, proto)) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -572,8 +578,7 @@ suite "Multistream :: stream limits":
 
     await reserved.wait()
 
-    expect LPStreamEOFError:
-      await connector("/test/proto1/1.0.0")
+    await connector("/test/proto1/1.0.0", accepted = false)
 
     await @[d1, d2].cancelAndWait()
     await transport2.stop()
@@ -644,10 +649,13 @@ suite "Multistream :: stream limits":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector(): Future[void] {.async.} =
+    proc connector(accepted = true): Future[void] {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, protocol.codecs[0])) == true
+        (await msDial.select(stream, protocol.codecs[0])) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -658,13 +666,61 @@ suite "Multistream :: stream limits":
 
     await reserved.wait()
 
-    expect LPStreamEOFError:
-      await connector()
+    await connector(accepted = false)
 
     await dialers.cancelAndWait()
     await transport2.stop()
     await transport1.stop()
     await handlerWait.cancelAndWait()
+
+  asyncTest "a full protocol budget permits negotiation of another protocol":
+    let (client, server) = bridgedConnections()
+    let full = LPProtocol.new(codecs, makeBlockedHandler(), maxIncomingStreamsTotal = 1)
+    check full.reserveIncoming(server.peerId)
+    let other =
+      LPProtocol.new("/test/other/1", makeBlockedHandler(), maxIncomingStreamsTotal = 1)
+    let ms = MultistreamSelect.new()
+    ms.addHandler(full)
+    ms.addHandler(other)
+    let handling = ms.handle(server)
+    defer:
+      await handling.cancelAndWait()
+      full.releaseIncoming(server.peerId)
+      await client.close()
+    check (await MultistreamSelect.select(client, @[codecs, other.codec])) == other.codec
+    check not other.canAcceptIncoming(server.peerId)
+    await handling.cancelAndWait()
+    check other.canAcceptIncoming(server.peerId)
+
+  asyncTest "confirmation failure and cancellation release the reserved slot":
+    for cancelWrite in [false, true]:
+      let gate = Future[void].Raising([CancelledError]).init()
+      let confirming = Future[void].Raising([CancelledError]).init()
+      proc write(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        confirming.complete()
+        if cancelWrite:
+          await gate
+        else:
+          raise newException(LPStreamError, "confirmation failed")
+
+      let server = TestBufferStream.new(write)
+      let protocol =
+        LPProtocol.new(codecs, makeBlockedHandler(), maxIncomingStreamsTotal = 1)
+      let ms = MultistreamSelect.new()
+      ms.addHandler(protocol)
+      let handling = ms.handle(server, active = true)
+      let proposal = codecs & "\n"
+      await server.pushData(@[byte proposal.len] & proposal.toBytes())
+      await confirming
+      if cancelWrite:
+        check not protocol.canAcceptIncoming(server.peerId)
+        await handling.cancelAndWait()
+      else:
+        await handling
+      check protocol.canAcceptIncoming(server.peerId)
+      await server.close()
 
   asyncTest "empty proposal produces one rejection before the next proposal":
     let (client, server) = bridgedConnections()
