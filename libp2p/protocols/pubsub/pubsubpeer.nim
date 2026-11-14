@@ -219,6 +219,7 @@ type
     maxLowPriorityQueueLen*: int
     sendStreamRetryBaseDelay*: Duration
     sendStreamRetryMaxDelay*: Duration
+      ## Caps retry backoff and sets the stream lifetime required to reset it.
     sendStreamWarnings: LogRateLimit
     rng: Rng
     validationSlots*: AsyncSemaphore
@@ -575,6 +576,9 @@ proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
         if lifetime >= p.sendStreamRetryMaxDelay:
           delay = p.sendStreamRetryBaseDelay
           continue
+        if not p.stopped and p.sendStreamWarnings.allowLog():
+          debug "Send stream closed before becoming stable, retrying",
+            peer = p, lifetime, delay
       except GetStreamDialError as e:
         libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
         if p.sendStreamWarnings.allowLog():
