@@ -219,6 +219,7 @@ type
     maxLowPriorityQueueLen*: int
     sendStreamRetryBaseDelay*: Duration
     sendStreamRetryMaxDelay*: Duration
+      ## Caps retry backoff and sets the stream lifetime required to reset it.
     sendStreamWarnings: LogRateLimit
     rng: Rng
     validationSlots*: AsyncSemaphore
@@ -501,7 +502,7 @@ proc closeSendStream(
 
 proc connectOnce(
     p: PubSubPeer
-): Future[void] {.async: (raises: [CancelledError, GetStreamDialError]).} =
+): Future[Duration] {.async: (raises: [CancelledError, GetStreamDialError]).} =
   var opened = false
   try:
     if p.connectedFut.finished:
@@ -513,7 +514,7 @@ proc connectOnce(
         raise newException(GetStreamDialError, "establishing stream timed out")
     if p.stopped:
       await newStream.close()
-      return
+      return ZeroDuration
 
     # When the send channel goes up, subscriptions need to be sent to the
     # remote peer - if we had multiple channels up and one goes down, all
@@ -541,7 +542,9 @@ proc connectOnce(
     if p.onEvent != nil:
       p.onEvent(p, PubSubPeerEvent(kind: PubSubPeerEventKind.StreamOpened))
 
+    let openedAt = Moment.now()
     await p.runHandleLoop(newStream)
+    return Moment.now() - openedAt
   finally:
     if opened:
       await p.closeSendStream(PubSubPeerEventKind.StreamClosed)
@@ -563,18 +566,25 @@ func doubled(delay, maxDelay: Duration): Duration =
     delay * 2
 
 proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
-  ## Keeps a send stream open; a failed open retries with capped exponential backoff.
+  ## Back off failed opens and short-lived streams until a stream stays stable.
   var delay = p.sendStreamRetryBaseDelay
   try:
     while not p.stopped:
       try:
-        await p.connectOnce()
-        delay = p.sendStreamRetryBaseDelay
+        let lifetime = await p.connectOnce()
+        # A successful negotiation alone does not establish a stable stream.
+        if lifetime >= p.sendStreamRetryMaxDelay:
+          delay = p.sendStreamRetryBaseDelay
+          continue
+        if not p.stopped and p.sendStreamWarnings.allowLog():
+          debug "Send stream closed before becoming stable, retrying",
+            peer = p, lifetime, delay
       except GetStreamDialError as e:
         libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
         if p.sendStreamWarnings.allowLog():
           debug "Could not establish send stream, retrying",
             peer = p, err = e.msg, delay
+      if not p.stopped:
         await sleepAsync(p.jittered(delay))
         delay = delay.doubled(p.sendStreamRetryMaxDelay)
   except CancelledError:
