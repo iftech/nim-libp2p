@@ -279,12 +279,9 @@ suite "Peer testing suite":
       PeerId.init(padded).isErr()
 
   test "Test PeerId.random() proc":
-    var randomPeer1 = PeerId.random(rng())
-    check:
-      randomPeer1.isOk()
-      randomPeer1.get().validate()
+    let randomPeer1 = PeerId.random()
+    check randomPeer1.validate()
 
     # generate a random peer with a new random seed
-    var randomPeer2 = PeerId.random(rng())
-    check:
-      randomPeer2.isErr() != true
+    let randomPeer2 = PeerId.random()
+    check randomPeer2.validate()

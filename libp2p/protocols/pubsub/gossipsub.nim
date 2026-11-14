@@ -702,11 +702,12 @@ proc messageOverhead(
     do:
       0
 
-  result = msgSize - payloadSize - controlSize
+  var overhead = msgSize - payloadSize - controlSize
   if fromTopicStream:
     # The decoded topic comes from the stream header, not this frame's bytes.
     for message in msg.messages:
-      result += message.topic.len
+      overhead += message.topic.len
+  overhead
 
 proc recordOverheadMetrics(g: GossipSub, peer: PubSubPeer, overhead: int) =
   let now = Moment.now()

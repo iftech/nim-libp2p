@@ -392,18 +392,19 @@ func isZero*(msg: PreparedTopicRPC): bool =
   msg.control.len == 0 and msg.payloads.len == 0
 
 proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
+  var payloads: seq[tuple[topic: string, data: seq[byte]]]
   for m in msg.messages:
     if m.data.len > 0:
-      result.payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
+      payloads.add((m.topic, m.anonymize(anonymize).topicRPC().encode()))
     else:
       trace "empty application message cannot use topic stream", topic = m.topic
   msg.partialMessageExtension.ifValue(partial):
     if partial.topicID.isSome:
-      result.payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
+      payloads.add((partial.topicID.get(), partial.topicRPC().encode()))
   var control = msg
   control.messages = @[]
   control.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
-  result.control = control.encode(anonymize)
+  PreparedTopicRPC(payloads: payloads, control: control.encode(anonymize))
 
 proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): seq[byte] =
   for payload in msg.payloads:

@@ -79,7 +79,7 @@ suite "PeerId length bound":
 
   test "oversized peer ids are rejected when an RPC is decoded":
     let
-      honest = PeerId.random(rng()).get()
+      honest = PeerId.random()
       long = PeerId(data: identityId(64 * 1024))
 
     proc fromPeer(pid: PeerId): Message =
@@ -103,7 +103,7 @@ suite "PeerId length bound":
 
   test "oversized peer id in a peer record is rejected":
     let
-      honest = PeerId.random(rng()).get()
+      honest = PeerId.random()
       long = PeerRecord(peerId: PeerId(data: identityId(64 * 1024)), seqNo: 1)
     check:
       PeerRecord.decode(PeerRecord(peerId: honest, seqNo: 1).encode()).isOk()
@@ -111,7 +111,7 @@ suite "PeerId length bound":
 
   test "multiaddress with an oversized /p2p/ component is rejected":
     let
-      honest = PeerId.random(rng()).get()
+      honest = PeerId.random()
       p2p = multiCodec("p2p")
     check:
       MultiAddress.init(withP2p(p2p, honest.data)).isOk()

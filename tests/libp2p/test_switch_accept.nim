@@ -47,12 +47,13 @@ method stop(p: SlowStopProtocol) {.async: (raises: []).} =
   p.started = false
 
 proc newSlowStopProtocol(): SlowStopProtocol =
-  result = SlowStopProtocol(stopping: newAsyncEvent(), release: newAsyncEvent())
-  result.codec = "/test/slow-stop/1.0.0"
-  result.handler = proc(
+  var protocol = SlowStopProtocol(stopping: newAsyncEvent(), release: newAsyncEvent())
+  protocol.codec = "/test/slow-stop/1.0.0"
+  protocol.handler = proc(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
     await stream.close()
+  protocol
 
 suite "Switch accept-loop failure handling":
   teardown:

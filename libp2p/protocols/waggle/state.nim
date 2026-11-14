@@ -79,11 +79,14 @@ proc expire(topic: TopicState, now: Moment, lifetime: Duration) =
 
 # Keep cache hits cheap; scan recency counters only when evicting.
 proc oldestKey[K, V](table: Table[K, V]): K =
-  var oldest = high(uint64)
+  var
+    oldest = high(uint64)
+    oldestKey = default(K)
   for key, value in table:
     if value.lastUsed < oldest:
       oldest = value.lastUsed
-      result = key
+      oldestKey = key
+  oldestKey
 
 proc touch[K, V](state: WaggleState, table: var Table[K, V], key: K, value: V) =
   var entry = value

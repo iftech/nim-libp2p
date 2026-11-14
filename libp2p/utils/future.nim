@@ -19,15 +19,17 @@ proc countFutureOutcomes*[Fut](
     futs: openArray[Fut]
 ): FutureOutcomeCounts {.raises: [].} =
   ## Counts futures by current state, including those still pending.
+  var counts: FutureOutcomeCounts
   for fut in futs:
     if fut.cancelled():
-      result.cancelled.inc()
+      counts.cancelled.inc()
     elif fut.failed():
-      result.failed.inc()
+      counts.failed.inc()
     elif fut.completed():
-      result.succeeded.inc()
+      counts.succeeded.inc()
     else:
-      result.pending.inc()
+      counts.pending.inc()
+  counts
 
 proc anyCompleted*[T](
     futs: seq[T]

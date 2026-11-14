@@ -708,6 +708,8 @@ when defined(libp2p_testing):
       self: WsTransport
   ): seq[tuple[key: TLSPrivateKey, cert: TLSCertificate]] =
     ## TLS credentials installed in the currently running secure HTTP servers.
+    var credentials: seq[tuple[key: TLSPrivateKey, cert: TLSCertificate]]
     for server in self.httpservers:
       if server.secure:
-        result.add((key: server.tlsPrivateKey, cert: server.tlsCertificate))
+        credentials.add((key: server.tlsPrivateKey, cert: server.tlsCertificate))
+    credentials

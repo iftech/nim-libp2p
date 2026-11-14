@@ -51,7 +51,7 @@ proc runEchoTest(mode: EchoMode): Future[bool] {.async.} =
   defer:
     await switch.stop()
   # Silent must reach the timeout; keep it short while allowing other cases more CI time.
-  result = await topicStreamsInteropTest(
+  let echoed = await topicStreamsInteropTest(
     switch.peerInfo.addrs[0],
     switch.peerInfo.peerId,
     timeout = (if mode == Silent: 2.seconds else: 10.seconds),
@@ -64,6 +64,8 @@ proc runEchoTest(mode: EchoMode): Future[bool] {.async.} =
     check received == 1
   of WithoutTopicStreams:
     check received == 0
+
+  echoed
 
 suite "Topic streams interop tests with Nim nodes":
   teardown:
