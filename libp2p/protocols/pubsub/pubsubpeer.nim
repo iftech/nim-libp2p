@@ -983,9 +983,12 @@ proc sendTopicRPC*(
     customDial = proc(): Future[Stream] {.
         async: (raises: [CancelledError, LPStreamError])
     .} =
-      return p.customStreamCallbacks.get().customStreamCreationCB(
+      let stream = p.customStreamCallbacks.get().customStreamCreationCB(
           p.address, p.peerId, TopicStreamsCodec
         )
+      if stream.isNil:
+        raise newException(LPStreamError, "custom stream creation failed")
+      return stream
   let control = p.extensionsState.sendTopicRPC(
     p.peerId, msg, priority == MessagePriority.Medium, customDial
   )

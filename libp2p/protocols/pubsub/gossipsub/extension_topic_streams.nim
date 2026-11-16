@@ -36,6 +36,7 @@ type
     ## Byte budgets must each be at least twice maxMessageSize to hold one
     ## maximum-size header and frame. Existing streams share these budgets.
     maxIncomingStreams*: int = 64 # includes pending headers
+    ## Custom and direct writers for the same topic each consume a stream slot.
     maxOutgoingStreams*: int = 64 # includes pending dials
     maxQueuedBytes*: int = 8 * 1024 * 1024 # queued/in-flight data and stream headers
     maxIncomingBytes*: int = 8 * 1024 * 1024 # in-flight frames and retained headers
