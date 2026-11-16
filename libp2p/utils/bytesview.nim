@@ -16,7 +16,6 @@ func consume*(v: var BytesView, n: int) =
   v.rpos += n
 
 template toOpenArray*(v: BytesView, b, e: int): openArray[byte] =
-  ## Both bounds are inclusive and relative to the unconsumed data.
   v.data.toOpenArray(v.rpos + b, v.rpos + e)
 
 template data*(v: BytesView): openArray[byte] =
