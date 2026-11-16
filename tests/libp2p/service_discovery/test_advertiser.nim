@@ -15,7 +15,7 @@ import
     protocols/service_discovery/advertiser,
     stream/connection,
   ]
-import ../../tools/[fault_stream, lifecycle, multiaddress, padding, unittest]
+import ../../tools/[fault_stream, lifecycle, multiaddress, protobuf, unittest]
 import ./utils
 
 proc holdUntil(gate: AsyncEvent) {.async: (raises: [CancelledError]).} =

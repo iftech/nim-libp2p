@@ -7,7 +7,7 @@ import chronos, chronos/ratelimit, tables, stew/byteutils, sequtils
 import ../../../../libp2p/multistream
 import
   ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
-import ../../../tools/[lifecycle, padding, switch_builder, sync, topology, unittest]
+import ../../../tools/[lifecycle, protobuf, switch_builder, sync, topology, unittest]
 import ../../../../libp2p/protocols/pubsub/rpc/protobuf
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/utils/future
