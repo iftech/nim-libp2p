@@ -128,3 +128,58 @@ suite "Ticket - timestamp encoding":
       epoch.tInit == 0'i64
       epoch.tMod == 0'i64
       Protobuf.encode(epoch) == @[0x10'u8, 0, 0x18, 0]
+
+suite "Ticket - service ids":
+  let idA = @[1'u8, 2]
+  let idB = @[3'u8]
+
+  test "toBytes appends the id count and each length-prefixed id after the wait time":
+    var ticket = makeTicket()
+    let base = ticket.toBytes()
+    ticket.serviceIds = @[idA, idB]
+
+    check ticket.toBytes() ==
+      base & @[0'u8, 0, 0, 2] & @[0'u8, 0, 0, 2] & idA & @[0'u8, 0, 0, 1] & idB
+
+  test "ids with the same concatenation but other boundaries give other bytes":
+    var split = makeTicket()
+    split.serviceIds = @[@[1'u8, 2], @[3'u8]]
+    var moved = makeTicket()
+    moved.serviceIds = @[@[1'u8], @[2'u8, 3]]
+
+    check split.toBytes() != moved.toBytes()
+
+  test "a signature over the ids fails once an id is swapped, dropped, or added":
+    let key = PrivateKey.random(rng()).get()
+    var ticket = makeTicket()
+    ticket.serviceIds = @[idA, idB]
+    check ticket.sign(key).isOk()
+    let pub = key.getPublicKey().get()
+    check ticket.verify(pub)
+
+    var swapped = ticket
+    swapped.serviceIds = @[idA, @[4'u8]]
+    var dropped = ticket
+    dropped.serviceIds = @[idA]
+    var cleared = ticket
+    cleared.serviceIds = @[]
+    var added = ticket
+    added.serviceIds = @[idA, idB, @[5'u8]]
+
+    check:
+      not swapped.verify(pub)
+      not dropped.verify(pub)
+      not cleared.verify(pub)
+      not added.verify(pub)
+
+  test "ids survive an encode and decode round trip with a valid signature":
+    let key = PrivateKey.random(rng()).get()
+    var ticket = makeTicket()
+    ticket.serviceIds = @[idA, idB]
+    check ticket.sign(key).isOk()
+
+    let decoded = Protobuf.decode(Protobuf.encode(ticket), Ticket)
+
+    check:
+      decoded.serviceIds == @[idA, idB]
+      decoded.verify(key.getPublicKey().get())
