@@ -320,7 +320,7 @@ suite "PubSubPeer send stream":
     peer.extensionsState =
       ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
     let recorder = TopicStreamsRecorder.new()
-    let allowDial = Future[void].Raising([CancelledError]).init()
+    let allowDial = Future[void].Raising([CancelledError]).init("allowDial")
 
     # the topic stream opens only after the test completes allowDial
     proc heldDial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
