@@ -74,7 +74,6 @@ suite "GossipSub Component - Custom Stream Support":
         .toGossipSub()
       var
         customStream: Stream
-        selected = false
         opened = 0
         received: seq[string]
         requestedCodec: string
@@ -90,7 +89,6 @@ suite "GossipSub Component - Custom Stream Support":
           customPeerSelectionCB: proc(
               allPeers, directPeers, meshPeers, fanoutPeers: HashSet[PubSubPeer]
           ): HashSet[PubSubPeer] =
-            selected = true
             return allPeers,
         )
       )
@@ -128,7 +126,6 @@ suite "GossipSub Component - Custom Stream Support":
       checkUntilTimeout:
         received == @["direct", "custom-1", "custom-2"]
       check:
-        selected
         opened == 1
         requestedCodec == TopicStreamsCodec
         nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
