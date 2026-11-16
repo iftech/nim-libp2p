@@ -923,8 +923,9 @@ proc libp2pKadPutValue*(
 proc libp2pKadGetValue*(
     lib: LibP2P, req: KadGetValueRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
-  ## Looks `key` up on the DHT. `quorum` is how many agreeing records to
-  ## require; pass a negative value for the default.
+  ## Looks `key` up on the DHT. `quorum` counts valid records for early stopping;
+  ## pass a negative value for the default. An exhausted search returns the best
+  ## valid record found even below quorum, or an error if none was found.
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
   if req.quorum == 0:

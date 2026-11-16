@@ -67,7 +67,10 @@ proc sendResponseOk(
 proc tryDial(
     autonat: Autonat, stream: Stream, addrs: seq[MultiAddress]
 ) {.async: (raises: [DialFailedError, CancelledError]).} =
-  await autonat.sem.acquire()
+  if not autonat.sem.tryAcquire():
+    debug "Too many concurrent dials, refusing request", peerId = stream.peerId
+    await stream.sendResponseError(DialRefused, "Too many concurrent dials")
+    return
   var futs: seq[Future[Opt[MultiAddress]].Raising([DialFailedError, CancelledError])]
   try:
     # This is to bypass the per peer max connections limit
@@ -158,10 +161,20 @@ proc handleDial(autonat: Autonat, stream: Stream, msg: AutonatMsg): Future[void]
   return autonat.tryDial(stream, addrsSeq)
 
 proc new*(
-    T: typedesc[Autonat], switch: Switch, semSize: int = 1, dialTimeout = 15.seconds
+    T: typedesc[Autonat],
+    switch: Switch,
+    semSize: int = 1,
+    dialTimeout = 15.seconds,
+    maxIncomingStreamsTotal = max(DefaultMaxIncomingStreamsTotal, semSize),
+    maxIncomingStreamsPerPeer = DefaultMaxIncomingStreamsPerPeer,
 ): T =
   let autonat =
     T(switch: switch, sem: newAsyncSemaphore(semSize), dialTimeout: dialTimeout)
+  autonat.setStreamLimits(
+    maxIncomingStreamsTotal = maxIncomingStreamsTotal,
+    maxIncomingStreamsPerPeer = maxIncomingStreamsPerPeer,
+  )
+
   proc handleStream(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =

@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import chronos
 import
   ../../../libp2p/[
@@ -11,10 +12,12 @@ import
     builders,
     protocols/connectivity/autonat/client,
     protocols/connectivity/autonat/server,
+    stream/bufferstream,
+    vbuffer,
     nameresolving/nameresolver,
     nameresolving/mockresolver,
   ]
-import ../../tools/[unittest, switch_builder, multiaddress]
+import ../../tools/[unittest, crypto, bufferstream, switch_builder, multiaddress]
 
 proc makeAutonatSwitch(nameResolver: NameResolver = nil): Switch =
   return makeStandardSwitchBuilder(TcpAutoAddress)
@@ -52,6 +55,16 @@ proc makeAutonatServicePrivate(): Switch =
   let switch = makeSwitch()
   switch.mount(autonatProtocol)
   switch
+
+proc dialRequest(peerId: PeerId, addrs: seq[MultiAddress]): seq[byte] =
+  AutonatMsg(
+    msgType: Opt.some(MsgType.Dial),
+    dial: Opt.some(
+      AutonatDial(
+        peerInfo: Opt.some(AutonatPeerInfo(id: Opt.some(peerId), addrs: addrs))
+      )
+    ),
+  ).encode()
 
 suite "Autonat":
   teardown:
@@ -98,27 +111,70 @@ suite "Autonat":
 
     await src.connect(dst)
     let stream = await src.dial(dst.peerInfo.peerId, @[AutonatCodec])
-    let buffer = AutonatMsg(
-      msgType: Opt.some(MsgType.Dial),
-      dial: Opt.some(
-        AutonatDial(
-          peerInfo: Opt.some(
-            AutonatPeerInfo(
-              id: Opt.some(src.peerInfo.peerId),
-              # we ask to be dialed in the does nothing listener instead
-              addrs: doesNothingListener.addrs,
-            )
-          )
-        )
-      ),
-    ).encode()
-    await stream.writeLp(buffer)
+    # we ask to be dialed in the does nothing listener instead
+    await stream.writeLp(dialRequest(src.peerInfo.peerId, doesNothingListener.addrs))
     let response = AutonatMsg.decode(await stream.readLp(1024)).get().response.get()
     check:
       response.status == DialError
       response.text == "Dial timeout"
       response.ma.isNone()
     await allFutures(doesNothingListener.stop(), src.stop(), dst.stop())
+
+  test "Default stream limits admit one stream per peer and eight in total":
+    let
+      autonat = Autonat.new(nil)
+      peers = PeerId.random(DefaultMaxIncomingStreamsTotal)
+      extraPeer = PeerId.random()
+
+    for peer in peers:
+      check autonat.reserveIncoming(peer)
+    check:
+      not autonat.reserveIncoming(peers[0]) # per peer limit
+      not autonat.reserveIncoming(extraPeer) # total limit
+
+    autonat.releaseIncoming(peers[0])
+    check autonat.reserveIncoming(extraPeer)
+
+  test "A semaphore above the default raises the total stream limit to match":
+    const semSize = DefaultMaxIncomingStreamsTotal * 2
+    let
+      autonat = Autonat.new(nil, semSize = semSize)
+      peers = PeerId.random(semSize)
+
+    for peer in peers:
+      check autonat.reserveIncoming(peer)
+    check not autonat.reserveIncoming(PeerId.random()) # total limit
+
+  asyncTest "Dial is refused when no dial permit is free":
+    let
+      autonat = Autonat.new(nil, semSize = 1)
+      peerId = PeerId.random()
+      responses = BufferStream.new()
+      stream = TestBufferStream.new(
+        proc(
+            data: sink seq[byte]
+        ) {.async: (raises: [CancelledError, LPStreamError]).} =
+          await responses.pushData(data)
+      )
+    stream.peerId = peerId
+    stream.observedAddr = Opt.some(MultiAddress.init("/ip4/1.2.3.4/tcp/4040").tryGet())
+    privateAccess(Autonat)
+    check autonat.sem.tryAcquire()
+
+    var request = initVBuffer()
+    request.writeSeq(dialRequest(peerId, @[]))
+    request.finish()
+
+    let handled = autonat.handler(stream, AutonatCodec)
+    await stream.pushData(request.buffer)
+    let response = AutonatMsg.decode(await responses.readLp(1024)).get().response.get()
+    check:
+      response.status == DialRefused
+      response.text == "Too many concurrent dials"
+      response.ma.isNone()
+
+    await handled
+    await responses.close()
 
   asyncTest "Message without type is handled as Dial":
     let

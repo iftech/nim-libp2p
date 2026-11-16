@@ -42,7 +42,7 @@ jobs:
           echo "builder=${BUILDERS[$PLATFORM_INDEX]}" >> $GITHUB_OUTPUT
           echo "shell=${SHELLS[$PLATFORM_INDEX]}" >> $GITHUB_OUTPUT
 
-          declare -a NIM_REFS=("v2.2.4" "v2.2.10" "v2.2.10")
+          declare -a NIM_REFS=("v2.2.6" "v2.2.14" "v2.2.14")
           declare -a NIM_MMS=("refc" "refc" "orc")
           NIM_INDEX=$((RANDOM % 3))
           echo "nim_ref=${NIM_REFS[$NIM_INDEX]}" >> $GITHUB_OUTPUT

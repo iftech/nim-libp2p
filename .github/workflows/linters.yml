@@ -22,7 +22,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 2  # In PR, has extra merge commit: ^1 = PR, ^2 = base
+          # The log audit needs the recorded PR base, which may predate the merge parents.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Check NPH formatting
@@ -46,9 +47,7 @@ jobs:
         run: python3 tools/check-nimble-lock.py
 
       - name: Run nim-lint checks
-        # `chronicles_linter` imports lint/types, which was moved in nim-lint
-        # after this revision. Keep the action pinned until it uses the public API.
-        uses: iftech/nim-lint@6fc8fb2c0bf59d7a0c2d5459f6ec119ec4fd3cbe
+        uses: iftech/nim-lint@1.0.0
         with:
           config: linter.nim
 

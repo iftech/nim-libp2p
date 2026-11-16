@@ -12,7 +12,7 @@ make
 
 ```sh
 make setup                 # explicit form of the default target
-make NIM_VERSION=2.2.4 setup
+make NIM_VERSION=2.2.6 setup
 make build                 # explicit Nix build
 ```
 
