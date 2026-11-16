@@ -11,6 +11,8 @@ import ./[protobuf, types, find, rpc, kademlia_metrics]
 logScope:
   topics = "libp2p kademlia"
 
+const LookupFailureCause* = "lookup failure"
+
 proc isBestValue(kad: KadDHT, key: RecordKey, record: EntryRecord): bool =
   ## Returns whether `value` is a better value than what we have locally
   ## Always returns `true` if we don't have the value locally
@@ -110,6 +112,12 @@ proc putValue*(
       failed,
       cancelled,
       pending
+
+  if peers.len == 0:
+    outcome = "no peers"
+    let kept = if storedLocally: "kept locally" else: "not kept locally"
+    return
+      err("no peers found for key " & key.shortLog & ", " & kept, LookupFailureCause)
 
   for chunk in peers.toChunks(kad.config.alpha):
     let batch = chunk.mapIt(kad.dispatchPutVal(it, key, value))

@@ -129,6 +129,11 @@ suite "KadDHT Switch Builder":
     var switch1 = makeStandardSwitchBuilder(TcpAutoAddress).withKademlia().build()
     var switch2 = makeStandardSwitch(TcpAutoAddress)
 
+    await allFutures(switch1.start(), switch2.start())
+    defer:
+      await allFutures(switch1.stop(), switch2.stop())
+
+    # switch1 has listen addrs only after start; an empty addr list skips the seed.
     let kad2 = KadDHT.new(
       switch2,
       bootstrapNodes = @[(switch1.peerInfo.peerId, switch1.peerInfo.addrs)],
@@ -136,8 +141,9 @@ suite "KadDHT Switch Builder":
       isServer = false,
     )
 
-    await allFutures(switch1.start(), switch2.start())
+    await kad2.start()
     defer:
-      await allFutures(switch1.stop(), switch2.stop())
+      await kad2.stop()
+    await kad2.waitBootstrap()
 
     check (await kad2.putValue(kad2.rtable.selfId, @[1.byte, 2, 3, 4, 5])).isOk()

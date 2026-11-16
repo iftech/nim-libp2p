@@ -34,6 +34,39 @@ suite "KadDHT Put":
       kads[0].containsData(key, value)
       kads[1].containsData(key, value)
 
+  asyncTest "PUT_VALUE fails with lookup failure when no peer is known":
+    let kads = setupKadSwitches(1)
+    startAndDeferStop(kads)
+
+    let key = kads[0].rtable.selfId
+    let value = @[1.byte, 2, 3]
+    let res = await kads[0].putValue(key, value)
+
+    check:
+      res.isOfError(LookupFailureCause)
+      kads[0].containsData(key, value)
+
+  asyncTest "PUT_VALUE fails with lookup failure at the local record limit":
+    let kads = setupKadSwitches(1)
+    startAndDeferStop(kads)
+
+    kads[0].config.limits.maxLocalRecords = Opt.some(1)
+
+    let
+      existingKey = PeerId.random()
+      existingValue = @[1.byte]
+      newKey = PeerId.random().toKey()
+      newValue = @[2.byte]
+
+    kads[0].dataTable.insert(existingKey, existingValue, Timestamp.now())
+
+    let res = await kads[0].putValue(newKey, newValue)
+
+    check:
+      res.isOfError(LookupFailureCause)
+      kads[0].containsData(existingKey, existingValue)
+      kads[0].containsNoData(newKey)
+
   asyncTest "PUT_VALUE requires validation on both sender and receiver":
     let kads = setupKadSwitches(2, validator = RestrictiveValidator())
     startAndDeferStop(kads)
