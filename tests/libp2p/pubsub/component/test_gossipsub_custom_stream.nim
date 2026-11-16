@@ -110,7 +110,6 @@ suite "GossipSub Component - Custom Stream Support":
       checkUntilTimeout:
         nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
 
-      # Create a direct writer first: custom publishes must never reuse it.
       check (await nodes[0].publish(topic, "direct")) == 1
       checkUntilTimeout:
         received == @["direct"]

@@ -69,7 +69,6 @@ type
     stopped: bool
     maxMessageSize: int
     queuedBytes, queuedMessages, incomingBytes: int
-    # Custom publishes must not reuse a writer opened over a direct connection.
     writers: Table[tuple[topic: string, custom: bool], TopicWriter]
     readers: seq[TopicReader]
     dial: TopicStreamDial
