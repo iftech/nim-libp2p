@@ -78,14 +78,11 @@ type
     boundIp*: Table[string, Moment]
     timestampIp*: Table[string, Moment]
 
-  ServiceSlot* = object
-    serviceId*: ServiceId
-    bucketIdx*: int
-
   AdvertiseTask* = ref object
     fut*: Future[void]
+    serviceId*: ServiceId
     registrar*: PeerId
-    slots*: seq[ServiceSlot] ## One REGISTER; `slots[0]` goes in `Message.key`.
+    bucketIdx*: int
 
   ProvidedAdvert* = object
     bytes*: seq[byte]
@@ -96,8 +93,6 @@ type
     running*: HashSet[AdvertiseTask]
     seqNo*: uint64
     providedAdverts*: Table[ServiceId, ProvidedAdvert]
-    singleRegistrars*: Table[PeerId, Moment]
-      ## Registrars that ignore batches, with the time each one stops counting.
 
   ServiceDiscoveryConfig* = object
     kRegister*: int
@@ -201,12 +196,6 @@ proc new*(
 
 proc hash*(t: AdvertiseTask): Hash =
   hash(cast[pointer](t))
-
-func bucketOf*(t: AdvertiseTask, serviceId: ServiceId): Opt[int] {.raises: [].} =
-  for slot in t.slots:
-    if slot.serviceId == serviceId:
-      return Opt.some(slot.bucketIdx)
-  Opt.none(int)
 
 proc hash*(ad: Advertisement): Hash {.raises: [].} =
   hash(ad.envelope.signature.data)

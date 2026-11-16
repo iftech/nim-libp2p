@@ -8,61 +8,16 @@ import
     crypto/crypto,
     peerid,
     peerinfo,
-    protocols/kademlia/protobuf,
     protocols/kademlia/types,
     protocols/service_discovery,
     protocols/service_discovery/advertiser,
     protocols/service_discovery/discoverer,
-    protocols/service_discovery/registrar,
     protocols/service_discovery/routing_table_manager,
     protocols/service_discovery/types,
-    stream/connection,
     switch,
   ]
 import ../../../tools/[crypto, lifecycle, multiaddress, unittest, topology]
 import ../utils
-
-type RegisterLog = ref object
-  batches: seq[seq[seq[byte]]] ## `Message.key` then the extra ids of each REGISTER.
-
-proc logRegisters(registrar: ServiceDiscovery, ignoreBatch: bool): RegisterLog =
-  ## `ignoreBatch` answers like a registrar that predates `RegisterMessage.serviceIds`.
-  let log = RegisterLog()
-  registrar.handler = proc(
-      stream: Stream, proto: string
-  ) {.async: (raises: [CancelledError]).} =
-    defer:
-      await noCancel stream.close()
-    try:
-      var msg = Message.decode(await stream.readLp(ServiceDiscoveryMaxMsgSize)).valueOr:
-        raiseAssert "undecodable message: " & $error
-      if msg.register.isNone():
-        return
-      log.batches.add(@[seq[byte](msg.key.get())] & msg.register.get().serviceIds)
-
-      if ignoreBatch:
-        msg.register.get().serviceIds = @[]
-      var reply = registrar.registration(stream.peerId, msg)
-      if ignoreBatch:
-        reply.register.get().accepted = @[]
-      await stream.writeLp(reply.encode())
-    except LPStreamError:
-      return # a cancelled task resets its stream
-
-  log
-
-func splitAfterBatch(log: RegisterLog): bool =
-  let batchAt = log.batches.mapIt(it.len).find(2)
-  batchAt >= 0 and log.batches[batchAt + 1 .. ^1].anyIt(
-    it == @[log.batches[batchAt][1]]
-  )
-
-proc advertiseBoth(disco: ServiceDiscovery): seq[ServiceId] =
-  let services = @[makeServiceInfo("service-a"), makeServiceInfo("service-b")]
-  let advert = sharedAdvert(services, disco.switch.peerInfo.privateKey)
-  for service in services:
-    doAssert disco.startAdvertising(service, Opt.some(advert)).isOk()
-  services.mapIt(it.id.hashServiceId())
 
 suite "Service Discovery Component - Advertise Discover":
   teardown:
@@ -299,8 +254,7 @@ suite "Service Discovery Component - Advertise Discover":
     # Capture the remote tasks that were started for this service
     # (the local registration now lives in localRegistrationLoop, not in running).
     var remoteTasks = advertiserNode.advertiser.running.filterIt(
-      it.bucketOf(serviceId).isSome() and
-        it.registrar != advertiserNode.switch.peerInfo.peerId
+      it.serviceId == serviceId and it.registrar != advertiserNode.switch.peerInfo.peerId
     )
 
     check remoteTasks.len > 0
@@ -317,8 +271,7 @@ suite "Service Discovery Component - Advertise Discover":
 
     # There should now be new remote registration task(s) for the service.
     remoteTasks = advertiserNode.advertiser.running.filterIt(
-      it.bucketOf(serviceId).isSome() and
-        it.registrar != advertiserNode.switch.peerInfo.peerId
+      it.serviceId == serviceId and it.registrar != advertiserNode.switch.peerInfo.peerId
     )
 
     check remoteTasks.len > 0
@@ -478,39 +431,3 @@ suite "Service Discovery Component - Advertise Discover":
     checkUntilTimeout:
       registrarNode.registrar.boundService.hasKey(secondServiceId)
     check registrarNode.countAdsInCache(secondServiceId) == 0
-
-  asyncTest "two services that share a registrar go out in one REGISTER":
-    let conf = ServiceDiscoveryConfig.new(safetyParam = 0.0, ipSimCoefficient = 0.0)
-    let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
-    let advertiserNode = setupServiceDiscoveryNode(discoConfig = conf)
-    startAndDeferStop(@[registrarNode, advertiserNode])
-    await connect(registrarNode, advertiserNode)
-    let log = registrarNode.logRegisters(ignoreBatch = false)
-    let ids = advertiserNode.advertiseBoth()
-
-    await advertiserNode.stopRegistrations()
-    await advertiserNode.maintainRegistrations()
-
-    checkUntilTimeout:
-      log.batches.anyIt(it.len == 2)
-      ids.allIt(registrarNode.countAdsInCache(it) == 1)
-    check registrarNode.switch.peerInfo.peerId notin
-      advertiserNode.advertiser.singleRegistrars
-
-  asyncTest "a registrar that ignores batches gets the other services one by one":
-    let conf = ServiceDiscoveryConfig.new(safetyParam = 0.0, ipSimCoefficient = 0.0)
-    let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
-    let advertiserNode = setupServiceDiscoveryNode(discoConfig = conf)
-    startAndDeferStop(@[registrarNode, advertiserNode])
-    await connect(registrarNode, advertiserNode)
-    let log = registrarNode.logRegisters(ignoreBatch = true)
-    let ids = advertiserNode.advertiseBoth()
-
-    await advertiserNode.stopRegistrations()
-    await advertiserNode.maintainRegistrations()
-
-    checkUntilTimeout:
-      log.splitAfterBatch()
-      ids.allIt(registrarNode.countAdsInCache(it) == 1)
-    check registrarNode.switch.peerInfo.peerId in
-      advertiserNode.advertiser.singleRegistrars

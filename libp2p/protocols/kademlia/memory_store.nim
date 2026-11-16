@@ -28,8 +28,10 @@ type
 
   Providers = ref object
     cap: Opt[int]
+    capPerPeer: Opt[int]
     byKey: Table[Key, Table[PeerId, StoredProvider]]
     count: int
+    countPerPeer: CountTable[PeerId]
     expiries: HeapQueue[ProviderSlot]
       ## min-heap on ``expiresAt``; a slot whose provider was removed or refreshed is stale
 
@@ -50,11 +52,14 @@ func new*(
       maxValues: Opt.some(DefaultMaxLocalRecords),
       maxProviders: Opt.some(DefaultProviderRecordCapacity),
       maxProvided: Opt.some(DefaultProvidedKeyCapacity),
+      maxProviderRecordsPerPeer:
+        Opt.some(defaultMaxProviderRecordsPerPeer(DefaultProviderRecordCapacity)),
     ),
 ): T =
   T(
     values: Values(cap: limits.maxValues),
-    providers: Providers(cap: limits.maxProviders),
+    providers:
+      Providers(cap: limits.maxProviders, capPerPeer: limits.maxProviderRecordsPerPeer),
     provided: ProvidedKeys(cap: limits.maxProvided),
   )
 
@@ -63,6 +68,7 @@ func limits*(store: MemoryKadStore): KadStoreLimits =
     maxValues: store.values.cap,
     maxProviders: store.providers.cap,
     maxProvided: store.provided.cap,
+    maxProviderRecordsPerPeer: store.providers.capPerPeer,
   )
 
 func atCapacity(count: int, cap: Opt[int]): bool =
@@ -195,6 +201,11 @@ func drop(providers: Providers, key: Key, peerId: PeerId) =
       return
     stored[].del(peerId)
     providers.count.dec()
+    let left = providers.countPerPeer.getOrDefault(peerId) - 1
+    if left <= 0:
+      providers.countPerPeer.del(peerId)
+    else:
+      providers.countPerPeer[peerId] = left
     if stored[].len == 0:
       providers.byKey.del(key)
 
@@ -255,10 +266,13 @@ func add(
 
   if providers.countOf(key) >= maxPerKey:
     return AddProviderOutcome.keyFull
+  if providers.countPerPeer.getOrDefault(peerId).atCapacity(providers.capPerPeer):
+    return AddProviderOutcome.peerFull
   if not providers.makeRoom(p):
     return AddProviderOutcome.storeFull
 
   providers.count.inc()
+  providers.countPerPeer.inc(peerId)
   providers.put(key, peerId, p)
   AddProviderOutcome.added
 

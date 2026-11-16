@@ -31,11 +31,6 @@ type
     status*: kademlia_protobuf.RegistrationStatus
     ticket*: Opt[Ticket]
     closerPeers*: seq[PeerInfo]
-    accepted*: seq[seq[byte]]
-
-  BatchPick = object
-    slot: ServiceSlot
-    advert: seq[byte]
 
   SignedXpr* = object
     peerId*: PeerId
@@ -73,10 +68,6 @@ proc getAdvertBytes(disco: ServiceDiscovery, explicit: Opt[seq[byte]]): Opt[seq[
     return Opt.none(seq[byte])
   Opt.some(extRecord.encode())
 
-proc runTask(
-  disco: ServiceDiscovery, task: AdvertiseTask, ticket: Opt[Ticket], advert: seq[byte]
-) {.async: (raises: [CancelledError]).}
-
 proc advertiseToRegistrar*(
   disco: ServiceDiscovery,
   serviceId: ServiceId,
@@ -88,28 +79,13 @@ proc advertiseToRegistrar*(
 proc advertiseAfter(
     disco: ServiceDiscovery,
     superseded: seq[Future[void]],
-    task: AdvertiseTask,
+    serviceId: ServiceId,
+    registrar: PeerId,
     advert: seq[byte],
 ) {.async: (raises: [CancelledError]).} =
   ## A superseded advert that lands later with an equal seqNo would win the cache.
   await allFutures(superseded)
-  await disco.runTask(task, Opt.none(Ticket), advert)
-
-proc trackTask(
-    disco: ServiceDiscovery,
-    registrar: PeerId,
-    slots: seq[ServiceSlot],
-    advertBytes: seq[byte],
-    superseded: seq[Future[void]] = @[],
-) =
-  let task = AdvertiseTask(registrar: registrar, slots: slots)
-  task.fut =
-    if superseded.len == 0:
-      disco.runTask(task, Opt.none(Ticket), advertBytes)
-    else:
-      disco.advertiseAfter(superseded, task, advertBytes)
-  disco.advertiser.running.incl(task)
-  cd_advertiser_pending_actions.inc()
+  await disco.advertiseToRegistrar(serviceId, registrar, Opt.none(Ticket), advert)
 
 proc trackAdvertiseTask(
     disco: ServiceDiscovery,
@@ -119,43 +95,17 @@ proc trackAdvertiseTask(
     advertBytes: seq[byte],
     superseded: seq[Future[void]] = @[],
 ) =
-  disco.trackTask(
-    registrar,
-    @[ServiceSlot(serviceId: serviceId, bucketIdx: bucketIdx)],
-    advertBytes,
-    superseded,
-  )
-
-proc pruneSingleRegistrars(a: Advertiser) =
-  let now = Moment.now()
-  var expired: seq[PeerId]
-  for registrar, until in a.singleRegistrars:
-    if until <= now:
-      expired.add(registrar)
-  for registrar in expired:
-    a.singleRegistrars.del(registrar)
-
-proc trackBatches(disco: ServiceDiscovery, registrar: PeerId, picks: seq[BatchPick]) =
-  if picks.len == 1:
-    disco.trackTask(registrar, @[picks[0].slot], picks[0].advert)
-    return
-
-  let maxBatch =
-    if registrar in disco.advertiser.singleRegistrars:
-      1
+  let fut =
+    if superseded.len == 0:
+      disco.advertiseToRegistrar(serviceId, registrar, Opt.none(Ticket), advertBytes)
     else:
-      disco.discoConfig.maxBatchServices
-
-  var byAdvert = initOrderedTable[seq[byte], seq[ServiceSlot]]()
-  for pick in picks:
-    byAdvert.mgetOrPut(pick.advert, @[]).add(pick.slot)
-
-  for advert, slots in byAdvert:
-    var first = 0
-    while first < slots.len:
-      let last = min(first + maxBatch, slots.len)
-      disco.trackTask(registrar, slots[first ..< last], advert)
-      first = last
+      disco.advertiseAfter(superseded, serviceId, registrar, advertBytes)
+  disco.advertiser.running.incl(
+    AdvertiseTask(
+      fut: fut, serviceId: serviceId, registrar: registrar, bucketIdx: bucketIdx
+    )
+  )
+  cd_advertiser_pending_actions.inc()
 
 func anyProvidedService(a: Advertiser): Opt[ServiceId] =
   ## A Table has no first-element accessor, so take the first key iterated.
@@ -205,31 +155,6 @@ proc restartLocalRegistration(disco: ServiceDiscovery) =
     disco.localRegistrationLoop = nil
   disco.startLocalRegistration()
 
-proc isStale(disco: ServiceDiscovery, t: AdvertiseTask): bool =
-  for slot in t.slots:
-    if slot.bucketIdx < 0:
-      continue
-    let table = disco.rtManager.getTable(slot.serviceId).valueOr:
-      continue
-    if slot.bucketIdx >= table.buckets.len:
-      continue
-    let bucket = table.buckets[slot.bucketIdx]
-    if bucket.peers.len > 0 and t.registrar.toKey() notin bucket.peers:
-      return true
-  false
-
-proc dropStaleTasks(disco: ServiceDiscovery) =
-  ## A registrar that left one bucket of the batch after a refresh loses the task.
-  var stale: seq[AdvertiseTask]
-  for t in disco.advertiser.running:
-    if not t.fut.finished() and disco.isStale(t):
-      stale.add(t)
-
-  for t in stale:
-    t.fut.cancelSoon()
-    disco.advertiser.running.excl(t)
-    cd_advertiser_pending_actions.dec()
-
 proc maintainRegistrations*(
     disco: ServiceDiscovery
 ) {.async: (raises: [CancelledError]).} =
@@ -245,30 +170,37 @@ proc maintainRegistrations*(
     trace "No registration maintenance while in client mode"
     return
 
-  disco.dropStaleTasks()
-  disco.advertiser.pruneSingleRegistrars()
-
   let selfPeer = disco.switch.peerInfo.peerId
-  var picks = initTable[PeerId, seq[BatchPick]]()
 
   for sid, advert in disco.advertiser.providedAdverts:
     let table = disco.rtManager.getTable(sid).valueOr:
       continue
 
+    # --- Remote registrars (bucketIdx >= 0) ---
     var activePerBucket = initTable[int, HashSet[PeerId]]()
     for t in disco.advertiser.running:
-      if t.fut.finished():
-        continue
-      let bucketIdx = t.bucketOf(sid).valueOr:
-        continue
-      if bucketIdx >= 0:
-        activePerBucket.mgetOrPut(bucketIdx, initHashSet[PeerId]()).incl(t.registrar)
+      if t.serviceId == sid and not t.fut.finished and t.bucketIdx >= 0:
+        activePerBucket.mgetOrPut(t.bucketIdx, initHashSet[PeerId]()).incl(t.registrar)
 
     for bucketIdx, bucket in table.buckets.pairs:
       if bucket.peers.len == 0:
         continue
 
-      let active = activePerBucket.getOrDefault(bucketIdx)
+      var active = activePerBucket.getOrDefault(bucketIdx)
+
+      # Drop tasks for peers that are no longer in this bucket (stale after refresh)
+      var stale: seq[AdvertiseTask]
+      for t in disco.advertiser.running:
+        if t.serviceId == sid and t.bucketIdx == bucketIdx and not t.fut.finished:
+          let regKey = t.registrar.toKey()
+          if regKey notin bucket.peers:
+            stale.add(t)
+      for t in stale:
+        t.fut.cancelSoon()
+        disco.advertiser.running.excl(t)
+        cd_advertiser_pending_actions.dec()
+        active.excl(t.registrar)
+
       let target = min(disco.discoConfig.kRegister, bucket.peers.len)
       let deficit = target - active.len
       if deficit <= 0:
@@ -284,12 +216,8 @@ proc maintainRegistrations*(
       let toAdd = disco.rng.pick(candidates, deficit).valueOr:
         continue
 
-      let slot = ServiceSlot(serviceId: sid, bucketIdx: bucketIdx)
       for registrar in toAdd:
-        picks.mgetOrPut(registrar, @[]).add(BatchPick(slot: slot, advert: advert.bytes))
-
-  for registrar, registrarPicks in picks:
-    disco.trackBatches(registrar, registrarPicks)
+        disco.trackAdvertiseTask(sid, registrar, bucketIdx, advert.bytes)
 
   # Defensive restart of the local registration loop if it died unexpectedly
   # while we still provide services.
@@ -334,7 +262,6 @@ proc sendRegister*(
     serviceId: ServiceId,
     ad: seq[byte],
     ticket: Opt[Ticket] = Opt.none(Ticket),
-    extraServiceIds: seq[ServiceId] = @[],
 ): Future[LPResult[RegistrationResponse]] {.async: (raises: [CancelledError]).} =
   let msg = Message(
     msgType: Opt.some(MessageType.register),
@@ -344,7 +271,6 @@ proc sendRegister*(
         advertisement: Opt.some(ad),
         status: Opt.none(kademlia_protobuf.RegistrationStatus),
         ticket: ticket,
-        serviceIds: extraServiceIds.mapIt(seq[byte](it)),
       )
     ),
   )
@@ -369,48 +295,19 @@ proc sendRegister*(
 
   return ok(
     RegistrationResponse(
-      status: status,
-      ticket: registerMsg.ticket,
-      closerPeers: closerPeers,
-      accepted: registerMsg.accepted,
+      status: status, ticket: registerMsg.ticket, closerPeers: closerPeers
     )
   )
 
-proc splitBatch(disco: ServiceDiscovery, task: AdvertiseTask, advert: seq[byte]) =
-  ## A registrar that skips `RegisterMessage.serviceIds` admits `Message.key` alone.
-  disco.advertiser.singleRegistrars[task.registrar] =
-    Moment.now() + disco.discoConfig.advertExpiry
-
-  for slot in task.slots[1 ..^ 1]:
-    disco.trackAdvertiseTask(slot.serviceId, task.registrar, slot.bucketIdx, advert)
-  task.slots.setLen(1)
-
-proc splitUnaccepted(
+proc advertiseToRegistrar*(
     disco: ServiceDiscovery,
-    task: AdvertiseTask,
-    accepted: seq[seq[byte]],
+    serviceId: ServiceId,
+    registrar: PeerId,
+    ticket: Opt[Ticket],
     advert: seq[byte],
-) =
-  ## The ids a registrar left out of `accepted` restart in a new REGISTER.
-  let kept = task.slots.filterIt(seq[byte](it.serviceId) in accepted)
-  if kept.len == 0 or kept.len == task.slots.len:
-    return
-
-  disco.trackTask(task.registrar, task.slots.filterIt(it notin kept), advert)
-  task.slots = kept
-
-proc hasRoutingTable(disco: ServiceDiscovery, serviceId: ServiceId): bool =
-  if disco.rtManager.hasService(serviceId):
-    return true
-  error "No service routing table found", serviceId
-  false
-
-proc runTask(
-    disco: ServiceDiscovery, task: AdvertiseTask, ticket: Opt[Ticket], advert: seq[byte]
 ) {.async: (raises: [CancelledError]).} =
-  let registrar = task.registrar
-  task.slots.keepItIf(disco.hasRoutingTable(it.serviceId))
-  if task.slots.len == 0:
+  if not disco.rtManager.hasService(serviceId):
+    error "No service routing table found", serviceId
     return
 
   cd_advertiser_actions_executed.inc()
@@ -418,19 +315,16 @@ proc runTask(
   let isSelf = registrar == disco.switch.peerInfo.peerId
   var currentTicket = ticket
 
-  trace "Registering advert",
-    serviceId = task.slots[0].serviceId, registrar, isSelf, services = task.slots.len
+  trace "Registering advert", serviceId, registrar, isSelf
 
   # `changeMode` can flip the mode at any point, so every iteration re-reads it
   while true:
-    let serviceId = task.slots[0].serviceId
-    let extra = task.slots[1 ..^ 1].mapIt(it.serviceId)
     if not disco.isServer:
       trace "Not advertising while in client mode", serviceId, registrar
       return
 
     let response = (
-      await disco.sendRegister(registrar, serviceId, advert, currentTicket, extra)
+      await disco.sendRegister(registrar, serviceId, advert, currentTicket)
     ).valueOr:
       trace "Failed to register ad", serviceId, registrar, error
       return
@@ -441,12 +335,6 @@ proc runTask(
     case response.status
     of kademlia_protobuf.RegistrationStatus.Confirmed:
       trace "Advert accepted", serviceId, registrar
-
-      if task.slots.len > 1:
-        if response.accepted.len == 0:
-          disco.splitBatch(task, advert)
-        else:
-          disco.splitUnaccepted(task, response.accepted, advert)
 
       # Drop any ticket used for this Confirm.
       # Self-registration reuses this loop after advertExpiry.
@@ -480,26 +368,8 @@ proc runTask(
 
       await sleepAsync(delay)
     of kademlia_protobuf.RegistrationStatus.Rejected:
-      if task.slots.len > 1:
-        trace "Batch rejected, retrying each service alone", serviceId, registrar
-        disco.splitBatch(task, advert)
-        currentTicket = Opt.none(Ticket)
-        continue
-
       trace "Registrar rejection, aborting", serviceId, registrar
       return
-
-proc advertiseToRegistrar*(
-    disco: ServiceDiscovery,
-    serviceId: ServiceId,
-    registrar: PeerId,
-    ticket: Opt[Ticket],
-    advert: seq[byte],
-) {.async: (raises: [CancelledError]).} =
-  let task = AdvertiseTask(
-    registrar: registrar, slots: @[ServiceSlot(serviceId: serviceId, bucketIdx: -1)]
-  )
-  await disco.runTask(task, ticket, advert)
 
 proc validateAdvert(advert: seq[byte], service: ServiceInfo): LPResult[PeerId] =
   ## Applies the checks a registrar applies in `isValidAdvertisement`, so a bad
@@ -616,37 +486,23 @@ proc restartXprPublishing*(disco: ServiceDiscovery) =
   disco.xprPublishLoop = disco.maintainXprsAfter(disco.xprPublishLoop)
   reportBackgroundFailure(disco.xprPublishLoop, "service discovery XPR publishing")
 
-proc takeServiceTasks(
-    disco: ServiceDiscovery, serviceId: ServiceId
-): seq[Future[void]] =
-  ## A ticket binds its whole batch, so the other services restart in a new REGISTER.
-  let a = disco.advertiser
+proc takeServiceTasks(a: Advertiser, serviceId: ServiceId): seq[Future[void]] =
   var kept: HashSet[AdvertiseTask]
   var taken: seq[Future[void]]
-  var rest: seq[AdvertiseTask]
   for t in a.running:
-    if t.bucketOf(serviceId).isNone():
+    if t.serviceId == serviceId:
+      taken.add(t.fut)
+    else:
       kept.incl(t)
-      continue
-    taken.add(t.fut)
-    let others = t.slots.filterIt(it.serviceId != serviceId)
-    if others.len > 0 and not t.fut.finished():
-      rest.add(AdvertiseTask(registrar: t.registrar, slots: others))
 
   a.running = kept
   cd_advertiser_pending_actions.set(a.running.len.float64)
-
-  for t in rest:
-    a.providedAdverts.withValue(t.slots[0].serviceId, provided):
-      disco.trackTask(t.registrar, t.slots, provided[].bytes)
-    do:
-      trace "No advert left for the rest of the batch", serviceId = t.slots[0].serviceId
   taken
 
 proc cancelServiceTasks(
     disco: ServiceDiscovery, serviceId: ServiceId
 ): seq[Future[void]] =
-  let cancelled = disco.takeServiceTasks(serviceId)
+  let cancelled = disco.advertiser.takeServiceTasks(serviceId)
   cancelled.cancelSoon()
   cancelled
 
@@ -724,7 +580,7 @@ proc removeProvidedService*(
 ) {.async: (raises: [CancelledError]).} =
   let sid = serviceId.hashServiceId()
 
-  await disco.takeServiceTasks(sid).cancelAndWait()
+  await disco.advertiser.takeServiceTasks(sid).cancelAndWait()
 
   disco.advertiser.providedAdverts.del(sid)
 
