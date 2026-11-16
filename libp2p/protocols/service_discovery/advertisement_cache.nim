@@ -55,7 +55,7 @@ proc ipSimilarity*(
     advertiser: Opt[PeerId],
     serviceId: ServiceId,
     discountedServices: int,
-): float64 =
+): float64 {.raises: [].} =
   ## The own IPs of `advertiser` count once it has `discountedServices` or more other ads.
   if discountedServices <= 0:
     return c.ipTree.ipsMaxScore(ips)
@@ -74,7 +74,9 @@ proc ipSimilarity*(
 
   c.ipTree.ipsMaxScore(ips, peerIps)
 
-proc remove*(c: AdvertisementCache, serviceId: ServiceId, advertiser: PeerId) =
+proc remove*(
+    c: AdvertisementCache, serviceId: ServiceId, advertiser: PeerId
+) {.raises: [].} =
   c.byService.withValue(serviceId, peers):
     peers[].withValue(advertiser, cachedAd):
       c.ipTree.removeIps(cachedAd[].ips)

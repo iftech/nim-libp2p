@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[bitops, net]
+import std/net
+import stew/bitops2
 
 type
   IpTreeNode* = ref object
@@ -119,7 +120,7 @@ func prefixLen(a, b: openArray[uint8]): int =
   for i in 0 ..< a.len:
     let x = a[i] xor b[i]
     if x != 0:
-      return i * 8 + countLeadingZeroBits(x)
+      return i * 8 + leadingZeros(x)
   a.len * 8
 
 func commonPrefixLen(a, b: IpAddress): int =

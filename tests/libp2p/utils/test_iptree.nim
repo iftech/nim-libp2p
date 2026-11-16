@@ -76,6 +76,21 @@ suite "IpTree":
       for probe in probes:
         checkpoint $exclude & " / " & $probe
         check tree.ipScore(probe, exclude) == removed.ipScore(probe)
+      check tree.ipsMaxScore(probes, exclude) == removed.ipsMaxScore(probes)
+
+  test "ipScore with an exclude outside the tree stays in [0, 1]":
+    let tree = IpTree.new()
+    tree.insertIps(@[ip4(10, 0, 0, 1), ip4(10, 0, 0, 2)])
+    let excludes = @[
+      @[ip4(10, 0, 0, 3)],
+      @[ip4(10, 0, 0, 1), ip4(10, 0, 0, 1)],
+      @[ip4(10, 0, 0, 1), ip4(10, 0, 0, 1), ip4(10, 0, 0, 2)],
+    ]
+    for exclude in excludes:
+      checkpoint $exclude
+      let score = tree.ipScore(ip4(10, 0, 0, 1), exclude)
+      check score >= 0.0 and score <= 1.0
+    check tree.ipScore(ip4(10, 0, 0, 1), excludes[2]) == 0.0
 
   test "insertIp creates correct tree structure":
     let tree = IpTree.new()

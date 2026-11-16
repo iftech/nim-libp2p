@@ -7,8 +7,9 @@
 ## Contract for every backend:
 ## - A read never returns an entry with ``expiresAt <= now``. Provided keys do not expire.
 ## - The backend deletes expired entries by itself, for example before a call that takes ``now``. ``KadDHT`` never asks it to prune.
-## - An expired entry never costs capacity. A store refuses a new value or provider with ``ok(false)``, ``keyFull`` or ``storeFull`` only when its live entries fill the cap.
+## - An expired entry never costs capacity. A store refuses a new value or provider with ``ok(false)``, ``keyFull``, ``peerFull`` or ``storeFull`` only when its live entries fill the cap.
 ## - At the total provider cap, ``addProvider`` evicts the provider with the lowest ``expiresAt`` when the new provider expires later. Else it answers ``storeFull``.
+## - At the provided cap, ``addProvided`` evicts the key provided least recently.
 ## - ``getProviders`` returns the providers of a key in no fixed order.
 ## - ``err`` means the backend failed. The core logs it and treats the call as "not stored" or "not found".
 ## - A ``limit`` below 1 returns no entries.
@@ -34,6 +35,7 @@ type
     added
     refreshed ## the provider was already stored for the key; ``expiresAt`` is updated
     keyFull ## the key holds ``maxPerKey`` other live providers
+    peerFull ## the peer holds its cap of live provider records
     storeFull
       ## the store holds its total cap of live providers and none expires before the new one
 
@@ -41,6 +43,7 @@ type
     maxValues*: Opt[int]
     maxProviders*: Opt[int]
     maxProvided*: Opt[int]
+    maxProviderRecordsPerPeer*: Opt[int]
 
   KadStore* = ref object of RootObj
 
@@ -75,7 +78,7 @@ method addProvider*(
 ): Future[LPResult[AddProviderOutcome]] {.
     async: (raises: [CancelledError]), base, gcsafe
 .} =
-  ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey`` or the total cap.
+  ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey``, the cap per peer or the total cap.
   ## An id that is missing or is not a ``PeerId`` is ``err``.
   raiseAssert "[KadStore.addProvider] abstract method not implemented!"
 

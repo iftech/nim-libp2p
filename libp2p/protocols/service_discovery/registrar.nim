@@ -219,7 +219,7 @@ proc isValidTicket(
 
 proc removeAdvertisement*(
     registrar: Registrar, serviceId: ServiceId, advertiser: PeerId
-) =
+) {.raises: [].} =
   registrar.ads.remove(serviceId, advertiser)
   registrar.updateRegistrarMetrics()
 

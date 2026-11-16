@@ -122,10 +122,9 @@ proc maintainLocalRegistration(
 ) {.async: (raises: [CancelledError]).} =
   ## Refreshes at half the expiry so a prune cannot drop an own ad between refreshes.
   heartbeat "local self-registration",
-    disco.discoConfig.advertExpiry div 2, sleepFirst = true:
-    if not disco.isServer:
-      return
-    disco.registerLocally()
+    max(1.seconds, disco.discoConfig.advertExpiry div 2), sleepFirst = true:
+    if disco.isServer:
+      disco.registerLocally()
 
 proc startLocalRegistration(disco: ServiceDiscovery) =
   if not disco.isServer:

@@ -518,8 +518,9 @@ suite "Service Discovery Component - Advertise Discover":
       raiseAssert "own ad missing after addProvidedService"
 
     checkUntilTimeout:
-      node.registrar.ads.getCachedAd(serviceId, selfPeer).get().timestamp >
-        first.timestamp
+      block:
+        let cur = node.registrar.ads.getCachedAd(serviceId, selfPeer)
+        cur.isSome() and cur.get().timestamp > first.timestamp
 
   asyncTest "a remote registrar admits a node's second service at once":
     let registrarNode = setupServiceDiscoveryNode()
