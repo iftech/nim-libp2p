@@ -142,7 +142,9 @@ type
 
   PublishParams* = object
     ## Used to indicate whether a message will be broadcasted using a custom stream
-    ## defined when instantiating Pubsub, or if it will use the normal send stream
+    ## defined when instantiating Pubsub, or if it will use the normal send stream.
+    ## For topic-stream peers the callback opens the topic-stream codec and the
+    ## payload retains topic-stream framing.
     useCustomStream*: bool
 
     ## Can be used to avoid having the node reply to IWANT messages when initially 
@@ -323,7 +325,7 @@ proc broadcast*(
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if preparedRPC.isZero():
           preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
-        peer.sendTopicRPC(preparedRPC, priority)
+        peer.sendTopicRPC(preparedRPC, priority, useCustomStream)
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)

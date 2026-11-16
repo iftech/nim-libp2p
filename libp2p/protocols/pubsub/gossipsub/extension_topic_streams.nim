@@ -69,7 +69,8 @@ type
     stopped: bool
     maxMessageSize: int
     queuedBytes, queuedMessages, incomingBytes: int
-    writers: Table[string, TopicWriter]
+    # Custom publishes must not reuse a writer opened over a direct connection.
+    writers: Table[tuple[topic: string, custom: bool], TopicWriter]
     readers: seq[TopicReader]
     dial: TopicStreamDial
     receive: TopicStreamReceive
@@ -186,9 +187,14 @@ proc popNext(
     return Opt.some(w.medium.popFirst())
   return Opt.some(w.low.popFirst())
 
-proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises: []).} =
+proc writeLoop(
+    s: TopicStreams,
+    key: tuple[topic: string, custom: bool],
+    w: TopicWriter,
+    dial: TopicStreamDial,
+) {.async: (raises: []).} =
   try:
-    w.stream = await s.dial().wait(TopicStreamDialTimeout)
+    w.stream = await dial().wait(TopicStreamDialTimeout)
     if s.stopped or w.closing:
       return
     w.monitor = s.monitorWriter(w)
@@ -208,7 +214,7 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
     w.closing = true
     if w.medium.len + w.low.len > 0:
       trace "discarding queued topic frames as writer closes",
-        topic, messages = w.medium.len + w.low.len
+        topic = key.topic, messages = w.medium.len + w.low.len
     s.discardQueued(w)
     w.header = @[]
     if w.monitor != nil:
@@ -217,10 +223,16 @@ proc writeLoop(s: TopicStreams, topic: string, w: TopicWriter) {.async: (raises:
       await w.stream.close()
     s.queuedBytes -= w.headerBytes
     # Keep the entry until close completes: replacement must close before dial.
-    if s.writers.getOrDefault(topic) == w:
-      s.writers.del(topic)
+    if s.writers.getOrDefault(key) == w:
+      s.writers.del(key)
 
-proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bool) =
+proc sendTopic*(
+    s: TopicStreams,
+    topic: string,
+    data: sink seq[byte],
+    medium: bool,
+    customDial: TopicStreamDial = nil,
+) =
   if s.stopped or not s.active:
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["inactive"])
     return
@@ -233,7 +245,8 @@ proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bo
     trace "dropping outgoing topic frame because queue is full", topic
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["queue_full"])
     return
-  var w = s.writers.getOrDefault(topic)
+  let key = (topic: topic, custom: customDial != nil)
+  var w = s.writers.getOrDefault(key)
   if w == nil:
     if s.writers.len >= s.config.maxOutgoingStreams:
       trace "dropping outgoing topic frame because stream limit is reached", topic
@@ -247,7 +260,7 @@ proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bo
       return
     w = TopicWriter(wake: newAsyncEvent(), header: header, headerBytes: header.len)
     s.queuedBytes += header.len
-    s.writers[topic] = w
+    s.writers[key] = w
   elif w.closing:
     trace "dropping outgoing topic frame while writer closes", topic
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["writer_closing"])
@@ -259,7 +272,7 @@ proc sendTopic*(s: TopicStreams, topic: string, data: sink seq[byte], medium: bo
   else:
     w.low.addLast(move(data))
   if w.task == nil:
-    w.task = s.writeLoop(topic, w)
+    w.task = s.writeLoop(key, w, if customDial == nil: s.dial else: customDial)
   else:
     w.wake.fire()
 
@@ -272,9 +285,10 @@ proc closeTopic*(
 ) {.async: (raises: []).} =
   if s == nil:
     return
-  let w = s.writers.getOrDefault(topic)
-  if w != nil:
-    await w.close()
+  for custom in [false, true]:
+    let w = s.writers.getOrDefault((topic, custom))
+    if w != nil:
+      await w.close()
   if incoming:
     let readers = s.readers
     for r in readers:
@@ -405,9 +419,14 @@ proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
   control.partialMessageExtension = Opt.none(PartialMessageExtensionRPC)
   result.control = control.encode(anonymize)
 
-proc sendTopicRPC*(s: TopicStreams, msg: PreparedTopicRPC, medium: bool): seq[byte] =
+proc sendTopicRPC*(
+    s: TopicStreams,
+    msg: PreparedTopicRPC,
+    medium: bool,
+    customDial: TopicStreamDial = nil,
+): seq[byte] =
   for payload in msg.payloads:
-    s.sendTopic(payload.topic, payload.data, medium)
+    s.sendTopic(payload.topic, payload.data, medium, customDial)
   msg.control
 
 proc new*(
@@ -455,10 +474,14 @@ proc readTopicStream*(
   await streams.readTopic(stream)
 
 proc sendTopicRPC*(
-    ext: TopicStreamsExtension, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
+    ext: TopicStreamsExtension,
+    peerId: PeerId,
+    msg: PreparedTopicRPC,
+    medium: bool,
+    customDial: TopicStreamDial = nil,
 ): seq[byte] =
   ext.peers.withValue(peerId, streams):
-    return streams[].sendTopicRPC(msg, medium)
+    return streams[].sendTopicRPC(msg, medium, customDial)
 
 proc closeTopicStreams*(
     ext: TopicStreamsExtension, topic: string, incoming = false

@@ -163,6 +163,9 @@ type
     # Task for processing non-priority message queue.
     sendNonHighPriorityTask: Future[void]
 
+  ## Opens the requested codec. Topic-stream peers use /gsts/v0beta for
+  ## payloads and the GossipSub codec for control RPCs. Custom topic writers
+  ## reuse the stream until it closes or the topic is unsubscribed.
   CustomStreamCreationProc* = proc(
     destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
   ): Stream {.gcsafe, raises: [].}
@@ -967,16 +970,34 @@ proc sendEncoded*(
           action.slowPeerPenaltyDelta, action.priority, msg.len
         )
 
-proc sendTopicRPC*(p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority) =
+proc sendTopicRPC*(
+    p: PubSubPeer,
+    msg: PreparedTopicRPC,
+    priority: MessagePriority,
+    useCustomStream: bool = false,
+) =
   if p.stopped:
     return
-  let control =
-    p.extensionsState.sendTopicRPC(p.peerId, msg, priority == MessagePriority.Medium)
+  var customDial: TopicStreamDial
+  if useCustomStream and p.customStreamCallbacks.isSome:
+    customDial = proc(): Future[Stream] {.
+        async: (raises: [CancelledError, LPStreamError])
+    .} =
+      return p.customStreamCallbacks.get().customStreamCreationCB(
+          p.address, p.peerId, TopicStreamsCodec
+        )
+  let control = p.extensionsState.sendTopicRPC(
+    p.peerId, msg, priority == MessagePriority.Medium, customDial
+  )
   if control.len > 0:
-    p.trackSend(p.sendEncoded(control, MessagePriority.High))
+    p.trackSend(p.sendEncoded(control, MessagePriority.High, useCustomStream))
 
 proc routeTopicRPC(
-    p: PubSubPeer, msg: RPCMsg, anonymize: bool, priority: MessagePriority
+    p: PubSubPeer,
+    msg: RPCMsg,
+    anonymize: bool,
+    priority: MessagePriority,
+    useCustomStream: bool,
 ): bool =
   if msg.messages.len == 0 and msg.partialMessageExtension.isNone and
       not p.hasObservers():
@@ -987,7 +1008,7 @@ proc routeTopicRPC(
   if p.hasObservers():
     p.sendObservers(msgCopy)
   sendMetrics(msgCopy)
-  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority)
+  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority, useCustomStream)
   true
 
 proc encodeRpcMsg(
@@ -1024,7 +1045,7 @@ proc send*(
   ##   High priority messages are sent immediately, medium and low priority messages are queued
   ##   and sent only after all high priority messages have been sent.
 
-  if p.routeTopicRPC(msg, anonymize, priority):
+  if p.routeTopicRPC(msg, anonymize, priority, useCustomStream):
     return
 
   var encoded = encodeRpcMsg(p, msg, anonymize)
@@ -1055,7 +1076,7 @@ proc sendResponse*(
   ## `maxMessageSize`, and individual messages that still exceed
   ## `maxMessageSize`, are dropped with a warning.
 
-  if p.routeTopicRPC(msg, anonymize, priority):
+  if p.routeTopicRPC(msg, anonymize, priority, useCustomStream):
     return
 
   proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =
