@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/net
+import std/[bitops, net]
 
 type
   IpTreeNode* = ref object
@@ -115,22 +115,41 @@ proc ipsLen*(ipTree: IpTree): int {.raises: [].} =
   ## Total IP multi-set size (IPv4 + IPv6 root counters).
   ipTree.root.counter + ipTree.root6.counter
 
-proc ipScore*(ipTree: IpTree, ip: IpAddress): float64 {.raises: [].} =
-  ## Returns an IP similarity score in [0.0, 1.0] for the given IP address.
-  ## Supports both IPv4 (32-level tree) and IPv6 (128-level tree).
-  ##
-  ## The score counts how many of the prefix nodes along the IP's path have
-  ## a counter exceeding the expected threshold (root.counter / 2^(depth+1)),
-  ## where depth+1 is the tree level of the child node being evaluated.
-  ## A high score means many existing IPs share the same subnet — a signal of
-  ## Sybil-style clustering.
+func prefixLen(a, b: openArray[uint8]): int =
+  for i in 0 ..< a.len:
+    let x = a[i] xor b[i]
+    if x != 0:
+      return i * 8 + countLeadingZeroBits(x)
+  a.len * 8
+
+func commonPrefixLen(a, b: IpAddress): int =
+  if a.family != b.family:
+    return 0
+  case a.family
+  of IpAddressFamily.IPv4:
+    prefixLen(a.address_v4, b.address_v4)
+  of IpAddressFamily.IPv6:
+    prefixLen(a.address_v6, b.address_v6)
+
+proc ipScore*(
+    ipTree: IpTree, ip: IpAddress, exclude: openArray[IpAddress] = []
+): float64 {.raises: [].} =
+  ## Sybil score of `ip`, as if each IP in `exclude` (all in the tree) were removed.
+  var divergesAt: array[129, int]
+  var excluded = 0
+  for e in exclude:
+    if e.family == ip.family:
+      inc excluded
+      inc divergesAt[commonPrefixLen(ip, e)]
+
   let root = ipTree.treeRoot(ip)
-  if root.counter == 0:
+  if root.counter - excluded <= 0:
     return 0.0
 
   var v = root
   var score = 0
-  let total = float64(root.counter)
+  var depth = 0
+  let total = float64(root.counter - excluded)
   let bytes = ip.ipBytes()
   let nBits = bytes.len * 8
 
@@ -143,21 +162,26 @@ proc ipScore*(ipTree: IpTree, ip: IpAddress): float64 {.raises: [].} =
       if v.isNil:
         return (float64(score) / float64(nBits))
 
-      if float64(v.counter) > threshold:
+      excluded -= divergesAt[depth]
+      inc depth
+      let effective = max(v.counter - excluded, 0)
+      if float64(effective) > threshold:
         score += 1
 
       threshold *= 0.5
 
   (float64(score) / float64(nBits))
 
-proc ipsMaxScore*(ipTree: IpTree, ips: seq[IpAddress]): float64 {.raises: [].} =
+proc ipsMaxScore*(
+    ipTree: IpTree, ips: seq[IpAddress], exclude: openArray[IpAddress] = []
+): float64 {.raises: [].} =
   ## Max IP similarity score across the given addresses.
   if ips.len < 1:
     return 1.0
 
   var maxScore = 0.0
   for ip in ips:
-    let score = ipTree.ipScore(ip)
+    let score = ipTree.ipScore(ip, exclude)
     if score > maxScore:
       maxScore = score
 

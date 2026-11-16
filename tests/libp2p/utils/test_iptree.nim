@@ -48,6 +48,35 @@ suite "IpTree":
     tree.removeIps(@[ip4(192, 168, 1, 2)])
     check tree.ipsLen == 0
 
+  test "ipScore with exclude matches the score after removal":
+    let stored = @[
+      ip4(10, 0, 0, 1),
+      ip4(10, 0, 0, 1),
+      ip4(10, 0, 0, 2),
+      ip4(10, 0, 1, 1),
+      ip4(192, 168, 1, 1),
+      ip6(0x20, 0x01, 1),
+      ip6(0x20, 0x01, 2),
+    ]
+    let probes =
+      @[ip4(10, 0, 0, 1), ip4(10, 0, 0, 9), ip4(172, 16, 0, 1), ip6(0x20, 0x01, 1)]
+    let excludes = @[
+      @[ip4(10, 0, 0, 1)],
+      @[ip4(10, 0, 0, 1), ip4(10, 0, 0, 1)],
+      @[ip4(10, 0, 0, 2), ip4(192, 168, 1, 1), ip6(0x20, 0x01, 2)],
+      stored,
+    ]
+
+    let tree = IpTree.new()
+    tree.insertIps(stored)
+    for exclude in excludes:
+      let removed = IpTree.new()
+      removed.insertIps(stored)
+      removed.removeIps(exclude)
+      for probe in probes:
+        checkpoint $exclude & " / " & $probe
+        check tree.ipScore(probe, exclude) == removed.ipScore(probe)
+
   test "insertIp creates correct tree structure":
     let tree = IpTree.new()
 
