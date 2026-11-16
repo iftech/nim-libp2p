@@ -11,6 +11,8 @@
 
 static const char *ServiceId = "/cbind/disco/demo-service";
 static const char *ServiceData = "demo-payload";
+// Replaces the 900 s core default.
+static const int64_t AdvertExpiryMs = 120000;
 
 // A lookup answers with up to Default_F_lookup (30) records.
 #define MAX_RECORDS 32
@@ -61,7 +63,8 @@ static LibP2PCtx *discoNode(const char *listenAddr, const char *label,
   NimFfiStr addrSlot = nimffi_str(listenAddr);
   Libp2pConfig cfg;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.mountServiceDiscovery = true;
+  cfg.serviceDiscovery.mount = true;
+  cfg.serviceDiscovery.advertExpiryMs = AdvertExpiryMs;
   cfg.addrs.data = &addrSlot;
   cfg.addrs.len = 1;
   cfg.muxer = MUXER_TYPE_MPLEX;
@@ -130,10 +133,74 @@ static bool rejectsDiscoBeforeStart(LibP2PCtx *ctx) {
   return true;
 }
 
+typedef struct {
+  ServiceDiscoveryConfig sd;
+  const char *want;
+} BadConfig;
+
+static const BadConfig BadConfigs[] = {
+    {{.mount = true, .kRegister = -1}, "kRegister must be 0 or greater (-1)"},
+    {{.mount = true, .advertExpiryMs = -1},
+     "advertExpiryMs must be 0 or greater (-1)"},
+    {{.mount = true, .advertCacheCap = -1},
+     "advertCacheCap must be 0 or greater (-1)"},
+    {{.mount = true, .kLookup = -1}, "kLookup must be 0 or greater (-1)"},
+    {{.mount = true, .fLookup = -1}, "fLookup must be 0 or greater (-1)"},
+    {{.mount = true, .fReturn = -1}, "fReturn must be 0 or greater (-1)"},
+    {{.mount = true, .bucketsCount = -1},
+     "bucketsCount must be 0 or greater (-1)"},
+    {{.mount = true, .bucketsCount = 257},
+     "bucketsCount exceeds the limit of 256 (257)"},
+    {{.mount = true, .registrationWindowMs = -1000},
+     "registrationWindowMs must be 0 or greater (-1000)"},
+    {{.mount = true, .registrationWindowMs = -1500},
+     "registrationWindowMs must be 0 or greater (-1500)"},
+    {{.mount = true, .registrationWindowMs = 9223372036855500},
+     "registrationWindowMs exceeds the limit of 9223372036854 "
+     "(9223372036855500)"},
+    {{.mount = true, .registrationWindowMs = 1500},
+     "registrationWindowMs must be whole seconds (1500)"},
+    {{.mount = true, .registrationWindowMs = 9223372037000},
+     "registrationWindowMs exceeds the limit of 9223372036854 "
+     "(9223372037000)"},
+    {{.mount = true, .advertExpiryMs = 9223372036855},
+     "advertExpiryMs exceeds the limit of 9223372036854 (9223372036855)"},
+    {{.mode = SERVICE_DISCOVERY_MODE_CLIENT},
+     "service discovery settings require serviceDiscovery.mount"},
+    {{.advertExpiryMs = 1000},
+     "service discovery settings require serviceDiscovery.mount"},
+    {{.disableXprPublishing = true},
+     "service discovery settings require serviceDiscovery.mount"},
+};
+
+static bool rejectsBadConfigs(void) {
+  for (size_t i = 0; i < sizeof(BadConfigs) / sizeof(BadConfigs[0]); i++) {
+    Libp2pConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.serviceDiscovery = BadConfigs[i].sd;
+    CreateWaiter w;
+    memset(&w, 0, sizeof(w));
+    libp2p_ctx_create(&cfg, on_created, &w);
+    wait_done(&w.done);
+    if (w.ctx)
+      libp2p_ctx_destroy(w.ctx);
+    if (w.err_code == 0 || strstr(w.err, BadConfigs[i].want) == NULL) {
+      fprintf(stderr, "Error: expected '%s', got: %s\n", BadConfigs[i].want,
+              w.err_code == 0 ? "success" : (w.err[0] ? w.err : "unknown"));
+      return false;
+    }
+  }
+  printf("Bad service discovery configs rejected\n");
+  return true;
+}
+
 int main(void) {
   int status = 1;
   BoolWaiter bw;
   PeerInfoWaiter providerInfo;
+
+  if (!rejectsBadConfigs())
+    return 1;
 
   LibP2PCtx *provider = discoNode("/ip4/127.0.0.1/tcp/5041", "provider", NULL);
   if (!provider)
