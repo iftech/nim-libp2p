@@ -33,7 +33,7 @@ suite "GossipSub Extensions :: Topic streams":
     defer:
       await peerEnd.close()
 
-    # the peer disconnected while its topic stream was negotiated, so GossipSub removed its transport
+    # random PeerId simulates a disconnected peer without a transport
     await state.readTopicStream(PeerId.random(), nodeEnd)
     check nodeEnd.wasResetLocally()
 

@@ -283,6 +283,7 @@ suite "PubSubPeer send stream":
     let recorder = TopicStreamsRecorder.new()
     let added = Message(topic: topic, data: @[1.byte])
 
+    # the send observer adds a message to every RPC the peer sends
     proc onSend(p: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
       msg.messages.add(added)
 
@@ -294,9 +295,11 @@ suite "PubSubPeer send stream":
     defer:
       await peer.stopTasks()
       await recorder.closeOutgoingStreams()
+    # topic streams negotiated, so messages to this peer must go on a topic stream
     check peer.extensionsState.negotiateTopicStreams(
       peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
     )
+    # an RPC without messages, only a subscription
     peer.sendResponse(
       RPCMsg.withSubscriptions(
         @[SubOpts(topic: Opt.some(topic), subscribe: Opt.some(true))]
@@ -304,6 +307,7 @@ suite "PubSubPeer send stream":
       false,
       MessagePriority.High,
     )
+    # the message the observer added goes out on a topic stream
     check:
       TopicRPCHeader.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
         TopicRPCHeader(topic: Opt.some(topic))
@@ -318,6 +322,7 @@ suite "PubSubPeer send stream":
     let recorder = TopicStreamsRecorder.new()
     let allowDial = Future[void].Raising([CancelledError]).init()
 
+    # the topic stream opens only after the test completes allowDial
     proc heldDial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
       let stream = await recorder.dial()()
       # the writer takes no message until the stream opens, so both messages queue first
@@ -330,14 +335,17 @@ suite "PubSubPeer send stream":
     defer:
       await peer.stopTasks()
       await recorder.closeOutgoingStreams()
+    # topic streams negotiated, so messages to this peer go on a topic stream
     check peer.extensionsState.negotiateTopicStreams(
       peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
     )
     let relayed = Message(topic: topic, data: @[1.byte])
     let published = Message(topic: topic, data: @[2.byte])
+    # the Low priority message is queued first, the Medium one second
     peer.sendResponse(RPCMsg.withMessages(relayed), false, MessagePriority.Low)
     peer.send(RPCMsg.withMessages(published), false, MessagePriority.Medium)
-    allowDial.complete()
+    allowDial.complete() # the stream opens and the writer starts taking messages
+    # after the header, the Medium priority message is written before the Low one
     check:
       TopicRPCHeader.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
         TopicRPCHeader(topic: Opt.some(topic))

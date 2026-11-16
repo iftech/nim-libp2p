@@ -188,7 +188,7 @@ suite "GossipSub Component - Topic streams":
     )
     check:
       (await received.popFirst()) == msg
-      # TODO: iftech/nim-libp2p#NNNN
+      # TODO: iftech/nim-libp2p#3432
       peerSelectionCalled
       not streamCreationCalled
 

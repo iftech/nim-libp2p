@@ -496,6 +496,12 @@ suite "GossipSub topic stream send side":
       (await written.popFirst()) == header
       (await written.popFirst()) == frames[0]
 
+    let rejected =
+      metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
+    state.sendTopic(topic, frames[0], true) # dropped: frames[0]'s write holds the budget
+    check metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
+      rejected + 1
+
     await state.closeTopic(topic) # cancels frames[0]'s write
     state.sendTopic(topic, frames[0], true) # fits only if the close released frames[0]
     check:
