@@ -224,16 +224,15 @@ proc upsertAddress(
     if entries[idx].confidence < AddressConfidence.High or
         confidence >= entries[idx].confidence:
       entries[idx].lastUpdated = now
-    entries[idx].confidence = max(entries[idx].confidence, confidence)
+      entries[idx].confidence = confidence
   else:
     entries.add(AddressEntry(address: ma, confidence: confidence, lastUpdated: now))
 
 proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
   let idx = entries.findWithAddress(entry.address)
   if idx >= 0:
+    entries[idx].lastUpdated = max(entries[idx].lastUpdated, entry.lastUpdated)
     entries[idx].confidence = max(entries[idx].confidence, entry.confidence)
-    if entries[idx].lastUpdated < entry.lastUpdated:
-      entries[idx].lastUpdated = entry.lastUpdated
   else:
     entries.add(entry)
 
