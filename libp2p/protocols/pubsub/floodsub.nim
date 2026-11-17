@@ -173,9 +173,9 @@ method rpcHandler*(
     let validation =
       try:
         await f.validate(msg)
-      except CancelledError as exc:
+      except CancelledError as e:
         discard f.seen.del(saltedId)
-        raise exc
+        raise e
     case validation
     of ValidationResult.Reject:
       trace "Dropping message after validation, reason: reject", msgId, peer
