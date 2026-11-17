@@ -171,7 +171,7 @@ proc del*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
       handler(peerId)
     return true
 
-proc contains*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
+func contains*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
   peerId in peerBook.book
 
 proc addHandler*[T](peerBook: PeerBook[T], handler: PeerBookChangeHandler) =
@@ -182,7 +182,7 @@ proc notifyChangeHandlers(addressBook: AddressBook, peerId: PeerId) =
   for handler in addressBook.changeHandlers:
     handler(peerId)
 
-proc len*[T](peerBook: PeerBook[T]): int =
+func len*[T](peerBook: PeerBook[T]): int =
   peerBook.book.len
 
 ################################
@@ -207,7 +207,7 @@ proc isExpired*(entry: AddressEntry, ttls: AddressConfidenceTtls): bool =
 
   Moment.now() - entry.lastUpdated > ttl
 
-proc isVerified(entry: AddressEntry): bool =
+func isVerified(entry: AddressEntry): bool =
   entry.confidence >= AddressConfidence.High
 
 proc nonExpired(
@@ -215,20 +215,20 @@ proc nonExpired(
 ): seq[AddressEntry] =
   entries.filterIt(not it.isExpired(ttls))
 
-proc findWithAddress(entries: seq[AddressEntry], ma: MultiAddress): int =
+func findWithAddress(entries: seq[AddressEntry], ma: MultiAddress): int =
   for i, e in entries:
     if e.address == ma:
       return i
   -1
 
-proc countUnverified(entries: seq[AddressEntry]): int =
+func countUnverified(entries: openArray[AddressEntry]): int =
   var count = 0
   for entry in entries:
     if not entry.isVerified():
       inc count
   count
 
-proc oldestHighIndex(entries: seq[AddressEntry]): int =
+proc oldestHighIndex(entries: openArray[AddressEntry]): int =
   var oldest = -1
   for i, entry in entries:
     if entry.confidence == AddressConfidence.High and
@@ -316,6 +316,9 @@ proc set*(
     return
 
   let now = Moment.now()
+  var normalizedAddrs = newSeqOfCap[MultiAddress](addrs.len)
+  for ma in addrs:
+    normalizedAddrs.add(ma.stripPeerId())
   var newEntries = newSeqOfCap[AddressEntry](addrs.len)
   var previousEntries = addressBook.book.getOrDefault(peerId)
   var prevUnverified = newSeqOfCap[AddressEntry](previousEntries.len)
@@ -326,8 +329,8 @@ proc set*(
       # Retain matching verified entries so an advertisement cannot downgrade
       # their confidence or refresh their verified timestamp.
       if entry.isVerified():
-        for ma in addrs:
-          if ma.stripPeerId() == normalizedEntry.address:
+        for ma in normalizedAddrs:
+          if ma == normalizedEntry.address:
             newEntries.mergeAddressEntry(normalizedEntry)
             break
       continue
@@ -336,8 +339,7 @@ proc set*(
     else:
       prevUnverified.add(normalizedEntry)
 
-  for ma in addrs:
-    let normalized = ma.stripPeerId()
+  for normalized in normalizedAddrs:
     for entry in prevUnverified:
       if entry.address == normalized:
         newEntries.mergeAddressEntry(entry)
