@@ -693,7 +693,8 @@ suite "Multistream :: stream limits":
     check other.canAcceptIncoming(server.peerId)
 
   asyncTest "confirmation failure and cancellation release the reserved slot":
-    for cancelWrite in [false, true]:
+    for withCncelWrite in [false, true]:
+      let cancelWrite = withCncelWrite
       let gate = Future[void].Raising([CancelledError]).init()
       let confirming = Future[void].Raising([CancelledError]).init()
       proc write(
