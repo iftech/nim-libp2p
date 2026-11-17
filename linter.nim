@@ -9,14 +9,12 @@ runLint:
   ignoredPatterns = ["**/nimbledeps/**", "**/nimcache*/**", "./build/**/*"]
 
   step "Check chronicles messages":
-    linter = chronicles
     check messageEndsWithPunctuation:
       severity = error
     check messageMaxSentences:
       severity = error
 
   step "Check chronicles fields":
-    linter = chronicles
     check fieldNameLength:
       severity = error
       settings:

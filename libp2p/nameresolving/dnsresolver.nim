@@ -5,17 +5,13 @@
 
 import std/[sets, sequtils], chronos, chronicles, ./dnsmessage
 
-import nameresolver
+import nameresolver, nameservers
+
+export nameservers
 import ../crypto/rng, ../utils/future
 
 logScope:
   topics = "libp2p name-resolution"
-
-const DefaultDnsServers* = @[
-  initTAddress("1.1.1.1:53"),
-  initTAddress("1.0.0.1:53"),
-  initTAddress("[2606:4700:4700::1111]:53"),
-]
 
 type DnsResolver* = ref object of NameResolver
   nameServers*: seq[TransportAddress]

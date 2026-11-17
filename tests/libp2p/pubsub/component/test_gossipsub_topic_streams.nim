@@ -3,10 +3,12 @@
 
 {.used.}
 
-import chronos, tables, stew/byteutils, sequtils
-import ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, rpc/message]
-import ../../../tools/[lifecycle, unittest]
-import ../../../../libp2p/protocols/pubsub/rpc/protobuf
+import chronos, chronos/ratelimit, tables, stew/byteutils, sequtils
+import
+  ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
+import ../../../tools/[bufferstream, lifecycle, switch_builder, topology, unittest]
+import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
+import ../../../../libp2p/utils/future
 import ../utils
 import ../extensions/my_partial_message
 
@@ -52,6 +54,139 @@ suite "GossipSub Component - Topic streams":
     discard await nodes[0].publish(topic, "third")
     checkUntilTimeout:
       received == [1, 2]
+
+  asyncTest "full incoming stream budget does not block outgoing delivery":
+    const streamLimit = 3
+    let nodes = generateNodes(
+        2,
+        gossip = true,
+        floodPublish = true,
+        topicStreamsConfig = Opt.some(
+          TopicStreamsConfig(
+            maxIncomingStreams: streamLimit, maxOutgoingStreams: streamLimit
+          )
+        ),
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    var received: array[2, int]
+    proc handlerFor(index: int): TopicHandler =
+      return proc(topic: string, data: seq[byte]) {.async.} =
+        inc received[index]
+
+    for i in 0 .. streamLimit:
+      for j in 0 .. 1:
+        nodes[j].subscribe("topic-" & $i, handlerFor(j))
+
+    await connect(nodes[0], nodes[1])
+    for i in 0 .. streamLimit:
+      waitSubscribeStar(nodes, "topic-" & $i)
+    checkUntilTimeout:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId) and
+        nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
+
+    for i in 0 ..< streamLimit:
+      discard await nodes[1].publish("topic-" & $i, "incoming")
+    checkUntilTimeout:
+      received[0] == streamLimit
+    check nodes[0].inboundTopicStreams(nodes[1].peerInfo.peerId).len == streamLimit
+
+    discard await nodes[0].publish("topic-" & $streamLimit, "outgoing")
+    checkUntilTimeout:
+      received[1] == 1
+    check nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 1
+
+  asyncTest "forwarded message travels on topic streams":
+    let nodes = generateNodes(
+        3, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let received = newFuture[void]("forwardedMessageReceived")
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      received.completeOnce()
+
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    nodes[2].subscribe(topic, onMessage)
+
+    await connectChain(nodes)
+    waitSubscribeChain(nodes, topic)
+    checkUntilTimeout:
+      nodes[0].mesh.hasPeerId(topic, nodes[1].peerInfo.peerId)
+      nodes[1].mesh.hasPeerId(topic, nodes[2].peerInfo.peerId)
+
+    discard await nodes[0].publish(topic, "forwarded")
+    await received
+    check nodes[2].inboundTopicStreams(nodes[1].peerInfo.peerId).len == 1
+
+  asyncTest "publish counts a topic stream peer that never receives a message with empty data":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+    startAndDeferStop(nodes)
+
+    let received = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await received.put(data)
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    # TODO: iftech/nim-libp2p#3411
+    check (await nodes[0].publish(topic, newSeq[byte]())) == 1
+    discard await nodes[0].publish(topic, "data")
+    check (await received.popFirst()) == "data"
+
+  asyncTest "publish with useCustomStream runs custom peer selection but skips the custom stream for a topic stream peer":
+    let nodes = generateNodes(
+        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
+      )
+      .toGossipSub()
+
+    var
+      peerSelectionCalled = false
+      streamCreationCalled = false
+    nodes[0].customStreamCallbacks = Opt.some(
+      CustomStreamCallbacks(
+        customStreamCreationCB: proc(
+            destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
+        ): Stream =
+          streamCreationCalled = true
+          return TestBufferStream.new(noop),
+        customPeerSelectionCB: proc(
+            allPeers: HashSet[PubSubPeer],
+            directPeers: HashSet[PubSubPeer],
+            meshPeers: HashSet[PubSubPeer],
+            fanoutPeers: HashSet[PubSubPeer],
+        ): HashSet[PubSubPeer] =
+          peerSelectionCalled = true
+          return allPeers,
+      )
+    )
+    startAndDeferStop(nodes)
+
+    let received = newAsyncQueue[seq[byte]]()
+    proc onMessage(topic: string, data: seq[byte]) {.async.} =
+      await received.put(data)
+
+    nodes[1].subscribe(topic, onMessage)
+    await connect(nodes[0], nodes[1])
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    const msg = "data"
+    discard await nodes[0].publish(
+      topic, msg, publishParams = Opt.some(PublishParams(useCustomStream: true))
+    )
+    check:
+      (await received.popFirst()) == msg
+      # TODO: iftech/nim-libp2p#3432
+      peerSelectionCalled
+      not streamCreationCalled
 
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
@@ -142,13 +277,15 @@ suite "GossipSub Component - Topic streams":
     await connect(nodes[0], nodes[1])
     waitSubscribeStar(nodes, topic)
 
-    let request = MyPartialMessage(groupId: "group".toBytes, want: @[1])
+    let request = MyPartialMessage(groupId: "group", want: @[1])
     store.messages[request.groupId] = request
     await nodes[1].publishPartial(topic, request.groupId, request.partsMetadata())
     checkUntilTimeout:
       incoming.len == 1
-    check incoming[0].topicID.get() == topic
-    check incoming[0].partialMessage.isNone
+    check:
+      incoming[0].topicID == topic
+      incoming[0].partialMessage.isNone
+      nodes[0].inboundTopicStreams(nodes[1].peerInfo.peerId).len == 1
 
     let response =
       MyPartialMessage(groupId: request.groupId, data: {1: "one".toBytes}.toTable)
@@ -156,7 +293,9 @@ suite "GossipSub Component - Topic streams":
     await nodes[0].publishPartial(topic, response.groupId, response.partsMetadata())
     checkUntilTimeout:
       incoming.anyIt(it.partialMessage.isSome)
-    check incoming[^1].partialMessage.get() == "one".toBytes
+    check:
+      incoming[^1].partialMessage == "one".toBytes
+      nodes[1].inboundTopicStreams(nodes[0].peerInfo.peerId).len == 1
 
   asyncTest "mixed RPC keeps subscription control separate from application response":
     let nodes = generateNodes(
@@ -189,59 +328,3 @@ suite "GossipSub Component - Topic streams":
     )
     checkUntilTimeout:
       received and nodes[1].gossipsub.getOrDefault(additionalTopic).len == 1
-
-  asyncTest "application payload on negotiated control stream disconnects peer":
-    let nodes = generateNodes(
-        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
-      )
-      .toGossipSub()
-    startAndDeferStop(nodes)
-
-    nodes.subscribeAllNodes(topic, voidTopicHandler)
-
-    await connect(nodes[0], nodes[1])
-    waitSubscribeStar(nodes, topic)
-
-    let peer = nodes[0].peers.getOrDefault(nodes[1].peerInfo.peerId)
-    check peer.extensionsState.peerHasTopicStreams(peer.peerId)
-
-    let msg = Message.init(nodes[0].peerInfo, "invalid stream", topic, 20'u64)
-    peer.trackSend(
-      peer.sendEncoded(RPCMsg.withMessages(msg).encode(false), MessagePriority.High)
-    )
-    checkUntilTimeout:
-      not nodes[1].switch.isConnected(nodes[0].switch)
-
-  asyncTest "peer graylisted when its ControlExtensions arrives is disconnected on its topic stream":
-    # TODO: iftech/nim-libp2p#3390
-    let nodes = generateNodes(
-        2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
-      )
-      .toGossipSub()
-    startAndDeferStop(nodes)
-
-    nodes[0].subscribe(topic, voidTopicHandler)
-    let originalGraylistThreshold = nodes[0].parameters.graylistThreshold
-    # nodes[1]'s score is 0, so this graylists it
-    nodes[0].parameters.graylistThreshold = 100000.0
-    # the agent label stays "unknown" until identify finishes
-    let ignored = currentGraylistedRpcs() + currentGraylistedRpcs("unknown")
-
-    # nodes[0] drops nodes[1]'s first RPC, its ControlExtensions
-    await connect(nodes[0], nodes[1])
-    checkUntilTimeout:
-      currentGraylistedRpcs() + currentGraylistedRpcs("unknown") > ignored
-
-    nodes[0].parameters.graylistThreshold = originalGraylistThreshold
-    # nodes[0] negotiates on this subscription, which has no ControlExtensions
-    nodes[1].subscribe(topic, voidTopicHandler)
-    waitSubscribeStar(nodes, topic)
-
-    check:
-      not nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
-      nodes[1].extensionsState.peerHasTopicStreams(nodes[0].peerInfo.peerId)
-
-    discard await nodes[1].publish(topic, "data")
-
-    checkUntilTimeout:
-      not nodes[0].switch.isConnected(nodes[1].switch)

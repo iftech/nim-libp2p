@@ -3,10 +3,41 @@
 
 {.used.}
 
+import std/sequtils
 import chronos
 import ../../../libp2p/[protocols/kademlia, switch, builders]
 import ../../tools/[lifecycle, topology, unittest]
 import ./utils
+
+type SelectiveValidator = ref object of EntryValidator
+  acceptedValue: Value
+  calls: int
+
+method isValid(self: SelectiveValidator, key: RecordKey, record: EntryRecord): bool =
+  self.calls.inc()
+  record.value == self.acceptedValue
+
+proc checkRepairTargets(rejectedRecord: bool) {.async.} =
+  let kads = setupKadSwitches(3)
+  startAndDeferStop(kads)
+  await connectHub(kads[0], kads[1 ..^ 1])
+
+  let
+    key = kads[1].rtable.selfId
+    value = @[1.byte, 2, 3]
+    validator = SelectiveValidator(acceptedValue: Value.init(value))
+  kads[2].dataTable.insert(key, value, Timestamp.now())
+  if rejectedRecord:
+    kads[1].dataTable.insert(key, @[9.byte], Timestamp.now())
+  kads[2].config.validator = validator
+  kads[2].config.limits.maxReceivedSize = 2
+
+  let expectedCalls = kads.countIt(not it.containsNoData(key))
+  let record = await kads[2].getValue(key, quorumOverride = Opt.some(2))
+  check:
+    record.get().value == value
+    kads[0].containsData(key, value)
+    validator.calls == expectedCalls
 
 suite "KadDHT Get":
   teardown:
@@ -83,7 +114,7 @@ suite "KadDHT Get":
       kads[3].containsData(key, bestValue)
       kads[4].containsData(key, bestValue)
 
-  asyncTest "Could not achieve quorum":
+  asyncTest "Return best value when lookup finishes below quorum":
     let kads = setupKadSwitches(5, DefaultEntryValidator(), DefaultEntrySelector())
     startAndDeferStop(kads)
 
@@ -103,9 +134,7 @@ suite "KadDHT Get":
       kads[4].containsNoData(key)
 
     let record = await kads[0].getValue(key)
-    check record.isErr()
-    check record.error() ==
-      "Not enough valid records to achieve quorum (needed 5, got 1)"
+    check record.get().value == value
 
   asyncTest "Update peers with empty values":
     let kads = setupKadSwitches(5, DefaultEntryValidator(), DefaultEntrySelector())
@@ -160,6 +189,48 @@ suite "KadDHT Get":
     check record.isErr()
     checkUntilTimeout:
       kads[2].hasKey(kads[1].rtable.selfId)
+
+  asyncTest "Get follows empty replies to find a value":
+    let kads = setupKadSwitches(3)
+    startAndDeferStop(kads)
+    await connectHub(kads[0], kads[1 ..^ 1])
+
+    let
+      key = kads[1].rtable.selfId
+      value = @[1.byte, 2, 3]
+    kads[1].dataTable.insert(key, value, Timestamp.now())
+
+    kads[2].config.limits.maxReceivedSize = 1
+    check not kads[2].hasKey(kads[1].rtable.selfId)
+    let record = await kads[2].getValue(key, quorumOverride = Opt.some(1))
+    check record.get().value == value
+
+  asyncTest "Get replaces rejected record with a valid record":
+    let kads = setupKadSwitches(3)
+    startAndDeferStop(kads)
+    await connectHub(kads[0], kads[1 ..^ 1])
+
+    let
+      key = kads[1].rtable.selfId
+      value = @[1.byte, 2, 3]
+      validator = SelectiveValidator(acceptedValue: Value.init(value))
+    kads[0].dataTable.insert(key, @[9.byte], Timestamp.now())
+    kads[1].dataTable.insert(key, value, Timestamp.now())
+    kads[2].config.validator = validator
+    kads[2].config.limits.maxReceivedSize = 1
+
+    check not kads[2].hasKey(kads[1].rtable.selfId)
+    let expectedCalls = kads.countIt(not it.containsNoData(key))
+    let record = await kads[2].getValue(key, quorumOverride = Opt.some(1))
+    check:
+      record.get().value == value
+      validator.calls == expectedCalls
+
+  asyncTest "Empty replies do not replace repair targets in a full table":
+    await checkRepairTargets(false)
+
+  asyncTest "Invalid replies do not replace repair targets in a full table":
+    await checkRepairTargets(true)
 
   asyncTest "Get updates routing table with closerPeers (with record)":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
@@ -405,7 +476,7 @@ suite "KadDHT Get":
       record.isOk()
       record.get().value == value
 
-  asyncTest "Get value fails when too many peers are offline":
+  asyncTest "Get value returns available record below quorum with offline peers":
     let kads = setupKadSwitches(4)
     startAndDeferStop(kads)
 
@@ -424,11 +495,11 @@ suite "KadDHT Get":
     await kads[2].switch.stop()
     await kads[3].switch.stop()
 
-    # Query should fail - need quorum of 3 but only 1 peer available
+    # The only available record is returned when the search finishes.
     let record = await kads[0].getValue(key, quorumOverride = Opt.some(3))
 
     check:
-      record.isErr()
+      record.get().value == value
 
   asyncTest "Get value retrieves binary data with null and high bytes":
     let kads = setupKadSwitches(2)

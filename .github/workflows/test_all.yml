@@ -47,11 +47,11 @@ jobs:
             cc: gcc
             log_level: INFO
         nim:
-          - ref: v2.2.4
+          - ref: v2.2.6
             memory_management: refc
-          - ref: v2.2.10
+          - ref: v2.2.14
             memory_management: refc
-          - ref: v2.2.10
+          - ref: v2.2.14
             memory_management: orc
         include:
           - platform:
@@ -139,7 +139,6 @@ jobs:
         id: build-test-all
         run: |
           NIMFLAGS="--nimcache:nimcache/test_all --mm:${{ matrix.nim.memory_management }} --opt:speed --styleCheck:usages --styleCheck:error --parallelBuild:0 --threads:on --skipUserCfg"
-          NIMFLAGS="$NIMFLAGS -d:nimNoLentIterators"
           NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=${{ matrix.platform.log_level }}"
           NIMFLAGS="$NIMFLAGS --debugger:native --stacktrace:off --define:nimStackTraceOverride"
           if [[ '${{ matrix.platform.cc }}' == 'clang' ]]; then
@@ -190,7 +189,7 @@ jobs:
   test-asan:
     env:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
-      NIM_REF: v2.2.10
+      NIM_REF: v2.2.14
     permissions:
       actions: write
       checks: write
@@ -201,7 +200,7 @@ jobs:
       run:
         shell: bash
 
-    name: "linux-amd64 (Nim v2.2.10 / gcc / orc / asan)"
+    name: "linux-amd64 (Nim v2.2.14 / gcc / orc / asan)"
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -245,7 +244,6 @@ jobs:
       - name: Build test_all
         run: |
           NIMFLAGS="--nimcache:nimcache/test_all_asan --mm:orc -d:useMalloc --opt:speed --styleCheck:usages --styleCheck:error --parallelBuild:0 --threads:on --skipUserCfg"
-          NIMFLAGS="$NIMFLAGS -d:nimNoLentIterators"
           NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=INFO"
           NIMFLAGS="$NIMFLAGS --debugger:native --stacktrace:off --define:nimStackTraceOverride"
           NIMFLAGS="$NIMFLAGS --passC:-fno-omit-frame-pointer --passC:-fsanitize=address --passL:-fsanitize=address"

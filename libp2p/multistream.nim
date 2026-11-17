@@ -263,16 +263,15 @@ proc list*(
 
   list
 
-proc tryHandle*(
+proc tryHandleImpl(
     _: type MultistreamSelect,
     stream: Stream,
     protos: seq[string],
-    matchers = newSeq[Matcher](),
-    active: bool = false,
+    accept: Matcher,
+    active: bool,
 ): Future[MultiStreamResult[string]] {.
     async: (raises: [CancelledError, LPStreamError])
 .} =
-  ## Returns "" when the stream reaches EOF before a proposal matches.
   trace "Multistream negotiation started", stream, handshaked = active
   var handshaked = active
   while not stream.atEof:
@@ -298,17 +297,32 @@ proc tryHandle*(
       else:
         trace "Duplicate multistream handshake rejected", stream
         await stream.writeLp(Na)
-    elif ms.len > 0 and (ms in protos or matchers.anyIt(it(ms))):
+    elif ms.len > 0 and accept(ms):
       trace "Protocol handler selected", stream, protocol = ms
       await stream.writeLp(ms & "\n")
       stream.protocol = ms
       return ok(ms)
     else:
       trace "Protocol negotiation rejected",
-        stream, protocol = ms, reason = "no handler"
+        stream, protocol = ms, reason = "no available handler"
       await stream.writeLp(Na)
 
   ok("")
+
+proc tryHandle*(
+    _: type MultistreamSelect,
+    stream: Stream,
+    protos: seq[string],
+    matchers = newSeq[Matcher](),
+    active: bool = false,
+): Future[MultiStreamResult[string]] {.
+    async: (raises: [CancelledError, LPStreamError], raw: true)
+.} =
+  ## Returns "" when the stream reaches EOF before a proposal matches.
+  proc matches(proto: string): bool {.gcsafe, raises: [].} =
+    proto in protos or matchers.anyIt(it(proto))
+
+  MultistreamSelect.tryHandleImpl(stream, protos, matches, active)
 
 proc handle*(
     _: type MultistreamSelect,
@@ -329,19 +343,6 @@ proc lookupProtocol*(m: MultistreamSelect, proto: string): Opt[LPProtocol] =
       return Opt.some(h.protocol)
   return Opt.none(LPProtocol)
 
-func allProtosAndMatchers(m: MultistreamSelect): (seq[string], seq[Matcher]) =
-  var
-    protos: seq[string]
-    matchers: seq[Matcher]
-
-  for h in m.handlers:
-    if h.match != nil:
-      matchers.add(h.match)
-    for proto in h.protos:
-      protos.add(proto)
-
-  return (protos, matchers)
-
 proc handle*(
     m: MultistreamSelect, stream: Stream, active: bool = false
 ) {.async: (raises: [CancelledError]).} =
@@ -350,10 +351,24 @@ proc handle*(
     trace "Multistream handler stopped", stream
     await noCancel stream.close()
 
+  var admitted: LPProtocol
+  proc admit(proto: string): bool {.gcsafe, raises: [].} =
+    m.lookupProtocol(proto).ifValue(p):
+      if p.reserveIncoming(stream.peerId):
+        admitted = p
+        return true
+      debug "Inbound stream budget exceeded, rejecting incoming stream",
+        stream, protocol = proto, peerId = stream.peerId
+    false
+
+  defer:
+    if admitted != nil:
+      admitted.releaseIncoming(stream.peerId)
+
   let negotiated =
     try:
-      let (protos, matchers) = m.allProtosAndMatchers()
-      await MultistreamSelect.tryHandle(stream, protos, matchers, active)
+      let protos = m.handlers.mapIt(it.protos).concat()
+      await MultistreamSelect.tryHandleImpl(stream, protos, admit, active)
     except LPStreamError as e:
       trace "Multistream negotiation failed", err = e.msg, stream
       return
@@ -361,21 +376,9 @@ proc handle*(
     trace "Multistream negotiation failed", err = error, stream
     return
 
-  m.lookupProtocol(ms).ifValue(p):
-    trace "Protocol handler selected", stream, protocol = ms
-
-    if not p.reserveIncoming(stream.peerId):
-      debug "Inbound stream budget exceeded, rejecting incoming stream",
-        stream, protocol = ms, peerId = stream.peerId
-      return
-
-    try:
-      let h = p.handler
-      await h(stream, ms)
-    finally:
-      p.releaseIncoming(stream.peerId)
-  else:
-    trace "Protocol handler unavailable", stream, protocol = ms
+  if admitted != nil:
+    let h = admitted.handler
+    await h(stream, ms)
 
 proc addHandler*(m: MultistreamSelect, protocol: LPProtocol, matcher: Matcher = nil) =
   trace "Protocol handlers registered", protocols = protocol.codecs

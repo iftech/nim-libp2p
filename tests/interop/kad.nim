@@ -47,7 +47,8 @@ proc kadInteropTest*(
   # wait for other peer's kad to store the value
   await sleepAsync(2.seconds)
 
-  # try to get the inserted value from peer
+  # Require retrieval from the peer rather than our local copy.
+  kad.dataTable.del(key)
   let getRes = await kad.getValue(key).wait(timeout)
   if getRes.isErr():
     echo "getValue failed: ", getRes.error

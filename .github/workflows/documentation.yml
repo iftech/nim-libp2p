@@ -30,7 +30,7 @@ jobs:
           os: linux
           cpu: amd64
           shell: bash
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Generate doc
         run: |
