@@ -645,6 +645,7 @@ suite "GossipSub":
       gossipSub.gossipsub.hasPeer(first, peer)
       gossipSub.gossipsub.hasPeer(second, peer)
       not gossipSub.gossipsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
 
     for (name, subscribe) in [(first, false), (replacement, true)]:
       await gossipSub.rpcHandler(
@@ -654,6 +655,7 @@ suite "GossipSub":
       not gossipSub.gossipsub.hasPeer(first, peer)
       gossipSub.gossipsub.hasPeer(second, peer)
       gossipSub.gossipsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
 
   asyncTest "rpcHandler - extensions only see accepted subscriptions":
     proc unionPartsMetadata(

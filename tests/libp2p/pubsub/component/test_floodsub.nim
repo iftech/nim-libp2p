@@ -444,6 +444,7 @@ suite "FloodSub Component", timeout = 120.seconds:
       node.floodsub.hasPeer(first, peer)
       node.floodsub.hasPeer(second, peer)
       not node.floodsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
 
     for (name, subscribe) in [(first, false), (replacement, true)]:
       await node.rpcHandler(
@@ -456,6 +457,7 @@ suite "FloodSub Component", timeout = 120.seconds:
       not node.floodsub.hasPeer(first, peer)
       node.floodsub.hasPeer(second, peer)
       node.floodsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
 
   asyncTest "FloodSub unsubscribePeer clears emptied topics":
     let node = generateNodes(1).toFloodSub()[0]
