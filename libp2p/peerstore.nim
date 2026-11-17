@@ -237,6 +237,25 @@ proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
   else:
     entries.add(entry)
 
+proc isLive(addressBook: AddressBook, peerId: PeerId, entry: AddressEntry): bool =
+  peerId in addressBook.connectedPeers or not entry.isExpired(addressBook.ttls)
+
+proc addressesChanged(
+    addressBook: AddressBook, peerId: PeerId, previous, current: openArray[AddressEntry]
+): bool =
+  ## Compare addresses, confidence and visibility, ignoring order and timestamps.
+  ## Current entries must have unique addresses, as produced by set.
+  if current.len != previous.len:
+    return true
+
+  var prevSet = initHashSet[(MultiAddress, AddressConfidence, bool)]()
+  for entry in previous:
+    prevSet.incl((entry.address, entry.confidence, addressBook.isLive(peerId, entry)))
+  for entry in current:
+    if (entry.address, entry.confidence, addressBook.isLive(peerId, entry)) notin prevSet:
+      return true
+  false
+
 proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()) =
   var entries = addressBook.book.getOrDefault(peerId)
   if entries.len == 0:
@@ -251,9 +270,6 @@ proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()
   if refreshed:
     addressBook.book[peerId] = entries
 
-proc isLive(addressBook: AddressBook, peerId: PeerId, entry: AddressEntry): bool =
-  peerId in addressBook.connectedPeers or not entry.isExpired(addressBook.ttls)
-
 proc set*(
     addressBook: AddressBook,
     peerId: PeerId,
@@ -265,17 +281,17 @@ proc set*(
   ## high-confidence entry is never downgraded by a lower-confidence update.
   ## High/Infinite entries absent from the incoming list are preserved so that
   ## a verified dial address is never evicted by a later Identify update.
-  defer:
-    addressBook.notifyChangeHandlers(peerId)
-
+  ## Every incoming address refreshes its timestamp, including duplicates.
+  ## Subscribers are notified when addresses, confidence or visibility change.
   if addrs.len == 0:
-    if peerId in addressBook.book:
-      addressBook.book.del(peerId)
+    discard addressBook.del(peerId)
     return
 
   let now = Moment.now()
+  let previous = addressBook.book.getOrDefault(peerId)
+
   var prevConf: Table[MultiAddress, AddressConfidence]
-  for entry in addressBook.book.getOrDefault(peerId):
+  for entry in previous:
     let normalized = entry.address.stripPeerId()
     prevConf[normalized] =
       max(prevConf.getOrDefault(normalized, entry.confidence), entry.confidence)
@@ -287,7 +303,7 @@ proc set*(
       normalized, higherConfidence(prevConf, normalized, confidence), now
     )
 
-  for entry in addressBook.book.getOrDefault(peerId):
+  for entry in previous:
     let normalized = entry.address.stripPeerId()
     if entry.confidence >= AddressConfidence.High:
       newEntries.mergeAddressEntry(
@@ -298,7 +314,10 @@ proc set*(
         )
       )
 
+  let changed = addressBook.addressesChanged(peerId, previous, newEntries)
   addressBook.book[peerId] = newEntries
+  if changed:
+    addressBook.notifyChangeHandlers(peerId)
 
 proc `[]=`*(addressBook: AddressBook, peerId: PeerId, addrs: seq[MultiAddress]) =
   addressBook.set(peerId, addrs)
@@ -340,17 +359,23 @@ proc extend*(
 ) =
   ## Add addresses for `key` without removing existing ones.
   ## For addresses already present the confidence is upgraded to
-  ## `max(existing, confidence)` and lastUpdated is refreshed.
+  ## `max(existing, confidence)` and lastUpdated is always refreshed.
   ## New addresses are added with `confidence`.
-  defer:
-    addressBook.notifyChangeHandlers(key)
-
+  ## Timestamp-only changes notify subscribers only when an address becomes visible.
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
+  var changed = false
   for ma in addrs:
-    entries.upsertAddress(ma.stripPeerId(), confidence, now)
+    let normalized = ma.stripPeerId()
+    let idx = entries.findWithAddress(normalized)
+    if idx < 0 or entries[idx].confidence < confidence or
+        not addressBook.isLive(key, entries[idx]):
+      changed = true
+    entries.upsertAddress(normalized, confidence, now)
   if entries.len > 0:
     addressBook.book[key] = entries
+  if changed:
+    addressBook.notifyChangeHandlers(key)
 
 proc pruneExpired*(addressBook: AddressBook) =
   ## Remove all per-address entries whose TTL has elapsed.
