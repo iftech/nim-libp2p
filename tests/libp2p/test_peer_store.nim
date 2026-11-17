@@ -298,14 +298,19 @@ suite "AddressBook TTL / confidence":
   test "address limit applies to set and extend while preserving verified addresses":
     let book = makeBook(1.hours, 1.hours, 1.hours)
     let addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    # replacement drops unverified addresses beyond the limit
     book.set(peerId1, addresses, AddressConfidence.Low)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
+    # successful dial can add an address at the limit; a later replacement
+    # preserves it and makes room by dropping an unverified address
     book.markConnected(peerId1, addresses[^1])
     book.set(peerId1, addresses, AddressConfidence.Low)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
     check book.entries(peerId1).anyIt(
       it.address == addresses[^1] and it.confidence == AddressConfidence.High
     )
+    # at the limit, extending refreshes and upgrades existing addresses but
+    # does not add new ones
     let before = book.entries(peerId1)[0].lastUpdated
     book.extend(peerId1, @[addresses[0], addresses[^2]], AddressConfidence.Medium)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
