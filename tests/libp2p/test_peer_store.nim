@@ -569,7 +569,7 @@ suite "AddressBook TTL / confidence":
     book.extend(peerId1, @[addr1], AddressConfidence.Low)
     check recorded[] == @[peerId1]
 
-  test "PeerStore normalizes addresses and leaves duplicates unchanged without notifying subscribers":
+  test "PeerStore normalizes addresses and refreshes duplicates without notifying subscribers":
     let
       peerStore = makeStore(1.hours, 1.hours, 24.hours)
       book = peerStore[AddressBook]
@@ -589,16 +589,21 @@ suite "AddressBook TTL / confidence":
 
     book.set(peerId1, @[addr1, fullAddr1], AddressConfidence.Low)
     check:
-      book.entries(peerId1) == @[original]
+      book[peerId1] == @[addr1]
+      book.entries(peerId1)[0].confidence == original.confidence
+      book.entries(peerId1)[0].lastUpdated > original.lastUpdated
       recorded[].len == 0
 
+    book.book[peerId1][0].lastUpdated = original.lastUpdated
     recorded[].setLen(0)
     book.extend(peerId1, @[fullAddr1, addr1], AddressConfidence.Low)
     check:
-      book.entries(peerId1) == @[original]
+      book[peerId1] == @[addr1]
+      book.entries(peerId1)[0].confidence == original.confidence
+      book.entries(peerId1)[0].lastUpdated > original.lastUpdated
       recorded[].len == 0
 
-  test "duplicate addresses notify and refresh only on confidence upgrades":
+  test "duplicate addresses refresh timestamps but notify only on confidence upgrades":
     for useExtend in [false, true]:
       let
         book = makeBook(1.hours, 1.hours, 24.hours)
@@ -617,7 +622,9 @@ suite "AddressBook TTL / confidence":
 
         if confidence == AddressConfidence.Low:
           check:
-            book.entries(peerId1) == @[original]
+            book[peerId1] == @[addr1]
+            book.entries(peerId1)[0].confidence == original.confidence
+            book.entries(peerId1)[0].lastUpdated > original.lastUpdated
             recorded[].len == 0
         else:
           let updated = book.entries(peerId1)
@@ -627,6 +634,40 @@ suite "AddressBook TTL / confidence":
             updated[0].confidence == AddressConfidence.High
             updated[0].lastUpdated > original.lastUpdated
             recorded[] == @[peerId1]
+
+  test "rediscovery keeps unconnected addresses alive and revives expired entries silently":
+    for useExtend in [false, true]:
+      for storedConfidence in [AddressConfidence.Low, AddressConfidence.Medium]:
+        for expired in [false, true]:
+          let
+            book = makeBook(1.hours, 1.hours, 24.hours)
+            fullAddr1 = ma($addr1 & "/p2p/" & $peerId1)
+          book.set(peerId1, @[addr1], storedConfidence)
+          book.book[peerId1][0].lastUpdated =
+            Moment.now() - (if expired: 2.hours else: 30.minutes)
+          let
+            original = book.entries(peerId1)[0]
+            recorded = newRecorder(book)
+          check (peerId1 in book) == not expired
+
+          if useExtend:
+            book.extend(peerId1, @[fullAddr1, addr1], AddressConfidence.Low)
+          else:
+            book.set(peerId1, @[fullAddr1, addr1], AddressConfidence.Low)
+
+          check:
+            book.entries(peerId1).len == 1
+            book.entries(peerId1)[0].lastUpdated > original.lastUpdated
+            book.entries(peerId1)[0].confidence == storedConfidence
+            book[peerId1] == @[addr1]
+            peerId1 in book
+            recorded[].len == 0
+
+          book.pruneExpired()
+          check:
+            book[peerId1] == @[addr1]
+            book.entries(peerId1).len == 1
+            recorded[].len == 0
 
   test "markConnected notifies subscribers":
     let book = makeBook(1.hours, 1.hours, 24.hours)
