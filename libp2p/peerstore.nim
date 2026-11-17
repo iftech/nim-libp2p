@@ -211,7 +211,7 @@ func isVerified(entry: AddressEntry): bool =
   entry.confidence >= AddressConfidence.High
 
 proc nonExpired(
-    entries: seq[AddressEntry], ttls: AddressConfidenceTtls
+    entries: openArray[AddressEntry], ttls: AddressConfidenceTtls
 ): seq[AddressEntry] =
   entries.filterIt(not it.isExpired(ttls))
 
@@ -258,7 +258,7 @@ proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
   else:
     entries.add(entry)
 
-proc retainWithinLimit(entries: var seq[AddressEntry]): int =
+func retainWithinLimit(entries: var seq[AddressEntry]): int =
   var i = entries.len
   var dropped = 0
   var unverified = entries.countUnverified()
@@ -320,17 +320,17 @@ proc set*(
   for ma in addrs:
     normalizedAddrs.add(ma.stripPeerId())
   var newEntries = newSeqOfCap[AddressEntry](addrs.len)
-  var previousEntries = addressBook.book.getOrDefault(peerId)
+  let previousEntries = addressBook.book.getOrDefault(peerId)
   var prevUnverified = newSeqOfCap[AddressEntry](previousEntries.len)
   for entry in previousEntries:
     var normalizedEntry = entry
     normalizedEntry.address = entry.address.stripPeerId()
     if peerId notin addressBook.connectedPeers and entry.isExpired(addressBook.ttls):
-      # Retain matching verified entries so an advertisement cannot downgrade
-      # their confidence or refresh their verified timestamp.
+      # Refresh matching expired entries while preserving verified confidence.
       if entry.isVerified():
         for ma in normalizedAddrs:
           if ma == normalizedEntry.address:
+            normalizedEntry.lastUpdated = now
             newEntries.mergeAddressEntry(normalizedEntry)
             break
       continue
@@ -421,8 +421,7 @@ proc extend*(
   var skipped = 0
   for ma in addrs:
     let normalized = ma.stripPeerId()
-    let idx = entries.findWithAddress(normalized)
-    if idx >= 0 and confidence <= entries[idx].confidence:
+    if entries.findWithAddress(normalized) >= 0:
       continue
     if entries.admitAddress(normalized, confidence, now):
       changed = true
