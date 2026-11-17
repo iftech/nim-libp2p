@@ -37,8 +37,8 @@ type
 
   ProvidedKeys = ref object
     cap: Opt[int]
-    stamps: Table[Key, uint64] ## a lower stamp is provided less recently
-    keys: seq[Key] ## the keys of ``stamps``, sorted
+    stamps: Table[ProvidedKey, uint64] ## a lower stamp is provided less recently
+    keys: seq[ProvidedKey] ## the keys of ``stamps``, sorted
     nextStamp: uint64
 
   MemoryKadStore* = ref object of KadStore
@@ -314,8 +314,8 @@ method removeProvider*(
   store.providers.drop(key, peerId)
   ok()
 
-func oldest(provided: ProvidedKeys): Opt[Key] =
-  var oldest = Opt.none(Key)
+func oldest(provided: ProvidedKeys): Opt[ProvidedKey] =
+  var oldest = Opt.none(ProvidedKey)
   var oldestStamp = high(uint64)
   for key, stamp in provided.stamps:
     if stamp < oldestStamp:
@@ -323,17 +323,17 @@ func oldest(provided: ProvidedKeys): Opt[Key] =
       oldestStamp = stamp
   oldest
 
-func drop(provided: ProvidedKeys, key: Key) =
+func drop(provided: ProvidedKeys, key: ProvidedKey) =
   provided.stamps.del(key)
   provided.keys.removeKey(key)
 
-func stamp(provided: ProvidedKeys, key: Key) =
+func stamp(provided: ProvidedKeys, key: ProvidedKey) =
   if key notin provided.stamps:
     provided.keys.insertKey(key)
   provided.stamps[key] = provided.nextStamp
   provided.nextStamp.inc()
 
-func add(provided: ProvidedKeys, key: Key): bool =
+func add(provided: ProvidedKeys, key: ProvidedKey): bool =
   if key notin provided.stamps and provided.stamps.len.atCapacity(provided.cap):
     let oldest = provided.oldest().valueOr:
       return false
@@ -342,29 +342,31 @@ func add(provided: ProvidedKeys, key: Key): bool =
   provided.stamp(key)
   true
 
-func contains(provided: ProvidedKeys, key: Key): bool =
+func contains(provided: ProvidedKeys, key: ProvidedKey): bool =
   key in provided.stamps
 
-func list(provided: ProvidedKeys, after: Opt[Key], limit: int): seq[Key] =
+func list(
+    provided: ProvidedKeys, after: Opt[ProvidedKey], limit: int
+): seq[ProvidedKey] =
   toSeq(provided.keys.page(after, limit))
 
 method addProvided*(
-    store: MemoryKadStore, key: Key
+    store: MemoryKadStore, key: ProvidedKey
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
   ok(store.provided.add(key))
 
 method delProvided*(
-    store: MemoryKadStore, key: Key
+    store: MemoryKadStore, key: ProvidedKey
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
   store.provided.drop(key)
   ok()
 
 method hasProvided*(
-    store: MemoryKadStore, key: Key
+    store: MemoryKadStore, key: ProvidedKey
 ): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
   ok(key in store.provided)
 
 method listProvided*(
-    store: MemoryKadStore, after: Opt[Key], limit: int
-): Future[LPResult[seq[Key]]] {.async: (raises: [CancelledError]), gcsafe.} =
+    store: MemoryKadStore, after: Opt[ProvidedKey], limit: int
+): Future[LPResult[seq[ProvidedKey]]] {.async: (raises: [CancelledError]), gcsafe.} =
   ok(store.provided.list(after, limit))
