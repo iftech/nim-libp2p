@@ -358,6 +358,18 @@ proc contains*(addressBook: AddressBook, peerId: PeerId): bool =
       return true
   return false
 
+proc admitAddress(
+    entries: var seq[AddressEntry],
+    address: MultiAddress,
+    confidence: AddressConfidence,
+    now: Moment,
+): bool =
+  if entries.findWithAddress(address) >= 0 or entries.len < MaxPeerStoreAddrs or
+      confidence >= AddressConfidence.High:
+    entries.upsertAddress(address, confidence, now)
+    return true
+  false
+
 proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) =
   ## Called after a successful outbound connection to `ma`.
   ## Upgrades the address to High confidence and refreshes its lastUpdated.
@@ -367,7 +379,7 @@ proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) 
 
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(peerId)
-  entries.upsertAddress(ma.stripPeerId(), AddressConfidence.High, now)
+  discard entries.admitAddress(ma.stripPeerId(), AddressConfidence.High, now)
   addressBook.book[peerId] = entries
 
 proc extend*(
@@ -380,8 +392,8 @@ proc extend*(
   ## For addresses already present the confidence is upgraded to
   ## `max(existing, confidence)` and lastUpdated is refreshed.
   ## New addresses are added with `confidence`.
-  ## Existing addresses can always be refreshed; new addresses are limited
-  ## by MaxPeerStoreAddrs, including successfully dialled addresses.
+  ## Existing addresses can always be refreshed. New unverified addresses are
+  ## limited by MaxPeerStoreAddrs; verified addresses may exceed the limit.
   defer:
     addressBook.notifyChangeHandlers(key)
 
@@ -392,9 +404,7 @@ proc extend*(
   var skipped = 0
   for ma in addrs:
     let normalized = ma.stripPeerId()
-    if entries.findWithAddress(normalized) >= 0 or entries.len < MaxPeerStoreAddrs:
-      entries.upsertAddress(normalized, confidence, now)
-    else:
+    if not entries.admitAddress(normalized, confidence, now):
       inc skipped
   if skipped > 0:
     debug "Peer addresses skipped: peerstore address limit reached",

@@ -351,6 +351,20 @@ suite "AddressBook TTL / confidence":
       check addresses[^1] in book[peerId1]
       check addresses[0] notin book[peerId1]
 
+  test "extend admits verified addresses when the book is full":
+    for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
+      let
+        book = makeBook(1.hours, 1.hours, 1.hours)
+        addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.Low)
+      book.extend(peerId1, @[addresses[^2]], confidence)
+      check book.entries(peerId1).len == MaxPeerStoreAddrs + 1
+      check book.entries(peerId1).anyIt(
+        it.address == addresses[^2] and it.confidence == confidence
+      )
+      book.extend(peerId1, @[addresses[^1]], AddressConfidence.Medium)
+      check addresses[^1] notin book[peerId1]
+
   test "extend removes expired entries before applying the address limit":
     let
       book = makeBook(1.seconds, 1.hours, 1.hours)
