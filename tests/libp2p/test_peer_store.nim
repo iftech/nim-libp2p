@@ -297,9 +297,7 @@ suite "AddressBook TTL / confidence":
 
   test "address limit applies to set and extend while preserving verified addresses":
     let book = makeBook(1.hours, 1.hours, 1.hours)
-    let addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(
-      ma("/ip4/127.0.0.1/tcp/" & $it)
-    )
+    let addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
     book.set(peerId1, addresses, AddressConfidence.Low)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
     book.markConnected(peerId1, addresses[^1])

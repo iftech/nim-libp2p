@@ -25,7 +25,8 @@ runnableExamples:
 
 import
   std/[tables, sets, macros, sequtils],
-  chronos, chronicles,
+  chronos,
+  chronicles,
   ./utils/heartbeat,
   ./crypto/crypto,
   ./protocols/identify,
