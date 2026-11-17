@@ -603,6 +603,45 @@ suite "AddressBook TTL / confidence":
       book.entries(peerId1)[0].lastUpdated > original.lastUpdated
       recorded[].len == 0
 
+  test "set ignores address order but not replacement at the same length":
+    let
+      book = makeBook(1.hours, 1.hours, 24.hours)
+      fullAddr1 = ma($addr1 & "/p2p/" & $peerId1)
+      addr3 = ma("/ip4/9.10.11.12/tcp/5678")
+    book.set(peerId1, @[addr1, addr2])
+    let recorded = newRecorder(book)
+
+    book.set(peerId1, @[addr2, fullAddr1, addr1])
+    check:
+      book[peerId1] == @[addr2, addr1]
+      recorded[].len == 0
+
+    book.set(peerId1, @[addr2, addr3])
+    check:
+      book[peerId1] == @[addr2, addr3]
+      recorded[] == @[peerId1]
+
+  test "set does not notify when preserved verified addresses shift position":
+    for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
+      let book = makeBook(1.hours, 1.hours, 24.hours)
+      book.set(peerId1, @[addr1], confidence)
+      book.extend(peerId1, @[addr2])
+      let
+        recorded = newRecorder(book)
+        original = book.entries(peerId1)[0]
+
+      book.set(peerId1, @[addr2])
+      check:
+        book[peerId1] == @[addr2, addr1]
+        book.entries(peerId1)[1] == original
+        recorded[].len == 0
+
+      book.set(peerId1, @[addr1, addr2])
+      check:
+        book[peerId1] == @[addr1, addr2]
+        book.entries(peerId1)[0].confidence == confidence
+        recorded[].len == 0
+
   test "duplicate addresses refresh timestamps but notify only on confidence upgrades":
     for useExtend in [false, true]:
       let

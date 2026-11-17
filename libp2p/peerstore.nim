@@ -237,6 +237,20 @@ proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
   else:
     entries.add(entry)
 
+proc addressesChanged(previous, current: seq[AddressEntry]): bool =
+  ## Compare address/confidence pairs, ignoring order and timestamps.
+  ## Current entries must have unique addresses, as produced by set.
+  if current.len != previous.len:
+    return true
+
+  var prevSet = initHashSet[(MultiAddress, AddressConfidence)]()
+  for entry in previous:
+    prevSet.incl((entry.address, entry.confidence))
+  for entry in current:
+    if (entry.address, entry.confidence) notin prevSet:
+      return true
+  false
+
 proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()) =
   var entries = addressBook.book.getOrDefault(peerId)
   if entries.len == 0:
@@ -297,14 +311,7 @@ proc set*(
         )
       )
 
-  var changed = newEntries.len != previous.len
-  if not changed:
-    for i, entry in newEntries:
-      if entry.address != previous[i].address or
-          entry.confidence != previous[i].confidence:
-        changed = true
-        break
-
+  let changed = addressesChanged(previous, newEntries)
   addressBook.book[peerId] = newEntries
   if changed:
     addressBook.notifyChangeHandlers(peerId)
