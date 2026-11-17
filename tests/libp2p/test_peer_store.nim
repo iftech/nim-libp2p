@@ -295,6 +295,26 @@ suite "AddressBook TTL / confidence":
     )
     recorded
 
+  test "address limit applies to set and extend while preserving verified addresses":
+    let book = makeBook(1.hours, 1.hours, 1.hours)
+    let addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(
+      ma("/ip4/127.0.0.1/tcp/" & $it)
+    )
+    book.set(peerId1, addresses, AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    book.markConnected(peerId1, addresses[^1])
+    book.set(peerId1, addresses, AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check book.entries(peerId1).anyIt(
+      it.address == addresses[^1] and it.confidence == AddressConfidence.High
+    )
+    let before = book.entries(peerId1)[0].lastUpdated
+    book.extend(peerId1, @[addresses[0], addresses[^2]], AddressConfidence.Medium)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check book.entries(peerId1)[0].lastUpdated >= before
+    check book.entries(peerId1)[0].confidence == AddressConfidence.Medium
+    check addresses[^2] notin book[peerId1]
+
   test "isExpired - Low expires after low TTL":
     let ttls = AddressConfidenceTtls(low: 1.seconds, medium: 1.hours, high: 24.hours)
     let entry = AddressEntry(

@@ -25,7 +25,7 @@ runnableExamples:
 
 import
   std/[tables, sets, macros, sequtils],
-  chronos,
+  chronos, chronicles,
   ./utils/heartbeat,
   ./crypto/crypto,
   ./protocols/identify,
@@ -45,6 +45,12 @@ when defined(libp2p_agents_metrics):
 
 const IdentifyCloseTimeout* = 5.seconds
   ## Grace for the remote's EOF once identify is done.
+const MaxPeerStoreAddrs* = 64
+  ## Maximum addresses accepted per peer, excluding verified addresses that
+  ## must be preserved or added after a successful connection.
+
+logScope:
+  topics = "libp2p peerstore"
 
 type
   #################
@@ -298,6 +304,15 @@ proc set*(
         )
       )
 
+  # Preserve verified addresses even when they leave less room for new ones.
+  var i = newEntries.len
+  while newEntries.len > MaxPeerStoreAddrs and i > 0:
+    dec i
+    if newEntries[i].confidence < AddressConfidence.High:
+      debug "Peer address skipped: peerstore address limit reached",
+        peerId = peerId, address = newEntries[i].address, limit = MaxPeerStoreAddrs
+      newEntries.delete(i)
+
   addressBook.book[peerId] = newEntries
 
 proc `[]=`*(addressBook: AddressBook, peerId: PeerId, addrs: seq[MultiAddress]) =
@@ -342,13 +357,20 @@ proc extend*(
   ## For addresses already present the confidence is upgraded to
   ## `max(existing, confidence)` and lastUpdated is refreshed.
   ## New addresses are added with `confidence`.
+  ## Existing addresses can always be refreshed; new addresses are limited
+  ## by MaxPeerStoreAddrs. Successfully dialled addresses are retained separately.
   defer:
     addressBook.notifyChangeHandlers(key)
 
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
   for ma in addrs:
-    entries.upsertAddress(ma.stripPeerId(), confidence, now)
+    let normalized = ma.stripPeerId()
+    if entries.findWithAddress(normalized) >= 0 or entries.len < MaxPeerStoreAddrs:
+      entries.upsertAddress(normalized, confidence, now)
+    else:
+      trace "Peer address skipped: peerstore address limit reached",
+        peerId = key, address = normalized, limit = MaxPeerStoreAddrs
   if entries.len > 0:
     addressBook.book[key] = entries
 
