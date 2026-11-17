@@ -215,7 +215,7 @@ proc nonExpired(
 ): seq[AddressEntry] =
   entries.filterIt(not it.isExpired(ttls))
 
-func findWithAddress(entries: seq[AddressEntry], ma: MultiAddress): int =
+func findWithAddress(entries: openArray[AddressEntry], ma: MultiAddress): int =
   for i, e in entries:
     if e.address == ma:
       return i
@@ -228,7 +228,7 @@ func countUnverified(entries: openArray[AddressEntry]): int =
       inc count
   count
 
-proc oldestHighIndex(entries: openArray[AddressEntry]): int =
+func oldestHighIndex(entries: openArray[AddressEntry]): int =
   var oldest = -1
   for i, entry in entries:
     if entry.confidence == AddressConfidence.High and
@@ -421,7 +421,8 @@ proc extend*(
   var skipped = 0
   for ma in addrs:
     let normalized = ma.stripPeerId()
-    if entries.findWithAddress(normalized) >= 0:
+    let idx = entries.findWithAddress(normalized)
+    if idx >= 0 and confidence <= entries[idx].confidence:
       continue
     if entries.admitAddress(normalized, confidence, now):
       changed = true

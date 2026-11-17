@@ -377,9 +377,13 @@ suite "AddressBook TTL / confidence":
     for entry in book.book[peerId1].mitems:
       entry.lastUpdated = Moment.now() - 1.minutes
     book.markConnected(peerId1, addresses[0])
+    let verifiedTime =
+      book.entries(peerId1).filterIt(it.address == addresses[0])[0].lastUpdated
     store.updatePeerInfo(IdentifyInfo(peerId: peerId1, addrs: addresses[1 .. ^1]))
     check addresses[0] in book[peerId1]
     check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check book.entries(peerId1).filterIt(it.address == addresses[0])[0].lastUpdated ==
+      verifiedTime
 
   test "extend admits verified addresses when the book is full":
     for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
@@ -397,10 +401,10 @@ suite "AddressBook TTL / confidence":
 
   test "extend removes expired entries before applying the address limit":
     let
-      book = makeBook(1.seconds, 1.hours, 1.hours)
+      book = makeBook(1.hours, 1.hours, 1.hours)
       addresses = (1 .. MaxPeerStoreAddrs + 1).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
     book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.Low)
-    book.book[peerId1][0].lastUpdated = Moment.now() - 2.seconds
+    book.book[peerId1][0].lastUpdated = Moment.now() - 2.hours
     book.extend(peerId1, @[addresses[^1]], AddressConfidence.Low)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
     check addresses[0] notin book[peerId1]
