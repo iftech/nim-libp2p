@@ -674,7 +674,7 @@ suite "AddressBook TTL / confidence":
             updated[0].lastUpdated > original.lastUpdated
             recorded[] == @[peerId1]
 
-  test "rediscovery keeps unconnected addresses alive and revives expired entries silently":
+  test "rediscovery refreshes addresses and notifies only when reviving expired entries":
     for useExtend in [false, true]:
       for storedConfidence in [AddressConfidence.Low, AddressConfidence.Medium]:
         for expired in [false, true]:
@@ -687,6 +687,11 @@ suite "AddressBook TTL / confidence":
           let
             original = book.entries(peerId1)[0]
             recorded = newRecorder(book)
+            expectedNotifications =
+              if expired:
+                @[peerId1]
+              else:
+                newSeq[PeerId]()
           check (peerId1 in book) == not expired
 
           if useExtend:
@@ -700,13 +705,53 @@ suite "AddressBook TTL / confidence":
             book.entries(peerId1)[0].confidence == storedConfidence
             book[peerId1] == @[addr1]
             peerId1 in book
-            recorded[].len == 0
+            recorded[] == expectedNotifications
 
           book.pruneExpired()
           check:
             book[peerId1] == @[addr1]
             book.entries(peerId1).len == 1
-            recorded[].len == 0
+            recorded[] == expectedNotifications
+
+  test "rediscovery notifies when one address revives on an already visible peer":
+    for useExtend in [false, true]:
+      let book = makeBook(1.hours, 1.hours, 24.hours)
+      book.set(peerId1, @[addr1, addr2], AddressConfidence.Low)
+      book.book[peerId1][0].lastUpdated = Moment.now() - 2.hours
+      let recorded = newRecorder(book)
+      check:
+        peerId1 in book
+        book[peerId1] == @[addr2]
+
+      if useExtend:
+        book.extend(peerId1, @[addr1, addr2], AddressConfidence.Low)
+      else:
+        book.set(peerId1, @[addr1, addr2], AddressConfidence.Low)
+      check:
+        book[peerId1] == @[addr1, addr2]
+        recorded[] == @[peerId1]
+
+  test "rediscovery of stale connected addresses does not notify":
+    for useExtend in [false, true]:
+      let
+        peerStore = makeStore(1.hours, 1.hours, 24.hours)
+        book = peerStore[AddressBook]
+      book.set(peerId1, @[addr1], AddressConfidence.Low)
+      peerStore.markPeerConnected(peerId1)
+      book.book[peerId1][0].lastUpdated = Moment.now() - 2.hours
+      let
+        original = book.entries(peerId1)[0]
+        recorded = newRecorder(book)
+      check book[peerId1] == @[addr1]
+
+      if useExtend:
+        book.extend(peerId1, @[addr1], AddressConfidence.Low)
+      else:
+        book.set(peerId1, @[addr1], AddressConfidence.Low)
+      check:
+        book.entries(peerId1)[0].lastUpdated > original.lastUpdated
+        book[peerId1] == @[addr1]
+        recorded[].len == 0
 
   test "markConnected notifies subscribers":
     let book = makeBook(1.hours, 1.hours, 24.hours)

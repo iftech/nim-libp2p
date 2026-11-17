@@ -237,17 +237,22 @@ proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
   else:
     entries.add(entry)
 
-func addressesChanged(previous, current: openArray[AddressEntry]): bool =
-  ## Compare address/confidence pairs, ignoring order and timestamps.
+proc isLive(addressBook: AddressBook, peerId: PeerId, entry: AddressEntry): bool =
+  peerId in addressBook.connectedPeers or not entry.isExpired(addressBook.ttls)
+
+proc addressesChanged(
+    addressBook: AddressBook, peerId: PeerId, previous, current: openArray[AddressEntry]
+): bool =
+  ## Compare addresses, confidence and visibility, ignoring order and timestamps.
   ## Current entries must have unique addresses, as produced by set.
   if current.len != previous.len:
     return true
 
-  var prevSet = initHashSet[(MultiAddress, AddressConfidence)]()
+  var prevSet = initHashSet[(MultiAddress, AddressConfidence, bool)]()
   for entry in previous:
-    prevSet.incl((entry.address, entry.confidence))
+    prevSet.incl((entry.address, entry.confidence, addressBook.isLive(peerId, entry)))
   for entry in current:
-    if (entry.address, entry.confidence) notin prevSet:
+    if (entry.address, entry.confidence, addressBook.isLive(peerId, entry)) notin prevSet:
       return true
   false
 
@@ -265,9 +270,6 @@ proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()
   if refreshed:
     addressBook.book[peerId] = entries
 
-proc isLive(addressBook: AddressBook, peerId: PeerId, entry: AddressEntry): bool =
-  peerId in addressBook.connectedPeers or not entry.isExpired(addressBook.ttls)
-
 proc set*(
     addressBook: AddressBook,
     peerId: PeerId,
@@ -280,7 +282,7 @@ proc set*(
   ## High/Infinite entries absent from the incoming list are preserved so that
   ## a verified dial address is never evicted by a later Identify update.
   ## Every incoming address refreshes its timestamp, including duplicates.
-  ## Subscribers are notified only when addresses or confidence change.
+  ## Subscribers are notified when addresses, confidence or visibility change.
   if addrs.len == 0:
     discard addressBook.del(peerId)
     return
@@ -312,7 +314,7 @@ proc set*(
         )
       )
 
-  let changed = addressesChanged(previous, newEntries)
+  let changed = addressBook.addressesChanged(peerId, previous, newEntries)
   addressBook.book[peerId] = newEntries
   if changed:
     addressBook.notifyChangeHandlers(peerId)
@@ -359,14 +361,15 @@ proc extend*(
   ## For addresses already present the confidence is upgraded to
   ## `max(existing, confidence)` and lastUpdated is always refreshed.
   ## New addresses are added with `confidence`.
-  ## Timestamp-only changes do not notify subscribers.
+  ## Timestamp-only changes notify subscribers only when an address becomes visible.
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
   var changed = false
   for ma in addrs:
     let normalized = ma.stripPeerId()
     let idx = entries.findWithAddress(normalized)
-    if idx < 0 or entries[idx].confidence < confidence:
+    if idx < 0 or entries[idx].confidence < confidence or
+        not addressBook.isLive(key, entries[idx]):
       changed = true
     entries.upsertAddress(normalized, confidence, now)
   if entries.len > 0:
