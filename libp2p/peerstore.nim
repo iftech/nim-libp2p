@@ -26,6 +26,7 @@ runnableExamples:
 import
   std/[tables, sets, macros, sequtils],
   chronos,
+  chronicles,
   ./utils/heartbeat,
   ./crypto/crypto,
   ./protocols/identify,
@@ -45,6 +46,12 @@ when defined(libp2p_agents_metrics):
 
 const IdentifyCloseTimeout* = 5.seconds
   ## Grace for the remote's EOF once identify is done.
+const MaxPeerStoreAddrs* = MaxIdentifyAddrs
+  ## Target maximum total addresses per peer. Verified addresses take priority
+  ## over unverified addresses and may exceed this limit.
+
+logScope:
+  topics = "libp2p peerstore"
 
 type
   #################
@@ -164,7 +171,7 @@ proc del*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
       handler(peerId)
     return true
 
-proc contains*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
+func contains*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
   peerId in peerBook.book
 
 proc addHandler*[T](peerBook: PeerBook[T], handler: PeerBookChangeHandler) =
@@ -175,7 +182,7 @@ proc notifyChangeHandlers(addressBook: AddressBook, peerId: PeerId) =
   for handler in addressBook.changeHandlers:
     handler(peerId)
 
-proc len*[T](peerBook: PeerBook[T]): int =
+func len*[T](peerBook: PeerBook[T]): int =
   peerBook.book.len
 
 ################################
@@ -200,20 +207,34 @@ proc isExpired*(entry: AddressEntry, ttls: AddressConfidenceTtls): bool =
 
   Moment.now() - entry.lastUpdated > ttl
 
-proc higherConfidence(
-    prevConf: Table[MultiAddress, AddressConfidence],
-    ma: MultiAddress,
-    incoming: AddressConfidence,
-): AddressConfidence =
-  ## Returns the higher of the stored and incoming confidence for `ma`.
-  ## A previously verified (High/Infinite) address is never downgraded.
-  max(prevConf.getOrDefault(ma, incoming), incoming)
+func isVerified(entry: AddressEntry): bool =
+  entry.confidence >= AddressConfidence.High
 
-proc findWithAddress(entries: seq[AddressEntry], ma: MultiAddress): int =
+proc nonExpired(
+    entries: openArray[AddressEntry], ttls: AddressConfidenceTtls
+): seq[AddressEntry] =
+  entries.filterIt(not it.isExpired(ttls))
+
+func findWithAddress(entries: openArray[AddressEntry], ma: MultiAddress): int =
   for i, e in entries:
     if e.address == ma:
       return i
   -1
+
+func countUnverified(entries: openArray[AddressEntry]): int =
+  var count = 0
+  for entry in entries:
+    if not entry.isVerified():
+      inc count
+  count
+
+func oldestHighIndex(entries: openArray[AddressEntry]): int =
+  var oldest = -1
+  for i, entry in entries:
+    if entry.confidence == AddressConfidence.High and
+        (oldest < 0 or entry.lastUpdated < entries[oldest].lastUpdated):
+      oldest = i
+  oldest
 
 proc upsertAddress(
     entries: var seq[AddressEntry],
@@ -223,19 +244,38 @@ proc upsertAddress(
 ) =
   let idx = entries.findWithAddress(ma)
   if idx >= 0:
+    if not entries[idx].isVerified() or confidence >= entries[idx].confidence:
+      entries[idx].lastUpdated = now
     entries[idx].confidence = max(entries[idx].confidence, confidence)
-    entries[idx].lastUpdated = now
   else:
     entries.add(AddressEntry(address: ma, confidence: confidence, lastUpdated: now))
 
 proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
   let idx = entries.findWithAddress(entry.address)
   if idx >= 0:
+    entries[idx].lastUpdated = max(entries[idx].lastUpdated, entry.lastUpdated)
     entries[idx].confidence = max(entries[idx].confidence, entry.confidence)
-    if entries[idx].lastUpdated < entry.lastUpdated:
-      entries[idx].lastUpdated = entry.lastUpdated
   else:
     entries.add(entry)
+
+func retainWithinLimit(entries: var seq[AddressEntry]): int =
+  var i = entries.len
+  var dropped = 0
+  var unverified = entries.countUnverified()
+  while entries.len > MaxPeerStoreAddrs and i > 0:
+    dec i
+    if not entries[i].isVerified() and unverified > 1:
+      entries.delete(i)
+      dec unverified
+      inc dropped
+
+  while entries.len > MaxPeerStoreAddrs:
+    let oldest = entries.oldestHighIndex()
+    if oldest < 0:
+      break
+    entries.delete(oldest)
+    inc dropped
+  dropped
 
 proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()) =
   var entries = addressBook.book.getOrDefault(peerId)
@@ -263,40 +303,54 @@ proc set*(
   ## Replace the address list for `peerId`. For addresses that already exist
   ## the confidence is upgraded to `max(existing, confidence)` so that a
   ## high-confidence entry is never downgraded by a lower-confidence update.
-  ## High/Infinite entries absent from the incoming list are preserved so that
-  ## a verified dial address is never evicted by a later Identify update.
+  ## High/Infinite entries absent from the incoming list are preferentially
+  ## preserved. At least one incoming unverified address is retained when
+  ## present; the oldest High entries are evicted if necessary. Infinite entries
+  ## are never evicted and may cause the book to exceed the limit.
+  ## An empty incoming list clears all entries, including verified addresses.
   defer:
     addressBook.notifyChangeHandlers(peerId)
 
   if addrs.len == 0:
-    if peerId in addressBook.book:
-      addressBook.book.del(peerId)
+    addressBook.book.del(peerId)
     return
 
   let now = Moment.now()
-  var prevConf: Table[MultiAddress, AddressConfidence]
-  for entry in addressBook.book.getOrDefault(peerId):
-    let normalized = entry.address.stripPeerId()
-    prevConf[normalized] =
-      max(prevConf.getOrDefault(normalized, entry.confidence), entry.confidence)
-
-  var newEntries = newSeqOfCap[AddressEntry](addrs.len)
+  var normalizedAddrs = newSeqOfCap[MultiAddress](addrs.len)
   for ma in addrs:
-    let normalized = stripPeerId(ma)
-    newEntries.upsertAddress(
-      normalized, higherConfidence(prevConf, normalized, confidence), now
-    )
+    normalizedAddrs.add(ma.stripPeerId())
+  var newEntries = newSeqOfCap[AddressEntry](addrs.len)
+  let previousEntries = addressBook.book.getOrDefault(peerId)
+  var prevUnverified = newSeqOfCap[AddressEntry](previousEntries.len)
+  for entry in previousEntries:
+    var normalizedEntry = entry
+    normalizedEntry.address = entry.address.stripPeerId()
+    if peerId notin addressBook.connectedPeers and entry.isExpired(addressBook.ttls):
+      # Refresh matching expired entries while preserving verified confidence.
+      if entry.isVerified():
+        for ma in normalizedAddrs:
+          if ma == normalizedEntry.address:
+            normalizedEntry.lastUpdated = now
+            newEntries.mergeAddressEntry(normalizedEntry)
+            break
+      continue
+    if entry.isVerified():
+      newEntries.mergeAddressEntry(normalizedEntry)
+    else:
+      prevUnverified.add(normalizedEntry)
 
-  for entry in addressBook.book.getOrDefault(peerId):
-    let normalized = entry.address.stripPeerId()
-    if entry.confidence >= AddressConfidence.High:
-      newEntries.mergeAddressEntry(
-        AddressEntry(
-          address: normalized,
-          confidence: entry.confidence,
-          lastUpdated: entry.lastUpdated,
-        )
-      )
+  for normalized in normalizedAddrs:
+    for entry in prevUnverified:
+      if entry.address == normalized:
+        newEntries.mergeAddressEntry(entry)
+    newEntries.upsertAddress(normalized, confidence, now)
+
+  # Prefer verified addresses, while reserving room for an advertised address.
+  let dropped = newEntries.retainWithinLimit()
+
+  if dropped > 0:
+    debug "Peer addresses dropped: peerstore address limit reached",
+      peerId = peerId, dropped = dropped, limit = MaxPeerStoreAddrs
 
   addressBook.book[peerId] = newEntries
 
@@ -320,6 +374,18 @@ proc contains*(addressBook: AddressBook, peerId: PeerId): bool =
       return true
   return false
 
+proc admitAddress(
+    entries: var seq[AddressEntry],
+    address: MultiAddress,
+    confidence: AddressConfidence,
+    now: Moment,
+): bool =
+  if entries.findWithAddress(address) >= 0 or entries.len < MaxPeerStoreAddrs or
+      confidence >= AddressConfidence.High:
+    entries.upsertAddress(address, confidence, now)
+    return true
+  false
+
 proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) =
   ## Called after a successful outbound connection to `ma`.
   ## Upgrades the address to High confidence and refreshes its lastUpdated.
@@ -329,7 +395,7 @@ proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) 
 
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(peerId)
-  entries.upsertAddress(ma.stripPeerId(), AddressConfidence.High, now)
+  discard entries.admitAddress(ma.stripPeerId(), AddressConfidence.High, now)
   addressBook.book[peerId] = entries
 
 proc extend*(
@@ -338,19 +404,38 @@ proc extend*(
     addrs: seq[MultiAddress],
     confidence = AddressConfidence.Medium,
 ) =
-  ## Add addresses for `key` without removing existing ones.
-  ## For addresses already present the confidence is upgraded to
-  ## `max(existing, confidence)` and lastUpdated is refreshed.
+  ## Add addresses for `key`, removing expired entries for disconnected peers.
+  ## Existing addresses are left unchanged.
   ## New addresses are added with `confidence`.
-  defer:
-    addressBook.notifyChangeHandlers(key)
+  ## New unverified addresses are limited by MaxPeerStoreAddrs; verified
+  ## addresses may exceed the limit.
 
+  if addrs.len == 0:
+    return
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
+  let previousLen = entries.len
+  if key notin addressBook.connectedPeers:
+    entries = entries.nonExpired(addressBook.ttls)
+  var changed = entries.len != previousLen
+  var skipped = 0
   for ma in addrs:
-    entries.upsertAddress(ma.stripPeerId(), confidence, now)
-  if entries.len > 0:
-    addressBook.book[key] = entries
+    let normalized = ma.stripPeerId()
+    if entries.findWithAddress(normalized) >= 0:
+      continue
+    if entries.admitAddress(normalized, confidence, now):
+      changed = true
+    else:
+      inc skipped
+  if skipped > 0:
+    debug "Peer addresses skipped: peerstore address limit reached",
+      peerId = key, skipped = skipped, limit = MaxPeerStoreAddrs
+  if changed:
+    if entries.len > 0:
+      addressBook.book[key] = entries
+    else:
+      addressBook.book.del(key)
+    addressBook.notifyChangeHandlers(key)
 
 proc pruneExpired*(addressBook: AddressBook) =
   ## Remove all per-address entries whose TTL has elapsed.
@@ -365,7 +450,7 @@ proc pruneExpired*(addressBook: AddressBook) =
         refresh.add(peerId)
       continue
 
-    let alive = entries.filterIt(not it.isExpired(addressBook.ttls))
+    let alive = entries.nonExpired(addressBook.ttls)
     if alive.len < entries.len:
       pending.add((peerId, alive))
 

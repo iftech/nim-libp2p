@@ -163,6 +163,21 @@ suite "PeerStore":
 
     check peerStore[AddressBook][peerId1] == dialable[0 ..< MaxIdentifyAddrs]
 
+  test "updatePeerInfo preserves verified addresses within the address budget":
+    let
+      peerStore = PeerStore.new(nil)
+      reported = (1 .. MaxIdentifyAddrs).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      verified = ma("/ip4/127.0.0.1/tcp/1000")
+
+    peerStore[AddressBook].markConnected(peerId1, verified)
+    peerStore.updatePeerInfo(IdentifyInfo(peerId: peerId1, addrs: reported))
+
+    let stored = peerStore[AddressBook][peerId1]
+    check stored.len == MaxPeerStoreAddrs
+    check verified in stored
+    check reported[0 ..< reported.len - 1].allIt(it in stored)
+    check reported[^1] notin stored
+
   test "PeerStore listeners":
     # Set up peer store with listener
     var
@@ -295,6 +310,122 @@ suite "AddressBook TTL / confidence":
     )
     recorded
 
+  test "address limit applies to set and extend while preserving verified addresses":
+    let book = makeBook(1.hours, 1.hours, 1.hours)
+    let addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    # replacement drops unverified addresses beyond the limit
+    book.set(peerId1, addresses, AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    # successful dial can add an address at the limit; a later replacement
+    # preserves it and makes room by dropping an unverified address
+    book.markConnected(peerId1, addresses[^1])
+    book.set(peerId1, addresses, AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check book.entries(peerId1).anyIt(
+      it.address == addresses[^1] and it.confidence == AddressConfidence.High
+    )
+    # at the limit, duplicates are unchanged and new unverified addresses are skipped.
+    let before = Moment.now() - 1.minutes
+    for entry in book.book[peerId1].mitems:
+      if entry.address == addresses[0]:
+        entry.lastUpdated = before
+    book.extend(peerId1, @[addresses[0], addresses[^2]], AddressConfidence.Medium)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    let existing = book.entries(peerId1).filterIt(it.address == addresses[0])
+    check existing ==
+      @[
+        AddressEntry(
+          address: addresses[0], confidence: AddressConfidence.Low, lastUpdated: before
+        )
+      ]
+    check addresses[^2] notin book[peerId1]
+
+  test "set retains a fresh address when verified addresses fill the book":
+    for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
+      let
+        book = makeBook(1.hours, 1.hours, 1.hours)
+        addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      book.set(peerId1, addresses[0 ..< MaxPeerStoreAddrs], confidence)
+      book.book[peerId1][0].lastUpdated = Moment.now() - 1.minutes
+      # successful connections can push the book above its limit
+      book.markConnected(peerId1, addresses[^2])
+      book.set(peerId1, @[addresses[^1]], AddressConfidence.Low)
+      check addresses[^1] in book[peerId1]
+      if confidence == AddressConfidence.Infinite:
+        check book.entries(peerId1).len == MaxPeerStoreAddrs + 1
+        check addresses[0] in book[peerId1]
+      else:
+        check book.entries(peerId1).len == MaxPeerStoreAddrs
+        check addresses[0] notin book[peerId1]
+
+  test "identify replaces expired verified addresses for a disconnected peer":
+    let
+      store = makeStore(1.hours, 1.hours, 1.hours)
+      book = store[AddressBook]
+      addresses = (1 .. MaxPeerStoreAddrs + 3).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      fresh = addresses[MaxPeerStoreAddrs .. ^1]
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.High)
+    for entry in book.book[peerId1].mitems:
+      entry.lastUpdated = Moment.now() - 2.hours
+    store.updatePeerInfo(IdentifyInfo(peerId: peerId1, addrs: fresh))
+    check book[peerId1] == fresh
+    check book.entries(peerId1).len == fresh.len
+
+  test "identify cannot refresh verified eviction order":
+    let
+      store = PeerStore.new(nil)
+      book = store[AddressBook]
+      addresses = (1 .. MaxPeerStoreAddrs + 1).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.High)
+    for entry in book.book[peerId1].mitems:
+      entry.lastUpdated = Moment.now() - 1.minutes
+    book.markConnected(peerId1, addresses[0])
+    let verifiedTime =
+      book.entries(peerId1).filterIt(it.address == addresses[0])[0].lastUpdated
+    store.updatePeerInfo(IdentifyInfo(peerId: peerId1, addrs: addresses[1 .. ^1]))
+    check addresses[0] in book[peerId1]
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check book.entries(peerId1).filterIt(it.address == addresses[0])[0].lastUpdated ==
+      verifiedTime
+
+  test "extend admits verified addresses when the book is full":
+    for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
+      let
+        book = makeBook(1.hours, 1.hours, 1.hours)
+        addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.Low)
+      book.extend(peerId1, @[addresses[^2]], confidence)
+      check book.entries(peerId1).len == MaxPeerStoreAddrs + 1
+      check book.entries(peerId1).anyIt(
+        it.address == addresses[^2] and it.confidence == confidence
+      )
+      book.extend(peerId1, @[addresses[^1]], AddressConfidence.Medium)
+      check addresses[^1] notin book[peerId1]
+
+  test "extend removes expired entries before applying the address limit":
+    let
+      book = makeBook(1.hours, 1.hours, 1.hours)
+      addresses = (1 .. MaxPeerStoreAddrs + 1).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.Low)
+    book.book[peerId1][0].lastUpdated = Moment.now() - 2.hours
+    book.extend(peerId1, @[addresses[^1]], AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check addresses[0] notin book[peerId1]
+    check addresses[^1] in book[peerId1]
+
+  test "extend retains expired entries for connected peers":
+    let
+      peerStore = makeStore(1.seconds, 1.hours, 1.hours)
+      book = peerStore[AddressBook]
+      addresses = (1 .. MaxPeerStoreAddrs + 1).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.Low)
+    peerStore.markPeerConnected(peerId1)
+    book.book[peerId1][0].lastUpdated = Moment.now() - 2.seconds
+    book.extend(peerId1, @[addresses[^1]], AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check addresses[0] in book[peerId1]
+    check addresses[^1] notin book[peerId1]
+
   test "isExpired - Low expires after low TTL":
     let ttls = AddressConfidenceTtls(low: 1.seconds, medium: 1.hours, high: 24.hours)
     let entry = AddressEntry(
@@ -381,12 +512,21 @@ suite "AddressBook TTL / confidence":
 
   test "markConnected adds address when not already present":
     let book = makeBook(1.hours, 1.hours, 24.hours)
+    let before = Moment.now()
     book.markConnected(peerId1, addr1)
+    let after = Moment.now()
     let entries = book.entries(peerId1)
-    check:
-      entries.len == 1
-      entries[0].address == addr1
-      entries[0].confidence == AddressConfidence.High
+    require entries.len == 1
+    check entries[0].lastUpdated >= before
+    check entries[0].lastUpdated <= after
+    check entries ==
+      @[
+        AddressEntry(
+          address: addr1,
+          confidence: AddressConfidence.High,
+          lastUpdated: entries[0].lastUpdated,
+        )
+      ]
 
   test "markConnected refreshes lastUpdated so address is not expired":
     let book = makeBook(1.seconds, 1.hours, 24.hours)
@@ -402,11 +542,58 @@ suite "AddressBook TTL / confidence":
     book.set(peerId1, @[addr1], AddressConfidence.Low)
     check book.entries(peerId1)[0].confidence == AddressConfidence.High
 
+  test "set refreshes an advertised expired verified address":
+    let book = makeBook(1.hours, 1.hours, 1.hours)
+    book.set(peerId1, @[addr1, addr2], AddressConfidence.High)
+    let expired = Moment.now() - 2.hours
+    for entry in book.book[peerId1].mitems:
+      entry.lastUpdated = expired
+    let before = Moment.now()
+    book.set(peerId1, @[addr1], AddressConfidence.Medium)
+    let after = Moment.now()
+    let entries = book.entries(peerId1)
+    check:
+      entries.len == 1
+      entries[0].address == addr1
+      entries[0].confidence == AddressConfidence.High
+      entries[0].lastUpdated >= before
+      entries[0].lastUpdated <= after
+      book[peerId1] == @[addr1]
+      peerId1 in book
+    book.pruneExpired()
+    check book[peerId1] == @[addr1]
+
   test "extend does not downgrade existing confidence":
     let book = makeBook(1.hours, 1.hours, 24.hours)
     book.set(peerId1, @[addr1], AddressConfidence.High)
     book.extend(peerId1, @[addr1], AddressConfidence.Low)
     check book.entries(peerId1)[0].confidence == AddressConfidence.High
+
+  test "set lower confidence retains Medium confidence and refreshes it":
+    let book = makeBook(1.hours, 1.hours, 24.hours)
+    book.set(peerId1, @[addr1], AddressConfidence.Medium)
+    let before = Moment.now() - 1.minutes
+    book.book[peerId1][0].lastUpdated = before
+    book.set(peerId1, @[addr1], AddressConfidence.Low)
+    check book.entries(peerId1)[0].confidence == AddressConfidence.Medium
+    check book.entries(peerId1)[0].lastUpdated > before
+
+  test "extend ignores duplicate addresses without notifying subscribers":
+    let book = makeBook(1.hours, 1.hours, 24.hours)
+    book.set(peerId1, @[addr1], AddressConfidence.Medium)
+    let before = Moment.now() - 1.minutes
+    book.book[peerId1][0].lastUpdated = before
+    let recorded = newRecorder(book)
+    let fullAddr = ma($addr1 & "/p2p/" & $peerId1)
+    for confidence in [AddressConfidence.Low, AddressConfidence.High]:
+      book.extend(peerId1, @[addr1, fullAddr], confidence)
+    check book.entries(peerId1) ==
+      @[
+        AddressEntry(
+          address: addr1, confidence: AddressConfidence.Medium, lastUpdated: before
+        )
+      ]
+    check recorded[].len == 0
 
   test "set preserves High confidence address absent from incoming list":
     let book = makeBook(1.hours, 1.hours, 24.hours)
@@ -439,19 +626,19 @@ suite "AddressBook TTL / confidence":
       entries = book.entries(peerId1)
       preserved = entries.filterIt(it.address == addr1)
 
-    check:
-      entries.len == 2
-      preserved.len == 1
-      preserved[0].confidence == AddressConfidence.Infinite
-      preserved[0].lastUpdated == newer
+    check entries.len == 2
+    check preserved ==
+      @[
+        AddressEntry(
+          address: addr1, confidence: AddressConfidence.Infinite, lastUpdated: newer
+        )
+      ]
 
   test "set does not preserve Low/Medium address absent from incoming list":
     let book = makeBook(1.hours, 1.hours, 24.hours)
     book.set(peerId1, @[addr1], AddressConfidence.Medium)
     book.set(peerId1, @[addr2], AddressConfidence.Medium)
-    check:
-      book.entries(peerId1).len == 1
-      book.entries(peerId1)[0].address == addr2
+    check book[peerId1] == @[addr2]
 
   test "AddressBook strips terminal peer id from direct addresses":
     let
