@@ -163,6 +163,21 @@ suite "PeerStore":
 
     check peerStore[AddressBook][peerId1] == dialable[0 ..< MaxIdentifyAddrs]
 
+  test "updatePeerInfo preserves verified addresses within the address budget":
+    let
+      peerStore = PeerStore.new(nil)
+      reported = (1 .. MaxIdentifyAddrs).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      verified = ma("/ip4/127.0.0.1/tcp/1000")
+
+    peerStore[AddressBook].markConnected(peerId1, verified)
+    peerStore.updatePeerInfo(IdentifyInfo(peerId: peerId1, addrs: reported))
+
+    let stored = peerStore[AddressBook][peerId1]
+    check stored.len == MaxPeerStoreAddrs
+    check verified in stored
+    check reported[0 ..< reported.len - 1].allIt(it in stored)
+    check reported[^1] notin stored
+
   test "PeerStore listeners":
     # Set up peer store with listener
     var
@@ -311,12 +326,38 @@ suite "AddressBook TTL / confidence":
     )
     # at the limit, extending refreshes and upgrades existing addresses but
     # does not add new ones
-    let before = book.entries(peerId1)[0].lastUpdated
+    let before = Moment.now() - 1.minutes
+    book.book[peerId1][0].lastUpdated = before
     book.extend(peerId1, @[addresses[0], addresses[^2]], AddressConfidence.Medium)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
-    check book.entries(peerId1)[0].lastUpdated >= before
-    check book.entries(peerId1)[0].confidence == AddressConfidence.Medium
+    let refreshed = book.entries(peerId1).filterIt(it.address == addresses[0])
+    check refreshed.len == 1
+    check refreshed.anyIt(it.lastUpdated > before and it.confidence == AddressConfidence.Medium)
     check addresses[^2] notin book[peerId1]
+
+  test "extend removes expired entries before applying the address limit":
+    let
+      book = makeBook(1.seconds, 1.hours, 1.hours)
+      addresses = (1 .. MaxPeerStoreAddrs + 1).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.Low)
+    book.book[peerId1][0].lastUpdated = Moment.now() - 2.seconds
+    book.extend(peerId1, @[addresses[^1]], AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check addresses[0] notin book[peerId1]
+    check addresses[^1] in book[peerId1]
+
+  test "extend retains expired entries for connected peers":
+    let
+      peerStore = makeStore(1.seconds, 1.hours, 1.hours)
+      book = peerStore[AddressBook]
+      addresses = (1 .. MaxPeerStoreAddrs + 1).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.Low)
+    peerStore.markPeerConnected(peerId1)
+    book.book[peerId1][0].lastUpdated = Moment.now() - 2.seconds
+    book.extend(peerId1, @[addresses[^1]], AddressConfidence.Low)
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
+    check addresses[0] in book[peerId1]
+    check addresses[^1] notin book[peerId1]
 
   test "isExpired - Low expires after low TTL":
     let ttls = AddressConfidenceTtls(low: 1.seconds, medium: 1.hours, high: 24.hours)

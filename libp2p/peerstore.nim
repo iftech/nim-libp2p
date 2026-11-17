@@ -46,9 +46,9 @@ when defined(libp2p_agents_metrics):
 
 const IdentifyCloseTimeout* = 5.seconds
   ## Grace for the remote's EOF once identify is done.
-const MaxPeerStoreAddrs* = 64
-  ## Maximum addresses accepted per peer, excluding verified addresses that
-  ## must be preserved or added after a successful connection.
+const MaxPeerStoreAddrs* = MaxIdentifyAddrs
+  ## Target maximum total addresses per peer. Verified addresses take priority
+  ## over unverified addresses and may exceed this limit.
 
 logScope:
   topics = "libp2p peerstore"
@@ -272,6 +272,8 @@ proc set*(
   ## high-confidence entry is never downgraded by a lower-confidence update.
   ## High/Infinite entries absent from the incoming list are preserved so that
   ## a verified dial address is never evicted by a later Identify update.
+  ## If the limit is exceeded, unverified entries are dropped from the tail.
+  ## An empty incoming list clears all entries, including verified addresses.
   defer:
     addressBook.notifyChangeHandlers(peerId)
 
@@ -307,12 +309,16 @@ proc set*(
 
   # Preserve verified addresses even when they leave less room for new ones.
   var i = newEntries.len
+  var dropped = 0
   while newEntries.len > MaxPeerStoreAddrs and i > 0:
     dec i
     if newEntries[i].confidence < AddressConfidence.High:
-      debug "Peer address skipped: peerstore address limit reached",
-        peerId = peerId, address = newEntries[i].address, limit = MaxPeerStoreAddrs
       newEntries.delete(i)
+      inc dropped
+
+  if dropped > 0:
+    debug "Peer addresses dropped: peerstore address limit reached",
+      peerId = peerId, dropped = dropped, limit = MaxPeerStoreAddrs
 
   addressBook.book[peerId] = newEntries
 
@@ -354,17 +360,19 @@ proc extend*(
     addrs: seq[MultiAddress],
     confidence = AddressConfidence.Medium,
 ) =
-  ## Add addresses for `key` without removing existing ones.
+  ## Add addresses for `key`, removing expired entries for disconnected peers.
   ## For addresses already present the confidence is upgraded to
   ## `max(existing, confidence)` and lastUpdated is refreshed.
   ## New addresses are added with `confidence`.
   ## Existing addresses can always be refreshed; new addresses are limited
-  ## by MaxPeerStoreAddrs. Successfully dialled addresses are retained separately.
+  ## by MaxPeerStoreAddrs, including successfully dialled addresses.
   defer:
     addressBook.notifyChangeHandlers(key)
 
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
+  if key notin addressBook.connectedPeers:
+    entries = entries.filterIt(not it.isExpired(addressBook.ttls))
   for ma in addrs:
     let normalized = ma.stripPeerId()
     if entries.findWithAddress(normalized) >= 0 or entries.len < MaxPeerStoreAddrs:
@@ -374,6 +382,8 @@ proc extend*(
         peerId = key, address = normalized, limit = MaxPeerStoreAddrs
   if entries.len > 0:
     addressBook.book[key] = entries
+  else:
+    addressBook.book.del(key)
 
 proc pruneExpired*(addressBook: AddressBook) =
   ## Remove all per-address entries whose TTL has elapsed.
