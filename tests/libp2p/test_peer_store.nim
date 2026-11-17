@@ -327,7 +327,9 @@ suite "AddressBook TTL / confidence":
     # at the limit, extending refreshes and upgrades existing addresses but
     # does not add new ones
     let before = Moment.now() - 1.minutes
-    book.book[peerId1][0].lastUpdated = before
+    for entry in book.book[peerId1].mitems:
+      if entry.address == addresses[0]:
+        entry.lastUpdated = before
     book.extend(peerId1, @[addresses[0], addresses[^2]], AddressConfidence.Medium)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
     let refreshed = book.entries(peerId1).filterIt(it.address == addresses[0])
@@ -354,6 +356,19 @@ suite "AddressBook TTL / confidence":
       else:
         check book.entries(peerId1).len == MaxPeerStoreAddrs
         check addresses[0] notin book[peerId1]
+
+  test "identify replaces expired verified addresses for a disconnected peer":
+    let
+      store = makeStore(1.hours, 1.hours, 1.hours)
+      book = store[AddressBook]
+      addresses = (1 .. MaxPeerStoreAddrs + 3).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      fresh = addresses[MaxPeerStoreAddrs .. ^1]
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.High)
+    for entry in book.book[peerId1].mitems:
+      entry.lastUpdated = Moment.now() - 2.hours
+    store.updatePeerInfo(IdentifyInfo(peerId: peerId1, addrs: fresh))
+    check book[peerId1] == fresh
+    check book.entries(peerId1).len == fresh.len
 
   test "identify cannot refresh verified eviction order":
     let

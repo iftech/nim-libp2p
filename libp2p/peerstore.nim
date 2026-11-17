@@ -317,7 +317,9 @@ proc set*(
 
   let now = Moment.now()
   var newEntries = newSeqOfCap[AddressEntry](addrs.len)
-  let previousEntries = addressBook.book.getOrDefault(peerId)
+  var previousEntries = addressBook.book.getOrDefault(peerId)
+  if peerId notin addressBook.connectedPeers:
+    previousEntries = previousEntries.nonExpired(addressBook.ttls)
   for entry in previousEntries:
     if entry.isVerified():
       var normalizedEntry = entry
