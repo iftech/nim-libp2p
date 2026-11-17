@@ -3,7 +3,7 @@
 
 {.used.}
 
-import sequtils, tables, sets, chronos, stew/byteutils
+import sequtils, tables, sets, chronos, stew/byteutils, strutils
 import chronos/ratelimit
 import
   ../utils,
@@ -408,6 +408,54 @@ suite "FloodSub Component", timeout = 120.seconds:
     check:
       peer.subscribedTopics == node.topicsHigh
       node.floodsub.hasKey(topic & "late")
+
+  asyncTest "FloodSub cumulative subscription topic byte budget":
+    let node = generateNodes(1).toFloodSub()[0]
+    let peerId = PeerId.random()
+    proc getStream(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      raise (ref GetStreamDialError)(msg: "unused")
+
+    let peer = PubSubPeer.new(
+      peerId, getStream, nil, FloodSubCodec, 1024 * 1024, voidPeerHandler
+    )
+    node.peers[peerId] = peer
+    node.maxMessageSize = 1024
+    let
+      first = repeat('a', 512)
+      second = repeat('b', 512)
+      replacement = repeat('c', 512)
+
+    for (name, subscribe) in [
+      (first, true),
+      (second, true),
+      (first, true),
+      (replacement, false),
+      (replacement, true),
+    ]:
+      await node.rpcHandler(
+        peer,
+        RPCMsg.withSubscriptions(@[SubOpts(subscribe: subscribe, topic: name)]).encode(
+          false
+        ),
+      )
+    check:
+      node.floodsub.hasPeer(first, peer)
+      node.floodsub.hasPeer(second, peer)
+      not node.floodsub.hasPeer(replacement, peer)
+
+    for (name, subscribe) in [(first, false), (replacement, true)]:
+      await node.rpcHandler(
+        peer,
+        RPCMsg.withSubscriptions(@[SubOpts(subscribe: subscribe, topic: name)]).encode(
+          false
+        ),
+      )
+    check:
+      not node.floodsub.hasPeer(first, peer)
+      node.floodsub.hasPeer(second, peer)
+      node.floodsub.hasPeer(replacement, peer)
 
   asyncTest "FloodSub unsubscribePeer clears emptied topics":
     let node = generateNodes(1).toFloodSub()[0]

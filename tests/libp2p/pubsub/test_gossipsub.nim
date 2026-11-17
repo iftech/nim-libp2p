@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, chronos/rateLimit, stew/byteutils, utils, sequtils
+import chronos, chronos/rateLimit, stew/byteutils, utils, sequtils, strutils
 import ../../../libp2p/[muxers/muxer, connmanager, switch]
 import ../../../libp2p/stream/[bufferstream, connection]
 import ../../../libp2p/utils/future
@@ -621,6 +621,39 @@ suite "GossipSub":
       gossipSub.gossipsub.hasKey(topic & "late")
 
     await conn.close()
+
+  asyncTest "rpcHandler - cumulative subscription topic byte budget":
+    let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
+    let peer = gossipSub.getPubSubPeer(PeerId.random())
+    gossipSub.maxMessageSize = 1024
+    let
+      first = repeat('a', 512)
+      second = repeat('b', 512)
+      replacement = repeat('c', 512)
+
+    for (name, subscribe) in [
+      (first, true),
+      (second, true),
+      (first, true),
+      (replacement, false),
+      (replacement, true),
+    ]:
+      await gossipSub.rpcHandler(
+        peer, RPCMsg.withSubs(@[name], subscribe).encode(false)
+      )
+    check:
+      gossipSub.gossipsub.hasPeer(first, peer)
+      gossipSub.gossipsub.hasPeer(second, peer)
+      not gossipSub.gossipsub.hasPeer(replacement, peer)
+
+    for (name, subscribe) in [(first, false), (replacement, true)]:
+      await gossipSub.rpcHandler(
+        peer, RPCMsg.withSubs(@[name], subscribe).encode(false)
+      )
+    check:
+      not gossipSub.gossipsub.hasPeer(first, peer)
+      gossipSub.gossipsub.hasPeer(second, peer)
+      gossipSub.gossipsub.hasPeer(replacement, peer)
 
   asyncTest "rpcHandler - extensions only see accepted subscriptions":
     proc unionPartsMetadata(
