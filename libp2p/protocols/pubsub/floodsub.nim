@@ -170,7 +170,12 @@ method rpcHandler*(
     # g.anonymize needs no evaluation when receiving messages
     # as we have a "lax" policy and allow signed messages
 
-    let validation = await f.validate(msg)
+    let validation =
+      try:
+        await f.validate(msg)
+      except CancelledError as exc:
+        discard f.seen.del(saltedId)
+        raise exc
     case validation
     of ValidationResult.Reject:
       trace "Dropping message after validation, reason: reject", msgId, peer
