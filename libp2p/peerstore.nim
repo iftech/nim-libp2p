@@ -237,7 +237,7 @@ proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
   else:
     entries.add(entry)
 
-proc addressesChanged(previous, current: seq[AddressEntry]): bool =
+func addressesChanged(previous, current: openArray[AddressEntry]): bool =
   ## Compare address/confidence pairs, ignoring order and timestamps.
   ## Current entries must have unique addresses, as produced by set.
   if current.len != previous.len:
@@ -287,8 +287,9 @@ proc set*(
 
   let now = Moment.now()
   let previous = addressBook.book.getOrDefault(peerId)
+  
   var prevConf: Table[MultiAddress, AddressConfidence]
-  for entry in addressBook.book.getOrDefault(peerId):
+  for entry in previous:
     let normalized = entry.address.stripPeerId()
     prevConf[normalized] =
       max(prevConf.getOrDefault(normalized, entry.confidence), entry.confidence)
@@ -300,7 +301,7 @@ proc set*(
       normalized, higherConfidence(prevConf, normalized, confidence), now
     )
 
-  for entry in addressBook.book.getOrDefault(peerId):
+  for entry in previous:
     let normalized = entry.address.stripPeerId()
     if entry.confidence >= AddressConfidence.High:
       newEntries.mergeAddressEntry(
