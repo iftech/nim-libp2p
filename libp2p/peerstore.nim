@@ -369,7 +369,7 @@ proc extend*(
     if entries.findWithAddress(normalized) >= 0 or entries.len < MaxPeerStoreAddrs:
       entries.upsertAddress(normalized, confidence, now)
     else:
-      trace "Peer address skipped: peerstore address limit reached",
+      debug "Peer address skipped: peerstore address limit reached",
         peerId = key, address = normalized, limit = MaxPeerStoreAddrs
   if entries.len > 0:
     addressBook.book[key] = entries
