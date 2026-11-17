@@ -11,8 +11,6 @@ import ./[protobuf, types, find, rpc, kademlia_metrics]
 logScope:
   topics = "libp2p kademlia"
 
-const LookupFailureCause* = "lookup failure"
-
 proc isBestValue(kad: KadDHT, key: RecordKey, record: EntryRecord): bool =
   ## Returns whether `value` is a better value than what we have locally
   ## Always returns `true` if we don't have the value locally
@@ -77,7 +75,11 @@ proc canStoreLocalRecord*(kad: KadDHT, key: RecordKey): bool {.raises: [].} =
 
 proc putValue*(
     kad: KadDHT, key: RecordKey, value: Value
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[LPResult[int]] {.async: (raises: [CancelledError]), gcsafe.} =
+  ## Stores `value` locally and on the closest peers. Returns the number of
+  ## peers that acknowledged it; 0 means no copy exists outside this node.
+  ## The caller decides what count counts as success. An error means the
+  ## value was rejected before replication.
   if value.len > kad.config.limits.maxValueSize:
     return err(
       fmt"{value.len} > {kad.config.limits.maxValueSize}", "value exceeds maxValueSize"
@@ -113,12 +115,6 @@ proc putValue*(
       cancelled,
       pending
 
-  if peers.len == 0:
-    outcome = "no peers"
-    let kept = if storedLocally: "kept locally" else: "not kept locally"
-    return
-      err("no peers found for key " & key.shortLog & ", " & kept, LookupFailureCause)
-
   for chunk in peers.toChunks(kad.config.alpha):
     let batch = chunk.mapIt(kad.dispatchPutVal(it, key, value))
     attempted += batch.len
@@ -135,7 +131,7 @@ proc putValue*(
       cancelled += results.cancelled
       pending += results.pending
   outcome = "completed"
-  ok()
+  ok(succeeded)
 
 proc handlePutValue*(
     kad: KadDHT, stream: Stream, msg: Message

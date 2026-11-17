@@ -12,6 +12,9 @@ type
   TestBufferStream* = ref object of BufferStream
     writeHandler*: WriteHandler
 
+  ReadSignallingStream* = ref object of BufferStream
+    reads*: AsyncQueue[int]
+
 method write*(
     s: TestBufferStream, msg: sink seq[byte]
 ): Future[void] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
@@ -24,3 +27,10 @@ proc new*(T: typedesc[TestBufferStream], writeHandler: WriteHandler): T =
   let testBufferStream = T(writeHandler: writeHandler)
   testBufferStream.initStream()
   testBufferStream
+
+method readOnce*(
+    s: ReadSignallingStream, pbytes: pointer, nbytes: int
+): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
+  let reading = procCall BufferStream(s).readOnce(pbytes, nbytes)
+  await s.reads.addLast(nbytes)
+  return await reading

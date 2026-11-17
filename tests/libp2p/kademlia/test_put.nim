@@ -27,14 +27,15 @@ suite "KadDHT Put":
 
     let key = kads[0].rtable.selfId
     let value = @[1.byte, 2, 3, 4, 5]
-    discard await kads[1].putValue(key, value)
+    let res = await kads[1].putValue(key, value)
 
     # After putValue, both nodes should have the record
     check:
+      res == LPResult[int].ok(1)
       kads[0].containsData(key, value)
       kads[1].containsData(key, value)
 
-  asyncTest "PUT_VALUE fails with lookup failure when no peer is known":
+  asyncTest "PUT_VALUE returns 0 and keeps the value locally when no peer is known":
     let kads = setupKadSwitches(1)
     startAndDeferStop(kads)
 
@@ -43,10 +44,10 @@ suite "KadDHT Put":
     let res = await kads[0].putValue(key, value)
 
     check:
-      res.isOfError(LookupFailureCause)
+      res == LPResult[int].ok(0)
       kads[0].containsData(key, value)
 
-  asyncTest "PUT_VALUE fails with lookup failure at the local record limit":
+  asyncTest "PUT_VALUE returns 0 and drops the value at the local record limit":
     let kads = setupKadSwitches(1)
     startAndDeferStop(kads)
 
@@ -63,7 +64,7 @@ suite "KadDHT Put":
     let res = await kads[0].putValue(newKey, newValue)
 
     check:
-      res.isOfError(LookupFailureCause)
+      res == LPResult[int].ok(0)
       kads[0].containsData(existingKey, existingValue)
       kads[0].containsNoData(newKey)
 
