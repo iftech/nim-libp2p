@@ -287,7 +287,7 @@ proc set*(
 
   let now = Moment.now()
   let previous = addressBook.book.getOrDefault(peerId)
-  
+
   var prevConf: Table[MultiAddress, AddressConfidence]
   for entry in previous:
     let normalized = entry.address.stripPeerId()
