@@ -332,7 +332,9 @@ suite "AddressBook TTL / confidence":
     check book.entries(peerId1).len == MaxPeerStoreAddrs
     let refreshed = book.entries(peerId1).filterIt(it.address == addresses[0])
     check refreshed.len == 1
-    check refreshed.anyIt(it.lastUpdated > before and it.confidence == AddressConfidence.Medium)
+    check refreshed.anyIt(
+      it.lastUpdated > before and it.confidence == AddressConfidence.Medium
+    )
     check addresses[^2] notin book[peerId1]
 
   test "extend removes expired entries before applying the address limit":
