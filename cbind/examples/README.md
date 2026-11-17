@@ -13,7 +13,7 @@ The bindings are a header-only C API over a C ABI. Every generated method is asy
 - `metrics.c` — a running node dumps the process-wide Prometheus registry as JSON via `collect_metrics`.
 - `read_timeout.c` — two TCP nodes over mplex, where the server never writes. A `stream_read_lp` with `timeoutMs = 100` fails with "read timeout" and resets the stream, so the next read on it fails at once. A second `stream_read_exactly` while the first one waits fails with "read already in progress".
 
-[`../tests/`](../tests/) holds the config validation cases (`test_config.nim`) and the check that an error reaches the C host (`ffi_contract.c`). `nimble test` runs them and then the examples.
+[`../tests/`](../tests/) holds the config validation cases (`test_config.nim`), the check that an error reaches the C host (`ffi_contract.c`), and the event-queue overflow test (`event_overflow.c`). `nimble test` runs them and then the examples.
 
 ## Build
 
