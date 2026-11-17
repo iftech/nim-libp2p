@@ -270,9 +270,9 @@ proc set*(
   ## Replace the address list for `peerId`. For addresses that already exist
   ## the confidence is upgraded to `max(existing, confidence)` so that a
   ## high-confidence entry is never downgraded by a lower-confidence update.
-  ## High/Infinite entries absent from the incoming list are preserved so that
-  ## a verified dial address is never evicted by a later Identify update.
-  ## If the limit is exceeded, unverified entries are dropped from the tail.
+  ## High/Infinite entries absent from the incoming list are preferentially
+  ## preserved. At least one incoming unverified address is retained when
+  ## present; the oldest verified entries are evicted if necessary.
   ## An empty incoming list clears all entries, including verified addresses.
   defer:
     addressBook.notifyChangeHandlers(peerId)
@@ -307,14 +307,28 @@ proc set*(
         )
       )
 
-  # Preserve verified addresses even when they leave less room for new ones.
+  # Prefer verified addresses, while reserving room for an advertised address.
   var i = newEntries.len
   var dropped = 0
+  var unverified = 0
+  for entry in newEntries:
+    if entry.confidence < AddressConfidence.High:
+      inc unverified
   while newEntries.len > MaxPeerStoreAddrs and i > 0:
     dec i
-    if newEntries[i].confidence < AddressConfidence.High:
+    if newEntries[i].confidence < AddressConfidence.High and unverified > 1:
       newEntries.delete(i)
+      dec unverified
       inc dropped
+
+  while newEntries.len > MaxPeerStoreAddrs:
+    var oldest = -1
+    for j, entry in newEntries:
+      if entry.confidence >= AddressConfidence.High and
+          (oldest < 0 or entry.lastUpdated < newEntries[oldest].lastUpdated):
+        oldest = j
+    newEntries.delete(oldest)
+    inc dropped
 
   if dropped > 0:
     debug "Peer addresses dropped: peerstore address limit reached",
@@ -373,13 +387,16 @@ proc extend*(
   var entries = addressBook.book.getOrDefault(key)
   if key notin addressBook.connectedPeers:
     entries = entries.filterIt(not it.isExpired(addressBook.ttls))
+  var skipped = 0
   for ma in addrs:
     let normalized = ma.stripPeerId()
     if entries.findWithAddress(normalized) >= 0 or entries.len < MaxPeerStoreAddrs:
       entries.upsertAddress(normalized, confidence, now)
     else:
-      debug "Peer address skipped: peerstore address limit reached",
-        peerId = key, address = normalized, limit = MaxPeerStoreAddrs
+      inc skipped
+  if skipped > 0:
+    debug "Peer addresses skipped: peerstore address limit reached",
+      peerId = key, skipped = skipped, limit = MaxPeerStoreAddrs
   if entries.len > 0:
     addressBook.book[key] = entries
   else:

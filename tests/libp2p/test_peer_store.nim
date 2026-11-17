@@ -337,6 +337,20 @@ suite "AddressBook TTL / confidence":
     )
     check addresses[^2] notin book[peerId1]
 
+  test "set retains a fresh address when verified addresses fill the book":
+    for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
+      let
+        book = makeBook(1.hours, 1.hours, 1.hours)
+        addresses = (1 .. MaxPeerStoreAddrs + 2).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+      book.set(peerId1, addresses[0 ..< MaxPeerStoreAddrs], confidence)
+      book.book[peerId1][0].lastUpdated = Moment.now() - 1.minutes
+      # successful connections can push the book above its limit
+      book.markConnected(peerId1, addresses[^2])
+      book.set(peerId1, @[addresses[^1]], AddressConfidence.Low)
+      check book.entries(peerId1).len == MaxPeerStoreAddrs
+      check addresses[^1] in book[peerId1]
+      check addresses[0] notin book[peerId1]
+
   test "extend removes expired entries before applying the address limit":
     let
       book = makeBook(1.seconds, 1.hours, 1.hours)
