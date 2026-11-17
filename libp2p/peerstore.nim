@@ -207,15 +207,6 @@ proc isExpired*(entry: AddressEntry, ttls: AddressConfidenceTtls): bool =
 
   Moment.now() - entry.lastUpdated > ttl
 
-proc higherConfidence(
-    prevConf: Table[MultiAddress, AddressConfidence],
-    ma: MultiAddress,
-    incoming: AddressConfidence,
-): AddressConfidence =
-  ## Returns the higher of the stored and incoming confidence for `ma`.
-  ## A previously verified (High/Infinite) address is never downgraded.
-  max(prevConf.getOrDefault(ma, incoming), incoming)
-
 proc findWithAddress(entries: seq[AddressEntry], ma: MultiAddress): int =
   for i, e in entries:
     if e.address == ma:
@@ -230,8 +221,10 @@ proc upsertAddress(
 ) =
   let idx = entries.findWithAddress(ma)
   if idx >= 0:
+    if entries[idx].confidence < AddressConfidence.High or
+        confidence >= entries[idx].confidence:
+      entries[idx].lastUpdated = now
     entries[idx].confidence = max(entries[idx].confidence, confidence)
-    entries[idx].lastUpdated = now
   else:
     entries.add(AddressEntry(address: ma, confidence: confidence, lastUpdated: now))
 
@@ -272,7 +265,8 @@ proc set*(
   ## high-confidence entry is never downgraded by a lower-confidence update.
   ## High/Infinite entries absent from the incoming list are preferentially
   ## preserved. At least one incoming unverified address is retained when
-  ## present; the oldest verified entries are evicted if necessary.
+  ## present; the oldest High entries are evicted if necessary. Infinite entries
+  ## are never evicted and may cause the book to exceed the limit.
   ## An empty incoming list clears all entries, including verified addresses.
   defer:
     addressBook.notifyChangeHandlers(peerId)
@@ -283,29 +277,15 @@ proc set*(
     return
 
   let now = Moment.now()
-  var prevConf: Table[MultiAddress, AddressConfidence]
-  for entry in addressBook.book.getOrDefault(peerId):
-    let normalized = entry.address.stripPeerId()
-    prevConf[normalized] =
-      max(prevConf.getOrDefault(normalized, entry.confidence), entry.confidence)
-
   var newEntries = newSeqOfCap[AddressEntry](addrs.len)
-  for ma in addrs:
-    let normalized = stripPeerId(ma)
-    newEntries.upsertAddress(
-      normalized, higherConfidence(prevConf, normalized, confidence), now
-    )
-
   for entry in addressBook.book.getOrDefault(peerId):
-    let normalized = entry.address.stripPeerId()
     if entry.confidence >= AddressConfidence.High:
-      newEntries.mergeAddressEntry(
-        AddressEntry(
-          address: normalized,
-          confidence: entry.confidence,
-          lastUpdated: entry.lastUpdated,
-        )
-      )
+      var normalizedEntry = entry
+      normalizedEntry.address = entry.address.stripPeerId()
+      newEntries.mergeAddressEntry(normalizedEntry)
+
+  for ma in addrs:
+    newEntries.upsertAddress(ma.stripPeerId(), confidence, now)
 
   # Prefer verified addresses, while reserving room for an advertised address.
   var i = newEntries.len
@@ -324,7 +304,7 @@ proc set*(
   while newEntries.len > MaxPeerStoreAddrs:
     var oldest = -1
     for j, entry in newEntries:
-      if entry.confidence >= AddressConfidence.High and
+      if entry.confidence == AddressConfidence.High and
           (oldest < 0 or entry.lastUpdated < newEntries[oldest].lastUpdated):
         oldest = j
     if oldest < 0:
@@ -390,7 +370,8 @@ proc extend*(
 ) =
   ## Add addresses for `key`, removing expired entries for disconnected peers.
   ## For addresses already present the confidence is upgraded to
-  ## `max(existing, confidence)` and lastUpdated is refreshed.
+  ## `max(existing, confidence)`. Lower-confidence updates do not refresh
+  ## verified entries; other updates refresh lastUpdated.
   ## New addresses are added with `confidence`.
   ## Existing addresses can always be refreshed. New unverified addresses are
   ## limited by MaxPeerStoreAddrs; verified addresses may exceed the limit.

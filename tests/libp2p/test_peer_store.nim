@@ -347,9 +347,26 @@ suite "AddressBook TTL / confidence":
       # successful connections can push the book above its limit
       book.markConnected(peerId1, addresses[^2])
       book.set(peerId1, @[addresses[^1]], AddressConfidence.Low)
-      check book.entries(peerId1).len == MaxPeerStoreAddrs
       check addresses[^1] in book[peerId1]
-      check addresses[0] notin book[peerId1]
+      if confidence == AddressConfidence.Infinite:
+        check book.entries(peerId1).len == MaxPeerStoreAddrs + 1
+        check addresses[0] in book[peerId1]
+      else:
+        check book.entries(peerId1).len == MaxPeerStoreAddrs
+        check addresses[0] notin book[peerId1]
+
+  test "identify cannot refresh verified eviction order":
+    let
+      store = PeerStore.new(nil)
+      book = store[AddressBook]
+      addresses = (1 .. MaxPeerStoreAddrs + 1).mapIt(ma("/ip4/127.0.0.1/tcp/" & $it))
+    book.extend(peerId1, addresses[0 ..< MaxPeerStoreAddrs], AddressConfidence.High)
+    for entry in book.book[peerId1].mitems:
+      entry.lastUpdated = Moment.now() - 1.minutes
+    book.markConnected(peerId1, addresses[0])
+    store.updatePeerInfo(IdentifyInfo(peerId: peerId1, addrs: addresses[1 .. ^1]))
+    check addresses[0] in book[peerId1]
+    check book.entries(peerId1).len == MaxPeerStoreAddrs
 
   test "extend admits verified addresses when the book is full":
     for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
