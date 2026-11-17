@@ -8,7 +8,7 @@ import chronos, results
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/[bridgestream, bufferstream]
-import ../../../tools/[unittest, bufferstream, metrics_utils]
+import ../../../tools/[unittest, bufferstream, crypto, metrics_utils]
 import ../converters
 import ./extension_recording
 
@@ -29,6 +29,7 @@ const
 suite "GossipSub topic stream wire format":
   test "full message reconstructs canonical signature input":
     let message = Message(
+      fromPeer: PeerId.random(),
       data: @[1.byte, 2],
       topic: "topic",
       seqno: @[3.byte],
@@ -70,6 +71,9 @@ suite "GossipSub topic stream wire format":
     check TopicRPC(partial: Opt.some(PartialMessageExtensionRPC(topicID: ""))).toRPC(
       "topic"
     ).isErr
+    check TopicRPC(
+      partial: Opt.some(PartialMessageExtensionRPC(partialMessage: newSeq[byte]()))
+    ).toRPC("topic").isErr
 
 suite "GossipSub topic stream negotiation":
   teardown:
@@ -458,6 +462,81 @@ suite "GossipSub topic stream send side":
         (await written.popFirst()) == frames[3]
         recorder.penalties == 0
         recorder.violations == 0
+
+  asyncTest "queue budgets release the frame in flight when the writer closes":
+    let written = newAsyncQueue[seq[byte]]()
+    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+      return TestBufferStream.new(
+        proc(
+            data: sink seq[byte]
+        ) {.async: (raises: [CancelledError, LPStreamError]).} =
+          let frame = data[1 ..^ 1] # without the 1-byte length prefix
+          await written.put(frame)
+          if frame == frames[0]:
+            await newAsyncEvent().wait() # completes only by cancellation
+      )
+
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(
+      TopicStreamsConfig(
+        maxQueuedBytes: header.len + frames[0].len, maxQueuedMessages: 1
+      ),
+      maxMessageSize,
+      dial,
+      recorder.receive(),
+      recorder.violation(),
+      recorder.penalize(),
+    )
+    defer:
+      await state.stop()
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+    state.sendTopic(topic, frames[0], true)
+    check:
+      (await written.popFirst()) == header
+      (await written.popFirst()) == frames[0]
+
+    let rejected =
+      metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
+    state.sendTopic(topic, frames[0], true) # dropped: frames[0]'s write holds the budget
+    check metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"]) ==
+      rejected + 1
+
+    await state.closeTopic(topic) # cancels frames[0]'s write
+    state.sendTopic(topic, frames[0], true) # fits only if the close released frames[0]
+    check:
+      (await written.popFirst()) == header # on a new stream
+      (await written.popFirst()) == frames[0]
+
+  asyncTest "pending dial is cancelled after the dial timeout, and the next frame dials again":
+    var dials: seq[Future[Stream].Raising([CancelledError, LPStreamError])]
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, LPStreamError], raw: true)
+    .} =
+      let dialing = Future[Stream].Raising([CancelledError, LPStreamError]).init()
+      dials.add(dialing)
+      return dialing
+
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(
+      TopicStreamsConfig(),
+      maxMessageSize,
+      dial,
+      recorder.receive(),
+      recorder.violation(),
+      recorder.penalize(),
+    )
+    defer:
+      await state.stop()
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+
+    state.sendTopic(topic, frames[0], true)
+    # nothing completes the dial, so the dial timeout cancels it and ends the writer
+    await dials[0].join()
+    state.sendTopic(topic, frames[1], true)
+    check:
+      dials[0].cancelled()
+      dials.len == 2
 
   asyncTest "incoming streams do not consume the outgoing stream budget":
     let recorder = TopicStreamsRecorder.new()

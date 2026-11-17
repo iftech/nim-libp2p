@@ -7,7 +7,7 @@ import chronos, results
 import ../../../../libp2p/peerid
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
-import ../../../../libp2p/stream/connection
+import ../../../../libp2p/stream/[bridgestream, connection]
 import ../../../tools/[unittest, crypto]
 import ./extension_recording
 
@@ -25,6 +25,17 @@ suite "GossipSub Extensions :: Topic streams":
           peer, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
         )
         not state.peerHasTopicStreams(peer)
+
+  asyncTest "topic stream from a peer without a transport is reset":
+    let state =
+      TopicStreamsExtension.new(Opt.some(TopicStreamsConfig()), noopBehaviorPenaltyProc)
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    defer:
+      await peerEnd.close()
+
+    # random PeerId simulates a disconnected peer without a transport
+    await state.readTopicStream(PeerId.random(), nodeEnd)
+    check nodeEnd.wasResetLocally()
 
   test "capability advertisement follows configuration":
     let disabled = ExtensionsState.new(rng())
