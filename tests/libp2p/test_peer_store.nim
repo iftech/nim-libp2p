@@ -526,6 +526,20 @@ suite "AddressBook TTL / confidence":
     book.set(peerId1, @[addr1], AddressConfidence.Low)
     check book.entries(peerId1)[0].confidence == AddressConfidence.High
 
+  test "set retains expired verified confidence without refreshing it":
+    let book = makeBook(1.hours, 1.hours, 1.hours)
+    book.set(peerId1, @[addr1, addr2], AddressConfidence.High)
+    let expired = Moment.now() - 2.hours
+    for entry in book.book[peerId1].mitems:
+      entry.lastUpdated = expired
+    book.set(peerId1, @[addr1], AddressConfidence.Medium)
+    let entries = book.entries(peerId1)
+    check entries.len == 1
+    check entries[0].address == addr1
+    check entries[0].confidence == AddressConfidence.High
+    check entries[0].lastUpdated == expired
+    check entries[0].isExpired(book.ttls)
+
   test "extend does not downgrade existing confidence":
     let book = makeBook(1.hours, 1.hours, 24.hours)
     book.set(peerId1, @[addr1], AddressConfidence.High)

@@ -318,21 +318,29 @@ proc set*(
   let now = Moment.now()
   var newEntries = newSeqOfCap[AddressEntry](addrs.len)
   var previousEntries = addressBook.book.getOrDefault(peerId)
-  if peerId notin addressBook.connectedPeers:
-    previousEntries = previousEntries.nonExpired(addressBook.ttls)
+  var prevUnverified = newSeqOfCap[AddressEntry](previousEntries.len)
   for entry in previousEntries:
+    var normalizedEntry = entry
+    normalizedEntry.address = entry.address.stripPeerId()
+    if peerId notin addressBook.connectedPeers and entry.isExpired(addressBook.ttls):
+      # Retain matching verified entries so an advertisement cannot downgrade
+      # their confidence or refresh their verified timestamp.
+      if entry.isVerified():
+        for ma in addrs:
+          if ma.stripPeerId() == normalizedEntry.address:
+            newEntries.mergeAddressEntry(normalizedEntry)
+            break
+      continue
     if entry.isVerified():
-      var normalizedEntry = entry
-      normalizedEntry.address = entry.address.stripPeerId()
       newEntries.mergeAddressEntry(normalizedEntry)
+    else:
+      prevUnverified.add(normalizedEntry)
 
   for ma in addrs:
     let normalized = ma.stripPeerId()
-    for entry in previousEntries:
-      if not entry.isVerified() and entry.address.stripPeerId() == normalized:
-        var normalizedEntry = entry
-        normalizedEntry.address = normalized
-        newEntries.mergeAddressEntry(normalizedEntry)
+    for entry in prevUnverified:
+      if entry.address == normalized:
+        newEntries.mergeAddressEntry(entry)
     newEntries.upsertAddress(normalized, confidence, now)
 
   # Prefer verified addresses, while reserving room for an advertised address.
