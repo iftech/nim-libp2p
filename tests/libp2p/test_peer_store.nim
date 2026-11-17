@@ -324,19 +324,17 @@ suite "AddressBook TTL / confidence":
     check book.entries(peerId1).anyIt(
       it.address == addresses[^1] and it.confidence == AddressConfidence.High
     )
-    # at the limit, extending refreshes and upgrades existing addresses but
-    # does not add new ones
+    # at the limit, duplicates are unchanged and new unverified addresses are skipped.
     let before = Moment.now() - 1.minutes
     for entry in book.book[peerId1].mitems:
       if entry.address == addresses[0]:
         entry.lastUpdated = before
     book.extend(peerId1, @[addresses[0], addresses[^2]], AddressConfidence.Medium)
     check book.entries(peerId1).len == MaxPeerStoreAddrs
-    let refreshed = book.entries(peerId1).filterIt(it.address == addresses[0])
-    check refreshed.len == 1
-    check refreshed.anyIt(
-      it.lastUpdated > before and it.confidence == AddressConfidence.Medium
-    )
+    let existing = book.entries(peerId1).filterIt(it.address == addresses[0])
+    check existing.len == 1
+    check existing[0].lastUpdated == before
+    check existing[0].confidence == AddressConfidence.Low
     check addresses[^2] notin book[peerId1]
 
   test "set retains a fresh address when verified addresses fill the book":
@@ -534,18 +532,28 @@ suite "AddressBook TTL / confidence":
     book.extend(peerId1, @[addr1], AddressConfidence.Low)
     check book.entries(peerId1)[0].confidence == AddressConfidence.High
 
-  test "lower confidence updates retain Medium confidence and refresh it":
-    for useSet in [true, false]:
-      let book = makeBook(1.hours, 1.hours, 24.hours)
-      book.set(peerId1, @[addr1], AddressConfidence.Medium)
-      let before = Moment.now() - 1.minutes
-      book.book[peerId1][0].lastUpdated = before
-      if useSet:
-        book.set(peerId1, @[addr1], AddressConfidence.Low)
-      else:
-        book.extend(peerId1, @[addr1], AddressConfidence.Low)
-      check book.entries(peerId1)[0].confidence == AddressConfidence.Medium
-      check book.entries(peerId1)[0].lastUpdated > before
+  test "set lower confidence retains Medium confidence and refreshes it":
+    let book = makeBook(1.hours, 1.hours, 24.hours)
+    book.set(peerId1, @[addr1], AddressConfidence.Medium)
+    let before = Moment.now() - 1.minutes
+    book.book[peerId1][0].lastUpdated = before
+    book.set(peerId1, @[addr1], AddressConfidence.Low)
+    check book.entries(peerId1)[0].confidence == AddressConfidence.Medium
+    check book.entries(peerId1)[0].lastUpdated > before
+
+  test "extend ignores duplicate addresses without notifying subscribers":
+    let book = makeBook(1.hours, 1.hours, 24.hours)
+    book.set(peerId1, @[addr1], AddressConfidence.Medium)
+    let before = Moment.now() - 1.minutes
+    book.book[peerId1][0].lastUpdated = before
+    let recorded = newRecorder(book)
+    let fullAddr = ma($addr1 & "/p2p/" & $peerId1)
+    for confidence in [AddressConfidence.Low, AddressConfidence.High]:
+      book.extend(peerId1, @[addr1, fullAddr], confidence)
+    check book.entries(peerId1).len == 1
+    check book.entries(peerId1)[0].confidence == AddressConfidence.Medium
+    check book.entries(peerId1)[0].lastUpdated == before
+    check recorded[].len == 0
 
   test "set preserves High confidence address absent from incoming list":
     let book = makeBook(1.hours, 1.hours, 24.hours)

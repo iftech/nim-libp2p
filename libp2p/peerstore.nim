@@ -395,31 +395,37 @@ proc extend*(
     confidence = AddressConfidence.Medium,
 ) =
   ## Add addresses for `key`, removing expired entries for disconnected peers.
-  ## For addresses already present the confidence is upgraded to
-  ## `max(existing, confidence)`. Lower-confidence updates do not refresh
-  ## verified entries; other updates refresh lastUpdated.
+  ## Existing addresses are left unchanged.
   ## New addresses are added with `confidence`.
-  ## Existing addresses can always be refreshed. New unverified addresses are
-  ## limited by MaxPeerStoreAddrs; verified addresses may exceed the limit.
-  defer:
-    addressBook.notifyChangeHandlers(key)
+  ## New unverified addresses are limited by MaxPeerStoreAddrs; verified
+  ## addresses may exceed the limit.
 
+  if addrs.len == 0:
+    return
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
+  let previousLen = entries.len
   if key notin addressBook.connectedPeers:
     entries = entries.nonExpired(addressBook.ttls)
+  var changed = entries.len != previousLen
   var skipped = 0
   for ma in addrs:
     let normalized = ma.stripPeerId()
-    if not entries.admitAddress(normalized, confidence, now):
+    if entries.findWithAddress(normalized) >= 0:
+      continue
+    if entries.admitAddress(normalized, confidence, now):
+      changed = true
+    else:
       inc skipped
   if skipped > 0:
     debug "Peer addresses skipped: peerstore address limit reached",
       peerId = key, skipped = skipped, limit = MaxPeerStoreAddrs
-  if entries.len > 0:
-    addressBook.book[key] = entries
-  else:
-    addressBook.book.del(key)
+  if changed:
+    if entries.len > 0:
+      addressBook.book[key] = entries
+    else:
+      addressBook.book.del(key)
+    addressBook.notifyChangeHandlers(key)
 
 proc pruneExpired*(addressBook: AddressBook) =
   ## Remove all per-address entries whose TTL has elapsed.
