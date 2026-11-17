@@ -1,12 +1,8 @@
 // Service discovery: a provider advertises a service id in its extended peer
 // record, and a seeker that bootstraps off the provider looks the service up
 // over the DHT. The generated bindings are asynchronous, so every call is
-// wrapped with the blocking helpers in common.h.
-//
-// Ordering matters here. The switch lifecycle already starts and stops
-// discovery, so `libp2p_ctx_start` comes first and every
-// `libp2p_ctx_service_disco_*` call before it fails with an explicit error
-// rather than half-starting an undialable node.
+// wrapped with the blocking helpers in common.h. `libp2p_ctx_start` starts
+// discovery, so it comes before any `libp2p_ctx_service_disco_*` call.
 #include "common.h"
 
 static const char *ServiceId = "/cbind/disco/demo-service";
@@ -114,25 +110,6 @@ static bool lookupProvider(LibP2PCtx *seeker, const char *providerId) {
   return false;
 }
 
-// Discovery cannot be driven before the switch listens (issue #3003).
-static bool rejectsDiscoBeforeStart(LibP2PCtx *ctx) {
-  BoolWaiter bw;
-  memset(&bw, 0, sizeof(bw));
-  libp2p_ctx_service_disco_start(ctx, on_bool, &bw);
-  wait_done(&bw.done);
-  if (bw.err_code == 0) {
-    fprintf(stderr, "Error: service_disco_start succeeded before ctx_start\n");
-    return false;
-  }
-  // A bare err_code check also passes on an unmounted protocol.
-  if (strstr(bw.err, "switch not started") == NULL) {
-    fprintf(stderr, "Error: expected the not-started guard, got: %s\n", bw.err);
-    return false;
-  }
-  printf("service_disco_start before ctx_start rejected: %s\n", bw.err);
-  return true;
-}
-
 int main(void) {
   int status = 1;
   BoolWaiter bw;
@@ -141,8 +118,6 @@ int main(void) {
   LibP2PCtx *provider = discoNode("/ip4/127.0.0.1/tcp/5041", "provider", NULL);
   if (!provider)
     return 1;
-  if (!rejectsDiscoBeforeStart(provider))
-    goto cleanup_provider;
   if (!AWAIT_BOOL(bw, libp2p_ctx_start(provider, on_bool, &bw),
                   "start provider"))
     goto cleanup_provider;

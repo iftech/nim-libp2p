@@ -143,10 +143,18 @@ proc findFfiVendorDir(): string =
     raise newException(IOError, "vendored tinycbor missing under " & vendor)
   vendor
 
-task examples, "Build and run the C bindings examples":
+type CBuild = object
+  san: string
+  ccFlags: string
+  vendor: string
+  cborObjs: string
+  lib: string
+
+proc setupCBuild(): CBuild =
+  ## Builds the FFI library, the C header and the TinyCBOR objects that every
+  ## C program here links against, under the `LIBP2P_SAN` sanitizer.
   let san = sanitizer()
   let ccFlags = ccSanFlags(san)
-  let lib = "../build/liblibp2p." & ffiLibExt()
   buildFfiLib(san)
   if not fileExists("c_bindings/libp2p.h"):
     genBindingsFor("c", "c_bindings")
@@ -161,14 +169,48 @@ task examples, "Build and run the C bindings examples":
     exec "gcc -std=c99 -fPIC" & ccFlags & " -I " & vendor & " -I " & vendor &
       "/tinycbor -c " & vendor & "/tinycbor/" & name & ".c -o " & obj
     cborObjs.add obj
-  let cborObjsStr = cborObjs.join(" ")
+  CBuild(
+    san: san,
+    ccFlags: ccFlags,
+    vendor: vendor,
+    cborObjs: cborObjs.join(" "),
+    lib: "../build/liblibp2p." & ffiLibExt(),
+  )
 
+proc buildAndRunC(b: CBuild, src: string) =
+  let outBin = "../build/" & src.splitFile().name
+  exec "gcc -std=c11" & b.ccFlags & " -I c_bindings -I " & b.vendor & " " & src & " " &
+    b.cborObjs & " " & b.lib & " -pthread -Wl,-rpath,'$ORIGIN' -o " & outBin
+  exec sanRunEnv(b.san) & outBin
+
+proc runExamples(b: CBuild) =
   for example in [
     "echo", "gossipsub", "kad", "service_disco", "relay", "peerstore", "metrics",
     "read_timeout",
   ]:
-    let outBin = "../build/" & example
-    exec "gcc -std=c11" & ccFlags & " -I c_bindings -I " & vendor & " examples/" &
-      example & ".c " & cborObjsStr & " " & lib & " -pthread -Wl,-rpath,'$ORIGIN' -o " &
-      outBin
-    exec sanRunEnv(san) & outBin
+    b.buildAndRunC("examples/" & example & ".c")
+
+task examples, "Build and run the C bindings examples":
+  setupCBuild().runExamples()
+
+task test, "Run the config unit tests, the C FFI contract test and the examples":
+  let san = sanitizer()
+  let sanFlags =
+    if san.len > 0:
+      nimSanFlags(san)
+    else:
+      " --mm:orc"
+  let nimcache =
+    if san.len > 0:
+      "nimcache_test_" & san
+    else:
+      "nimcache_test"
+  let outBin = "../build/test_config"
+  # The test declares its own nim-ffi library, so NimMain takes its prefix.
+  exec "nim c --threads:on -d:metrics -d:chronicles_runtime_filtering=on" & sanFlags &
+    " --nimMainPrefix:libconfigtest" & ffiDepPaths() & " --nimcache:" & nimcache &
+    " --out:" & outBin & " tests/test_config.nim"
+  exec sanRunEnv(san) & outBin
+  let b = setupCBuild()
+  b.buildAndRunC("tests/ffi_contract.c")
+  b.runExamples()
