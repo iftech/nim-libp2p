@@ -519,6 +519,19 @@ suite "AddressBook TTL / confidence":
     book.extend(peerId1, @[addr1], AddressConfidence.Low)
     check book.entries(peerId1)[0].confidence == AddressConfidence.High
 
+  test "lower confidence updates retain Medium confidence and refresh it":
+    for useSet in [true, false]:
+      let book = makeBook(1.hours, 1.hours, 24.hours)
+      book.set(peerId1, @[addr1], AddressConfidence.Medium)
+      let before = Moment.now() - 1.minutes
+      book.book[peerId1][0].lastUpdated = before
+      if useSet:
+        book.set(peerId1, @[addr1], AddressConfidence.Low)
+      else:
+        book.extend(peerId1, @[addr1], AddressConfidence.Low)
+      check book.entries(peerId1)[0].confidence == AddressConfidence.Medium
+      check book.entries(peerId1)[0].lastUpdated > before
+
   test "set preserves High confidence address absent from incoming list":
     let book = makeBook(1.hours, 1.hours, 24.hours)
     book.set(peerId1, @[addr1], AddressConfidence.High)

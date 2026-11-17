@@ -207,11 +207,34 @@ proc isExpired*(entry: AddressEntry, ttls: AddressConfidenceTtls): bool =
 
   Moment.now() - entry.lastUpdated > ttl
 
+proc isVerified(entry: AddressEntry): bool =
+  entry.confidence >= AddressConfidence.High
+
+proc nonExpired(
+    entries: seq[AddressEntry], ttls: AddressConfidenceTtls
+): seq[AddressEntry] =
+  entries.filterIt(not it.isExpired(ttls))
+
 proc findWithAddress(entries: seq[AddressEntry], ma: MultiAddress): int =
   for i, e in entries:
     if e.address == ma:
       return i
   -1
+
+proc countUnverified(entries: seq[AddressEntry]): int =
+  var count = 0
+  for entry in entries:
+    if not entry.isVerified():
+      inc count
+  count
+
+proc oldestHighIndex(entries: seq[AddressEntry]): int =
+  var oldest = -1
+  for i, entry in entries:
+    if entry.confidence == AddressConfidence.High and
+        (oldest < 0 or entry.lastUpdated < entries[oldest].lastUpdated):
+      oldest = i
+  oldest
 
 proc upsertAddress(
     entries: var seq[AddressEntry],
@@ -221,10 +244,9 @@ proc upsertAddress(
 ) =
   let idx = entries.findWithAddress(ma)
   if idx >= 0:
-    if entries[idx].confidence < AddressConfidence.High or
-        confidence >= entries[idx].confidence:
+    if not entries[idx].isVerified() or confidence >= entries[idx].confidence:
       entries[idx].lastUpdated = now
-      entries[idx].confidence = confidence
+    entries[idx].confidence = max(entries[idx].confidence, confidence)
   else:
     entries.add(AddressEntry(address: ma, confidence: confidence, lastUpdated: now))
 
@@ -235,6 +257,25 @@ proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
     entries[idx].confidence = max(entries[idx].confidence, entry.confidence)
   else:
     entries.add(entry)
+
+proc retainWithinLimit(entries: var seq[AddressEntry]): int =
+  var i = entries.len
+  var dropped = 0
+  var unverified = entries.countUnverified()
+  while entries.len > MaxPeerStoreAddrs and i > 0:
+    dec i
+    if not entries[i].isVerified() and unverified > 1:
+      entries.delete(i)
+      dec unverified
+      inc dropped
+
+  while entries.len > MaxPeerStoreAddrs:
+    let oldest = entries.oldestHighIndex()
+    if oldest < 0:
+      break
+    entries.delete(oldest)
+    inc dropped
+  dropped
 
 proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()) =
   var entries = addressBook.book.getOrDefault(peerId)
@@ -276,39 +317,24 @@ proc set*(
 
   let now = Moment.now()
   var newEntries = newSeqOfCap[AddressEntry](addrs.len)
-  for entry in addressBook.book.getOrDefault(peerId):
-    if entry.confidence >= AddressConfidence.High:
+  let previousEntries = addressBook.book.getOrDefault(peerId)
+  for entry in previousEntries:
+    if entry.isVerified():
       var normalizedEntry = entry
       normalizedEntry.address = entry.address.stripPeerId()
       newEntries.mergeAddressEntry(normalizedEntry)
 
   for ma in addrs:
-    newEntries.upsertAddress(ma.stripPeerId(), confidence, now)
+    let normalized = ma.stripPeerId()
+    for entry in previousEntries:
+      if not entry.isVerified() and entry.address.stripPeerId() == normalized:
+        var normalizedEntry = entry
+        normalizedEntry.address = normalized
+        newEntries.mergeAddressEntry(normalizedEntry)
+    newEntries.upsertAddress(normalized, confidence, now)
 
   # Prefer verified addresses, while reserving room for an advertised address.
-  var i = newEntries.len
-  var dropped = 0
-  var unverified = 0
-  for entry in newEntries:
-    if entry.confidence < AddressConfidence.High:
-      inc unverified
-  while newEntries.len > MaxPeerStoreAddrs and i > 0:
-    dec i
-    if newEntries[i].confidence < AddressConfidence.High and unverified > 1:
-      newEntries.delete(i)
-      dec unverified
-      inc dropped
-
-  while newEntries.len > MaxPeerStoreAddrs:
-    var oldest = -1
-    for j, entry in newEntries:
-      if entry.confidence == AddressConfidence.High and
-          (oldest < 0 or entry.lastUpdated < newEntries[oldest].lastUpdated):
-        oldest = j
-    if oldest < 0:
-      break
-    newEntries.delete(oldest)
-    inc dropped
+  let dropped = newEntries.retainWithinLimit()
 
   if dropped > 0:
     debug "Peer addresses dropped: peerstore address limit reached",
@@ -379,7 +405,7 @@ proc extend*(
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
   if key notin addressBook.connectedPeers:
-    entries = entries.filterIt(not it.isExpired(addressBook.ttls))
+    entries = entries.nonExpired(addressBook.ttls)
   var skipped = 0
   for ma in addrs:
     let normalized = ma.stripPeerId()
@@ -406,7 +432,7 @@ proc pruneExpired*(addressBook: AddressBook) =
         refresh.add(peerId)
       continue
 
-    let alive = entries.filterIt(not it.isExpired(addressBook.ttls))
+    let alive = entries.nonExpired(addressBook.ttls)
     if alive.len < entries.len:
       pending.add((peerId, alive))
 
