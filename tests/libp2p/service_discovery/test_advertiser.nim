@@ -12,9 +12,9 @@ import
     peerstore,
     protocols/kademlia,
     protocols/service_discovery,
-    protocols/service_discovery/advertiser,
     stream/connection,
   ]
+import ../../../libp2p/protocols/service_discovery/advertiser {.all.}
 import ../../tools/[fault_stream, lifecycle, multiaddress, protobuf, unittest]
 import ./utils
 
@@ -469,9 +469,10 @@ suite "Advertiser - maintainRegistrations":
     let replacement = PeerId.random()
     disco.switch.peerStore[AddressBook][replacement] = @[makeMultiAddress("127.0.0.1")]
     let table = disco.rtManager.getTable(serviceId).get()
-    let pos = table.buckets[stalled.bucketIdx].peers.find(stalled.registrar.toKey())
+    let bucketIdx = stalled.slots[0].bucketIdx
+    let pos = table.buckets[bucketIdx].peers.find(stalled.registrar.toKey())
     require pos >= 0
-    table.buckets[stalled.bucketIdx].peers[pos] = replacement.toKey()
+    table.buckets[bucketIdx].peers[pos] = replacement.toKey()
 
     await disco.maintainRegistrations()
 
@@ -480,6 +481,413 @@ suite "Advertiser - maintainRegistrations":
       stalled notin disco.advertiser.running
       toSeq(disco.advertiser.running).anyIt(it.registrar == replacement)
       stalled.fut.cancelled()
+
+suite "Advertiser - ticket retry":
+  teardown:
+    checkTrackers()
+
+  asyncTest "a retry after a wait capped at advertExpiry lands in the window":
+    # safetyParam 1.0 on an empty cache makes the wait exactly advertExpiry.
+    let conf = ServiceDiscoveryConfig.new(
+      advertExpiry = 3.secs, registrationWindow = 1.secs, safetyParam = 1.0
+    )
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let service = makeServiceInfo()
+    let serviceId = service.id.hashServiceId()
+    let advert = makeAdvertisement(service.id).encode().get()
+    check disco.rtManager.addService(
+      serviceId, disco.rtable, disco.config.replication, conf.bucketsCount, Provided
+    )
+
+    let task = disco.advertiseToRegistrar(
+      serviceId, disco.switch.peerInfo.peerId, Opt.none(Ticket), advert
+    )
+
+    check:
+      serviceId in disco.registrar.boundService
+      disco.countAdsInCache(serviceId) == 0
+    checkUntilTimeoutCustom(
+      conf.advertExpiry + 2 * conf.registrationWindow, 100.milliseconds
+    ):
+      disco.countAdsInCache(serviceId) == 1
+
+    await task.cancelAndWait()
+
+proc setupWithRegistrars(conf: ServiceDiscoveryConfig): ServiceDiscovery =
+  let disco = setupServiceDiscoveryNode(discoConfig = conf)
+  disco.populateRoutingTable(6)
+  # An address keeps each task in its dial, so the task is still running.
+  for key in disco.rtable.allKeys():
+    disco.switch.peerStore[AddressBook][key.toPeerId().get()] =
+      @[makeMultiAddress("127.0.0.1")]
+  disco
+
+proc advertiseBoth(conf: ServiceDiscoveryConfig): ServiceDiscovery =
+  ## Two services with one caller-supplied advert, so their picks can share a REGISTER.
+  let disco = setupWithRegistrars(conf)
+  let services = @[makeServiceInfo("service-a"), makeServiceInfo("service-b")]
+  let advert = sharedAdvert(services)
+  for service in services:
+    doAssert disco.startAdvertising(service, Opt.some(advert)).isOk()
+  disco
+
+suite "Advertiser - batch registration":
+  teardown:
+    checkTrackers()
+
+  # kRegister above the table size picks every peer for both services.
+  let conf = ServiceDiscoveryConfig.new(kRegister = 10)
+
+  asyncTest "services that share a registrar and an advert go out in one task":
+    let disco = advertiseBoth(conf)
+
+    await disco.stopRegistrations()
+    await disco.maintainRegistrations()
+
+    check:
+      disco.advertiser.running.len == 6
+      toSeq(disco.advertiser.running).allIt(it.slots.len == 2)
+
+    await disco.stopRegistrations()
+
+  asyncTest "maxBatchServices caps the services of one task":
+    let disco =
+      advertiseBoth(ServiceDiscoveryConfig.new(kRegister = 10, maxBatchServices = 1))
+
+    await disco.stopRegistrations()
+    await disco.maintainRegistrations()
+
+    check:
+      disco.advertiser.running.len == 12
+      toSeq(disco.advertiser.running).allIt(it.slots.len == 1)
+
+    await disco.stopRegistrations()
+
+  asyncTest "a registrar that ignores batches gets one task per service":
+    let disco = advertiseBoth(conf)
+    let single = disco.rtable.allKeys()[0].toPeerId().get()
+    disco.advertiser.singleRegistrars[single] = Moment.now() + 1.hours
+
+    await disco.stopRegistrations()
+    await disco.maintainRegistrations()
+
+    let tasks = toSeq(disco.advertiser.running).filterIt(it.registrar == single)
+    check:
+      tasks.len == 2
+      tasks.allIt(it.slots.len == 1)
+
+    await disco.stopRegistrations()
+
+  asyncTest "an expired single-service mark lets the registrar batch again":
+    let disco = advertiseBoth(conf)
+    let single = disco.rtable.allKeys()[0].toPeerId().get()
+    disco.advertiser.singleRegistrars[single] = Moment.now() - 1.seconds
+
+    await disco.stopRegistrations()
+    await disco.maintainRegistrations()
+
+    check:
+      single notin disco.advertiser.singleRegistrars
+      toSeq(disco.advertiser.running).filterIt(it.registrar == single).len == 1
+
+    await disco.stopRegistrations()
+
+  asyncTest "removing a service restarts the rest of its batches without it":
+    let disco = advertiseBoth(conf)
+    await disco.stopRegistrations()
+    await disco.maintainRegistrations()
+    let batches = toSeq(disco.advertiser.running)
+
+    await disco.stopAdvertising("service-a")
+
+    let kept = "service-b".hashServiceId()
+    check:
+      batches.allIt(it notin disco.advertiser.running)
+      disco.advertiser.running.len == 6
+      toSeq(disco.advertiser.running).allIt(it.slots.mapIt(it.serviceId) == @[kept])
+
+    await disco.stopRegistrations()
+
+  asyncTest "re-advertising a service restarts the rest of its batches without it":
+    let disco = advertiseBoth(conf)
+    await disco.stopRegistrations()
+    await disco.maintainRegistrations()
+    let batches = toSeq(disco.advertiser.running)
+    let idA = "service-a".hashServiceId()
+    let idB = "service-b".hashServiceId()
+    var bucketOfB = initTable[PeerId, int]()
+    for batch in batches:
+      bucketOfB[batch.registrar] = batch.bucketOf(idB).get()
+    let advertA = disco.advertiser.providedAdverts[idA].bytes
+
+    check disco.startAdvertising(makeServiceInfo("service-a"), Opt.some(advertA)).isOk()
+
+    let running = toSeq(disco.advertiser.running)
+    let restarted = running.filterIt(it.slots.mapIt(it.serviceId) == @[idB])
+    let fresh = running.filterIt(it.slots.mapIt(it.serviceId) == @[idA])
+    check:
+      batches.allIt(it notin disco.advertiser.running)
+      running.len == 12
+      restarted.len == 6
+      fresh.len == 6
+    for task in restarted:
+      check task.slots[0].bucketIdx == bucketOfB[task.registrar]
+
+    await disco.stopRegistrations()
+
+  asyncTest "picks with different advert bytes for one registrar make separate tasks":
+    let disco = setupWithRegistrars(conf)
+    let serviceA = makeServiceInfo("service-a")
+    let serviceB = makeServiceInfo("service-b")
+    let serviceC = makeServiceInfo("service-c")
+    let shared = sharedAdvert([serviceA, serviceB])
+    let own = sharedAdvert([serviceC])
+    check:
+      disco.startAdvertising(serviceA, Opt.some(shared)).isOk()
+      disco.startAdvertising(serviceB, Opt.some(shared)).isOk()
+      disco.startAdvertising(serviceC, Opt.some(own)).isOk()
+
+    await disco.stopRegistrations()
+    await disco.maintainRegistrations()
+
+    let idC = "service-c".hashServiceId()
+    let tasks = toSeq(disco.advertiser.running)
+    let batched = tasks.filterIt(it.slots.len == 2)
+    let alone = tasks.filterIt(it.slots.len == 1)
+    check:
+      tasks.len == 12
+      batched.len == 6
+      alone.len == 6
+      batched.allIt(it.bucketOf(idC).isNone())
+      alone.allIt(it.slots[0].serviceId == idC)
+      batched.mapIt(it.registrar).toHashSet().len == 6
+      alone.mapIt(it.registrar).toHashSet().len == 6
+
+    await disco.stopRegistrations()
+
+suite "Advertiser - batch split":
+  teardown:
+    checkTrackers()
+
+  let ids = @["service-a", "service-b", "service-c"].mapIt(it.hashServiceId())
+
+  proc batchTask(registrar: PeerId): AdvertiseTask =
+    AdvertiseTask(
+      registrar: registrar,
+      slots: ids.mapIt(ServiceSlot(serviceId: it, bucketIdx: ids.find(it))),
+    )
+
+  proc addTables(disco: ServiceDiscovery, serviceIds: openArray[ServiceId]) =
+    for id in serviceIds:
+      doAssert disco.rtManager.addService(
+        id, disco.rtable, disco.config.replication, disco.discoConfig.bucketsCount,
+        Provided,
+      )
+
+  asyncTest "splitBatch keeps the key and restarts each other service alone":
+    let disco = setupServiceDiscoveryNode()
+    disco.addTables(ids)
+    let registrar = PeerId.random()
+    let task = batchTask(registrar)
+    let before = Moment.now()
+
+    disco.splitBatch(task, @[1'u8, 2, 3])
+
+    let restarted = toSeq(disco.advertiser.running)
+    check:
+      task.slots == @[ServiceSlot(serviceId: ids[0], bucketIdx: 0)]
+      restarted.len == ids.len - 1
+      restarted.allIt(it.registrar == registrar and it.slots.len == 1)
+      restarted.mapIt(it.slots[0]).toHashSet() ==
+        toHashSet(
+          [
+            ServiceSlot(serviceId: ids[1], bucketIdx: 1),
+            ServiceSlot(serviceId: ids[2], bucketIdx: 2),
+          ]
+        )
+      disco.advertiser.singleRegistrars[registrar] >=
+        before + disco.discoConfig.advertExpiry
+
+    await disco.stopRegistrations()
+
+  asyncTest "a batch that the registrar accepts in full is not split":
+    let disco = setupServiceDiscoveryNode(
+      discoConfig =
+        ServiceDiscoveryConfig.new(safetyParam = 0.0, ipSimCoefficient = 0.0)
+    )
+    let selfId = disco.switch.peerInfo.peerId
+    let services = @["service-a", "service-b", "service-c"].mapIt(makeServiceInfo(it))
+    for id in ids:
+      check disco.rtManager.addService(
+        id, disco.rtable, disco.config.replication, disco.discoConfig.bucketsCount,
+        Provided,
+      )
+    let task = batchTask(selfId)
+
+    task.fut = disco.runTask(
+      task, Opt.none(Ticket), sharedAdvert(services, disco.switch.peerInfo.privateKey)
+    )
+
+    checkUntilTimeout:
+      ids.allIt(disco.countAdsInCache(it) == 1)
+    check:
+      task.slots.len == ids.len
+      selfId notin disco.advertiser.singleRegistrars
+      disco.advertiser.running.len == 0
+
+    await task.fut.cancelAndWait()
+
+  asyncTest "splitUnaccepted restarts only the ids the registrar left out":
+    let disco = setupServiceDiscoveryNode()
+    disco.addTables(ids)
+    let registrar = PeerId.random()
+
+    type Case = object
+      name: string
+      accepted: seq[ServiceId]
+      kept: seq[ServiceId]
+      restarted: seq[seq[ServiceId]]
+
+    let cases = [
+      Case(
+        name: "subset",
+        accepted: @[ids[0], ids[2]],
+        kept: @[ids[0], ids[2]],
+        restarted: @[@[ids[1]]],
+      ),
+      Case(name: "every id", accepted: ids, kept: ids, restarted: @[]),
+      Case(name: "only foreign ids", accepted: @[makeServiceId(9)], kept: ids),
+    ]
+
+    for c in cases:
+      checkpoint c.name
+      let task = batchTask(registrar)
+
+      disco.splitUnaccepted(task, c.accepted.mapIt(seq[byte](it)), @[1'u8, 2, 3])
+
+      let restarted = toSeq(disco.advertiser.running)
+      check:
+        task.slots.mapIt(it.serviceId) == c.kept
+        restarted.mapIt(it.slots.mapIt(it.serviceId)) == c.restarted
+        registrar notin disco.advertiser.singleRegistrars
+      await disco.stopRegistrations()
+
+  proc selfDisco(maxBatchServices = Default_MaxBatchServices): ServiceDiscovery =
+    setupServiceDiscoveryNode(
+      discoConfig = ServiceDiscoveryConfig.new(
+        safetyParam = 0.0, ipSimCoefficient = 0.0, maxBatchServices = maxBatchServices
+      )
+    )
+
+  let services = @["service-a", "service-b", "service-c"].mapIt(makeServiceInfo(it))
+
+  asyncTest "a rejected batch retries each service alone":
+    let disco = selfDisco(maxBatchServices = ids.len - 1)
+    let selfId = disco.switch.peerInfo.peerId
+    disco.addTables(ids)
+    let task = batchTask(selfId)
+
+    task.fut = disco.runTask(
+      task, Opt.none(Ticket), sharedAdvert(services, disco.switch.peerInfo.privateKey)
+    )
+
+    checkUntilTimeout:
+      ids.allIt(disco.countAdsInCache(it) == 1)
+    check:
+      task.slots.len == 1
+      disco.advertiser.running.len == ids.len - 1
+      selfId in disco.advertiser.singleRegistrars
+
+    await task.fut.cancelAndWait()
+    await disco.stopRegistrations()
+
+  asyncTest "a slot without a routing table leaves the rest of the batch running":
+    let disco = selfDisco()
+    disco.addTables([ids[0], ids[2]])
+    let task = batchTask(disco.switch.peerInfo.peerId)
+
+    task.fut = disco.runTask(
+      task, Opt.none(Ticket), sharedAdvert(services, disco.switch.peerInfo.privateKey)
+    )
+
+    checkUntilTimeout:
+      disco.countAdsInCache(ids[0]) == 1 and disco.countAdsInCache(ids[2]) == 1
+    check:
+      task.slots.mapIt(it.serviceId) == @[ids[0], ids[2]]
+      disco.countAdsInCache(ids[1]) == 0
+
+    await task.fut.cancelAndWait()
+
+  asyncTest "removing a service skips the rest of a batch whose advert is gone":
+    let disco = setupServiceDiscoveryNode()
+    let gate = newFuture[void]("test.batch.gate")
+    let task = batchTask(PeerId.random())
+    task.fut = gate
+    disco.advertiser.running.incl(task)
+
+    let taken = disco.takeServiceTasks(ids[0])
+
+    check:
+      taken == @[gate]
+      disco.advertiser.running.len == 0
+
+    await gate.cancelAndWait()
+
+suite "Advertiser - batch staleness":
+  teardown:
+    checkTrackers()
+
+  proc parked(): Future[void] {.async: (raises: [CancelledError]).} =
+    await sleepAsync(1.hours)
+
+  proc batchOfTwo(disco: ServiceDiscovery, registrar: PeerId): AdvertiseTask =
+    ## A running two-service task whose registrar sits in bucket 0 of both tables.
+    let idA = "service-a".hashServiceId()
+    let idB = "service-b".hashServiceId()
+    for id in [idA, idB]:
+      doAssert disco.rtManager.addService(
+        id, disco.rtable, disco.config.replication, disco.discoConfig.bucketsCount,
+        Interest,
+      )
+      disco.rtManager.getTable(id).get().buckets =
+        @[Bucket(peers: @[registrar.toKey()])]
+    let task = AdvertiseTask(
+      registrar: registrar,
+      slots: @[
+        ServiceSlot(serviceId: idA, bucketIdx: 0),
+        ServiceSlot(serviceId: idB, bucketIdx: 0),
+      ],
+    )
+    task.fut = parked()
+    disco.advertiser.running.incl(task)
+    task
+
+  asyncTest "a registrar that left only one bucket of the batch loses the whole task":
+    let disco = setupServiceDiscoveryNode()
+    let registrar = PeerId.random()
+    let task = disco.batchOfTwo(registrar)
+    let tableB = disco.rtManager.getTable("service-b".hashServiceId()).get()
+    tableB.buckets[0].peers = @[PeerId.random().toKey()]
+
+    await disco.maintainRegistrations()
+
+    await task.fut.join()
+    check:
+      task notin disco.advertiser.running
+      task.fut.cancelled()
+
+  asyncTest "a registrar that stays in every bucket of the batch keeps its task":
+    let disco = setupServiceDiscoveryNode()
+    let registrar = PeerId.random()
+    let task = disco.batchOfTwo(registrar)
+
+    await disco.maintainRegistrations()
+
+    check:
+      task in disco.advertiser.running
+      not task.fut.finished()
+
+    await disco.stopRegistrations()
 
 suite "Advertiser - removeProvidedService":
   teardown:

@@ -1788,3 +1788,232 @@ suite "Service Discovery Registrar - connection IPs":
     check slot.ips == connectionIps
     check slot.ips != @[parseIpAddress("10.0.0.1")]
     check slot.ips != @[parseIpAddress("10.0.0.99")]
+
+func idBytes(ids: openArray[ServiceId]): seq[seq[byte]] =
+  ids.mapIt(seq[byte](it))
+
+proc registerBatch(
+    disco: ServiceDiscovery,
+    ids: seq[ServiceId],
+    adBytes: seq[byte],
+    ticket = Opt.none(Ticket),
+): kadprotobuf.RegisterMessage =
+  let msg = kadprotobuf.Message(
+    msgType: kadprotobuf.MessageType.register,
+    key: ids[0],
+    register: Opt.some(
+      kadprotobuf.RegisterMessage(
+        advertisement: adBytes,
+        status: Opt.none(kadprotobuf.RegistrationStatus),
+        ticket: ticket,
+        serviceIds: idBytes(ids[1 ..^ 1]),
+      )
+    ),
+  )
+  let advertiserId = Advertisement.decode(adBytes).get().data.peerId
+  disco.registration(advertiserId, msg, @[parseIpAddress("198.51.100.42")]).register.get()
+
+proc batchTicket(
+    disco: ServiceDiscovery, adBytes: seq[byte], ids: seq[ServiceId]
+): Ticket =
+  let pastNow = getTime().toUnix() - 5
+  var ticket = Ticket(
+    advertisement: adBytes,
+    tInit: pastNow,
+    tMod: pastNow,
+    tWaitFor: 1.secs,
+    signature: Opt.none(seq[byte]),
+    serviceIds: idBytes(ids),
+  )
+  doAssert ticket.sign(disco.switch.peerInfo.privateKey).isOk()
+  ticket
+
+suite "Service Discovery Registrar - batch registration":
+  const names = ["service-a", "service-b", "service-c"]
+  let ids = names.mapIt(it.hashServiceId())
+
+  proc batchAd(names: openArray[string]): seq[byte] =
+    makeAdvertisementWithServices(names.mapIt(makeServiceInfo(it))).encode().get()
+
+  test "batchServiceIds puts the key first and drops duplicates":
+    let batch = batchServiceIds(ids[0], idBytes([ids[1], ids[0], ids[2], ids[1]]), 8)
+
+    check batch == LPResult[seq[ServiceId]].ok(ids)
+
+  test "batchServiceIds rejects an id of the wrong length":
+    let batch = batchServiceIds(ids[0], @[@[1'u8, 2, 3]], 8)
+
+    check:
+      batch.isErr()
+      $batch.error == "service id length 3 != " & $IdLength
+
+  test "batchServiceIds accepts exactly maxBatch ids after dedup":
+    let batch = batchServiceIds(
+      ids[0], idBytes([ids[1], ids[0], ids[2], ids[2], ids[1]]), ids.len
+    )
+
+    check batch == LPResult[seq[ServiceId]].ok(ids)
+
+  test "batchServiceIds rejects one id past maxBatch":
+    let batch = batchServiceIds(ids[0], idBytes(ids[1 ..^ 1]), ids.len - 1)
+
+    check:
+      batch.isErr()
+      $batch.error == "3 > 2 service ids in one batch"
+
+  test "batchServiceIds with no extra ids and maxBatch 1 returns the key alone":
+    let batch = batchServiceIds(ids[0], newSeq[seq[byte]](), 1)
+
+    check batch == LPResult[seq[ServiceId]].ok(@[ids[0]])
+
+  test "a batch of k ids gets one Confirmed and k cache entries":
+    let disco = setupServiceDiscoveryNode()
+
+    let reply = disco.registerBatch(ids, batchAd(names))
+
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Confirmed
+      reply.accepted == idBytes(ids)
+      disco.registrar.ads.len == ids.len
+    for id in ids:
+      check disco.countAdsInCache(id) == 1
+
+  test "a batch Wait binds every id to the ticket and sets every lower bound":
+    let disco = setupServiceDiscoveryNode(
+      discoConfig = ServiceDiscoveryConfig.new(safetyParam = 1.0)
+    )
+
+    let reply = disco.registerBatch(ids, batchAd(names))
+
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Wait
+      reply.accepted.len == 0
+      reply.ticket.get().serviceIds == idBytes(ids)
+      reply.ticket.get().verify(disco.switch.peerInfo.privateKey.getPublicKey().get())
+      disco.registrar.ads.len == 0
+    let bound = disco.registrar.boundService[ids[0]]
+    for id in ids:
+      check disco.registrar.boundService[id] == bound
+
+  test "a single-service Wait ticket carries no ids":
+    let disco = setupServiceDiscoveryNode(
+      discoConfig = ServiceDiscoveryConfig.new(safetyParam = 1.0)
+    )
+
+    let reply = disco.registerBatch(ids[0 .. 0], batchAd(names))
+
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Wait
+      reply.ticket.get().serviceIds.len == 0
+
+  test "a batch that the registrar refuses is Rejected":
+    type Case = object
+      name: string
+      maxBatch: int
+      adNames: seq[string]
+      ticketIds: Opt[seq[ServiceId]]
+
+    let cases = [
+      Case(name: "over maxBatchServices", maxBatch: names.len - 1, adNames: @names),
+      Case(name: "id not advertised", maxBatch: names.len, adNames: @(names[0 .. 1])),
+      Case(
+        name: "ticket with other ids",
+        maxBatch: names.len,
+        adNames: @names,
+        ticketIds: Opt.some(ids[0 .. 1]),
+      ),
+      Case(
+        name: "ticket with no ids",
+        maxBatch: names.len,
+        adNames: @names,
+        ticketIds: Opt.some(newSeq[ServiceId]()),
+      ),
+    ]
+
+    for c in cases:
+      checkpoint c.name
+      let disco = setupServiceDiscoveryNode(
+        discoConfig = ServiceDiscoveryConfig.new(maxBatchServices = c.maxBatch)
+      )
+      let adBytes = batchAd(c.adNames)
+      let ticket = c.ticketIds.map(
+        proc(t: seq[ServiceId]): Ticket =
+          disco.batchTicket(adBytes, t)
+      )
+
+      let reply = disco.registerBatch(ids, adBytes, ticket)
+
+      check:
+        reply.status == kadprotobuf.RegistrationStatus.Rejected
+        disco.registrar.ads.len == 0
+
+  test "a batch with stale ids confirms the fresh ids and Rejects when none are fresh":
+    type Case = object
+      name: string
+      staleIds: seq[ServiceId]
+      status: kadprotobuf.RegistrationStatus
+      accepted: seq[ServiceId]
+
+    let cases = [
+      Case(
+        name: "one stale id",
+        staleIds: @[ids[1]],
+        status: kadprotobuf.RegistrationStatus.Confirmed,
+        accepted: @[ids[0], ids[2]],
+      ),
+      Case(
+        name: "every id stale",
+        staleIds: ids,
+        status: kadprotobuf.RegistrationStatus.Rejected,
+        accepted: @[],
+      ),
+    ]
+
+    for c in cases:
+      checkpoint c.name
+      let disco = setupServiceDiscoveryNode()
+      let key = PrivateKey.random(rng()).get()
+      let services = names.mapIt(makeServiceInfo(it))
+      let newer = makeAdvertisementWithServices(services, privateKey = key, seqNo = 2)
+      for id in c.staleIds:
+        disco.registrar.ads.putAd(id, newer, Moment.now())
+      let older = makeAdvertisementWithServices(services, privateKey = key, seqNo = 1)
+
+      let reply = disco.registerBatch(ids, older.encode().get())
+
+      let ads = disco.registrar.ads
+      let signer = newer.data.peerId
+      check:
+        reply.status == c.status
+        reply.accepted == idBytes(c.accepted)
+        c.accepted.allIt(ads.getCachedAd(it, signer).get().ad.data.seqNo == 1)
+        c.staleIds.allIt(ads.getCachedAd(it, signer).get().ad.data.seqNo == 2)
+
+  test "a ticket retry with the same ids inside the window confirms the batch":
+    let disco = setupServiceDiscoveryNode(
+      discoConfig = ServiceDiscoveryConfig.new(registrationWindow = 10.secs)
+    )
+    let adBytes = batchAd(names)
+
+    let reply =
+      disco.registerBatch(ids, adBytes, Opt.some(disco.batchTicket(adBytes, ids)))
+
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Confirmed
+      disco.registrar.ads.len == ids.len
+
+  test "batch waitingTime takes the busiest service of the batch":
+    let conf = ServiceDiscoveryConfig.new(safetyParam = 1.0, advertCacheCap = 100)
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let connectionIps = @[parseIpAddress("198.51.100.42")]
+    let quiet = makeServiceId(1)
+    let busy = makeServiceId(2)
+    let now = Moment.now()
+    for i in 0 ..< 10:
+      disco.registrar.seedAd(busy, makeAdvertisement($busy), now)
+
+    let batchWait = disco.registrar.waitingTime(conf, [quiet, busy], connectionIps, now)
+
+    check:
+      batchWait == disco.registrar.waitingTime(conf, busy, connectionIps, now)
+      batchWait > disco.registrar.waitingTime(conf, quiet, connectionIps, now)

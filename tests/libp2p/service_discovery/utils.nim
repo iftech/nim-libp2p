@@ -93,6 +93,16 @@ proc makeAdvertisement*(
   )
   SignedExtendedPeerRecord.init(privateKey, extRecord).get()
 
+proc sharedAdvert*(
+    services: openArray[ServiceInfo],
+    privateKey: PrivateKey = PrivateKey.random(rng()).get(),
+): seq[byte] =
+  ## One encoded advert for several services, so their REGISTERs can share a batch.
+  let record = ExtendedPeerRecord(
+    peerId: PeerId.init(privateKey).get(), seqNo: 1, services: @services
+  )
+  SignedExtendedPeerRecord.init(privateKey, record).get().encode().get()
+
 proc makeOversizedAdvertisement*(
     serviceId: string, privateKey: PrivateKey = PrivateKey.random(rng()).get()
 ): Advertisement =
