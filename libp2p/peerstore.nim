@@ -327,6 +327,8 @@ proc set*(
       if entry.confidence >= AddressConfidence.High and
           (oldest < 0 or entry.lastUpdated < newEntries[oldest].lastUpdated):
         oldest = j
+    if oldest < 0:
+      break
     newEntries.delete(oldest)
     inc dropped
 
