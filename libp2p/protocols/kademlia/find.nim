@@ -69,8 +69,9 @@ proc admissibleAddrs(
     caps: DiversityCaps,
     pending: seq[PeerId] = @[],
 ): seq[MultiAddress] {.raises: [].} =
-  let addrs =
-    addressPolicy.dialableAddrs(p.addrs, switch.peerStore.allowUndialableAddrs)
+  let addrs = addressPolicy.dialableAddrs(
+    p.addrs[0 ..< min(p.addrs.len, MaxPeerAddrs)], switch.peerStore.allowUndialableAddrs
+  )
   if addrs.len == 0:
     return @[]
   if not switch.peerStore[AddressBook].hasIpDiversity(
@@ -116,14 +117,16 @@ proc updateShortlist*(state: LookupState, msg: Message): seq[PeerInfo] {.raises:
   let cap = state.kad.config.limits.maxShortlistSize
   let pending = state.kad.pendingAdmissions(state.rtable.selfId)
 
-  for newPeer in msg.closerPeers:
+  for i in 0 ..< min(msg.closerPeers.len, MaxCloserPeers):
+    let newPeer = msg.closerPeers[i]
+    let addrs = newPeer.addrs[0 ..< min(newPeer.addrs.len, MaxPeerAddrs)]
     let raw = newPeer.id.valueOr:
       continue
     let pid = PeerId.init(raw).valueOr:
       continue
     if state.shortlist.contains(pid):
       continue
-    if not state.canBecomeDialable(pid, newPeer.addrs, pending):
+    if not state.canBecomeDialable(pid, addrs, pending):
       continue
 
     let dist = xorDistance(pid, state.target, state.rtable.config.hasher)
@@ -132,7 +135,7 @@ proc updateShortlist*(state: LookupState, msg: Message): seq[PeerInfo] {.raises:
       continue
 
     state.shortlist[pid] = dist
-    newPeerInfos.add(PeerInfo(peerId: pid, addrs: newPeer.addrs))
+    newPeerInfos.add(PeerInfo(peerId: pid, addrs: addrs))
 
   return newPeerInfos
 

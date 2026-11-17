@@ -58,6 +58,9 @@ const
     # KV entries older than this are considered stale and will be evicted
   DefaultCleanupDataEntriesInterval* = 1.hours # how often to scan for stale KV entries
 
+  MaxCloserPeers* = 2 * DefaultReplication
+  MaxPeerAddrs* = 16
+
   MaxMsgSize* = 1 shl 22 # 4 MiB
 
   DefaultMaxProvidersPerKey* = 20 ## upper bound on providers stored per key
@@ -113,7 +116,8 @@ proc toPeerId*(k: Key): LPResult[PeerId] =
 
 proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
   let peer = ?k.toPeerId()
-  let addrs = switch.peerStore[AddressBook][peer]
+  let allAddrs = switch.peerStore[AddressBook][peer]
+  let addrs = allAddrs[0 ..< min(allAddrs.len, MaxPeerAddrs)]
   if addrs.len == 0:
     return err("Could not find peer addresses in address book")
 
@@ -128,7 +132,7 @@ proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
 proc toPeer*(peerInfo: PeerInfo): Peer =
   Peer(
     id: Opt.some(peerInfo.peerId.getBytes()),
-    addrs: peerInfo.addrs,
+    addrs: peerInfo.addrs[0 ..< min(peerInfo.addrs.len, MaxPeerAddrs)],
     connection: Opt.none(ConnectionStatus),
   )
 
