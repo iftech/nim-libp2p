@@ -271,8 +271,7 @@ proc set*(
     addressBook.notifyChangeHandlers(peerId)
 
   if addrs.len == 0:
-    if peerId in addressBook.book:
-      addressBook.book.del(peerId)
+    addressBook.book.del(peerId)
     return
 
   let now = Moment.now()
