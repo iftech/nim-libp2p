@@ -265,15 +265,14 @@ proc set*(
   ## high-confidence entry is never downgraded by a lower-confidence update.
   ## High/Infinite entries absent from the incoming list are preserved so that
   ## a verified dial address is never evicted by a later Identify update.
-  defer:
-    addressBook.notifyChangeHandlers(peerId)
-
+  ## Duplicate addresses keep their timestamps unless confidence increases.
+  ## Subscribers are notified only when the stored entries change.
   if addrs.len == 0:
-    if peerId in addressBook.book:
-      addressBook.book.del(peerId)
+    discard addressBook.del(peerId)
     return
 
   let now = Moment.now()
+  let previous = addressBook.book.getOrDefault(peerId)
   var prevConf: Table[MultiAddress, AddressConfidence]
   for entry in addressBook.book.getOrDefault(peerId):
     let normalized = entry.address.stripPeerId()
@@ -287,6 +286,13 @@ proc set*(
       normalized, higherConfidence(prevConf, normalized, confidence), now
     )
 
+  # Repeated discovery of an address at the same or lower confidence is a no-op.
+  for entry in newEntries.mitems:
+    for old in previous:
+      if old.address == entry.address and old.confidence >= confidence:
+        entry.lastUpdated = old.lastUpdated
+        break
+
   for entry in addressBook.book.getOrDefault(peerId):
     let normalized = entry.address.stripPeerId()
     if entry.confidence >= AddressConfidence.High:
@@ -298,7 +304,9 @@ proc set*(
         )
       )
 
-  addressBook.book[peerId] = newEntries
+  if newEntries != previous:
+    addressBook.book[peerId] = newEntries
+    addressBook.notifyChangeHandlers(peerId)
 
 proc `[]=`*(addressBook: AddressBook, peerId: PeerId, addrs: seq[MultiAddress]) =
   addressBook.set(peerId, addrs)
@@ -340,17 +348,20 @@ proc extend*(
 ) =
   ## Add addresses for `key` without removing existing ones.
   ## For addresses already present the confidence is upgraded to
-  ## `max(existing, confidence)` and lastUpdated is refreshed.
+  ## `max(existing, confidence)`. Only confidence upgrades refresh lastUpdated.
   ## New addresses are added with `confidence`.
-  defer:
-    addressBook.notifyChangeHandlers(key)
-
   let now = Moment.now()
-  var entries = addressBook.book.getOrDefault(key)
+  var entries = addressBook.book.getOrDefault(key).mapIt(it)
+  var changed = false
   for ma in addrs:
-    entries.upsertAddress(ma.stripPeerId(), confidence, now)
-  if entries.len > 0:
+    let normalized = ma.stripPeerId()
+    let idx = entries.findWithAddress(normalized)
+    if idx < 0 or entries[idx].confidence < confidence:
+      entries.upsertAddress(normalized, confidence, now)
+      changed = true
+  if changed:
     addressBook.book[key] = entries
+    addressBook.notifyChangeHandlers(key)
 
 proc pruneExpired*(addressBook: AddressBook) =
   ## Remove all per-address entries whose TTL has elapsed.

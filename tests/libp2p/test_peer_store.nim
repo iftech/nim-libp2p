@@ -569,20 +569,76 @@ suite "AddressBook TTL / confidence":
     book.extend(peerId1, @[addr1], AddressConfidence.Low)
     check recorded[] == @[peerId1]
 
+  test "PeerStore normalizes addresses and leaves duplicates unchanged without notifying subscribers":
+    let
+      peerStore = makeStore(1.hours, 1.hours, 24.hours)
+      book = peerStore[AddressBook]
+      fullAddr1 = ma($addr1 & "/p2p/" & $peerId1)
+      recorded = newRecorder(book)
+
+    book.set(peerId1, @[fullAddr1, addr1], AddressConfidence.Low)
+    check:
+      book[peerId1] == @[addr1]
+      book.entries(peerId1).len == 1
+      recorded[] == @[peerId1]
+
+    # Back-date the entry so a timestamp refresh is observable without sleeping.
+    book.book[peerId1][0].lastUpdated = Moment.now() - 1.seconds
+    let original = book.entries(peerId1)[0]
+    recorded[].setLen(0)
+
+    book.set(peerId1, @[addr1, fullAddr1], AddressConfidence.Low)
+    check:
+      book.entries(peerId1) == @[original]
+      recorded[].len == 0
+
+    recorded[].setLen(0)
+    book.extend(peerId1, @[fullAddr1, addr1], AddressConfidence.Low)
+    check:
+      book.entries(peerId1) == @[original]
+      recorded[].len == 0
+
+  test "duplicate addresses notify and refresh only on confidence upgrades":
+    for useExtend in [false, true]:
+      let
+        book = makeBook(1.hours, 1.hours, 24.hours)
+        fullAddr1 = ma($addr1 & "/p2p/" & $peerId1)
+      book.set(peerId1, @[addr1], AddressConfidence.Medium)
+      book.book[peerId1][0].lastUpdated = Moment.now() - 1.seconds
+      let
+        original = book.entries(peerId1)[0]
+        recorded = newRecorder(book)
+
+      for confidence in [AddressConfidence.Low, AddressConfidence.High]:
+        if useExtend:
+          book.extend(peerId1, @[fullAddr1, addr1], confidence)
+        else:
+          book.set(peerId1, @[fullAddr1, addr1], confidence)
+
+        if confidence == AddressConfidence.Low:
+          check:
+            book.entries(peerId1) == @[original]
+            recorded[].len == 0
+        else:
+          let updated = book.entries(peerId1)
+          check:
+            updated.len == 1
+            updated[0].address == addr1
+            updated[0].confidence == AddressConfidence.High
+            updated[0].lastUpdated > original.lastUpdated
+            recorded[] == @[peerId1]
+
   test "markConnected notifies subscribers":
     let book = makeBook(1.hours, 1.hours, 24.hours)
     let recorded = newRecorder(book)
     book.markConnected(peerId1, addr1)
     check recorded[] == @[peerId1]
 
-  test "set fires a change handler even when clearing an absent peer":
+  test "set does not notify when clearing an absent peer":
     let book = makeBook(1.hours, 1.hours, 24.hours)
     let recorded = newRecorder(book)
-    # Clearing a peer that was never stored changes nothing,
-    # yet set still notifies through its unconditional defer.
-    # This differs from del and pruneExpired, which notify only on a real change.
     book.set(peerId1, newSeq[MultiAddress]())
-    check recorded[] == @[peerId1]
+    check recorded[].len == 0
 
   test "pruneExpired notifies changed peers and skips untouched ones":
     let
