@@ -7,40 +7,12 @@
 {.push raises: [].}
 
 import std/os
-when defined(windows):
-  import std/winlean
-else:
-  import std/posix
 import chronos, chronicles
 import chronos/transports/osnet
 import ../../[address_manager, multiaddress, results]
 import ../../utils/lock
 
-when defined(windows):
-  # Winsock IP and IPv6 multicast options (ws2ipdef.h).
-  const
-    ipv4MulticastInterface = cint(9)
-    ipv4MulticastTtl = cint(10)
-    ipv4AddMembership = cint(12)
-    ipv4DropMembership = cint(13)
-    ipv6Protocol = cint(41)
-    ipv6MulticastInterface = cint(9)
-    ipv6MulticastHops = cint(10)
-    ipv6JoinGroup = cint(12)
-    ipv6LeaveGroup = cint(13)
-else:
-  const (membershipOption, ttlOption, interfaceOption, dropOption) =
-    when declared(posix.IP_ADD_MEMBERSHIP) and declared(posix.IP_MULTICAST_TTL):
-      (
-        posix.IP_ADD_MEMBERSHIP, posix.IP_MULTICAST_TTL, posix.IP_MULTICAST_IF,
-        posix.IP_DROP_MEMBERSHIP,
-      )
-    elif defined(linux) or defined(android):
-      (cint(35), cint(33), cint(32), cint(36))
-    elif defined(macosx) or defined(ios) or defined(bsd):
-      (cint(12), cint(10), cint(9), cint(13))
-    else:
-      {.error: "mDNS IPv4 multicast socket options are unavailable on this platform".}
+import ./socketoptions
 
 const
   MdnsPort* = 5353
@@ -131,11 +103,7 @@ proc expandAddresses*(
 
 template checkSocketOption(status: cint, option: string) =
   if status != 0:
-    let code =
-      when defined(windows):
-        OSErrorCode(winlean.wsaGetLastError())
-      else:
-        osLastError()
+    let code = socketLastError()
     return err(option & " failed (OS error " & $code.int & "): " & osErrorMsg(code))
 
 proc membership4(
@@ -144,47 +112,19 @@ proc membership4(
   var membership: array[8, byte] = [224'u8, 0, 0, 251, 0, 0, 0, 0]
   for i in 0 .. 3:
     membership[i + 4] = address[i]
-  when defined(windows):
-    let status = winlean.setsockopt(
-      winlean.SocketHandle(transport.fd),
-      0,
-      (if join: ipv4AddMembership else: ipv4DropMembership),
-      addr membership,
-      winlean.SockLen(sizeof(membership)),
-    )
-  else:
-    let status = posix.setsockopt(
-      posix.SocketHandle(transport.fd),
-      posix.IPPROTO_IP,
-      (if join: membershipOption else: dropOption),
-      addr membership,
-      posix.SockLen(sizeof(membership)),
-    )
+  let status = setSocketOption(
+    toSocketHandle(transport.fd),
+    ipv4Protocol,
+    (if join: ipv4AddMembership else: ipv4DropMembership),
+    membership,
+  )
   checkSocketOption(status, "IPv4 multicast membership")
   ok()
 
 proc configureMulticast(transport: DatagramTransport): LPResult[void] =
-  when defined(linux) or defined(android) or defined(windows):
-    var ttl = MdnsMulticastHopLimit
-  else:
-    # Darwin and BSD require a one-byte value for IP_MULTICAST_TTL.
-    var ttl = uint8(MdnsMulticastHopLimit)
-  when defined(windows):
-    let status = winlean.setsockopt(
-      winlean.SocketHandle(transport.fd),
-      0,
-      ipv4MulticastTtl,
-      addr ttl,
-      winlean.SockLen(sizeof(ttl)),
-    )
-  else:
-    let status = posix.setsockopt(
-      posix.SocketHandle(transport.fd),
-      posix.IPPROTO_IP,
-      ttlOption,
-      addr ttl,
-      posix.SockLen(sizeof(ttl)),
-    )
+  var ttl = MulticastTtl(MdnsMulticastHopLimit)
+  let status =
+    setSocketOption(toSocketHandle(transport.fd), ipv4Protocol, ipv4MulticastTtl, ttl)
   checkSocketOption(status, "IP_MULTICAST_TTL")
   ok()
 
@@ -192,41 +132,14 @@ proc selectMulticastInterface4(
     transport: DatagramTransport, address: array[4, byte]
 ): bool =
   var selected = address
-  when defined(windows):
-    winlean.setsockopt(
-      winlean.SocketHandle(transport.fd),
-      0,
-      ipv4MulticastInterface,
-      addr selected,
-      winlean.SockLen(sizeof(selected)),
-    ) == 0
-  else:
-    posix.setsockopt(
-      posix.SocketHandle(transport.fd),
-      posix.IPPROTO_IP,
-      interfaceOption,
-      addr selected,
-      posix.SockLen(sizeof(selected)),
-    ) == 0
+  setSocketOption(
+    toSocketHandle(transport.fd), ipv4Protocol, ipv4MulticastInterface, selected
+  ) == 0
 
 proc configureMulticast6(transport: DatagramTransport): LPResult[void] =
   var hops = MdnsMulticastHopLimit
-  when defined(windows):
-    let status = winlean.setsockopt(
-      winlean.SocketHandle(transport.fd),
-      ipv6Protocol,
-      ipv6MulticastHops,
-      addr hops,
-      winlean.SockLen(sizeof(hops)),
-    )
-  else:
-    let status = posix.setsockopt(
-      posix.SocketHandle(transport.fd),
-      posix.IPPROTO_IPV6,
-      posix.IPV6_MULTICAST_HOPS,
-      addr hops,
-      posix.SockLen(sizeof(hops)),
-    )
+  let status =
+    setSocketOption(toSocketHandle(transport.fd), ipv6Protocol, ipv6MulticastHops, hops)
   checkSocketOption(status, "IPV6_MULTICAST_HOPS")
   ok()
 
@@ -241,46 +154,21 @@ proc membership6(
   var membership: Ipv6Membership
   membership.group = [0xff'u8, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfb]
   membership.interfaceIndex = index
-  when defined(windows):
-    let socket = winlean.SocketHandle(transport.fd)
-    let status = winlean.setsockopt(
-      socket,
-      ipv6Protocol,
-      (if join: ipv6JoinGroup else: ipv6LeaveGroup),
-      addr membership,
-      winlean.SockLen(sizeof(membership)),
-    )
-  else:
-    let socket = posix.SocketHandle(transport.fd)
-    let status = posix.setsockopt(
-      socket,
-      posix.IPPROTO_IPV6,
-      (if join: posix.IPV6_JOIN_GROUP else: posix.IPV6_LEAVE_GROUP),
-      addr membership,
-      posix.SockLen(sizeof(membership)),
-    )
+  let status = setSocketOption(
+    toSocketHandle(transport.fd),
+    ipv6Protocol,
+    (if join: ipv6JoinGroup else: ipv6LeaveGroup),
+    membership,
+  )
   checkSocketOption(status, (if join: "IPV6_JOIN_GROUP" else: "IPV6_LEAVE_GROUP"))
   ok()
 
 proc selectMulticastInterface6*(transport: DatagramTransport, index: uint32): bool =
   ## Select the outgoing interface for IPv6 multicast on this transport.
   var interfaceIndex = index
-  when defined(windows):
-    winlean.setsockopt(
-      winlean.SocketHandle(transport.fd),
-      ipv6Protocol,
-      ipv6MulticastInterface,
-      addr interfaceIndex,
-      winlean.SockLen(sizeof(interfaceIndex)),
-    ) == 0
-  else:
-    posix.setsockopt(
-      posix.SocketHandle(transport.fd),
-      posix.IPPROTO_IPV6,
-      posix.IPV6_MULTICAST_IF,
-      addr interfaceIndex,
-      posix.SockLen(sizeof(interfaceIndex)),
-    ) == 0
+  setSocketOption(
+    toSocketHandle(transport.fd), ipv6Protocol, ipv6MulticastInterface, interfaceIndex
+  ) == 0
 
 proc refreshInterfaces*(network: MdnsNetwork) =
   ## Reconcile multicast memberships with the current network interfaces.
