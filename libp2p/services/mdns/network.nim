@@ -7,43 +7,26 @@
 {.push raises: [].}
 
 import std/os
+when defined(windows):
+  import std/winlean
+else:
+  import std/posix
 import chronos, chronicles
 import chronos/transports/osnet
 import ../../[address_manager, multiaddress, results]
 import ../../utils/lock
 
-when defined(windows):
-  import std/winlean
-  const
-    ipv4AddMembership = 12
-    ipv4DropMembership = 13
-    ipv4MulticastTtl = 10
-    ipv6Protocol = 41
-    ipv6MulticastInterface = 9
-    ipv6MulticastHops = 10
-    ipv6JoinGroup = 12
-    ipv6LeaveGroup = 13
-else:
-  import std/posix
+
+const (membershipOption, ttlOption, interfaceOption, dropOption) =
   when declared(posix.IP_ADD_MEMBERSHIP) and declared(posix.IP_MULTICAST_TTL):
-    const
-      membershipOption = posix.IP_ADD_MEMBERSHIP
-      ttlOption = posix.IP_MULTICAST_TTL
-      interfaceOption = posix.IP_MULTICAST_IF
-      dropOption = posix.IP_DROP_MEMBERSHIP
+    (
+      posix.IP_ADD_MEMBERSHIP, posix.IP_MULTICAST_TTL, posix.IP_MULTICAST_IF,
+      posix.IP_DROP_MEMBERSHIP,
+    )
   elif defined(linux) or defined(android):
-    const
-      membershipOption = cint(35)
-      ttlOption = cint(33)
-      interfaceOption = cint(32)
-      dropOption = cint(36)
-  elif defined(macosx) or defined(ios) or defined(freebsd) or defined(openbsd) or
-      defined(netbsd) or defined(dragonfly):
-    const
-      membershipOption = cint(12)
-      ttlOption = cint(10)
-      interfaceOption = cint(9)
-      dropOption = cint(13)
+    (cint(35), cint(33), cint(32), cint(36))
+  elif defined(macosx) or defined(ios) or defined(bsd):
+    (cint(12), cint(10), cint(9), cint(13))
   else:
     {.error: "mDNS IPv4 multicast socket options are unavailable on this platform".}
 
