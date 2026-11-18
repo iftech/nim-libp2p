@@ -394,7 +394,7 @@ proc extend*(
       AddressEntry(address: normalized, confidence: confidence, lastUpdated: now),
       ReplaceTimestamp,
     )
-  if entries.len > 0: # could get empty with expired addresses
+  if entries.len > 0: # empty only when previous and addrs are both empty
     addressBook.book[key] = entries
 
   let changed = addressBook.addressesChanged(key, previous, entries)
