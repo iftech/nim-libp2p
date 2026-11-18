@@ -87,13 +87,21 @@ proc handleSubscribe(f: FloodSub, peer: PubSubPeer, topic: string, subscribe: bo
       trace "ignoring subscription over topicsHigh limit", limit = f.topicsHigh
       return
 
+    # Bound retained topic names across RPCs using the existing message-size budget.
+    if not f.floodsub.hasPeer(topic, peer) and
+        topic.len > f.maxMessageSize - peer.subscribedTopicBytes:
+      trace "ignoring subscription over topic byte budget", limit = f.maxMessageSize
+      return
+
     if f.floodsub.addPeer(topic, peer):
       peer.subscribedTopics.inc()
+      peer.subscribedTopicBytes += topic.len
       debug "peer subscribed to topic"
   else:
     if f.floodsub.hasPeer(topic, peer):
       f.floodsub.removePeer(topic, peer)
       peer.subscribedTopics.dec()
+      peer.subscribedTopicBytes -= topic.len
       debug "peer unsubscribed from topic"
 
 method unsubscribePeer*(f: FloodSub, peer: PeerId) =

@@ -460,8 +460,15 @@ proc handleSubscribe(
       peer.behaviourPenalty += SubscriptionFloodPenalty
       return false
 
+    # Bound retained topic names across RPCs using the existing message-size budget.
+    if not g.gossipsub.hasPeer(topic, peer) and
+        topic.len > g.maxMessageSize - peer.subscribedTopicBytes:
+      trace "ignoring subscription over topic byte budget", limit = g.maxMessageSize
+      return false
+
     if g.gossipsub.addPeer(topic, peer):
       peer.subscribedTopics.inc()
+      peer.subscribedTopicBytes += topic.len
       debug "peer subscribed to topic"
     if peer.peerId in g.parameters.directPeers:
       discard g.subscribedDirectPeers.addPeer(topic, peer)
@@ -476,6 +483,7 @@ proc handleSubscribe(
     let wasSubscribed = g.gossipsub.hasPeer(topic, peer)
     if wasSubscribed:
       peer.subscribedTopics.dec()
+      peer.subscribedTopicBytes -= topic.len
     g.gossipsub.removePeer(topic, peer)
 
     g.fanout.removePeer(topic, peer)
