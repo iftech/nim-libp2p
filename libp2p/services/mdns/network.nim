@@ -16,18 +16,31 @@ import chronos/transports/osnet
 import ../../[address_manager, multiaddress, results]
 import ../../utils/lock
 
-const (membershipOption, ttlOption, interfaceOption, dropOption) =
-  when declared(posix.IP_ADD_MEMBERSHIP) and declared(posix.IP_MULTICAST_TTL):
-    (
-      posix.IP_ADD_MEMBERSHIP, posix.IP_MULTICAST_TTL, posix.IP_MULTICAST_IF,
-      posix.IP_DROP_MEMBERSHIP,
-    )
-  elif defined(linux) or defined(android):
-    (cint(35), cint(33), cint(32), cint(36))
-  elif defined(macosx) or defined(ios) or defined(bsd):
-    (cint(12), cint(10), cint(9), cint(13))
-  else:
-    {.error: "mDNS IPv4 multicast socket options are unavailable on this platform".}
+when defined(windows):
+  # Winsock IP and IPv6 multicast options (ws2ipdef.h).
+  const
+    ipv4MulticastInterface = cint(9)
+    ipv4MulticastTtl = cint(10)
+    ipv4AddMembership = cint(12)
+    ipv4DropMembership = cint(13)
+    ipv6Protocol = cint(41)
+    ipv6MulticastInterface = cint(9)
+    ipv6MulticastHops = cint(10)
+    ipv6JoinGroup = cint(12)
+    ipv6LeaveGroup = cint(13)
+else:
+  const (membershipOption, ttlOption, interfaceOption, dropOption) =
+    when declared(posix.IP_ADD_MEMBERSHIP) and declared(posix.IP_MULTICAST_TTL):
+      (
+        posix.IP_ADD_MEMBERSHIP, posix.IP_MULTICAST_TTL, posix.IP_MULTICAST_IF,
+        posix.IP_DROP_MEMBERSHIP,
+      )
+    elif defined(linux) or defined(android):
+      (cint(35), cint(33), cint(32), cint(36))
+    elif defined(macosx) or defined(ios) or defined(bsd):
+      (cint(12), cint(10), cint(9), cint(13))
+    else:
+      {.error: "mDNS IPv4 multicast socket options are unavailable on this platform".}
 
 const
   MdnsPort* = 5353
@@ -166,7 +179,7 @@ proc selectMulticastInterface4(
     winlean.setsockopt(
       winlean.SocketHandle(transport.fd),
       0,
-      9,
+      ipv4MulticastInterface,
       addr selected,
       winlean.SockLen(sizeof(selected)),
     ) == 0
