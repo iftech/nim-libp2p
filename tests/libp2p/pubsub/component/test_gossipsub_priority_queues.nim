@@ -3,63 +3,14 @@
 
 {.used.}
 
-import chronos, std/[sequtils, strutils], stew/byteutils
+import chronos, std/sequtils, stew/byteutils
 import
   ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, peertable, rpc/messages]
-import ../../../tools/[lifecycle, topology, unittest]
+import ../../../tools/[lifecycle, stall_stream, topology, unittest]
 import ../utils
-
-type MockSendStream* = ref object of Connection
-  ## Records every write in order. The first `stallCount` writes stay pending.
-  ## Later writes complete at once. Closing fails any pending write.
-  writes*: seq[seq[byte]] # messages written, in order
-  pendingWrites: seq[Future[void].Raising([CancelledError, LPStreamError])]
-  stallCount: int
-
-method writeLp*(
-    s: MockSendStream, msg: openArray[byte]
-): Future[void] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
-  s.writes.add(@msg)
-  let fut =
-    Future[void].Raising([CancelledError, LPStreamError]).init("MockSendStream.writeLp")
-  if s.pendingWrites.len >= s.stallCount:
-    fut.complete()
-  else:
-    s.pendingWrites.add(fut)
-  fut
-
-method getWrapped*(s: MockSendStream): Connection =
-  s
-
-method closeImpl*(s: MockSendStream) {.async: (raises: []).} =
-  for fut in s.pendingWrites:
-    if not fut.finished:
-      fut.fail(newLPStreamClosedError())
-  await procCall Connection(s).closeImpl()
-
-proc releasePendingWrites*(s: MockSendStream) {.raises: [].} =
-  for fut in s.pendingWrites:
-    if not fut.finished:
-      fut.complete()
-
-proc stallSendStream*(
-    node: GossipSub, topic: string, peerId: PeerId, stallCount: int = int.high
-): MockSendStream =
-  ## Point `node`'s send stream for `peerId` at a stall stream so its outbound queues fill up.
-  ## The replaced stream is left open on purpose: if it closed, the peer would
-  ## dial a new stream and overwrite the stall stream. It is closed at teardown.
-  let mock =
-    MockSendStream(dir: Direction.Out, timeout: 0.milliseconds, stallCount: stallCount)
-  mock.initStream()
-  node.getPeerByPeerId(topic, peerId).sendStream = mock
-  mock
 
 proc message(n: byte): seq[byte] =
   @[n, n, n]
-
-func carries(writes: seq[seq[byte]], data: seq[byte]): bool =
-  let needle = string.fromBytes(data)
-  writes.anyIt(string.fromBytes(it).contains(needle))
 
 suite "GossipSub Component - Priority Queues":
   const topic = "foobar"
@@ -78,10 +29,10 @@ suite "GossipSub Component - Priority Queues":
     waitSubscribeStar(nodes, topic)
 
     let peerId = nodes[1].peerInfo.peerId
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
     let penaltyBefore = peer.slowPeerPenalty
 
     let msg = message(1)
@@ -119,10 +70,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
     let penaltyBefore = peer.slowPeerPenalty
 
     # A pending high message keeps the high-priority queue non-empty, so the
@@ -154,10 +105,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
     let penaltyBefore = peer.slowPeerPenalty
 
     # A pending high message keeps the high-priority queue non-empty, so the
@@ -191,10 +142,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId, stallCount = 1)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream(stallCount = 1)
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     let highMsgs = @[message(0), message(1)]
     let mediumMsgs = @[message(10), message(11)]
@@ -249,10 +200,10 @@ suite "GossipSub Component - Priority Queues":
       nodes[0].mesh.hasPeerId(topic, peerId)
       nodes[2].mesh.hasPeerId(topic, nodes[0].peerInfo.peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId, stallCount = 1)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream(stallCount = 1)
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the queue non-empty, so the relay is queued.
     check peer.sendEncoded(message(9), MessagePriority.High).finished
@@ -303,10 +254,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the high-priority queue non-empty,
     # so the medium messages are queued rather than sent at once.
@@ -339,10 +290,10 @@ suite "GossipSub Component - Priority Queues":
 
     let peerId = nodes[1].peerInfo.peerId
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the high-priority queue non-empty,
     # so the medium messages are queued rather than sent at once.
@@ -379,10 +330,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the high-priority queue non-empty,
     # so the medium messages are queued rather than sent at once.
@@ -456,7 +407,7 @@ suite "GossipSub Component - Priority Queues":
       let peer = nodes[0].getOrCreatePeer(peerId, @[GossipSubCodec_12])
       check peer.maxOutboundQueueBytes ==
         (if priority == MessagePriority.High: 6 else: 9)
-      let mock = stallSendStream(nodes[0], topic, peerId)
+      let mock = peer.stallSendStream()
       defer:
         await mock.close()
       if priority != MessagePriority.High:

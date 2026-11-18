@@ -11,7 +11,7 @@ import ../../../libp2p/protocols/pubsub/gossipsub/types
 import ../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
 import ../../../libp2p/peerid
 import ../../../libp2p/utils/future
-import ../../tools/[unittest, crypto]
+import ../../tools/[unittest, crypto, stall_stream]
 
 proc dummyGetConn(): Future[Stream] {.
     async: (raises: [CancelledError, GetStreamDialError])
@@ -22,79 +22,6 @@ proc noopHandler(
     peer: PubSubPeer, data: sink seq[byte]
 ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
   discard
-
-type PendingConnection = ref object of Connection
-  # These futures never finish, they're used to grow the high priority queue
-  pendingWrites: seq[Future[void].Raising([CancelledError, LPStreamError])]
-
-type RecorderConnection = ref object of Connection
-  # First write blocks, later writes complete and are recorded in order.
-  writes: seq[seq[byte]]
-  firstWriteFut: Future[void].Raising([CancelledError, LPStreamError])
-
-method initStream*(s: PendingConnection) {.raises: [].} =
-  s.objName = "PendingConnection"
-  procCall Connection(s).initStream()
-
-method writeLp*(
-    s: PendingConnection, msg: openArray[byte]
-): Future[void] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
-  let fut = Future[void].Raising([CancelledError, LPStreamError]).init(
-      "PendingConnection.writeLp"
-    )
-  s.pendingWrites.add(fut)
-  fut
-
-method getWrapped*(s: PendingConnection): Connection =
-  s
-
-method closeImpl*(s: PendingConnection) {.async: (raises: []).} =
-  for fut in s.pendingWrites:
-    if not fut.finished:
-      fut.fail(newLPStreamClosedError())
-  await procCall Connection(s).closeImpl()
-
-proc createPendingConnection(): PendingConnection {.raises: [].} =
-  let conn = PendingConnection(dir: Direction.Out, timeout: 0.milliseconds)
-  conn.initStream()
-  conn
-
-method initStream*(s: RecorderConnection) {.raises: [].} =
-  s.objName = "RecorderConnection"
-  procCall Connection(s).initStream()
-
-method writeLp*(
-    s: RecorderConnection, msg: openArray[byte]
-): Future[void] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
-  s.writes.add(@msg)
-  if s.firstWriteFut.isNil:
-    s.firstWriteFut = Future[void].Raising([CancelledError, LPStreamError]).init(
-        "RecorderConnection.writeLp"
-      )
-    s.firstWriteFut
-  else:
-    let fut = Future[void].Raising([CancelledError, LPStreamError]).init(
-        "RecorderConnection.writeLp.completed"
-      )
-    fut.complete()
-    fut
-
-method getWrapped*(s: RecorderConnection): Connection =
-  s
-
-method closeImpl*(s: RecorderConnection) {.async: (raises: []).} =
-  if not s.firstWriteFut.isNil:
-    s.firstWriteFut.completeOnce()
-  await procCall Connection(s).closeImpl()
-
-proc createRecorderConnection(): RecorderConnection {.raises: [].} =
-  let conn = RecorderConnection(dir: Direction.Out, timeout: 0.milliseconds)
-  conn.initStream()
-  conn
-
-proc releaseFirstWrite(conn: RecorderConnection) {.raises: [].} =
-  if not conn.firstWriteFut.isNil and not conn.firstWriteFut.finished:
-    conn.firstWriteFut.complete()
 
 proc callbacksDrained(
     fut: FutureBase
@@ -151,11 +78,9 @@ suite "Priority queue behavior":
     let peer = createTestPeer(
       maxHigh = 3, onEvent = newDisconnectRecorder(disconnectRequestedForTest)
     )
-    let conn = createPendingConnection()
+    let conn = peer.stallSendStream()
     defer:
       await peer.stopTasks()
-
-    peer.sendStream = conn
 
     # These sends stay pending, keeping the high-priority backlog visible until
     # the underlying transport write completes.
@@ -192,11 +117,10 @@ suite "Priority queue behavior":
     let peer = createTestPeer(
       maxMedium = 4, onEvent = newDisconnectRecorder(disconnectRequestedForTest)
     )
-    let conn = createRecorderConnection()
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
-
-    peer.sendStream = conn
+      await conn.close()
 
     let highMsg = @[1'u8, 2, 3]
     let mediumMsgs = @[@[10'u8, 0, 0], @[11'u8, 0, 0]]
@@ -214,7 +138,7 @@ suite "Priority queue behavior":
 
     check conn.writes == @[highMsg]
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
     checkUntilTimeout:
       conn.writes == @[highMsg, mediumMsgs[0], mediumMsgs[1]]
@@ -229,11 +153,10 @@ suite "Priority queue behavior":
     let peer = createTestPeer(
       maxLow = 4, onEvent = newDisconnectRecorder(disconnectRequestedForTest)
     )
-    let conn = createRecorderConnection()
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
-
-    peer.sendStream = conn
+      await conn.close()
 
     let highMsg = @[1'u8, 2, 3]
     let lowMsgs = @[@[20'u8, 0, 0], @[21'u8, 0, 0]]
@@ -251,7 +174,7 @@ suite "Priority queue behavior":
 
     check conn.writes == @[highMsg]
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
     checkUntilTimeout:
       conn.writes == @[highMsg, lowMsgs[0], lowMsgs[1]]
@@ -262,11 +185,10 @@ suite "Priority queue behavior":
 
   asyncTest "Cancelling a queued relay drops it and leaves the other queued messages":
     let peer = createTestPeer(maxLow = 4)
-    let conn = createRecorderConnection()
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
-
-    peer.sendStream = conn
+      await conn.close()
 
     let
       highMsg = @[1'u8, 2, 3]
@@ -298,18 +220,17 @@ suite "Priority queue behavior":
       peer.cancelQueuedRelays([cancelledId].toHashSet()) == 0
       peer.queuedBytes(Low) == keptMsg.len
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
     checkUntilTimeout:
       conn.writes == @[highMsg, keptMsg]
 
   asyncTest "An IDONTWANT in the peer history cancels a queued relay":
     let peer = createTestPeer(maxLow = 4)
-    let conn = createRecorderConnection()
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
-
-    peer.sendStream = conn
+      await conn.close()
 
     let
       highMsg = @[1'u8, 2, 3]
@@ -334,7 +255,7 @@ suite "Priority queue behavior":
     check peer.cancelQueuedRelays(noDuplicates) == unwantedMsg.len
     check peer.queuedBytes(Low) == 0
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
     checkUntilTimeout:
       conn.writes == @[highMsg]
@@ -342,15 +263,11 @@ suite "Priority queue behavior":
   asyncTest "Empty queues fast-path medium and low sends while returning completed futures":
     let mediumPeer = createTestPeer()
     let lowPeer = createTestPeer()
-    let mediumConn = createPendingConnection()
-    let lowConn = createPendingConnection()
+    let mediumConn = mediumPeer.stallSendStream()
+    let lowConn = lowPeer.stallSendStream()
     defer:
       await mediumPeer.stopTasks()
       await lowPeer.stopTasks()
-
-    # This is required so we can test the send path
-    mediumPeer.sendStream = mediumConn
-    lowPeer.sendStream = lowConn
 
     let mediumFut = mediumPeer.sendEncoded(@[1'u8, 2, 3], MessagePriority.Medium)
     let lowFut = lowPeer.sendEncoded(@[4'u8, 5, 6], MessagePriority.Low)
@@ -381,12 +298,10 @@ suite "Priority queue behavior":
       onEvent = newDisconnectRecorder(disconnectRequestedForTest),
       maxMessageSize = maxSize,
     )
-    let conn = createPendingConnection()
+    let conn = peer.stallSendStream()
     defer:
       await conn.close()
       await peer.stopTasks()
-
-    peer.sendStream = conn
 
     let emptyFut = peer.sendEncoded(newSeq[byte](0), MessagePriority.Medium)
     let oversizedFut =
@@ -541,10 +456,10 @@ suite "Priority queue byte budgets":
     let peer = createTestPeer(
       maxHigh = 10, maxOutboundBytes = 5, onEvent = newDisconnectRecorder(disconnected)
     )
-    let conn = createPendingConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream()
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     await peer.sendEncoded(@[1'u8, 2], High)
     await peer.sendEncoded(@[3'u8, 4, 5], High)
@@ -566,21 +481,21 @@ suite "Priority queue byte budgets":
       let peer = createTestPeer(
         maxOutboundBytes = 2, onEvent = newDisconnectRecorder(disconnected)
       )
-      let conn = createPendingConnection()
-      peer.sendStream = conn
+      let conn = peer.stallSendStream()
       await peer.sendEncoded(@[1'u8, 2, 3], priority)
       check:
         not disconnected[]
         conn.pendingWrites.len == 1
         peer.queuedBytes(High) == 3
       await peer.stopTasks()
+      await conn.close()
 
   asyncTest "High-priority reservation limits non-high backlog":
     let peer = createTestPeer(maxHigh = 10, maxMedium = 10, maxOutboundBytes = 32)
-    let conn = createPendingConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream()
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     await peer.sendEncoded(@[9'u8], High)
     await peer.sendEncoded(newSeq[byte](30), Medium)
@@ -599,10 +514,10 @@ suite "Priority queue byte budgets":
   asyncTest "High evicts queued low then medium traffic":
     let peer =
       createTestPeer(maxHigh = 10, maxMedium = 10, maxLow = 10, maxOutboundBytes = 10)
-    let conn = createPendingConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream()
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     await peer.sendEncoded(@[9'u8], High)
     await peer.sendEncoded(newSeq[byte](4), Low)
@@ -621,8 +536,7 @@ suite "Priority queue byte budgets":
     for priorityValue in [Medium, Low]:
       let priority = priorityValue
       let peer = createTestPeer(maxOutboundBytes = 16)
-      let conn = createPendingConnection()
-      peer.sendStream = conn
+      let conn = peer.stallSendStream()
       await peer.sendEncoded(@[9'u8], High)
       await peer.sendEncoded(newSeq[byte](15), priority)
       await sleepAsync(1.milliseconds)
@@ -654,13 +568,14 @@ suite "Priority queue byte budgets":
       await peer.stopTasks()
       await peer.sendEncoded(@[10'u8], priority)
       check peer.queuedBytes(priority) == 0
+      await conn.close()
 
   asyncTest "Completed middle high sends release bytes before deque cleanup":
     let peer = createTestPeer(maxHigh = 10, maxOutboundBytes = 9)
-    let conn = createPendingConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream()
     defer:
       await peer.stopTasks()
+      await conn.close()
     for i in 0 ..< 3:
       await peer.sendEncoded(newSeq[byte](3), High)
     check peer.queuedBytes(High) == 9
@@ -675,8 +590,7 @@ suite "Priority queue byte budgets":
 
   asyncTest "Failed writes and cancellation release all accounted bytes":
     let peer = createTestPeer()
-    let conn = createPendingConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream()
     await peer.sendEncoded(@[1'u8, 2], High)
     await peer.sendEncoded(@[3'u8, 4, 5], Medium)
     await peer.sendEncoded(@[6'u8, 7, 8, 9], Low)
@@ -725,10 +639,10 @@ suite "PubSubPeer sendResponse":
 
   asyncTest "sendResponse sends a fitting RPC as-is":
     let peer = createTestPeer(maxMessageSize = 4096)
-    let conn = createRecorderConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     let msg = RPCMsg(
       control: Opt.some(ControlMessage(graft: @[ControlGraft(topicID: topic)])),
@@ -744,7 +658,7 @@ suite "PubSubPeer sendResponse":
       conn.writes.len == 1
       conn.writes[0] == msg.encode(false)
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
   asyncTest "sendResponse sizes an anonymized RPC after anonymization":
     let msg = RPCMsg.withMessages(
@@ -754,10 +668,10 @@ suite "PubSubPeer sendResponse":
     check msg.encodedSize() > encoded.len
 
     let peer = createTestPeer(maxMessageSize = encoded.len)
-    let conn = createRecorderConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     peer.sendResponse(msg, true, MessagePriority.High)
 
@@ -765,7 +679,7 @@ suite "PubSubPeer sendResponse":
       conn.writes.len == 1
       conn.writes[0] == encoded
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
   asyncTest "sendResponse batches an oversized RPC, keeping non-message fields in the first batch":
     let
@@ -779,10 +693,10 @@ suite "PubSubPeer sendResponse":
       maxSize = fullMsg.encodedSize() - 1
 
     let peer = createTestPeer(maxMessageSize = maxSize)
-    let conn = createRecorderConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     peer.sendResponse(fullMsg, false, MessagePriority.High)
 
@@ -791,7 +705,7 @@ suite "PubSubPeer sendResponse":
       conn.writes[0] == firstBatch.encode(false)
       conn.writes[1] == RPCMsg(messages: @[m2]).encode(false)
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
   asyncTest "sendResponse drops an oversized message but still sends non-message fields":
     let
@@ -801,10 +715,10 @@ suite "PubSubPeer sendResponse":
       fullMsg = RPCMsg(control: Opt.some(control), messages: @[oversized])
 
     let peer = createTestPeer(maxMessageSize = controlOnly.encodedSize())
-    let conn = createRecorderConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     peer.sendResponse(fullMsg, false, MessagePriority.High)
 
@@ -812,7 +726,7 @@ suite "PubSubPeer sendResponse":
       conn.writes.len == 1
       conn.writes[0] == controlOnly.encode(false)
 
-    conn.releaseFirstWrite()
+    conn.releasePendingWrites()
 
   asyncTest "sendResponse drops an oversized RPC with no messages":
     var grafts: seq[ControlGraft]
@@ -825,10 +739,10 @@ suite "PubSubPeer sendResponse":
       maxSize = msg.encodedSize() - 1
 
     let peer = createTestPeer(maxMessageSize = maxSize)
-    let conn = createRecorderConnection()
-    peer.sendStream = conn
+    let conn = peer.stallSendStream(stallCount = 1)
     defer:
       await peer.stopTasks()
+      await conn.close()
 
     peer.sendResponse(msg, false, MessagePriority.High)
 
