@@ -103,10 +103,8 @@ proc suitable(address: MultiAddress): bool =
       return false
   let transportAddress = initTAddress(address).valueOr:
     return false
-  transportAddress.port != Port(0) and (
-    transportAddress.isPrivate() or transportAddress.isUniqueLocal() or
-    transportAddress.isLinkLocal()
-  )
+  transportAddress.port != Port(0) and not transportAddress.isLoopback() and
+    not transportAddress.isMulticast() and not transportAddress.isUnspecified()
 
 proc announcement*(
     service: MdnsService, peer: PeerInfo, instance: string, ttl: uint32
@@ -173,8 +171,8 @@ proc announcement*(service: MdnsService, peer: PeerInfo, instance: string): DnsM
   service.announcement(peer, instance, max(RecordTtl, uint32(seconds * 2)))
 
 proc peers*(service: MdnsService, message: DnsMessage, self: PeerId): seq[MdnsPeer] =
-  ## Decode this service's live TXT records, accepting private or link-local
-  ## IP transport addresses and grouping them by peer ID. mDNS is unauthenticated.
+  ## Decode this service's live TXT records and group IP transport addresses by
+  ## peer ID. mDNS is unauthenticated.
   if not message.response:
     return @[]
   var grouped: Table[PeerId, seq[MultiAddress]]

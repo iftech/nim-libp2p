@@ -146,17 +146,17 @@ suite "mDNS discovery":
     message.additionals[0].name = @["peer", "_other", "_udp", "local"]
     check service.peers(message, local).len == 0
 
-  test "accept only private and link-local IP transport addresses":
+  test "accept usable IP transport addresses regardless of IP range":
     let
       service = MdnsService.new()
       id = PeerId.random()
       local = PeerId.random()
       accepted = @[
         "/ip4/10.0.0.1/tcp/4001", "/ip4/169.254.1.2/tcp/4001", "/ip6/fd00::1/tcp/4001",
-        "/ip6/fe80::1/tcp/4001",
+        "/ip6/fe80::1/tcp/4001", "/ip4/8.8.8.8/tcp/4001",
+        "/ip6/2606:4700::1111/tcp/4001",
       ]
       rejected = @[
-        "/ip4/8.8.8.8/tcp/4001", "/ip6/2606:4700::1111/tcp/4001",
         "/ip4/127.0.0.1/tcp/4001", "/ip6/::1/tcp/4001",
         "/ip6/::ffff:127.0.0.1/tcp/4001", "/ip4/0.0.0.0/tcp/4001",
         "/ip4/224.0.0.1/tcp/4001", "/dns4/example.com/tcp/4001", "/ip4/10.0.0.1/tcp/0",
