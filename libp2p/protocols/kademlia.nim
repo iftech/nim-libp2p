@@ -549,8 +549,7 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   kad.stopping = false
   if kad.autoModeHandler.isSome():
     kad.isServer = false
-    kad.autoModePolicy =
-      AutoModePolicy.init(kad.autoModePolicy.config(), isServer = kad.isServer)
+    kad.autoModePolicy = kad.autoModePolicy.restarted(isServer = kad.isServer)
     await kad.observeReachability(kad.currentReachability())
   kad.msgSender.start()
 
