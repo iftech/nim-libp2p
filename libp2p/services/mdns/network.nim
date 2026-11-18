@@ -7,6 +7,10 @@
 {.push raises: [].}
 
 import std/os
+when defined(windows):
+  import std/winlean
+else:
+  import std/posix
 import chronos, chronicles
 import chronos/transports/osnet
 import ../../[address_manager, multiaddress, results]
