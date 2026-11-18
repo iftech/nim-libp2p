@@ -179,6 +179,7 @@ type
     maxIWantsPerMessage*: int
 
     # Shared by control/topic streams, including pending writes and topic headers.
+    # Must be at least twice maxMessageSize when topic streams are enabled.
     maxOutboundQueueBytes*: int
 
     # Broadcast an IDONTWANT message automatically when the message exceeds the IDONTWANT message size threshold

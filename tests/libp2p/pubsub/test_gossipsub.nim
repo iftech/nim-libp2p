@@ -568,6 +568,35 @@ suite "GossipSub":
           rng = rng(),
         )
 
+  test "topic streams require an outbound budget for a maximum-size header and frame":
+    const maxMessageSize = 64
+    for enabled in [false, true]:
+      for budget in [2 * maxMessageSize - 1, 2 * maxMessageSize]:
+        let params = GossipSubParams.init(
+          topicStreamsConfig =
+            if enabled:
+              Opt.some(TopicStreamsConfig())
+            else:
+              Opt.none(TopicStreamsConfig),
+          maxOutboundQueueBytes = budget,
+        )
+        if enabled and budget < 2 * maxMessageSize:
+          expectMsg InitializationError,
+            "gossipsub: maxOutboundQueueBytes must be at least twice maxMessageSize with topic streams":
+            discard GossipSub.init(
+              makeStandardSwitch(),
+              parameters = params,
+              maxMessageSize = maxMessageSize,
+              rng = rng(),
+            )
+        else:
+          discard GossipSub.init(
+            makeStandardSwitch(),
+            parameters = params,
+            maxMessageSize = maxMessageSize,
+            rng = rng(),
+          )
+
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
     gossipSub.topicsHigh = 10

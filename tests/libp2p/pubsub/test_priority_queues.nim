@@ -19,11 +19,6 @@ proc dummyGetConn(): Future[Stream] {.
 .} =
   raise newException(GetStreamDialError, "this is not a real connection")
 
-proc noopHandler(
-    peer: PubSubPeer, data: sink seq[byte]
-) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
-  discard
-
 proc callbacksDrained(
     fut: FutureBase
 ): Future[void].Raising([CancelledError]) {.raises: [].} =
@@ -59,7 +54,7 @@ proc createTestPeer(
     onEvent,
     GossipSubCodec_12,
     maxMessageSize = maxMessageSize,
-    handler = noopHandler,
+    handler = noopRpcHandler,
     maxHighPriorityQueueLen = maxHigh,
     maxMediumPriorityQueueLen = maxMedium,
     maxLowPriorityQueueLen = maxLow,
@@ -754,7 +749,7 @@ suite "Shared control and topic queue budgets":
     checkTrackers()
 
   proc topicState(peer: PubSubPeer, recorder: TopicStreamsRecorder): TopicStreams =
-    result = TopicStreams.new(
+    let streams = TopicStreams.new(
       TopicStreamsConfig(),
       100,
       recorder.pendingDial(),
@@ -763,7 +758,8 @@ suite "Shared control and topic queue budgets":
       recorder.penalize(),
       peer.outboundQueue,
     )
-    doAssert result.negotiate(makeRPC(ControlExtensions(topicStreams: Opt.some(true))))
+    doAssert streams.negotiate(makeRPC(ControlExtensions(topicStreams: Opt.some(true))))
+    return streams
 
   asyncTest "control High and Medium evict queued topic Low frames":
     for priority in [High, Medium]:
@@ -847,6 +843,36 @@ suite "Shared control and topic queue budgets":
     topics.sendTopic("b", @[1.byte], Low)
     check peer.queuedBytes() == 7
 
+  asyncTest "completed topic writes leave room for control traffic at the minimum budget":
+    let disconnected = new bool
+    let peer = createTestPeer(
+      maxMessageSize = 4,
+      maxOutboundBytes = 8,
+      onEvent = newDisconnectRecorder(disconnected),
+    )
+    let conn = peer.stallSendStream(stallCount = 0)
+    let recorder = TopicStreamsRecorder.new()
+    let topics =
+      TopicStreams.new(recorder, maxMessageSize = 4, queue = peer.outboundQueue)
+    check topics.negotiate(makeRPC(ControlExtensions(topicStreams: Opt.some(true))))
+    defer:
+      await topics.stop()
+      await recorder.closeOutgoingStreams()
+      await conn.close()
+      await peer.stopTasks()
+    let header = TopicRPCHeader(topic: Opt.some("ab")).encode()
+    let frame = newSeq[byte](4)
+    require header.len == 4
+    topics.sendTopic("ab", frame, Low)
+    check (await recorder.outgoingStreams[0].readLp(4)) == header
+    check (await recorder.outgoingStreams[0].readLp(4)) == frame
+    checkUntilTimeout:
+      peer.queuedBytes() == header.len
+    await peer.sendEncoded(frame, High)
+    check:
+      conn.writes == @[frame]
+      not disconnected[]
+
   asyncTest "peer shutdown releases queued topic frames and retained headers":
     let peer = createTestPeer()
     peer.extensionsState =
@@ -888,6 +914,7 @@ suite "Shared control and topic queue budgets":
     let stopping = peer.stopTasks()
     await cleaningUp.wait()
     let stoppingAgain = peer.stopTasks()
+    # Yield so an incorrectly completed second stop is observed before cleanup resumes.
     await sleepAsync(1.milliseconds)
     check:
       not stoppingAgain.finished

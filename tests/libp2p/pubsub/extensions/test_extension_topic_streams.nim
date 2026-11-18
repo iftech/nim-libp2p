@@ -158,7 +158,7 @@ suite "GossipSub topic stream lifecycle":
       metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"]) ==
         rejected + 1
     state.sendTopic("a", newSeq[byte](129), Medium)
-    check recorder.penalties == 0
+    check peer.slowPeerPenalty == 1.0
 
     await state.closeTopic("a")
     state.sendTopic("a", payload, Medium)

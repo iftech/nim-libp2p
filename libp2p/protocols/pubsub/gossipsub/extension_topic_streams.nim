@@ -169,10 +169,13 @@ proc negotiate*(s: TopicStreams, rpc: RPCMsg): bool =
   true
 
 proc releaseFrame(s: TopicStreams, priority: MessagePriority, size: int, queued: bool) =
+  doAssert s.queue.bytes[priority] >= size
   s.queue.bytes[priority] -= size
   if queued or priority == High:
+    doAssert s.queue.topicCounts[priority] > 0
     dec s.queue.topicCounts[priority]
   if queued and priority != High:
+    doAssert s.queue.evictableBytes[priority] >= size
     s.queue.evictableBytes[priority] -= size
 
 proc discardQueued(s: TopicStreams, w: TopicWriter) =
@@ -182,17 +185,20 @@ proc discardQueued(s: TopicStreams, w: TopicWriter) =
     w.pending[priority].clear()
 
 proc evictQueued(s: TopicStreams, priority: MessagePriority, amount: int): int =
+  ## Evicts at least `amount` bytes when possible; may overshoot by one frame.
   if priority == High:
     return 0
+  var freed = 0
   for w in s.writers.values:
-    while w.pending[priority].len > 0 and result < amount:
+    while w.pending[priority].len > 0 and freed < amount:
       let data = w.pending[priority].popFirst()
-      result += data.len
+      freed += data.len
       s.releaseFrame(priority, data.len, true)
       if s.queue.evicted != nil:
         s.queue.evicted(priority, data.len)
-    if result >= amount:
+    if freed >= amount:
       break
+  return freed
 
 proc monitorWriter(s: TopicStreams, w: TopicWriter) {.async: (raises: []).} =
   try:

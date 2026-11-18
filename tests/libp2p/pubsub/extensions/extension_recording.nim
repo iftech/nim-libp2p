@@ -87,22 +87,23 @@ proc unboundedTopicQueue*(): OutboundQueue =
       QueueAction(priority: priority, send: true)
   )
 
+proc noopRpcHandler*(
+    peer: PubSubPeer, data: sink seq[byte]
+) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
+  discard
+
 proc newQueuePeer*(
     maxOutboundQueueBytes = DefaultMaxOutboundQueueBytes,
     maxMediumPriorityQueueLen = DefaultMaxMediumPriorityQueueLen,
 ): PubSubPeer =
-  proc handler(
-      peer: PubSubPeer, data: sink seq[byte]
-  ) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
-    discard
-
   PubSubPeer.new(
     PeerId.random(),
     nil,
     nil,
     "",
     1024,
-    handler,
+    noopRpcHandler,
+    rng = rng(),
     maxOutboundQueueBytes = maxOutboundQueueBytes,
     maxMediumPriorityQueueLen = maxMediumPriorityQueueLen,
   )
