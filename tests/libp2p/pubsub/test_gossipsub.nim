@@ -932,6 +932,27 @@ suite "GossipSub":
     check:
       gossipSub.getPeerTopicInfo(peer.peerId, topic).invalidMessageDeliveries == 1.0
 
+  asyncTest "rpcHandler - cancelled validation slot allows retry":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    gossipSub.verifySignature = false
+    let peer = peers[0]
+    let msg = Message.init(peer.peerId, "bar".toBytes(), topic, Opt.some(1'u64))
+    let msgId = gossipSub.msgIdProvider(msg).get()
+    let data = RPCMsg.withMessages(msg).encode(false)
+    peer.validationSlots = newAsyncSemaphore(1)
+    await peer.validationSlots.acquire()
+    let receiving = gossipSub.rpcHandler(peer, data)
+    checkUntilTimeout:
+      gossipSub.hasSeen(gossipSub.salt(msgId))
+      not receiving.finished()
+    await receiving.cancelAndWait()
+    peer.validationSlots.release()
+    await gossipSub.rpcHandler(peer, data)
+    checkUntilTimeout:
+      gossipSub.mcache.get(msgId).isSome
+
   asyncTest "rpcHandler - peer is punished when message validation is rejected":
     # Given a GossipSub instance with one peer
     let
