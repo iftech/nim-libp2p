@@ -569,6 +569,7 @@ proc acquireValidationSlot(
     await peer.validationSlots.acquire()
   except CancelledError as e:
     g.validationSeen.del(saltedId)
+    discard g.seen.del(saltedId)
     libp2p_gossipsub_pending_validations.dec()
     raise e
 
