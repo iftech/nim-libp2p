@@ -103,12 +103,6 @@ proc toCid*(k: Key): Cid =
       )
       .get()
 
-template toKey*(mh: MultiHash): Key =
-  Key.fromBytes(mh.data.buffer)
-
-proc toKey*(c: Cid): Key =
-  c.mhash().get().toKey()
-
 proc toKey*(p: PeerId): Key =
   MultiHash.init(p.data).get().toKey()
 
@@ -527,6 +521,9 @@ func diversityCaps*(limits: KadDHTLimits): DiversityCaps =
       diversityCap(limits.maxPeersPerIpv6Subnet, limits.maxPeersPerIpv6SubnetPerBucket),
   )
 
+func defaultMaxProviderRecordsPerPeer*(providerRecordCapacity: int): int =
+  max(1, providerRecordCapacity div ProviderRecordsPerPeerDivisor)
+
 proc new*(
     T: typedesc[KadDHTLimits],
     replication: int,
@@ -540,7 +537,7 @@ proc new*(
   T(
     maxProvidersPerKey: Opt.some(replication),
     maxProviderRecordsPerPeer:
-      Opt.some(max(1, providerRecordCapacity div ProviderRecordsPerPeerDivisor)),
+      Opt.some(defaultMaxProviderRecordsPerPeer(providerRecordCapacity)),
     maxShortlistSize: replication * 2,
     maxReceivedSize: max(replication, quorum),
     maxValueSize: DefaultMaxValueSize,
