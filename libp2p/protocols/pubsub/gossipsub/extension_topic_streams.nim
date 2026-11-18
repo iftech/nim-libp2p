@@ -48,6 +48,8 @@ type
     async: (raises: [CancelledError])
   .}
 
+  TopicWriterKey = tuple[topic: string, custom: bool]
+
   TopicWriter = ref object
     stream: Stream
     header: seq[byte]
@@ -70,7 +72,7 @@ type
     stopped: bool
     maxMessageSize: int
     queuedBytes, queuedMessages, incomingBytes: int
-    writers: Table[tuple[topic: string, custom: bool], TopicWriter]
+    writers: Table[TopicWriterKey, TopicWriter]
     readers: seq[TopicReader]
     dial: TopicStreamDial
     receive: TopicStreamReceive
@@ -188,10 +190,7 @@ proc popNext(
   return Opt.some(w.low.popFirst())
 
 proc writeLoop(
-    s: TopicStreams,
-    key: tuple[topic: string, custom: bool],
-    w: TopicWriter,
-    dial: TopicStreamDial,
+    s: TopicStreams, key: TopicWriterKey, w: TopicWriter, dial: TopicStreamDial
 ) {.async: (raises: []).} =
   try:
     w.stream = await dial().wait(TopicStreamDialTimeout)

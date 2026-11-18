@@ -67,17 +67,17 @@ suite "GossipSub Component - Custom Stream Support":
       peerSelectionCalled
       dummyStream.data.len > 0
 
-  for withObserver in [false, true]:
-    asyncTest "custom topic streams preserve routing and framing, observer=" &
-      $withObserver:
+  asyncTest "custom topic streams preserve routing and framing":
+    for withObserver in [false, true]:
+      checkpoint("running with observer=" & $withObserver)
       let nodes = generateNodes(
           2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
         )
         .toGossipSub()
+      let received = newAsyncQueue[string]()
       var
         customStream: Stream
         opened = 0
-        received: seq[string]
         requestedCodec: string
 
       nodes[0].customStreamCallbacks = Opt.some(
@@ -102,19 +102,17 @@ suite "GossipSub Component - Custom Stream Support":
           )
         )
       startAndDeferStop(nodes)
-      nodes[1].subscribe(
-        topic,
-        proc(topic: string, data: seq[byte]) {.async.} =
-          received.add(string.fromBytes(data)),
-      )
+      proc onMessage(topic: string, data: seq[byte]) {.async.} =
+        await received.put(string.fromBytes(data))
+
+      nodes[1].subscribe(topic, onMessage)
       await connectStar(nodes)
       waitSubscribe(nodes[0], nodes[1], topic)
       checkUntilTimeout:
         nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
 
       check (await nodes[0].publish(topic, "direct")) == 1
-      checkUntilTimeout:
-        received == @["direct"]
+      check (await received.popFirst()) == "direct"
       customStream = await nodes[0].switch.dial(nodes[1].switch, TopicStreamsCodec)
       for payload in ["custom-1", "custom-2"]:
         check (
@@ -124,8 +122,9 @@ suite "GossipSub Component - Custom Stream Support":
             publishParams = Opt.some(PublishParams(useCustomStream: true)),
           )
         ) == 1
-      checkUntilTimeout:
-        received == @["direct", "custom-1", "custom-2"]
+      for payload in ["custom-1", "custom-2"]:
+        check (await received.popFirst()) == payload
+      check received.empty()
       check:
         opened == 1
         requestedCodec == TopicStreamsCodec

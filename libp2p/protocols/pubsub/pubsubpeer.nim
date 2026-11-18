@@ -970,6 +970,17 @@ proc sendEncoded*(
           action.slowPeerPenaltyDelta, action.priority, msg.len
         )
 
+proc makeCustomDial(p: PubSubPeer): TopicStreamDial =
+  if p.customStreamCallbacks.isNone:
+    return nil
+  return proc(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+    let stream = p.customStreamCallbacks.get().customStreamCreationCB(
+        p.address, p.peerId, TopicStreamsCodec
+      )
+    if stream.isNil:
+      raise newException(LPStreamError, "custom stream creation failed")
+    return stream
+
 proc sendTopicRPC*(
     p: PubSubPeer,
     msg: PreparedTopicRPC,
@@ -978,17 +989,11 @@ proc sendTopicRPC*(
 ) =
   if p.stopped:
     return
-  var customDial: TopicStreamDial
-  if useCustomStream and p.customStreamCallbacks.isSome:
-    customDial = proc(): Future[Stream] {.
-        async: (raises: [CancelledError, LPStreamError])
-    .} =
-      let stream = p.customStreamCallbacks.get().customStreamCreationCB(
-          p.address, p.peerId, TopicStreamsCodec
-        )
-      if stream.isNil:
-        raise newException(LPStreamError, "custom stream creation failed")
-      return stream
+  let customDial =
+    if useCustomStream:
+      p.makeCustomDial()
+    else:
+      nil
   let control = p.extensionsState.sendTopicRPC(
     p.peerId, msg, priority == MessagePriority.Medium, customDial
   )
