@@ -313,6 +313,7 @@ proc set*(
   ## High/Infinite entries absent from the incoming list are preserved so that
   ## a verified dial address is never evicted by a later Identify update.
   ## Every incoming address refreshes its timestamp, including duplicates.
+  ## Duplicate addresses are merged using their highest confidence.
   ## Subscribers are notified when addresses, confidence or visibility change.
   if addrs.len == 0:
     discard addressBook.del(peerId)
@@ -373,20 +374,27 @@ proc extend*(
   ## For addresses already present the confidence is upgraded to
   ## `max(existing, confidence)` and lastUpdated is always refreshed.
   ## New addresses are added with `confidence`.
+  ## Existing and incoming duplicates are merged using their highest confidence.
   ## Timestamp-only changes notify subscribers only when an address becomes visible.
   let now = Moment.now()
-  var entries = addressBook.book.getOrDefault(key)
-  var changed = false
+  let previous = addressBook.book.getOrDefault(key)
+  var entries = newSeqOfCap[AddressEntry](previous.len + addrs.len)
+  for entry in previous:
+    entries.upsertAddress(
+      AddressEntry(
+        address: entry.address.stripPeerId(),
+        confidence: entry.confidence,
+        lastUpdated: entry.lastUpdated,
+      ),
+      KeepLatestTimestamp,
+    )
   for ma in addrs:
     let normalized = ma.stripPeerId()
-    let idx = entries.findWithAddress(normalized)
-    if idx < 0 or entries[idx].confidence < confidence or
-        not addressBook.isLive(key, entries[idx]):
-      changed = true
     entries.upsertAddress(
       AddressEntry(address: normalized, confidence: confidence, lastUpdated: now),
       ReplaceTimestamp,
     )
+  let changed = addressBook.addressesChanged(key, previous, entries)
   if entries.len > 0:
     addressBook.book[key] = entries
   if changed:

@@ -408,6 +408,62 @@ suite "AddressBook TTL / confidence":
     book.extend(peerId1, @[addr1], AddressConfidence.Low)
     check book.entries(peerId1)[0].confidence == AddressConfidence.High
 
+  test "set and extend merge stored duplicates using maximum confidence":
+    for useExtend in [false, true]:
+      for firstConfidence in AddressConfidence:
+        for secondConfidence in AddressConfidence:
+          let
+            book = makeBook(1.hours, 1.hours, 24.hours)
+            fullAddr1 = ma($addr1 & "/p2p/" & $peerId1)
+            older = Moment.now() - 2.seconds
+          book.book[peerId1] = @[
+            AddressEntry(
+              address: fullAddr1, confidence: firstConfidence, lastUpdated: older
+            ),
+            AddressEntry(
+              address: addr1, confidence: secondConfidence, lastUpdated: older
+            ),
+          ]
+          let recorded = newRecorder(book)
+
+          if useExtend:
+            book.extend(peerId1, @[addr1, fullAddr1], AddressConfidence.Low)
+          else:
+            book.set(peerId1, @[addr1, fullAddr1], AddressConfidence.Low)
+
+          let entries = book.entries(peerId1)
+          check:
+            entries.len == 1
+            entries[0].address == addr1
+            entries[0].confidence == max(firstConfidence, secondConfidence)
+            entries[0].lastUpdated > older
+            recorded[] == @[peerId1]
+
+  test "extend merges stored duplicates absent from incoming list":
+    let
+      book = makeBook(1.hours, 1.hours, 24.hours)
+      fullAddr1 = ma($addr1 & "/p2p/" & $peerId1)
+      older = Moment.now() - 2.seconds
+      newer = Moment.now() - 1.seconds
+    book.book[peerId1] = @[
+      AddressEntry(
+        address: fullAddr1, confidence: AddressConfidence.Infinite, lastUpdated: older
+      ),
+      AddressEntry(
+        address: addr1, confidence: AddressConfidence.Low, lastUpdated: newer
+      ),
+    ]
+
+    book.extend(peerId1, @[addr2, addr2], AddressConfidence.Medium)
+    let entries = book.entries(peerId1)
+    check:
+      entries.len == 2
+      entries[0].address == addr1
+      entries[0].confidence == AddressConfidence.Infinite
+      entries[0].lastUpdated == newer
+      entries[1].address == addr2
+      entries[1].confidence == AddressConfidence.Medium
+
   test "set preserves High confidence address absent from incoming list":
     let book = makeBook(1.hours, 1.hours, 24.hours)
     book.set(peerId1, @[addr1], AddressConfidence.High)
