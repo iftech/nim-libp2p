@@ -4,11 +4,16 @@
 
 import algorithm, chronos, hashes, results, sequtils, sets, tables
 import
-  ../../../libp2p/[protocols/kademlia, switch, builders, multihash, stream/connection]
+  ../../../libp2p/[
+    protocols/kademlia, switch, builders, cid, multicodec, multihash, stream/connection
+  ]
 import ../../tools/[crypto, unittest, switch_builder, multiaddress]
 import ./mock_kademlia
 
 export crypto
+
+proc makeProvidedCid*(seed: byte): Cid =
+  Cid.init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[seed]).get()).get()
 
 converter toKey*(bytes: seq[byte]): Key =
   Key.fromBytes(bytes)

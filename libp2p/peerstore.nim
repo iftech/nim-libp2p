@@ -86,6 +86,10 @@ type
     confidence*: AddressConfidence
     lastUpdated*: Moment
 
+  TimestampPolicy = enum
+    ReplaceTimestamp
+    KeepLatestTimestamp
+
   AddressConfidenceTtls* = object
     low*: Duration = 15.minutes
     medium*: Duration = 1.hours
@@ -119,7 +123,7 @@ type
     identifyCloseTimeout*: Duration ## Grace for the remote's EOF after identify.
     pruneHandle*: Future[void]
 
-proc new*(
+func new*(
     Self: type PeerStore,
     identify: Identify,
     capacity = 1000,
@@ -139,7 +143,11 @@ proc new*(
 # Generic Peer Book API #
 #########################
 
-proc `[]`*[T](peerBook: PeerBook[T], peerId: PeerId): T =
+proc notifyChangeHandlers(peerBook: BasePeerBook, peerId: PeerId) =
+  for handler in peerBook.changeHandlers:
+    handler(peerId)
+
+func `[]`*[T](peerBook: PeerBook[T], peerId: PeerId): T =
   ## Get all known metadata of a provided peer, or default(T) if missing
   peerBook.book.getOrDefault(peerId)
 
@@ -148,34 +156,25 @@ proc `[]=`*[T](peerBook: PeerBook[T], peerId: PeerId, entry: T) =
 
   peerBook.book[peerId] = entry
 
-  # Notify clients
-  for handler in peerBook.changeHandlers:
-    handler(peerId)
+  peerBook.notifyChangeHandlers(peerId)
 
 proc del*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
   ## Delete the provided peer from the book. Returns whether the peer was in the book
-
   if peerId notin peerBook.book:
     return false
-  else:
-    peerBook.book.del(peerId)
-    # Notify clients
-    for handler in peerBook.changeHandlers:
-      handler(peerId)
-    return true
 
-proc contains*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
+  peerBook.book.del(peerId)
+  peerBook.notifyChangeHandlers(peerId)
+  return true
+
+func contains*[T](peerBook: PeerBook[T], peerId: PeerId): bool =
   peerId in peerBook.book
 
 proc addHandler*[T](peerBook: PeerBook[T], handler: PeerBookChangeHandler) =
   ## Adds a callback that will be called everytime the book changes
   peerBook.changeHandlers.add(handler)
 
-proc notifyChangeHandlers(addressBook: AddressBook, peerId: PeerId) =
-  for handler in addressBook.changeHandlers:
-    handler(peerId)
-
-proc len*[T](peerBook: PeerBook[T]): int =
+func len*[T](peerBook: PeerBook[T]): int =
   peerBook.book.len
 
 ################################
@@ -200,7 +199,7 @@ proc isExpired*(entry: AddressEntry, ttls: AddressConfidenceTtls): bool =
 
   Moment.now() - entry.lastUpdated > ttl
 
-proc higherConfidence(
+func higherConfidence(
     prevConf: Table[MultiAddress, AddressConfidence],
     ma: MultiAddress,
     incoming: AddressConfidence,
@@ -209,33 +208,46 @@ proc higherConfidence(
   ## A previously verified (High/Infinite) address is never downgraded.
   max(prevConf.getOrDefault(ma, incoming), incoming)
 
-proc findWithAddress(entries: seq[AddressEntry], ma: MultiAddress): int =
+func findWithAddress(entries: openArray[AddressEntry], ma: MultiAddress): int =
   for i, e in entries:
     if e.address == ma:
       return i
   -1
 
-proc upsertAddress(
+func upsertAddress(
     entries: var seq[AddressEntry],
-    ma: MultiAddress,
-    confidence: AddressConfidence,
-    now: Moment,
+    incoming: AddressEntry,
+    timestampPolicy: TimestampPolicy,
 ) =
-  let idx = entries.findWithAddress(ma)
+  let idx = entries.findWithAddress(incoming.address)
   if idx >= 0:
-    entries[idx].confidence = max(entries[idx].confidence, confidence)
-    entries[idx].lastUpdated = now
+    entries[idx].confidence = max(entries[idx].confidence, incoming.confidence)
+    case timestampPolicy
+    of ReplaceTimestamp:
+      entries[idx].lastUpdated = incoming.lastUpdated
+    of KeepLatestTimestamp:
+      entries[idx].lastUpdated = max(entries[idx].lastUpdated, incoming.lastUpdated)
   else:
-    entries.add(AddressEntry(address: ma, confidence: confidence, lastUpdated: now))
+    entries.add(incoming)
 
-proc mergeAddressEntry(entries: var seq[AddressEntry], entry: AddressEntry) =
-  let idx = entries.findWithAddress(entry.address)
-  if idx >= 0:
-    entries[idx].confidence = max(entries[idx].confidence, entry.confidence)
-    if entries[idx].lastUpdated < entry.lastUpdated:
-      entries[idx].lastUpdated = entry.lastUpdated
-  else:
-    entries.add(entry)
+proc isLive(addressBook: AddressBook, peerId: PeerId, entry: AddressEntry): bool =
+  peerId in addressBook.connectedPeers or not entry.isExpired(addressBook.ttls)
+
+proc addressesChanged(
+    addressBook: AddressBook, peerId: PeerId, previous, current: openArray[AddressEntry]
+): bool =
+  ## Compare addresses, confidence and visibility, ignoring order and timestamps.
+  ## Current entries must have unique addresses, as produced by set.
+  if current.len != previous.len:
+    return true
+
+  var prevSet = initHashSet[(MultiAddress, AddressConfidence, bool)]()
+  for entry in previous:
+    prevSet.incl((entry.address, entry.confidence, addressBook.isLive(peerId, entry)))
+  for entry in current:
+    if (entry.address, entry.confidence, addressBook.isLive(peerId, entry)) notin prevSet:
+      return true
+  false
 
 proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()) =
   var entries = addressBook.book.getOrDefault(peerId)
@@ -251,31 +263,15 @@ proc refreshExpired(addressBook: AddressBook, peerId: PeerId, now = Moment.now()
   if refreshed:
     addressBook.book[peerId] = entries
 
-proc isLive(addressBook: AddressBook, peerId: PeerId, entry: AddressEntry): bool =
-  peerId in addressBook.connectedPeers or not entry.isExpired(addressBook.ttls)
-
-proc set*(
-    addressBook: AddressBook,
-    peerId: PeerId,
-    addrs: seq[MultiAddress],
-    confidence = AddressConfidence.Medium,
-) =
-  ## Replace the address list for `peerId`. For addresses that already exist
-  ## the confidence is upgraded to `max(existing, confidence)` so that a
-  ## high-confidence entry is never downgraded by a lower-confidence update.
-  ## High/Infinite entries absent from the incoming list are preserved so that
-  ## a verified dial address is never evicted by a later Identify update.
-  defer:
-    addressBook.notifyChangeHandlers(peerId)
-
-  if addrs.len == 0:
-    if peerId in addressBook.book:
-      addressBook.book.del(peerId)
-    return
-
-  let now = Moment.now()
+func replacementEntries(
+    previous: openArray[AddressEntry],
+    addrs: openArray[MultiAddress],
+    confidence: AddressConfidence,
+    now: Moment,
+): seq[AddressEntry] =
+  ## Normalize and deduplicate incoming addresses, preserving verified entries.
   var prevConf: Table[MultiAddress, AddressConfidence]
-  for entry in addressBook.book.getOrDefault(peerId):
+  for entry in previous:
     let normalized = entry.address.stripPeerId()
     prevConf[normalized] =
       max(prevConf.getOrDefault(normalized, entry.confidence), entry.confidence)
@@ -284,23 +280,53 @@ proc set*(
   for ma in addrs:
     let normalized = stripPeerId(ma)
     newEntries.upsertAddress(
-      normalized, higherConfidence(prevConf, normalized, confidence), now
+      AddressEntry(
+        address: normalized,
+        confidence: higherConfidence(prevConf, normalized, confidence),
+        lastUpdated: now,
+      ),
+      ReplaceTimestamp,
     )
 
-  for entry in addressBook.book.getOrDefault(peerId):
+  for entry in previous:
     let normalized = entry.address.stripPeerId()
     if entry.confidence >= AddressConfidence.High:
-      newEntries.mergeAddressEntry(
+      newEntries.upsertAddress(
         AddressEntry(
           address: normalized,
           confidence: entry.confidence,
           lastUpdated: entry.lastUpdated,
-        )
+        ),
+        KeepLatestTimestamp,
       )
+  return newEntries
 
+proc set*(
+    addressBook: AddressBook,
+    peerId: PeerId,
+    addrs: openArray[MultiAddress],
+    confidence = AddressConfidence.Medium,
+) =
+  ## Replace the address list for `peerId`. For addresses that already exist
+  ## the confidence is upgraded to `max(existing, confidence)` so that a
+  ## high-confidence entry is never downgraded by a lower-confidence update.
+  ## High/Infinite entries absent from the incoming list are preserved so that
+  ## a verified dial address is never evicted by a later Identify update.
+  ## Every incoming address refreshes its timestamp, including duplicates.
+  ## Subscribers are notified when addresses, confidence or visibility change.
+  if addrs.len == 0:
+    discard addressBook.del(peerId)
+    return
+
+  let now = Moment.now()
+  let previous = addressBook.book.getOrDefault(peerId)
+  let newEntries = replacementEntries(previous, addrs, confidence, now)
+  let changed = addressBook.addressesChanged(peerId, previous, newEntries)
   addressBook.book[peerId] = newEntries
+  if changed:
+    addressBook.notifyChangeHandlers(peerId)
 
-proc `[]=`*(addressBook: AddressBook, peerId: PeerId, addrs: seq[MultiAddress]) =
+proc `[]=`*(addressBook: AddressBook, peerId: PeerId, addrs: openArray[MultiAddress]) =
   addressBook.set(peerId, addrs)
 
 proc `[]`*(addressBook: AddressBook, peerId: PeerId): seq[MultiAddress] =
@@ -310,7 +336,7 @@ proc `[]`*(addressBook: AddressBook, peerId: PeerId): seq[MultiAddress] =
     it.address
   )
 
-proc entries*(addressBook: AddressBook, peerId: PeerId): seq[AddressEntry] =
+func entries*(addressBook: AddressBook, peerId: PeerId): seq[AddressEntry] =
   ## Return the raw entry list for `peerId`, including expired entries.
   addressBook.book.getOrDefault(peerId)
 
@@ -329,28 +355,42 @@ proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) 
 
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(peerId)
-  entries.upsertAddress(ma.stripPeerId(), AddressConfidence.High, now)
+  entries.upsertAddress(
+    AddressEntry(
+      address: ma.stripPeerId(), confidence: AddressConfidence.High, lastUpdated: now
+    ),
+    ReplaceTimestamp,
+  )
   addressBook.book[peerId] = entries
 
 proc extend*(
     addressBook: AddressBook,
     key: PeerId,
-    addrs: seq[MultiAddress],
+    addrs: openArray[MultiAddress],
     confidence = AddressConfidence.Medium,
 ) =
   ## Add addresses for `key` without removing existing ones.
   ## For addresses already present the confidence is upgraded to
-  ## `max(existing, confidence)` and lastUpdated is refreshed.
+  ## `max(existing, confidence)` and lastUpdated is always refreshed.
   ## New addresses are added with `confidence`.
-  defer:
-    addressBook.notifyChangeHandlers(key)
-
+  ## Timestamp-only changes notify subscribers only when an address becomes visible.
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(key)
+  var changed = false
   for ma in addrs:
-    entries.upsertAddress(ma.stripPeerId(), confidence, now)
+    let normalized = ma.stripPeerId()
+    let idx = entries.findWithAddress(normalized)
+    if idx < 0 or entries[idx].confidence < confidence or
+        not addressBook.isLive(key, entries[idx]):
+      changed = true
+    entries.upsertAddress(
+      AddressEntry(address: normalized, confidence: confidence, lastUpdated: now),
+      ReplaceTimestamp,
+    )
   if entries.len > 0:
     addressBook.book[key] = entries
+  if changed:
+    addressBook.notifyChangeHandlers(key)
 
 proc pruneExpired*(addressBook: AddressBook) =
   ## Remove all per-address entries whose TTL has elapsed.
@@ -412,33 +452,29 @@ macro getTypeName(t: type): untyped =
 
   newLit(repr(qualify(getTypeImpl(t)[1])))
 
-proc `[]`*(p: PeerStore, _: type[AddressBook]): AddressBook =
-  ## Get the AddressBook, initialising it with the store's configured TTLs.
-  let name = getTypeName(AddressBook)
-  p.books.withValue(name, bookPtr):
-    return AddressBook(bookPtr[])
-
-  let book = AddressBook.new()
-  book.ttls = p.addressTtls
-  book.deletor = proc(pid: PeerId) =
-    discard AddressBook(p.books.getOrDefault(name)).del(pid)
-  p.books[name] = book
-  book
-
-proc `[]`*[T](p: PeerStore, typ: type[T]): T =
-  ## Get a book from the PeerStore (ex: peerStore[AddressBook])
+proc getOrCreateBook[T](p: PeerStore, typ: type[T]): T =
   let name = getTypeName(T)
   p.books.withValue(name, bookPtr):
     return T(bookPtr[])
 
   let book = T.new()
+  when T is AddressBook and AddressBook is T:
+    book.ttls = p.addressTtls
   book.deletor = proc(pid: PeerId) =
     # Manual method because generic method don't work
     discard T(p.books.getOrDefault(name)).del(pid)
   p.books[name] = book
   book
 
-proc firstSupportedProtocol*(
+proc `[]`*(p: PeerStore, _: type[AddressBook]): AddressBook =
+  ## Get the AddressBook, initialising it with the store's configured TTLs.
+  p.getOrCreateBook(AddressBook)
+
+proc `[]`*[T](p: PeerStore, typ: type[T]): T =
+  ## Get a book from the PeerStore (ex: peerStore[AddressBook])
+  p.getOrCreateBook(typ)
+
+func firstSupportedProtocol*(
     p: PeerStore, peerId: PeerId, protocols: openArray[string]
 ): Opt[string] =
   ## Return the first requested protocol advertised by the peer without
@@ -505,27 +541,40 @@ proc close*(peerStore: PeerStore) =
     peerStore.pruneHandle.cancelSoon()
     peerStore.pruneHandle = nil
 
+proc updateIdentifyAddresses(
+    peerStore: PeerStore, peerId: PeerId, advertisedAddrs: openArray[MultiAddress]
+) =
+  if advertisedAddrs.len > 0:
+    var addrs = peerStore.addressPolicy.dialableAddrs(
+      advertisedAddrs, peerStore.allowUndialableAddrs
+    )
+    addrs.setLen(min(addrs.len, MaxIdentifyAddrs))
+    if addrs.len > 0:
+      peerStore[AddressBook].set(peerId, addrs, AddressConfidence.Medium)
+    else:
+      discard peerStore[AddressBook].del(peerId)
+
+proc recordObservedAddress(
+    peerStore: PeerStore,
+    peerId: PeerId,
+    observedAddr: Opt[MultiAddress],
+    direction: Opt[Direction],
+) =
+  peerStore[LastSeenBook][peerId] = observedAddr
+
+  # Update LastSeenOutboundBook only for outbound connections
+  direction.ifValue(dir):
+    if dir == Direction.Out:
+      peerStore[LastSeenOutboundBook][peerId] = observedAddr
+
 proc updatePeerInfo*(
     peerStore: PeerStore,
     info: IdentifyInfo,
     observedAddr: Opt[MultiAddress] = Opt.none(MultiAddress),
     direction: Opt[Direction] = Opt.none(Direction),
 ) =
-  if len(info.addrs) > 0:
-    var addrs =
-      peerStore.addressPolicy.dialableAddrs(info.addrs, peerStore.allowUndialableAddrs)
-    addrs.setLen(min(addrs.len, MaxIdentifyAddrs))
-    if addrs.len > 0:
-      peerStore[AddressBook].set(info.peerId, addrs, AddressConfidence.Medium)
-    else:
-      discard peerStore[AddressBook].del(info.peerId)
-
-  peerStore[LastSeenBook][info.peerId] = observedAddr
-
-  # Update LastSeenOutboundBook only for outbound connections
-  direction.ifValue(dir):
-    if dir == Direction.Out:
-      peerStore[LastSeenOutboundBook][info.peerId] = observedAddr
+  peerStore.updateIdentifyAddresses(info.peerId, info.addrs)
+  peerStore.recordObservedAddress(info.peerId, observedAddr, direction)
 
   info.pubkey.ifValue(pubkey):
     peerStore[KeyBook][info.peerId] = pubkey
@@ -571,6 +620,11 @@ proc retireStream(
       return
   await noCancel stream.reset()
 
+when defined(libp2p_agents_metrics):
+  func classifyAgent(agentVersion: Opt[string]): string =
+    let shortAgent = agentVersion.get("").split("/")[0].safeToLowerAscii().get("")
+    if KnownLibP2PAgentsSeq.contains(shortAgent): shortAgent else: "unknown"
+
 proc identify*(
     peerStore: PeerStore, muxer: Muxer, dir: Direction
 ) {.
@@ -592,13 +646,7 @@ proc identify*(
       let info = await peerStore.identify.identify(stream, stream.peerId)
 
       when defined(libp2p_agents_metrics):
-        var
-          knownAgent = "unknown"
-          shortAgent =
-            info.agentVersion.get("").split("/")[0].safeToLowerAscii().get("")
-        if KnownLibP2PAgentsSeq.contains(shortAgent):
-          knownAgent = shortAgent
-        muxer.setShortAgent(knownAgent)
+        muxer.setShortAgent(classifyAgent(info.agentVersion))
 
       peerStore.updatePeerInfo(info, stream.observedAddr, Opt.some(dir))
       identifyCompleted = true
@@ -607,17 +655,17 @@ proc identify*(
   finally:
     await retireStream(stream, identifyCompleted, peerStore.identifyCloseTimeout)
 
-proc getMostObservedProtosAndPorts*(
+func getMostObservedProtosAndPorts*(
     self: PeerStore
 ): seq[MultiAddress] {.deprecated: "use switch.addressManager".} =
   return self.identify.addressManager.mostObservedProtosAndPorts()
 
-proc guessDialableAddr*(
+func guessDialableAddr*(
     self: PeerStore, ma: MultiAddress
 ): MultiAddress {.deprecated: "use switch.addressManager.externalAddrFor".} =
   return self.identify.addressManager.externalAddrFor(ma)
 
-proc extend*[T](self: SeqPeerBook[T], key: PeerId, new: seq[T]) =
+proc extend*[T](self: SeqPeerBook[T], key: PeerId, new: openArray[T]) =
   var extended: HashSet[T]
 
   for old in self[key]:
