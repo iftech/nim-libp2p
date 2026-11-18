@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[sequtils, strutils]
+import std/[sequtils, strutils, tables]
 import chronos
 import chronos/transports/osnet
 import ../../../libp2p/[switch, peerinfo, utils/future]
@@ -336,7 +336,7 @@ suite "mDNS discovery":
         service.peers(responses[0], PeerId.random()) ==
           @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
 
-  asyncTest "multicast query responses are rate limited":
+  asyncTest "multicast query responses are rate limited independently per interface":
     when defined(macosx):
       skip()
     else:
@@ -352,7 +352,13 @@ suite "mDNS discovery":
         query = DnsMessage(
           questions: @[DnsQuestion(name: @["_p2p", "_udp", "local"], kind: PTR)]
         )
-      var responses = 0
+      var expected: seq[uint32]
+      for iface in getInterfaces():
+        if iface.ifIndex > 0 and
+            (iface.state == StatusUp or iface.ifType == IfSoftwareLoopback) and
+            iface.addresses.anyIt(it.host.family == AddressFamily.IPv4):
+          expected.add(uint32(iface.ifIndex))
+      var responses: Table[uint32, int]
       var unicastResponses = 0
       proc received(
           packet: seq[byte], context: MdnsReplyContext
@@ -363,7 +369,7 @@ suite "mDNS discovery":
               service.peers(message, PeerId.random()).anyIt(
                 it.peerId == local.peerInfo.peerId
               ):
-            inc responses
+            responses.mgetOrPut(context.interfaceIndex, 0).inc
         except ValueError:
           raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
@@ -387,21 +393,22 @@ suite "mDNS discovery":
       require opened.isOk
       # Let the initial announcement finish before counting query responses.
       await sleepAsync(200.milliseconds)
-      responses = 0
+      responses.clear()
       for i in 0 ..< 5:
         check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
-        responses > 0
+        responses.len == expected.len
       for i in 0 ..< 2:
         await sender.sendTo(initTAddress("224.0.0.251:5353"), encodeMessage(query))
       checkUntilTimeout:
         unicastResponses >= 2
       # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
       await sleepAsync(MdnsResponseInterval)
-      check responses == 1
+      for index in expected:
+        check responses.getOrDefault(index) == 1
       check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
-        responses >= 2
+        expected.allIt(responses.getOrDefault(it) >= 2)
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     when defined(macosx):
