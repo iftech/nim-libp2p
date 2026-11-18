@@ -394,9 +394,10 @@ proc extend*(
       AddressEntry(address: normalized, confidence: confidence, lastUpdated: now),
       ReplaceTimestamp,
     )
-  let changed = addressBook.addressesChanged(key, previous, entries)
-  if entries.len > 0:
+  if entries.len > 0: # could get empty with expired addresses
     addressBook.book[key] = entries
+
+  let changed = addressBook.addressesChanged(key, previous, entries)
   if changed:
     addressBook.notifyChangeHandlers(key)
 
