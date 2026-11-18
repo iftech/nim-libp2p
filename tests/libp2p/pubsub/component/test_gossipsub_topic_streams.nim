@@ -6,7 +6,7 @@
 import chronos, chronos/ratelimit, tables, stew/byteutils, sequtils
 import
   ../../../../libp2p/protocols/pubsub/[gossipsub, peertable, pubsubpeer, rpc/message]
-import ../../../tools/[bufferstream, lifecycle, switch_builder, topology, unittest]
+import ../../../tools/[lifecycle, switch_builder, topology, unittest]
 import ../../../../libp2p/protocols/pubsub/gossipsub/extensions
 import ../../../../libp2p/utils/future
 import ../utils
@@ -142,7 +142,7 @@ suite "GossipSub Component - Topic streams":
     discard await nodes[0].publish(topic, "data")
     check (await received.popFirst()) == "data"
 
-  asyncTest "publish with useCustomStream runs custom peer selection but skips the custom stream for a topic stream peer":
+  asyncTest "publish with useCustomStream runs custom peer selection and stream creation for a topic stream peer":
     let nodes = generateNodes(
         2, gossip = true, topicStreamsConfig = Opt.some(TopicStreamsConfig())
       )
@@ -151,13 +151,14 @@ suite "GossipSub Component - Topic streams":
     var
       peerSelectionCalled = false
       streamCreationCalled = false
+      customStream: Stream
     nodes[0].customStreamCallbacks = Opt.some(
       CustomStreamCallbacks(
         customStreamCreationCB: proc(
             destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
         ): Stream =
           streamCreationCalled = true
-          return TestBufferStream.new(noop),
+          return customStream,
         customPeerSelectionCB: proc(
             allPeers: HashSet[PubSubPeer],
             directPeers: HashSet[PubSubPeer],
@@ -178,15 +179,18 @@ suite "GossipSub Component - Topic streams":
     await connect(nodes[0], nodes[1])
     waitSubscribe(nodes[0], nodes[1], topic)
 
+    checkUntilTimeout:
+      nodes[0].extensionsState.peerHasTopicStreams(nodes[1].peerInfo.peerId)
+    customStream = await nodes[0].switch.dial(nodes[1].switch, TopicStreamsCodec)
+
     const msg = "data"
     discard await nodes[0].publish(
       topic, msg, publishParams = Opt.some(PublishParams(useCustomStream: true))
     )
     check:
       (await received.popFirst()) == msg
-      # TODO: iftech/nim-libp2p#3432
       peerSelectionCalled
-      not streamCreationCalled
+      streamCreationCalled
 
   asyncTest "mixed capability broadcast and reconnect":
     let nodes = (
