@@ -42,8 +42,9 @@ export
   natservice.upnpConfig, natservice.natPmpConfig, natservice.explicitIpConfig,
   natservice.autonatConfig, natservice.holePunchingConfig,
   natservice.AutonatV2ServiceConfig, natservice.AutonatV2Service, natservice.natService,
-  mdns.MdnsPeer, mdns.MdnsPeerFound, mdns.MdnsService, mdns.MdnsDefaultQueryInterval,
-  mdns.MdnsMinQueryInterval, mdns.MdnsMaxQueryInterval
+  mdns.MdnsPeer, mdns.MdnsPeerFound, mdns.MdnsService, mdns.MdnsMinQueryInterval,
+  mdns.MdnsMaxQueryInterval, mdns.MdnsDefaultQueryInterval,
+  mdns.MdnsDefaultMaxPendingCallbacks
 
 logScope:
   topics = "libp2p builders"
@@ -118,6 +119,7 @@ type
     mdnsEnabled: bool
     mdnsCallback: MdnsPeerFound
     mdnsQueryInterval: Duration
+    mdnsMaxPendingCallbacks: int
     addressManagerConfig: Opt[AddressManagerConfig]
     enableWildcardResolver: bool
     addressPolicy: PeerAddressPolicy
@@ -178,17 +180,25 @@ proc withMdns*(
     enabled: bool = true,
     onPeerFound: MdnsPeerFound = nil,
     queryInterval: Duration = MdnsDefaultQueryInterval,
+    maxPendingCallbacks: int = MdnsDefaultMaxPendingCallbacks,
 ): SwitchBuilder =
   ## Enable mDNS and optionally handle discovered peers. The query interval must
   ## be between MdnsMinQueryInterval and MdnsMaxQueryInterval, inclusive.
+  ## Discovered addresses are filtered by the configured address policy and
+  ## stored in the switch's AddressBook with AddressConfidence.Low, even when
+  ## `onPeerFound` is nil. A nil callback does not initiate connections.
+  ## Async callback futures are cancelled when the service stops.
+  ## Discoveries beyond `maxPendingCallbacks` are stored without invoking the callback.
   if enabled:
     doAssert queryInterval >= MdnsMinQueryInterval and
       queryInterval <= MdnsMaxQueryInterval, "mDNS query interval is out of range"
+    doAssert maxPendingCallbacks >= 0, "mDNS callback limit cannot be negative"
   ## Each call replaces the full mDNS configuration: passing no `onPeerFound`
   ## clears a callback registered by an earlier `withMdns` call.
   b.mdnsEnabled = enabled
   b.mdnsCallback = onPeerFound
   b.mdnsQueryInterval = queryInterval
+  b.mdnsMaxPendingCallbacks = maxPendingCallbacks
   b
 
 proc withAddresses*(b: SwitchBuilder, addresses: seq[MultiAddress]): SwitchBuilder =
@@ -701,7 +711,11 @@ proc addServices(b: SwitchBuilder, switch: Switch) =
 
   if b.mdnsEnabled:
     switch.services.add(
-      MdnsService.new(b.mdnsCallback, queryInterval = b.mdnsQueryInterval)
+      MdnsService.new(
+        b.mdnsCallback,
+        queryInterval = b.mdnsQueryInterval,
+        maxPendingCallbacks = b.mdnsMaxPendingCallbacks,
+      )
     )
 
 proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
