@@ -16,7 +16,6 @@ import chronos/transports/osnet
 import ../../[address_manager, multiaddress, results]
 import ../../utils/lock
 
-
 const (membershipOption, ttlOption, interfaceOption, dropOption) =
   when declared(posix.IP_ADD_MEMBERSHIP) and declared(posix.IP_MULTICAST_TTL):
     (
