@@ -12,6 +12,7 @@ import ../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
 import ../../../libp2p/peerid
 import ../../../libp2p/utils/future
 import ../../tools/[unittest, crypto, stall_stream]
+import ./extensions/extension_recording
 
 proc dummyGetConn(): Future[Stream] {.
     async: (raises: [CancelledError, GetStreamDialError])
@@ -747,3 +748,189 @@ suite "PubSubPeer sendResponse":
     peer.sendResponse(msg, false, MessagePriority.High)
 
     check conn.writes.len == 0
+
+suite "Shared control and topic queue budgets":
+  teardown:
+    checkTrackers()
+
+  proc topicState(peer: PubSubPeer, recorder: TopicStreamsRecorder): TopicStreams =
+    result = TopicStreams.new(
+      TopicStreamsConfig(),
+      100,
+      recorder.pendingDial(),
+      recorder.receive(),
+      recorder.violation(),
+      recorder.penalize(),
+      peer.outboundQueue,
+    )
+    doAssert result.negotiate(makeRPC(ControlExtensions(topicStreams: Opt.some(true))))
+
+  asyncTest "control High and Medium evict queued topic Low frames":
+    for priority in [High, Medium]:
+      let peer = createTestPeer(maxOutboundBytes = 32)
+      let conn = peer.stallSendStream()
+      let recorder = TopicStreamsRecorder.new()
+      let topics = peer.topicState(recorder)
+      defer:
+        await topics.stop()
+        await conn.close()
+        await peer.stopTasks()
+      await peer.sendEncoded(@[1.byte], High)
+      topics.sendTopic("a", newSeq[byte](20), Low)
+      check peer.queuedBytes() == 24 # control, header, topic frame
+      await peer.sendEncoded(newSeq[byte](25), priority)
+      check:
+        peer.queuedBytes() == 29
+        peer.queuedBytes(Low) == 3 # retained topic header
+        peer.slowPeerPenalty == 0
+
+  asyncTest "topic traffic shares control-stream eviction and overflow policy":
+    let peer = createTestPeer(maxOutboundBytes = 32)
+    let conn = peer.stallSendStream()
+    let recorder = TopicStreamsRecorder.new()
+    let topics = peer.topicState(recorder)
+    defer:
+      await topics.stop()
+      await conn.close()
+      await peer.stopTasks()
+    await peer.sendEncoded(@[1.byte], High)
+    await peer.sendEncoded(newSeq[byte](25), Low)
+    topics.sendTopic("a", newSeq[byte](20), Medium)
+    check:
+      peer.queuedBytes() == 24
+      peer.queuedBytes(Low) == 0
+      peer.queuedBytes(Medium) == 23
+      peer.slowPeerPenalty == 0
+    topics.sendTopic("a", newSeq[byte](9), Low)
+    check:
+      peer.queuedBytes() == 24
+      peer.slowPeerPenalty == 1
+
+  asyncTest "topic and control frames share each priority's count limit":
+    for priority in [Medium, Low]:
+      for topicFirst in [false, true]:
+        let peer = createTestPeer(maxMedium = 1, maxLow = 1)
+        let conn = peer.stallSendStream()
+        let recorder = TopicStreamsRecorder.new()
+        let topics = peer.topicState(recorder)
+        defer:
+          await topics.stop()
+          await conn.close()
+          await peer.stopTasks()
+        await peer.sendEncoded(@[1.byte], High)
+        if topicFirst:
+          topics.sendTopic("a", @[2.byte], priority)
+          await peer.sendEncoded(@[3.byte], priority)
+        else:
+          await peer.sendEncoded(@[2.byte], priority)
+          topics.sendTopic("a", @[3.byte], priority)
+        check peer.slowPeerPenalty == 1
+        check peer.queuedBytes() == (if topicFirst: 5 else: 2)
+
+  asyncTest "promoted topic frames remain charged and cannot be evicted":
+    let disconnected = new bool
+    let peer = createTestPeer(
+      maxOutboundBytes = 4, onEvent = newDisconnectRecorder(disconnected)
+    )
+    let conn = peer.stallSendStream()
+    let recorder = TopicStreamsRecorder.new()
+    let topics = peer.topicState(recorder)
+    defer:
+      await topics.stop()
+      await conn.close()
+      await peer.stopTasks()
+    topics.sendTopic("a", newSeq[byte](4), Low)
+    check peer.queuedBytes(High) == 7
+      # lone valid frame plus its header exceeds the budget
+    await peer.sendEncoded(@[1.byte], High)
+    check disconnected[]
+    topics.sendTopic("b", @[1.byte], Low)
+    check peer.queuedBytes() == 7
+
+  asyncTest "peer shutdown releases queued topic frames and retained headers":
+    let peer = createTestPeer()
+    peer.extensionsState =
+      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+    let recorder = TopicStreamsRecorder.new()
+    let cleaningUp = newAsyncEvent()
+    let releaseCleanup = newAsyncEvent()
+    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+      try:
+        await newAsyncEvent().wait()
+      except CancelledError as exc:
+        cleaningUp.fire()
+        await noCancel releaseCleanup.wait()
+        inc recorder.cancelledDials
+        raise exc
+      raiseAssert "pending dial only completes by cancellation"
+
+    peer.extensionsState.initTopicStreams(
+      peer.peerId,
+      100,
+      dial,
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
+    )
+    check peer.extensionsState.negotiateTopicStreams(
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
+    defer:
+      await peer.stopTasks()
+    for priority in [Low, Medium, Low]:
+      peer.sendTopicRPC(
+        makePreparedTopicRPC(
+          RPCMsg.withMessages(Message(topic: "a", data: @[1.byte])), false
+        ),
+        priority,
+      )
+    check peer.queuedBytes() > 0
+    let stopping = peer.stopTasks()
+    await cleaningUp.wait()
+    let stoppingAgain = peer.stopTasks()
+    await sleepAsync(1.milliseconds)
+    check:
+      not stoppingAgain.finished
+      peer.queuedBytes() > 0
+    releaseCleanup.fire()
+    await allFutures(stopping, stoppingAgain)
+    check:
+      peer.queuedBytes() == 0
+      peer.outboundQueue.topicCounts == default(array[MessagePriority, int])
+      peer.outboundQueue.evictableBytes == default(array[MessagePriority, int])
+      recorder.cancelledDials == 1
+
+  asyncTest "topic routing preserves explicit High priority and its overflow behavior":
+    let disconnected = new bool
+    let peer =
+      createTestPeer(maxHigh = 2, onEvent = newDisconnectRecorder(disconnected))
+    let conn = peer.stallSendStream()
+    peer.extensionsState =
+      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+    let recorder = TopicStreamsRecorder.new()
+    peer.extensionsState.initTopicStreams(
+      peer.peerId,
+      100,
+      recorder.pendingDial(),
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
+    )
+    check peer.extensionsState.negotiateTopicStreams(
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
+    defer:
+      await conn.close()
+      await peer.stopTasks()
+    await peer.sendEncoded(@[1.byte], High)
+    let prepared = makePreparedTopicRPC(
+      RPCMsg.withMessages(Message(topic: "a", data: @[1.byte])), false
+    )
+    peer.sendTopicRPC(prepared, High)
+    check:
+      peer.queuedBytes(Low) == 0
+      peer.outboundQueue.topicCounts[High] == 1
+    peer.sendTopicRPC(prepared, High)
+    checkUntilTimeout:
+      disconnected[]
+    check peer.slowPeerPenalty == 0

@@ -556,9 +556,8 @@ suite "GossipSub":
     const largeMessageSize = 10 * 1024 * 1024
     for (config, maxMessageSize) in [
       (TopicStreamsConfig(maxIncomingStreams: 2), DefaultPubSubMaxMessageSize),
-      # Raising the message limit must not silently leave either byte budget too small.
+      # Raising the message limit must not leave the incoming byte budget too small.
       (TopicStreamsConfig(), largeMessageSize),
-      (TopicStreamsConfig(maxQueuedBytes: 2 * largeMessageSize), largeMessageSize),
     ]:
       let params = GossipSubParams.init(topicStreamsConfig = Opt.some(config))
       expect InitializationError:

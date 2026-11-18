@@ -178,7 +178,7 @@ type
     # Max number of peers we send an IWANT to for the same message at the same time.
     maxIWantsPerMessage*: int
 
-    # Encoded RPC byte limits include queued messages and pending writes.
+    # Shared by control/topic streams, including pending writes and topic headers.
     maxOutboundQueueBytes*: int
 
     # Broadcast an IDONTWANT message automatically when the message exceeds the IDONTWANT message size threshold

@@ -365,7 +365,7 @@ method onNewPeer*(g: GossipSub, peer: PubSubPeer) =
       g.pendingTasks.trackFut(g.disconnectPeer(peer))
 
     g.extensionsState.initTopicStreams(
-      peer.peerId, g.maxMessageSize, dial, receive, violation
+      peer.peerId, g.maxMessageSize, dial, receive, violation, peer.outboundQueue
     )
 
   peer.iHaveBudget = IHavePeerBudget
