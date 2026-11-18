@@ -338,12 +338,100 @@ suite "mDNS network":
       await network.close()
       check not network.isOpen
 
+  asyncTest "multicast reaches every IPv4 interface and replies stay on ingress":
+    when defined(macosx):
+      skip()
+    else:
+      # Loopback and a LAN interface suffice; no virtual interfaces or network
+      # administration privileges are needed for this regression test.
+      var interfaces: seq[NetworkInterface]
+      var expected: seq[uint32]
+      for iface in getInterfaces():
+        if iface.ifIndex <= 0 or
+            (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
+          continue
+        var ipv4 = iface
+        ipv4.addresses = @[]
+        for address in iface.addresses:
+          if address.host.family == AddressFamily.IPv4:
+            ipv4.addresses.add(address)
+        if ipv4.addresses.len > 0:
+          interfaces.add(ipv4)
+          expected.add(uint32(iface.ifIndex))
+      if interfaces.len < 2:
+        checkpoint "Two IPv4 interfaces are required for multicast fan-out"
+        skip()
+      else:
+        proc provider(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+          interfaces
+
+        let
+          network = MdnsNetwork.new(interfaceProvider = provider)
+          query = @[31'u8, 41, 59]
+        var queries, responses: seq[uint32]
+        var contexts: seq[MdnsReplyContext]
+        proc received(
+            data: seq[byte], context: MdnsReplyContext
+        ) {.async: (raises: []).} =
+          if data == query:
+            queries.add(context.interfaceIndex)
+            contexts.add(context)
+            let index = context.interfaceIndex
+            let response = @[
+              26'u8,
+              byte(index and 255),
+              byte((index shr 8) and 255),
+              byte((index shr 16) and 255),
+              byte(index shr 24),
+            ]
+            check await noCancel network.reply(response, context, unicast = false)
+          elif data.len == 5 and data[0] == 26:
+            let origin =
+              uint32(data[1]) or (uint32(data[2]) shl 8) or (uint32(data[3]) shl 16) or
+              (uint32(data[4]) shl 24)
+            check context.interfaceIndex == origin
+            responses.add(origin)
+
+        requireOpened(network, received)
+        defer:
+          await network.close()
+        check await network.multicast(query)
+        checkUntilTimeout:
+          queries.len >= expected.len and responses.len >= expected.len
+        check:
+          queries.len == expected.len
+          responses.len == expected.len
+        for index in expected:
+          check:
+            index in queries
+            index in responses
+
+        # Removing and re-adding an interface must not revive old reply contexts.
+        interfaces = @[]
+        network.refreshInterfaces()
+        for context in contexts:
+          check not (await network.reply(query, context, unicast = false))
+        interfaces = getInterfaces()
+        network.refreshInterfaces()
+        for context in contexts:
+          check not (await network.reply(query, context, unicast = false))
+
   asyncTest "multicast sends bytes and replies through a multicast context":
     when defined(macosx):
       skip()
     else:
+      proc singleInterface(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+        for iface in getInterfaces():
+          if iface.ifIndex > 0 and
+              (iface.state == StatusUp or iface.ifType == IfSoftwareLoopback):
+            for address in iface.addresses:
+              if address.host.family == AddressFamily.IPv4:
+                var ipv4 = iface
+                ipv4.addresses = @[address]
+                return @[ipv4]
+
       let
-        network = MdnsNetwork.new()
+        network = MdnsNetwork.new(interfaceProvider = singleInterface)
         packet = @[9'u8, 8, 7]
         response = @[6'u8, 5, 4]
         receivedResponse = newFuture[void]()

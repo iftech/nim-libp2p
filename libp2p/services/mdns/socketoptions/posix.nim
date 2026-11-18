@@ -56,3 +56,11 @@ proc setSocketOption*[T](
 
 proc socketLastError*(): OSErrorCode =
   osLastError()
+
+when defined(linux) or defined(android):
+  proc bindToInterface*(socket: posix.SocketHandle, index: uint32): cint =
+    # SO_BINDTOIFINDEX pins reception as well as transmission. Unlike changing
+    # an existing binding, the initial binding needs no privilege on Linux 5.7+.
+    const soBindToIfIndex = cint(62)
+    var interfaceIndex = cint(index)
+    setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
