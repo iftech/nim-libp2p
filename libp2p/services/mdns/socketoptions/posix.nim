@@ -6,17 +6,17 @@
 import std/[os, posix]
 
 const (
-  ipv4AddMembership*, ipv4MulticastTtl*, ipv4MulticastInterface*, ipv4DropMembership*
+  ipv4AddMembership*, ipv4DropMembership*, ipv4MulticastTtl*, ipv4MulticastInterface*
 ) =
   when declared(posix.IP_ADD_MEMBERSHIP) and declared(posix.IP_MULTICAST_TTL):
     (
-      posix.IP_ADD_MEMBERSHIP, posix.IP_MULTICAST_TTL, posix.IP_MULTICAST_IF,
-      posix.IP_DROP_MEMBERSHIP,
+      posix.IP_ADD_MEMBERSHIP, posix.IP_DROP_MEMBERSHIP, posix.IP_MULTICAST_TTL,
+      posix.IP_MULTICAST_IF,
     )
   elif defined(linux) or defined(android):
-    (cint(35), cint(33), cint(32), cint(36))
+    (35.cint, 36.cint, 33.cint, 32.cint)
   elif defined(macosx) or defined(ios) or defined(bsd):
-    (cint(12), cint(10), cint(9), cint(13))
+    (12.cint, 13.cint, 10.cint, 9.cint)
   else:
     {.error: "mDNS IPv4 multicast socket options are unavailable on this platform".}
 

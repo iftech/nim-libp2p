@@ -7,16 +7,16 @@ import std/[os, winlean]
 
 # Winsock IP and IPv6 multicast options (ws2ipdef.h).
 const
-  ipv4Protocol* = cint(0)
-  ipv4MulticastInterface* = cint(9)
-  ipv4MulticastTtl* = cint(10)
-  ipv4AddMembership* = cint(12)
-  ipv4DropMembership* = cint(13)
-  ipv6Protocol* = cint(41)
-  ipv6MulticastInterface* = cint(9)
-  ipv6MulticastHops* = cint(10)
-  ipv6JoinGroup* = cint(12)
-  ipv6LeaveGroup* = cint(13)
+  ipv4Protocol* = 0.cint
+  ipv4MulticastInterface* = 9.cint
+  ipv4MulticastTtl* = 10.cint
+  ipv4AddMembership* = 12.cint
+  ipv4DropMembership* = 13.cint
+  ipv6Protocol* = 41.cint
+  ipv6MulticastInterface* = 9.cint
+  ipv6MulticastHops* = 10.cint
+  ipv6JoinGroup* = 12.cint
+  ipv6LeaveGroup* = 13.cint
 
 type MulticastTtl* = cint
 
