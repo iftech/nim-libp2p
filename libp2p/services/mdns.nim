@@ -311,6 +311,13 @@ proc received(
     finally:
       service.multicastLimits.finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
 
+proc makeInstanceName(rng: Rng): string =
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+  var name = newString(rng.rand(32, 63))
+  for c in name.mitems:
+    c = alphabet[rng.rand(0, alphabet.high)]
+  name
+
 proc tryStart*(
     service: MdnsService, switch: Switch
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
@@ -318,7 +325,7 @@ proc tryStart*(
     return ok()
   service.owner = switch
   # Random instance labels avoid publishing the peer ID as a DNS host name.
-  service.instance = "libp2p-" & $switch.rng.generate(uint64)
+  service.instance = makeInstanceName(switch.rng)
   proc onPacket(
       packet: seq[byte], context: MdnsReplyContext
   ): Future[void].Raising([]) =
