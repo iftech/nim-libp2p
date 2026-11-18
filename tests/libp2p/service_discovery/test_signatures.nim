@@ -4,6 +4,7 @@
 
 import chronos, results
 import protobuf_serialization
+import stew/[endians2, byteutils]
 import ../../../libp2p/[crypto/crypto, protocols/kademlia/protobuf]
 import ../../tools/[crypto, unittest]
 import ./utils
@@ -36,7 +37,6 @@ suite "Ticket - sign and verify":
     check not t.verify(key.getPublicKey().get())
 
 suite "Ticket - tamper detection":
-  # The signature covers: advertisement || tInit || tMod || tWaitFor
   # Mutating any covered field must break verification.
 
   test "tampered advertisement bytes":
@@ -110,7 +110,7 @@ suite "Ticket - timestamp encoding":
     var ticket = Ticket(tInit: 1_700_000_000'i64, tMod: 1_700_000_001'i64)
     check Protobuf.encode(ticket) ==
       @[0x10'u8, 0x80, 0xE2, 0xCF, 0xAA, 0x06, 0x18, 0x81, 0xE2, 0xCF, 0xAA, 0x06]
-    check ticket.toBytes() ==
+    check ticket.toBytes()[^20 .. ^1] ==
       @[0'u8, 0, 0, 0, 0x65, 0x53, 0xF1, 0, 0, 0, 0, 0, 0x65, 0x53, 0xF1, 1, 0, 0, 0, 0]
     check ticket.sign(key).isOk()
     let decoded = Protobuf.decode(Protobuf.encode(ticket), Ticket)
@@ -128,3 +128,28 @@ suite "Ticket - timestamp encoding":
       epoch.tInit == 0'i64
       epoch.tMod == 0'i64
       Protobuf.encode(epoch) == @[0x10'u8, 0, 0x18, 0]
+
+suite "Ticket - protocol separation":
+  test "signing bytes match the specified domain and SHA256 digest":
+    let ticket = Ticket(
+      advertisement: "abc".toBytes(), tInit: 1'i64, tMod: 2'i64, tWaitFor: 3.seconds
+    )
+    let expected =
+      "logos-service-discovery-ticket-v1".toBytes() &
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".hexToSeqByte() &
+      "0000000000000001000000000000000200000003".hexToSeqByte()
+    check ticket.toBytes() == expected
+
+  test "legacy raw advertisement signatures are rejected":
+    let key = PrivateKey.random(rng()).get()
+    var ticket = makeTicket()
+    var legacy = ticket.advertisement.get()
+    legacy.add(toBytesBE(ticket.tInit.get().uint64))
+    legacy.add(toBytesBE(ticket.tMod.get().uint64))
+    legacy.add(toBytesBE(ticket.tWaitFor.get().seconds.uint32))
+    ticket.signature = Opt.some(key.sign(legacy).get().getBytes())
+    check not ticket.verify(key.getPublicKey().get())
+    check ticket.sign(key).isOk()
+    var signature: Signature
+    check signature.init(ticket.signature.get())
+    check not signature.verify(legacy, key.getPublicKey().get())
