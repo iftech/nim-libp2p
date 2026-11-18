@@ -214,7 +214,7 @@ func findWithAddress(entries: openArray[AddressEntry], ma: MultiAddress): int =
       return i
   -1
 
-func upsertAddress(
+func upsert(
     entries: var seq[AddressEntry],
     incoming: AddressEntry,
     timestampPolicy: TimestampPolicy,
@@ -279,7 +279,7 @@ func replacementEntries(
   var newEntries = newSeqOfCap[AddressEntry](addrs.len)
   for ma in addrs:
     let normalized = stripPeerId(ma)
-    newEntries.upsertAddress(
+    newEntries.upsert(
       AddressEntry(
         address: normalized,
         confidence: higherConfidence(prevConf, normalized, confidence),
@@ -291,7 +291,7 @@ func replacementEntries(
   for entry in previous:
     let normalized = entry.address.stripPeerId()
     if entry.confidence >= AddressConfidence.High:
-      newEntries.upsertAddress(
+      newEntries.upsert(
         AddressEntry(
           address: normalized,
           confidence: entry.confidence,
@@ -322,9 +322,8 @@ proc set*(
   let now = Moment.now()
   let previous = addressBook.book.getOrDefault(peerId)
   let newEntries = replacementEntries(previous, addrs, confidence, now)
-  let changed = addressBook.addressesChanged(peerId, previous, newEntries)
   addressBook.book[peerId] = newEntries
-  if changed:
+  if addressBook.addressesChanged(peerId, previous, newEntries):
     addressBook.notifyChangeHandlers(peerId)
 
 proc `[]=`*(addressBook: AddressBook, peerId: PeerId, addrs: openArray[MultiAddress]) =
@@ -356,7 +355,7 @@ proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) 
 
   let now = Moment.now()
   var entries = addressBook.book.getOrDefault(peerId)
-  entries.upsertAddress(
+  entries.upsert(
     AddressEntry(
       address: ma.stripPeerId(), confidence: AddressConfidence.High, lastUpdated: now
     ),
@@ -380,7 +379,7 @@ proc extend*(
   let previous = addressBook.book.getOrDefault(key)
   var entries = newSeqOfCap[AddressEntry](previous.len + addrs.len)
   for entry in previous:
-    entries.upsertAddress(
+    entries.upsert(
       AddressEntry(
         address: entry.address.stripPeerId(),
         confidence: entry.confidence,
@@ -390,15 +389,14 @@ proc extend*(
     )
   for ma in addrs:
     let normalized = ma.stripPeerId()
-    entries.upsertAddress(
+    entries.upsert(
       AddressEntry(address: normalized, confidence: confidence, lastUpdated: now),
       ReplaceTimestamp,
     )
   if entries.len > 0: # empty only when previous and addrs are both empty
     addressBook.book[key] = entries
 
-  let changed = addressBook.addressesChanged(key, previous, entries)
-  if changed:
+  if addressBook.addressesChanged(key, previous, entries):
     addressBook.notifyChangeHandlers(key)
 
 proc pruneExpired*(addressBook: AddressBook) =
