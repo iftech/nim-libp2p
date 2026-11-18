@@ -103,8 +103,15 @@ proc suitable(address: MultiAddress): bool =
       return false
   let transportAddress = initTAddress(address).valueOr:
     return false
-  transportAddress.port != Port(0) and not transportAddress.isLoopback() and
-    not transportAddress.isMulticast() and not transportAddress.isUnspecified()
+  let host =
+    if transportAddress.isV4Mapped():
+      transportAddress.toIPv4()
+    else:
+      transportAddress
+
+  return
+    host.port != Port(0) and not host.isLoopback() and not host.isMulticast() and
+    not host.isUnspecified()
 
 proc announcement*(
     service: MdnsService, peer: PeerInfo, instance: string, ttl: uint32
