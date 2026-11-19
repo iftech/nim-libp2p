@@ -23,6 +23,32 @@ To fix this please, follow these steps:
 3. `nimble install nimble` - get latest `nimble` first
 4. then run `make setup` when developing this repository, or `nimble install libp2p` when using libp2p from another project
 
+## Connection admission limits
+
+The default connection cap is 50 shared slots, with no outbound reserve.
+`withMaxConnections(n)` and `ConnectionLimits.maxTotal(n)` also leave every slot
+available to either direction unless a reserve is supplied.
+
+To prevent established inbound connections from consuming outbound dial capacity,
+opt in with an absolute number of reserved slots:
+
+```nim
+ConnectionLimits.maxTotal(150, outboundReserve = 30)
+# Equivalent builder setting:
+# builder.withMaxConnections(150, outboundReserve = 30)
+```
+
+This allows 150 total connections, with at most 120 inbound. Outbound connections
+can use all 150 slots when available. The reserve must be nonnegative and smaller
+than the total cap. Without a reserve, authenticated inbound connections can
+still fill the shared cap and block ordinary outbound dials.
+
+Pending inbound upgrades have separate protections regardless of the reserve:
+there are at most 32, further limited to half the inbound capacity (minimum one),
+and at most eight per IPv4 address or IPv6 /56. Non-IP addresses share one bucket.
+Transport upgrades expire after 10 seconds. These protections change handshake
+admission behavior even when the outbound reserve is zero.
+
 ---
 
 (open a pull request if you want something to be included here)

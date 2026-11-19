@@ -66,6 +66,7 @@ type
     ## for a single shared cap, or `ConnectionLimits.maxInOut` for independent
     ## inbound/outbound caps.
     maxConnections: int = -1
+    outboundReserve: int
     maxIn: int = -1
     maxOut: int = -1
 
@@ -113,6 +114,7 @@ type
     maxConnsPerPeer: int
     maxConnectionsIn: int
     maxConnectionsOut: int
+    inboundBudget: AsyncSemaphore
     inSema: AsyncSemaphore
     outSema: AsyncSemaphore
     connEvents: array[ConnEventKind, OrderedSet[ConnEventHandler]]
@@ -159,10 +161,16 @@ proc decayNone*(): DecayFn =
   return proc(value: int, elapsed: Duration): int {.gcsafe, raises: [].} =
     value
 
-proc maxTotal*(T: type ConnectionLimits, maxConnections: int): ConnectionLimits =
-  ## Constructs ConnectionLimits with single shared cap limit.
+proc maxTotal*(
+    T: type ConnectionLimits, maxConnections: int, outboundReserve: int = 0
+): ConnectionLimits =
+  ## Shares `maxConnections` slots between inbound and outbound connections.
+  ## `outboundReserve` lowers the inbound ceiling by that many slots; outbound
+  ## connections can still fill the total cap. It must be in `0 ..< maxConnections`.
   doAssert maxConnections > 0, "maxConnections must be > 0"
-  ConnectionLimits(maxConnections: maxConnections)
+  doAssert outboundReserve >= 0 and outboundReserve < maxConnections,
+    "outboundReserve must be in 0 ..< maxConnections"
+  ConnectionLimits(maxConnections: maxConnections, outboundReserve: outboundReserve)
 
 proc maxInOut*(T: type ConnectionLimits, maxIn: int, maxOut: int): ConnectionLimits =
   ## Constructs ConnectionLimits with independent inbound/outbound caps.
@@ -182,9 +190,9 @@ proc new*(
   ## `maxConnsPerPeer` accepts values ≤0 to mean "use the default value".
   ##
   ## `limits` selects the connection-cap strategy: `ConnectionLimits.maxTotal(n)`
-  ## for a single shared cap, or `ConnectionLimits.maxInOut(i, o)` for independent
-  ## per-direction caps. When omitted, the total cap defaults to
-  ## `DefaultMaxConnections`.
+  ## for a shared cap, or `ConnectionLimits.maxInOut(i, o)` for independent caps.
+  ## The default is 50 shared slots with no outbound reserve. Pass `outboundReserve`
+  ## to `maxTotal` to keep inbound connections from consuming every shared slot.
   ##
   ## When `watermark` is provided without `limits` the semaphore is omitted
   ## and hi/lo trimming is the only guard.  When both are provided the
@@ -195,7 +203,7 @@ proc new*(
   let hasInOut = cfg.maxIn > 0 and cfg.maxOut > 0
   let hasTotal = cfg.maxConnections > 0
 
-  var inSema, outSema: AsyncSemaphore
+  var inSema, outSema, inboundBudget: AsyncSemaphore
   var maxInArg, maxOutArg: int
 
   if hasInOut:
@@ -210,6 +218,9 @@ proc new*(
     outSema = sema
     maxInArg = cap
     maxOutArg = cap
+    if cfg.outboundReserve > 0:
+      maxInArg = cap - cfg.outboundReserve
+      inboundBudget = newAsyncSemaphore(maxInArg)
   else:
     maxInArg = ConnectionsUnlimited
     maxOutArg = ConnectionsUnlimited
@@ -221,6 +232,7 @@ proc new*(
       if maxConnsPerPeer > 0: maxConnsPerPeer else: DefaultMaxConnectionsPerPeer,
     maxConnectionsIn: maxInArg,
     maxConnectionsOut: maxOutArg,
+    inboundBudget: inboundBudget,
     inSema: inSema,
     outSema: outSema,
     watermark: watermark,
@@ -602,15 +614,32 @@ proc storeMuxer*(
     muxer, direction = $muxer.connection.dir, peers = c.muxerStore.countPeers()
   ok()
 
+proc releaseSlot(sema: AsyncSemaphore) =
+  if sema == nil:
+    return
+  try:
+    sema.release()
+  except AsyncSemaphoreError:
+    raiseAssert "semaphore released without acquire"
+
 proc getIncomingSlot*(
     c: ConnManager
 ): Future[ConnectionSlot] {.async: (raises: [CancelledError]).} =
-  if c.inSema != nil:
-    await c.inSema.acquire()
+  if c.inboundBudget != nil:
+    await c.inboundBudget.acquire()
+  try:
+    if c.inSema != nil:
+      await c.inSema.acquire()
+  except CancelledError as exc:
+    c.inboundBudget.releaseSlot()
+    raise exc
   return ConnectionSlot(connManager: c, direction: In)
 
 proc tryGetIncomingSlot*(c: ConnManager): Opt[ConnectionSlot] =
+  if c.inboundBudget != nil and not c.inboundBudget.tryAcquire():
+    return Opt.none(ConnectionSlot)
   if c.inSema != nil and not c.inSema.tryAcquire():
+    c.inboundBudget.releaseSlot()
     return Opt.none(ConnectionSlot)
   Opt.some(ConnectionSlot(connManager: c, direction: In))
 
@@ -635,16 +664,14 @@ proc availableSlots*(c: ConnManager, dir: Direction): int =
   let sema = semaphore(c, dir)
   if sema == nil:
     return ConnectionsUnlimited
+  if dir == In and c.inboundBudget != nil:
+    return min(sema.availableSlots, c.inboundBudget.availableSlots)
   return sema.availableSlots
 
 proc release*(cs: ConnectionSlot) =
-  let sema = semaphore(cs.connManager, cs.direction)
-  if sema == nil:
-    return
-  try:
-    sema.release()
-  except AsyncSemaphoreError:
-    raiseAssert "semaphore released without acquire"
+  semaphore(cs.connManager, cs.direction).releaseSlot()
+  if cs.direction == In:
+    cs.connManager.inboundBudget.releaseSlot()
 
 proc trackConnection*(cs: ConnectionSlot, conn: RawConn) =
   proc semaphoreMonitor() {.async: (raises: [CancelledError]).} =
