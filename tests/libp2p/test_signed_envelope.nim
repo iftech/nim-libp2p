@@ -110,3 +110,13 @@ suite "Signed payload":
       encoded = signed.encode()
 
     check SignedDummy.decode(encoded).error == EnvelopeWrongType
+
+  test "Envelope overload verifies the signature":
+    let
+      privKey = PrivateKey.random(rng()).tryGet()
+      signed = SignedDummy.init(privKey, DummyPayload(awesome: 12.byte)).tryGet()
+      other = SignedDummy.init(privKey, DummyPayload(awesome: 13.byte)).tryGet()
+    var tampered = signed.envelope
+    tampered.signature = other.envelope.signature
+
+    check SignedDummy.decode(tampered).error == EnvelopeInvalidSignature
