@@ -9,6 +9,7 @@ import nimcrypto/sha2
 import ../../../libp2p/protocols/pubsub/pubsubpeer
 import ../../../libp2p/protocols/pubsub/gossipsub/types
 import ../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
+import ../../../libp2p/stream/bridgestream
 import ../../../libp2p/utils/future
 import ../../tools/[unittest, crypto, stall_stream]
 import ./extensions/extension_recording
@@ -47,6 +48,7 @@ proc createTestPeer(
     onEvent: OnEvent = nil,
     maxMessageSize: int = 100,
     maxOutboundBytes: int = DefaultMaxOutboundQueueBytes,
+    getStream: GetStream = dummyGetConn,
 ): PubSubPeer =
   newQueuePeer(
     maxHighPriorityQueueLen = maxHigh,
@@ -54,7 +56,7 @@ proc createTestPeer(
     maxLowPriorityQueueLen = maxLow,
     maxMessageSize = maxMessageSize,
     maxOutboundQueueBytes = maxOutboundBytes,
-    getStream = dummyGetConn,
+    getStream = getStream,
     onEvent = onEvent,
     codec = GossipSubCodec_12,
   )
@@ -578,10 +580,10 @@ suite "Priority queue byte budgets":
       # the medium message stays queued
       peer.queuedBytes(Medium) == mediumMsg.len
 
-  asyncTest "Medium evicts queued low traffic when only one byte limit is short":
+  asyncTest "Medium evicts queued low traffic when only one byte limit is exceeded":
     for (highSize, lowSize, mediumSize) in [
-      (1, 29, 2), # only Medium and Low are short: 29 + 2 = 31 of their 30 bytes
-      (10, 20, 5), # only the total is short: 10 + 20 + 5 = 35 of 32 bytes
+      (1, 29, 2), # only Medium and Low exceed their limit: 29 + 2 = 31 of 30 bytes
+      (10, 20, 5), # only the total exceeds its limit: 10 + 20 + 5 = 35 of 32 bytes
     ]:
       let peer = createTestPeer(maxOutboundBytes = maxOutboundBytes)
       let conn = peer.stallSendStream()
@@ -600,8 +602,10 @@ suite "Priority queue byte budgets":
 
   asyncTest "Medium evicts no queued low traffic when the message would still be refused":
     for (maxMedium, highSize, queuedMediumSize, lowSize, mediumSize) in [
-      (2, 1, 25, 3, 6), # without the low message, Medium and Low use 31 of 30 bytes
-      (2, 25, 2, 3, 6), # without the low message, the total is 33 of 32 bytes
+      (2, 1, 25, 3, 6),
+        # without the low message, Medium and Low would use 25 + 6 = 31 of their 30 bytes
+      (2, 25, 2, 3, 6),
+        # without the low message, the total would be 25 + 2 + 6 = 33 of 32 bytes
       (1, 1, 1, 28, 3), # evicting would make room, but the medium queue is full
     ]:
       let peer =
@@ -705,6 +709,51 @@ suite "Priority queue byte budgets":
     await peer.stopTasks()
     for priority in MessagePriority:
       check peer.queuedBytes(priority) == 0
+
+  asyncTest "Messages waiting for stream setup are written once the send stream opens":
+    let highMsg = @[1'u8, 2, 3]
+    let mediumMsg = @[4'u8, 5, 6, 7]
+    let (peerEnd, nodeEnd) = bridgedConnections()
+    proc getStream(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      return nodeEnd
+
+    let peer = createTestPeer(getStream = getStream)
+    defer:
+      await peer.stopTasks()
+      await peerEnd.close()
+
+    # no send stream yet, so the high message waits for stream setup
+    await peer.sendEncoded(highMsg, High)
+    # the medium message is queued behind the waiting high message
+    await peer.sendEncoded(mediumMsg, Medium)
+    # stream setup opens nodeEnd as the send stream
+    peer.connect()
+
+    check:
+      # the high message is written once the send stream opens
+      (await peerEnd.readLp(highMsg.len)) == highMsg
+      # the medium message follows it
+      (await peerEnd.readLp(mediumMsg.len)) == mediumMsg
+      # both writes have ended, so their bytes are released
+      peer.queuedBytes() == 0
+
+  asyncTest "Messages waiting for stream setup are released when the send stream fails to open":
+    let peer = createTestPeer()
+    defer:
+      await peer.stopTasks()
+
+    # no send stream yet, so the high message waits for stream setup
+    await peer.sendEncoded(@[1'u8, 2, 3], High)
+    # the medium message is queued behind the waiting high message
+    await peer.sendEncoded(@[4'u8, 5, 6, 7], Medium)
+    # stream setup fails
+    peer.connect()
+
+    # the failed setup ends both messages unwritten, which releases their bytes before any stop
+    checkUntilTimeout:
+      peer.queuedBytes() == 0
 
   test "Byte admission avoids addition overflow":
     let action = determineQueueAction(
