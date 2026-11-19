@@ -45,7 +45,8 @@ still fill the shared cap and block ordinary outbound dials.
 
 Pending inbound upgrades have separate protections regardless of the reserve:
 there are at most 32, further limited to half the inbound capacity (minimum one),
-and at most eight per IPv4 address or IPv6 /56. Non-IP addresses share one bucket.
+and at most eight per IPv4 address or IPv6 /56. Connections without an IP use only
+the global pending budget. The budget covers Identify and connection callbacks.
 Transport upgrades expire after 10 seconds. These protections change handshake
 admission behavior even when the outbound reserve is zero.
 

@@ -190,7 +190,7 @@ suite "Switch accept-loop failure handling":
     let connecting = client.connect(server)
     await registered.wait()
     check:
-      server.pendingUpgrades == 0
+      server.pendingUpgrades == 1
       server.pendingUpgradesBySource.len == 0
     await connecting
     let conn = server.connManager.selectMuxer(client.peerInfo.peerId).connection
@@ -200,6 +200,8 @@ suite "Switch accept-loop failure handling":
     await protocol.stopping.wait()
     check:
       server.acceptFuts.allIt(it.finished)
+      server.pendingUpgrades == 0
+      server.pendingUpgradesBySource.len == 0
       conn.closed
       server.connManager.isRunning()
       not stopped.finished
@@ -223,18 +225,22 @@ suite "Pending inbound upgrades":
     defer:
       for socket in sockets:
         await socket.closeWait()
-    for _ in 0 ..< 12:
+    for _ in 0 ..< PendingUpgradesPerSourceForTesting + 4:
       sockets.add(await wire.connect(server.peerInfo.addrs[0]))
     check (await sockets[^1].read().wait(1.seconds)).len == 0
     checkUntilTimeout:
-      server.pendingUpgrades == 8
-      server.upgradeFuts.len == 8
+      server.pendingUpgrades == PendingUpgradesPerSourceForTesting
+      server.upgradeFuts.len == PendingUpgradesPerSourceForTesting
       server.rejectedConnCloseFuts.allIt(it.finished)
-    check server.connManager.availableSlots(Direction.In) == 42
+    check server.connManager.availableSlots(Direction.In) ==
+      server.connManager.maxConnections(Direction.In) -
+      PendingUpgradesPerSourceForTesting
     await server.connect(peer)
     check:
       server.isConnected(peer)
-      server.connManager.availableSlots(Direction.Out) == 41
+      server.connManager.availableSlots(Direction.Out) ==
+        server.connManager.maxConnections(Direction.Out) -
+        PendingUpgradesPerSourceForTesting - 1
     for socket in sockets:
       await socket.closeWait()
     checkUntilTimeout:
@@ -243,13 +249,14 @@ suite "Pending inbound upgrades":
     await peer.connect(server, reuseConnection = false)
     checkUntilTimeout:
       server.pendingUpgrades == 0
-      server.connManager.availableSlots(Direction.In) == 48
+      server.connManager.availableSlots(Direction.In) ==
+        server.connManager.maxConnections(Direction.In) - 2
 
   asyncTest "IPv6 address rotation within a /56 shares one pending budget":
     privateAccess(Switch)
     var sources: seq[MultiAddress]
-    for i in 1 .. 8:
-      sources.add(ma("/ip6/2001:db8:1234:560" & $i & "::1/tcp/1"))
+    for i in 1 .. PendingUpgradesPerSourceForTesting:
+      sources.add(ma("/ip6/2001:db8:1234:5600::" & $i & "/tcp/1"))
     sources.add(ma("/ip6/2001:db8:1234:56ff::1/tcp/2"))
     sources.add(ma("/ip6/2001:db8:1234:5700::1/tcp/1"))
     let server = SwitchBuilder
@@ -278,9 +285,38 @@ suite "Pending inbound upgrades":
       checkUntilTimeout:
         SourceAddressTransport(server.transports[0]).accepted == connections.len
     checkUntilTimeout:
-      server.pendingUpgrades == 9
+      server.pendingUpgrades == PendingUpgradesPerSourceForTesting + 1
       server.pendingUpgradesBySource.len == 2
-    check server.connManager.availableSlots(Direction.In) == 41
+    check server.connManager.availableSlots(Direction.In) ==
+      server.connManager.maxConnections(Direction.In) -
+      PendingUpgradesPerSourceForTesting - 1
+    for conn in connections:
+      await conn.close()
+    checkUntilTimeout:
+      server.pendingUpgrades == 0
+      server.pendingUpgradesBySource.len == 0
+
+  asyncTest "connections without an IP use only the global pending budget":
+    privateAccess(Switch)
+    let server =
+      makeStandardSwitchBuilder(MemoryAutoAddress()).withMaxInOut(20, 2).build()
+    let peer = makeStandardSwitch(MemoryAutoAddress())
+    startAndDeferStop(@[server, peer])
+    var connections: seq[RawConn]
+    defer:
+      for conn in connections:
+        await conn.close()
+    for _ in 0 ..< 10:
+      connections.add(await peer.transports[0].dial("", server.peerInfo.addrs[0]))
+      await idleAsync()
+    checkUntilTimeout:
+      server.pendingUpgrades == 10
+    check server.pendingUpgradesBySource.len == 0
+    let rejected = await peer.transports[0].dial("", server.peerInfo.addrs[0])
+    connections.add(rejected)
+    var buffer: byte
+    check (await rejected.readOnce(addr buffer, 1).wait(1.seconds)) == 0
+    check server.pendingUpgrades == 10
     for conn in connections:
       await conn.close()
     checkUntilTimeout:
@@ -321,7 +357,8 @@ suite "Pending inbound upgrades":
     checkUntilTimeoutCustom(IncomingUpgradeTimeout + 2.seconds, 50.milliseconds):
       server.pendingUpgrades == 0
       server.pendingUpgradesBySource.len == 0
-      server.connManager.availableSlots(Direction.In) == 50
+      server.connManager.availableSlots(Direction.In) ==
+        server.connManager.maxConnections(Direction.In)
 
   asyncTest "stop cancels pending upgrades and restart restores their budget":
     privateAccess(Switch)
@@ -336,7 +373,8 @@ suite "Pending inbound upgrades":
     check:
       server.pendingUpgrades == 0
       server.pendingUpgradesBySource.len == 0
-      server.connManager.availableSlots(Direction.In) == 50
+      server.connManager.availableSlots(Direction.In) ==
+        server.connManager.maxConnections(Direction.In)
     await server.start()
     let peer = makeStandardSwitch(TcpAutoAddress)
     startAndDeferStop(@[peer])

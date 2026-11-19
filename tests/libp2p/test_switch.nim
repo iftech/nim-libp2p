@@ -3,7 +3,7 @@
 
 {.used.}
 
-import results, sequtils, chronos, stew/byteutils
+import results, sequtils, chronos, stew/byteutils, std/importutils
 import
   ../../libp2p/[
     errors,
@@ -772,6 +772,7 @@ suite "Switch":
     await allFuturesRaising(switches.mapIt(it.stop()))
 
   asyncTest "an opt-in outbound reserve leaves room for repair dials":
+    privateAccess(Switch)
     let server = makeStandardSwitchBuilder(TcpAutoAddress)
       .withMaxConnections(3, outboundReserve = 1)
       .build()
@@ -779,6 +780,8 @@ suite "Switch":
     startAndDeferStop(@[server] & peers)
     for peer in peers[0 .. 1]:
       await peer.connect(server)
+      checkUntilTimeout:
+        server.pendingUpgrades == 0
     expect DialFailedError:
       await peers[2].connect(server)
     await server.connect(peers[2])
@@ -1258,7 +1261,8 @@ suite "Switch":
       switch.transports[0].upgrader.secureManagers[0] of Noise
 
   asyncTest "accept loop handles more peers than the pending upgrade budget":
-    # Use batches of eight to respect the per-source pending upgrade limit.
+    privateAccess(Switch)
+    const BatchSize = PendingUpgradesPerSourceForTesting
     const NumPeers = 85
     let server = makeStandardSwitchBuilder(TcpAutoAddress)
       .withConnectionLimits(ConnectionLimits.maxTotal(NumPeers))
@@ -1270,10 +1274,12 @@ suite "Switch":
       clients.add(makeStandardSwitch(TcpAutoAddress))
     await allFuturesRaising(clients.mapIt(it.start()))
 
-    for i in countup(0, clients.high, 8):
+    for i in countup(0, clients.high, BatchSize):
       await allFuturesRaising(
-        clients[i .. min(i + 7, clients.high)].mapIt(it.connect(server))
+        clients[i .. min(i + BatchSize - 1, clients.high)].mapIt(it.connect(server))
       )
+      checkUntilTimeout:
+        server.pendingUpgrades == 0
 
     await allFuturesRaising(clients.mapIt(it.stop()) & @[server.stop()])
 

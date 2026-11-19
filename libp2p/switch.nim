@@ -312,14 +312,7 @@ proc upgrader(
     switch: Switch, trans: Transport, conn: RawConn, observer: string
 ) {.async: (raises: [CancelledError, UpgradeError]).} =
   try:
-    let muxed =
-      try:
-        await trans.upgrade(conn, Opt.none(PeerId)).wait(IncomingUpgradeTimeout)
-      finally:
-        switch.pendingUpgrades.dec()
-        switch.pendingUpgradesBySource[observer].dec()
-        if switch.pendingUpgradesBySource[observer] == 0:
-          switch.pendingUpgradesBySource.del(observer)
+    let muxed = await trans.upgrade(conn, Opt.none(PeerId)).wait(IncomingUpgradeTimeout)
     (await switch.connManager.storeMuxer(muxed)).onErrorRaise(UpgradeError)
     await switch.peerStore.identify(muxed, conn.transportDir)
     await switch.connManager.triggerPeerEvents(
@@ -330,6 +323,14 @@ proc upgrader(
     raise e
   except CatchableError as e:
     raise newException(UpgradeError, "catchable error upgrader: " & e.msg, e)
+  finally:
+    # Identify and application callbacks must remain within the pending budget.
+    switch.pendingUpgrades.dec()
+    if observer.len > 0:
+      switch.pendingUpgradesBySource.withValue(observer, pending):
+        pending[].dec()
+        if pending[] == 0:
+          switch.pendingUpgradesBySource.del(observer)
 
 proc upgradeMonitor(
     switch: Switch, trans: Transport, conn: RawConn, observer: string
@@ -376,11 +377,12 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
           of IpAddressFamily.IPv6:
             # Rotating addresses within an IPv6 /56 must not bypass admission.
             observer = $ip.address_v6[0 .. 6]
-      # Addresses without an IP share one bucket (e.g. memory transports).
+      # Without an IP, only the global pending budget applies.
       let slot =
-        if s.pendingUpgrades >= pendingLimit or
-            s.pendingUpgradesBySource.getOrDefault(observer) >=
-            MaxPendingUpgradesPerSource:
+        if s.pendingUpgrades >= pendingLimit or (
+          observer.len > 0 and
+          s.pendingUpgradesBySource.getOrDefault(observer) >= MaxPendingUpgradesPerSource
+        ):
           Opt.none(ConnectionSlot)
         else:
           s.connManager.tryGetIncomingSlot()
@@ -394,7 +396,8 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
 
       slot.get().trackConnection(conn)
       s.pendingUpgrades.inc()
-      s.pendingUpgradesBySource.mgetOrPut(observer, 0).inc()
+      if observer.len > 0:
+        s.pendingUpgradesBySource.mgetOrPut(observer, 0).inc()
 
       # set the direction of this bottom level transport
       # in order to be able to consume this information in gossipsub if required
@@ -412,6 +415,8 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
       return
 
 when defined(libp2p_testing):
+  const PendingUpgradesPerSourceForTesting* = MaxPendingUpgradesPerSource
+
   proc acceptFuts*(s: Switch): seq[Future[void]] =
     s.acceptFuts
 
