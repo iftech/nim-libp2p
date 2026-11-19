@@ -175,7 +175,7 @@ proc encode*(
   buffer
 
 proc toBytes*(ticket: Ticket): seq[byte] {.raises: [], gcsafe.} =
-  ## Returns the canonical byte representation of a Ticket used for signing.
+  ## Returns the domain-separated signing input for a Ticket.
   ## Domain separation and a fixed-size digest prevent cross-protocol signing.
   let ad = ticket.advertisement.get(@[])
   var buf = newSeqOfCap[byte](ticketDomain.len + 32 + 20)
