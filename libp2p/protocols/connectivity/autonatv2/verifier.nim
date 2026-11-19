@@ -37,7 +37,7 @@ proc new*(
   client.setup(switch)
   T(switch: switch, client: client, rng: rng)
 
-proc selectPeer(self: AutonatV2Verifier, excluded: seq[PeerId]): Opt[PeerId] =
+proc selectPeer(self: AutonatV2Verifier, excluded: openArray[PeerId]): Opt[PeerId] =
   ## A peer which dialed us proves nothing. It has a path to us already.
   self.rng.pickOne(
     self.switch.connectedPeers(Direction.Out).filterIt(
@@ -73,15 +73,19 @@ proc askPeer(
 method verify*(
     self: AutonatV2Verifier, address: MultiAddress
 ): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
-  ## One request carrying that one address, to a random peer.
-  if not self.switch.hasEnoughIncomingSlots():
-    trace "No incoming slots left, skipping verification", address
-    return Opt.none(AddrState)
-
+  ## Confirm on a successful dial-back; require three distinct negative replies
+  ## to mark the address unreachable. Insufficient or inconclusive replies leave
+  ## its state unchanged.
+  const negativeQuorum = 3
   var asked: seq[PeerId]
   var failures = 0
-  for i in 0 ..< 3:
+  for i in 0 ..< negativeQuorum:
+    if not self.switch.hasEnoughIncomingSlots():
+      trace "No incoming slots left, skipping verification", address
+      return Opt.none(AddrState)
+
     let peerId = self.selectPeer(asked).valueOr:
+      trace "No peer to ask", address
       return Opt.none(AddrState)
     asked.add(peerId)
     let verdict = await self.askPeer(peerId, address)
@@ -89,6 +93,6 @@ method verify*(
       return verdict
     if verdict == Opt.some(AddrState.Unreachable):
       inc failures
-  if failures == 3:
+  if failures == negativeQuorum:
     return Opt.some(AddrState.Unreachable)
   Opt.none(AddrState)

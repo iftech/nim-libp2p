@@ -7,18 +7,20 @@ import chronos
 import
   ../../../libp2p/[
     address_manager,
+    connmanager,
     multiaddress,
     switch,
     protocols/connectivity/autonatv2/mockclient,
     protocols/connectivity/autonatv2/types,
     protocols/connectivity/autonatv2/verifier,
   ]
-import ../../tools/[unittest, crypto, switch_builder, multiaddress]
+import ../../tools/[unittest, futures, crypto, switch_builder, multiaddress]
 
 type
   VerifierClientMock = ref object of AutonatV2ClientMock
     peers: seq[PeerId]
     verdicts: seq[NetworkReachability]
+    onDial: proc() {.gcsafe, raises: [].}
 
   VerifierPair = object
     switch: Switch
@@ -37,6 +39,8 @@ method sendDialRequest(
   if self.verdicts.len > 0:
     response.reachability = self.verdicts[0]
     self.verdicts.delete(0)
+  if self.onDial != nil:
+    self.onDial()
   response
 
 proc makePair(
@@ -121,19 +125,15 @@ suite "AutonatV2 verifier":
 
   asyncTest "a negative quorum requires three distinct conclusive replies":
     let
-      pair = makePair(NotReachable, expectedDials = 6)
+      pair = makePair(NotReachable, expectedDials = 12)
       address = ma("/ip4/1.2.3.4/tcp/1")
     let second =
       makeStandardSwitchBuilder(ma("/memorytransport/*")).withAutonatV2Server().build()
     let third =
       makeStandardSwitchBuilder(ma("/memorytransport/*")).withAutonatV2Server().build()
-    await pair.start()
-    await second.start()
-    await third.start()
     defer:
-      await second.stop()
-      await third.stop()
-      await pair.stop()
+      await allFuturesRaising(pair.stop(), second.stop(), third.stop())
+    await allFuturesRaising(pair.start(), second.start(), third.start())
     await pair.dialPeer()
     check (await pair.verifier.verify(address)).isNone()
     check pair.client.peers == @[pair.peer.peerInfo.peerId]
@@ -159,3 +159,33 @@ suite "AutonatV2 verifier":
         pair.peer.peerInfo.peerId in pair.client.peers
         second.peerInfo.peerId in pair.client.peers
         third.peerInfo.peerId in pair.client.peers
+    check:
+      pair.client.dials == 12
+      pair.client.finished.finished()
+
+  asyncTest "incoming capacity exhausted after a reply stops verification":
+    let
+      pair = makePair(NotReachable)
+      second = makeStandardSwitchBuilder(ma("/memorytransport/*"))
+        .withAutonatV2Server()
+        .build()
+      third = makeStandardSwitchBuilder(ma("/memorytransport/*"))
+        .withAutonatV2Server()
+        .build()
+    var slots: seq[ConnectionSlot]
+    defer:
+      for slot in slots:
+        slot.release()
+      await allFuturesRaising(pair.stop(), second.stop(), third.stop())
+    await allFuturesRaising(pair.start(), second.start(), third.start())
+    await pair.dialPeer()
+    await pair.switch.connect(second)
+    await pair.switch.connect(third)
+
+    pair.client.onDial = proc() =
+      while pair.switch.connManager.availableSlots(In) > 0:
+        slots.add(pair.switch.connManager.tryGetIncomingSlot().get())
+
+    check:
+      (await pair.verifier.verify(ma("/ip4/1.2.3.4/tcp/1"))).isNone()
+      pair.client.dials == 1
