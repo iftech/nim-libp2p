@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, chronos/rateLimit, stew/byteutils, utils, sequtils
+import chronos, chronos/rateLimit, stew/byteutils, utils, sequtils, strutils
 import ../../../libp2p/[muxers/muxer, connmanager, switch]
 import ../../../libp2p/stream/[bufferstream, connection]
 import ../../../libp2p/utils/future
@@ -622,6 +622,41 @@ suite "GossipSub":
 
     await conn.close()
 
+  asyncTest "rpcHandler - cumulative subscription topic byte budget":
+    let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
+    let peer = gossipSub.getPubSubPeer(PeerId.random())
+    gossipSub.maxMessageSize = 1024
+    let
+      first = repeat('a', 512)
+      second = repeat('b', 512)
+      replacement = repeat('c', 512)
+
+    for (name, subscribe) in [
+      (first, true),
+      (second, true),
+      (first, true),
+      (replacement, false),
+      (replacement, true),
+    ]:
+      await gossipSub.rpcHandler(
+        peer, RPCMsg.withSubs(@[name], subscribe).encode(false)
+      )
+    check:
+      gossipSub.gossipsub.hasPeer(first, peer)
+      gossipSub.gossipsub.hasPeer(second, peer)
+      not gossipSub.gossipsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
+
+    for (name, subscribe) in [(first, false), (replacement, true)]:
+      await gossipSub.rpcHandler(
+        peer, RPCMsg.withSubs(@[name], subscribe).encode(false)
+      )
+    check:
+      not gossipSub.gossipsub.hasPeer(first, peer)
+      gossipSub.gossipsub.hasPeer(second, peer)
+      gossipSub.gossipsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
+
   asyncTest "rpcHandler - extensions only see accepted subscriptions":
     proc unionPartsMetadata(
         a, b: PartsMetadata
@@ -931,6 +966,27 @@ suite "GossipSub":
     # Then the peer's invalidMessageDeliveries counter is incremented
     check:
       gossipSub.getPeerTopicInfo(peer.peerId, topic).invalidMessageDeliveries == 1.0
+
+  asyncTest "rpcHandler - cancelled validation slot allows retry":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    gossipSub.verifySignature = false
+    let peer = peers[0]
+    let msg = Message.init(peer.peerId, "bar".toBytes(), topic, Opt.some(1'u64))
+    let msgId = gossipSub.msgIdProvider(msg).get()
+    let data = RPCMsg.withMessages(msg).encode(false)
+    peer.validationSlots = newAsyncSemaphore(1)
+    await peer.validationSlots.acquire()
+    let receiving = gossipSub.rpcHandler(peer, data)
+    checkUntilTimeout:
+      gossipSub.hasSeen(gossipSub.salt(msgId))
+      not receiving.finished()
+    await receiving.cancelAndWait()
+    peer.validationSlots.release()
+    await gossipSub.rpcHandler(peer, data)
+    checkUntilTimeout:
+      gossipSub.mcache.get(msgId).isSome
 
   asyncTest "rpcHandler - peer is punished when message validation is rejected":
     # Given a GossipSub instance with one peer
