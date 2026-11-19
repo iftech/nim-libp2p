@@ -568,34 +568,39 @@ suite "GossipSub":
           rng = rng(),
         )
 
-  test "topic streams require an outbound budget for a maximum-size header and frame":
+  test "topic streams reject an outbound budget below the minimum":
     const maxMessageSize = 64
-    for enabled in [false, true]:
-      for budget in [2 * maxMessageSize - 1, 2 * maxMessageSize]:
-        let params = GossipSubParams.init(
-          topicStreamsConfig =
-            if enabled:
-              Opt.some(TopicStreamsConfig())
-            else:
-              Opt.none(TopicStreamsConfig),
-          maxOutboundQueueBytes = budget,
+    for budget in [127, 128, 135]:
+      let params = GossipSubParams.init(
+        topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+        maxOutboundQueueBytes = budget,
+      )
+      expectMsg InitializationError,
+        "gossipsub: non-High outbound budget must be at least twice maxMessageSize with topic streams":
+        discard GossipSub.init(
+          makeStandardSwitch(),
+          parameters = params,
+          maxMessageSize = maxMessageSize,
+          rng = rng(),
         )
-        if enabled and budget < 2 * maxMessageSize:
-          expectMsg InitializationError,
-            "gossipsub: maxOutboundQueueBytes must be at least twice maxMessageSize with topic streams":
-            discard GossipSub.init(
-              makeStandardSwitch(),
-              parameters = params,
-              maxMessageSize = maxMessageSize,
-              rng = rng(),
-            )
-        else:
-          discard GossipSub.init(
-            makeStandardSwitch(),
-            parameters = params,
-            maxMessageSize = maxMessageSize,
-            rng = rng(),
-          )
+
+  test "topic streams accept the minimum outbound budget including the High reserve":
+    let params = GossipSubParams.init(
+      topicStreamsConfig = Opt.some(TopicStreamsConfig()), maxOutboundQueueBytes = 136
+    )
+    discard GossipSub.init(
+      makeStandardSwitch(), parameters = params, maxMessageSize = 64, rng = rng()
+    )
+
+  test "disabled topic streams accept outbound budgets below the topic stream minimum":
+    for budget in [127, 128, 135, 136]:
+      let params = GossipSubParams.init(
+        topicStreamsConfig = Opt.none(TopicStreamsConfig),
+        maxOutboundQueueBytes = budget,
+      )
+      discard GossipSub.init(
+        makeStandardSwitch(), parameters = params, maxMessageSize = 64, rng = rng()
+      )
 
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())

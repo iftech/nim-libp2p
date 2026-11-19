@@ -9,10 +9,10 @@ import nimcrypto/sha2
 import ../../../libp2p/protocols/pubsub/pubsubpeer
 import ../../../libp2p/protocols/pubsub/gossipsub/types
 import ../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
-import ../../../libp2p/peerid
 import ../../../libp2p/utils/future
 import ../../tools/[unittest, crypto, stall_stream]
 import ./extensions/extension_recording
+import ./peer_helpers
 
 proc dummyGetConn(): Future[Stream] {.
     async: (raises: [CancelledError, GetStreamDialError])
@@ -48,17 +48,15 @@ proc createTestPeer(
     maxMessageSize: int = 100,
     maxOutboundBytes: int = DefaultMaxOutboundQueueBytes,
 ): PubSubPeer =
-  PubSubPeer.new(
-    PeerId.random(),
-    dummyGetConn,
-    onEvent,
-    GossipSubCodec_12,
-    maxMessageSize = maxMessageSize,
-    handler = noopRpcHandler,
+  newQueuePeer(
     maxHighPriorityQueueLen = maxHigh,
     maxMediumPriorityQueueLen = maxMedium,
     maxLowPriorityQueueLen = maxLow,
+    maxMessageSize = maxMessageSize,
     maxOutboundQueueBytes = maxOutboundBytes,
+    getStream = dummyGetConn,
+    onEvent = onEvent,
+    codec = GossipSubCodec_12,
   )
 
 func testSaltedId(seed: byte): SaltedId =
@@ -823,27 +821,48 @@ suite "Shared control and topic queue budgets":
         check peer.slowPeerPenalty == 1
         check peer.queuedBytes() == (if topicFirst: 5 else: 2)
 
-  asyncTest "promoted topic frames remain charged and cannot be evicted":
-    let disconnected = new bool
-    let peer = createTestPeer(
-      maxOutboundBytes = 4, onEvent = newDisconnectRecorder(disconnected)
-    )
-    let conn = peer.stallSendStream()
-    let recorder = TopicStreamsRecorder.new()
-    let topics = peer.topicState(recorder)
-    defer:
-      await topics.stop()
-      await conn.close()
-      await peer.stopTasks()
-    topics.sendTopic("a", newSeq[byte](4), Low)
-    check peer.queuedBytes(High) == 7
-      # lone valid frame plus its header exceeds the budget
-    await peer.sendEncoded(@[1.byte], High)
-    check disconnected[]
-    topics.sendTopic("b", @[1.byte], Low)
-    check peer.queuedBytes() == 7
+  asyncTest "idle topic frames retain their priority and leave High slots available":
+    for priority in [Medium, Low]:
+      let disconnected = new bool
+      let peer = createTestPeer(
+        maxHigh = 1,
+        maxOutboundBytes = 16,
+        onEvent = newDisconnectRecorder(disconnected),
+      )
+      let conn = peer.stallSendStream()
+      let recorder = TopicStreamsRecorder.new()
+      let topics = peer.topicState(recorder)
+      defer:
+        await topics.stop()
+        await conn.close()
+        await peer.stopTasks()
+      topics.sendTopic("a", newSeq[byte](4), priority)
+      check:
+        peer.queuedBytes(High) == 0
+        peer.queuedBytes(priority) == 7
+        peer.outboundQueue.topicCounts[priority] == 1
+        peer.outboundQueue.evictableBytes[priority] == 4
+      await peer.sendEncoded(newSeq[byte](13), High)
+      check:
+        not disconnected[]
+        peer.queuedBytes(High) == 13
+        peer.queuedBytes(priority) == 3 # retained header after frame eviction
+        peer.outboundQueue.topicCounts[priority] == 0
 
-  asyncTest "completed topic writes leave room for control traffic at the minimum budget":
+  asyncTest "idle topic frames respect the non-High byte budget":
+    for priority in [Medium, Low]:
+      let peer = createTestPeer(maxOutboundBytes = 16)
+      let recorder = TopicStreamsRecorder.new()
+      let topics = peer.topicState(recorder)
+      defer:
+        await topics.stop()
+        await peer.stopTasks()
+      topics.sendTopic("a", newSeq[byte](13), priority)
+      check:
+        peer.queuedBytes() == 0
+        peer.slowPeerPenalty == 1
+
+  asyncTest "retained topic headers leave room for control traffic after writes complete":
     let disconnected = new bool
     let peer = createTestPeer(
       maxMessageSize = 4,
@@ -913,15 +932,21 @@ suite "Shared control and topic queue budgets":
     check peer.queuedBytes() > 0
     let stopping = peer.stopTasks()
     await cleaningUp.wait()
+    let cancellingStop = stopping.cancelAndWait()
     let stoppingAgain = peer.stopTasks()
     # Yield so an incorrectly completed second stop is observed before cleanup resumes.
     await sleepAsync(1.milliseconds)
     check:
       not stoppingAgain.finished
+      not cancellingStop.finished
       peer.queuedBytes() > 0
     releaseCleanup.fire()
-    await allFutures(stopping, stoppingAgain)
+    await allFutures(stopping, stoppingAgain, cancellingStop)
     check:
+      stopping.completed
+      stoppingAgain.completed
+      peer.outboundQueue.admit == nil
+      peer.outboundQueue.evicted == nil
       peer.queuedBytes() == 0
       peer.outboundQueue.topicCounts == default(array[MessagePriority, int])
       peer.outboundQueue.evictableBytes == default(array[MessagePriority, int])
@@ -958,6 +983,5 @@ suite "Shared control and topic queue budgets":
       peer.queuedBytes(Low) == 0
       peer.outboundQueue.topicCounts[High] == 1
     peer.sendTopicRPC(prepared, High)
-    checkUntilTimeout:
-      disconnected[]
+    check disconnected[]
     check peer.slowPeerPenalty == 0

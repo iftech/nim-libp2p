@@ -11,6 +11,7 @@ import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/[bridgestream, bufferstream]
 import ../../../tools/[unittest, bufferstream, crypto, metrics_utils]
 import ../converters
+import ../peer_helpers
 import ./extension_recording
 
 const topic = "foobar"

@@ -33,6 +33,7 @@ type
       gcsafe, raises: []
     .}
     evictTopics*: QueueEviction
+    # Synchronous notification; must not re-enter admission or mutate topic writers.
     evicted*: proc(priority: MessagePriority, messageBytes: int) {.gcsafe, raises: [].}
 
 func queuedBytes*(q: OutboundQueue): int =

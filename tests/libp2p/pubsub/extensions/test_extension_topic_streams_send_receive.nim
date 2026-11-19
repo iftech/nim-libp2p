@@ -11,6 +11,7 @@ import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/[bridgestream, bufferstream]
 import ../../../tools/[unittest, bufferstream, metrics_utils]
 import ../converters
+import ../peer_helpers
 import ./extension_recording
 
 const
@@ -35,7 +36,8 @@ suite "GossipSub topic stream send side":
     let config = TopicStreamsConfig(maxIncomingBytes: 2 * limit)
     check config.validate(limit).isOk
     let recorder = TopicStreamsRecorder.new()
-    let peer = newQueuePeer(maxOutboundQueueBytes = 2 * limit)
+    # 128 non-High bytes plus the 8-byte High reserve.
+    let peer = newQueuePeer(maxOutboundQueueBytes = 136)
     defer:
       await peer.stopTasks()
     let state = TopicStreams.new(recorder, config, limit, peer.outboundQueue)
@@ -83,7 +85,7 @@ suite "GossipSub topic stream send side":
     for (maxBytes, maxMedium) in [
       # The header and two frames fill the byte budget.
       (header.len + frames[0].len + frames[1].len, DefaultMaxMediumPriorityQueueLen),
-      # frames[0] is promoted to High; frames[1] fills the Medium queue.
+      # frames[0] is in flight; frames[1] fills the Medium queue.
       (DefaultMaxOutboundQueueBytes, 1),
     ]:
       let peer = newQueuePeer(maxBytes, maxMedium)

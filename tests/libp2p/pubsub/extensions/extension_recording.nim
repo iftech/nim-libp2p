@@ -2,7 +2,6 @@
 # Copyright (c) Status Research & Development GmbH
 
 import chronos
-import ../../../tools/crypto
 import ../../../../libp2p/protocols/pubsub/pubsubpeer
 import ../../../../libp2p/peerid
 import ../../../../libp2p/stream/bridgestream
@@ -85,27 +84,6 @@ proc unboundedTopicQueue*(): OutboundQueue =
         priority: MessagePriority, size: int
     ): QueueAction {.gcsafe, raises: [].} =
       QueueAction(priority: priority, send: true)
-  )
-
-proc noopRpcHandler*(
-    peer: PubSubPeer, data: sink seq[byte]
-) {.async: (raises: [CancelledError, PeerRateLimitError]).} =
-  discard
-
-proc newQueuePeer*(
-    maxOutboundQueueBytes = DefaultMaxOutboundQueueBytes,
-    maxMediumPriorityQueueLen = DefaultMaxMediumPriorityQueueLen,
-): PubSubPeer =
-  PubSubPeer.new(
-    PeerId.random(),
-    nil,
-    nil,
-    "",
-    1024,
-    noopRpcHandler,
-    rng = rng(),
-    maxOutboundQueueBytes = maxOutboundQueueBytes,
-    maxMediumPriorityQueueLen = maxMediumPriorityQueueLen,
   )
 
 proc new*(

@@ -1387,10 +1387,13 @@ method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   g.parameters.validateParameters().onErrorRaise(InitializationError)
   g.parameters.topicStreamsConfig.ifValue(config):
     config.validate(g.maxMessageSize).onErrorRaise(InitializationError)
-    if g.maxMessageSize > g.parameters.maxOutboundQueueBytes div 2:
+    let nonHighBudget =
+      g.parameters.maxOutboundQueueBytes -
+      highPriorityQueueReservedBytes(g.parameters.maxOutboundQueueBytes)
+    if g.maxMessageSize > nonHighBudget div 2:
       raise newException(
         InitializationError,
-        "gossipsub: maxOutboundQueueBytes must be at least twice maxMessageSize with topic streams",
+        "gossipsub: non-High outbound budget must be at least twice maxMessageSize with topic streams",
       )
 
   # init the floodsub stuff here, we customize timedcache in gossip!

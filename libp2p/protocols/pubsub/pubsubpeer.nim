@@ -292,7 +292,7 @@ func outbound*(p: PubSubPeer): bool =
 func fitsWithin(currentBytes, messageBytes, maxBytes: int): bool =
   currentBytes <= maxBytes and messageBytes <= maxBytes - currentBytes
 
-func highPriorityQueueReservedBytes(maxOutboundQueueBytes: int): int =
+func highPriorityQueueReservedBytes*(maxOutboundQueueBytes: int): int =
   maxOutboundQueueBytes div HighPriorityQueueReserveDivisor
 
 func determineQueueAction*(
@@ -304,6 +304,7 @@ func determineQueueAction*(
     mediumPriorityQueueBytes: int = 0,
     lowPriorityQueueBytes: int = 0,
     maxOutboundQueueBytes: int = DefaultMaxOutboundQueueBytes,
+    promoteOnEmpty: bool = true,
 ): QueueAction =
   let
     totalBytes =
@@ -319,7 +320,7 @@ func determineQueueAction*(
   var slowPeerPenaltyDelta = 0.0
   var priority = priority
 
-  if priority == MessagePriority.High or emptyQueues:
+  if priority == MessagePriority.High or (promoteOnEmpty and emptyQueues):
     # A lone protocol-valid frame may exceed the normal backlog budget.
     priority = MessagePriority.High
 
@@ -352,6 +353,7 @@ func determineQueueAction*(
     maxHighPriorityQueueLen, maxMediumPriorityQueueLen, maxLowPriorityQueueLen: int,
     messageBytes: int = 0,
     maxOutboundQueueBytes: int = DefaultMaxOutboundQueueBytes,
+    promoteOnEmpty: bool = true,
 ): QueueAction =
   determineQueueAction(
     priority,
@@ -366,6 +368,7 @@ func determineQueueAction*(
     rpcmessagequeue.budget.bytes[Medium],
     rpcmessagequeue.budget.bytes[Low],
     maxOutboundQueueBytes,
+    promoteOnEmpty,
   )
 
 func outboundQueue*(p: PubSubPeer): OutboundQueue =
@@ -899,7 +902,7 @@ proc cancelQueuedRelays*(p: PubSubPeer, duplicates: HashSet[SaltedId]): int =
   savedBytes
 
 proc admitMessage(
-    p: PubSubPeer, priority: MessagePriority, messageBytes: int
+    p: PubSubPeer, priority: MessagePriority, messageBytes: int, promoteOnEmpty = true
 ): QueueAction =
   p.clearSendPriorityQueue()
   case priority
@@ -915,7 +918,7 @@ proc admitMessage(
     discard
   determineQueueAction(
     priority, p.rpcmessagequeue, p.maxHighPriorityQueueLen, p.maxMediumPriorityQueueLen,
-    p.maxLowPriorityQueueLen, messageBytes, p.maxOutboundQueueBytes,
+    p.maxLowPriorityQueueLen, messageBytes, p.maxOutboundQueueBytes, promoteOnEmpty,
   )
 
 proc sendEncoded*(
@@ -1302,7 +1305,8 @@ proc new*(
   ): QueueAction {.gcsafe, raises: [].} =
     if response.stopped:
       return QueueAction(priority: priority)
-    let action = response.admitMessage(priority, messageBytes)
+    # Independent topic writers do not need the control stream's immediate-send promotion.
+    let action = response.admitMessage(priority, messageBytes, promoteOnEmpty = false)
     if not action.send:
       if action.priority == High:
         response.trackSend(response.disconnectPeer())
