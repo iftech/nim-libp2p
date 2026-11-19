@@ -281,9 +281,13 @@ proc readTopicStream*(
   state.topicStreamsExtension.readTopicStream(peerId, stream)
 
 proc sendTopicRPC*(
-    state: ExtensionsState, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
+    state: ExtensionsState,
+    peerId: PeerId,
+    msg: PreparedTopicRPC,
+    medium: bool,
+    customDial: TopicStreamDial = nil,
 ): seq[byte] =
-  state.topicStreamsExtension.sendTopicRPC(peerId, msg, medium)
+  state.topicStreamsExtension.sendTopicRPC(peerId, msg, medium, customDial)
 
 proc closeTopicStreams*(
     state: ExtensionsState, topic: string, incoming = false

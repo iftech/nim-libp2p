@@ -610,3 +610,18 @@ suite "MultiAddress IP utilities":
       ma("/ip4/0.0.0.0/tcp/80").replaceIp(ip6).get == ma("/ip6/2001:db8::1/tcp/80")
       # no IP component
       ma("/unix/tmp/sock").replaceIp(ip4).isErr
+
+  test "long marker sequences preserve slice boundaries":
+    var raw: seq[byte]
+    let marker = MultiAddress.init("/ws").get().bytes()
+    for i in 0 ..< 4000:
+      raw.add(marker)
+    let address = MultiAddress.init(raw).get()
+    let middle = address[1000 ..< 3000].get()
+    check middle.bytes().len == 2000 * marker.len
+    check middle.len().get() == 2000
+    check address[0 .. ^1].get() == address
+    check address[^1 .. ^1].get().bytes() == marker
+    check address[0 .. 4000].isErr()
+    check address[-1 .. 1].isErr()
+    check address[2 .. 1].get().bytes().len == 0

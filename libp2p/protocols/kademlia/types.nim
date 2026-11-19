@@ -103,12 +103,6 @@ proc toCid*(k: Key): Cid =
       )
       .get()
 
-template toKey*(mh: MultiHash): Key =
-  Key.fromBytes(mh.data.buffer)
-
-proc toKey*(c: Cid): Key =
-  c.mhash().get().toKey()
-
 proc toKey*(p: PeerId): Key =
   MultiHash.init(p.data).get().toKey()
 
