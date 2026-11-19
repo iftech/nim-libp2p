@@ -223,6 +223,88 @@ proc countBucketEntries*(buckets: seq[Bucket], key: Key): uint32 =
         res += 1
   return res
 
+func providerCount*(kad: KadDHT): int =
+  kad.providerManager.providerRecords.len()
+
+func providerCount*(kad: KadDHT, key: Key): int =
+  kad.providerManager.knownKeys.getOrDefault(key).len()
+
+func providerKeyCount*(kad: KadDHT): int =
+  kad.providerManager.knownKeys.len()
+
+func hasProvider*(kad: KadDHT, key: Key): bool =
+  kad.providerManager.knownKeys.hasKey(key)
+
+func hasProvider*(kad: KadDHT, key: Key, peerId: PeerId): bool =
+  let id = Opt.some(peerId.getBytes())
+  kad.providerManager.knownKeys.getOrDefault(key).anyIt(it.id == id)
+
+func findProviderRecord(kad: KadDHT, key: Key, peerId: PeerId): Opt[ProviderRecord] =
+  let
+    id = Opt.some(peerId.getBytes())
+    records = kad.providerManager.providerRecords
+  for i in 0 ..< records.len():
+    if records[i].key == key and records[i].provider.id == id:
+      return Opt.some(records[i])
+  Opt.none(ProviderRecord)
+
+func providerExpiry*(kad: KadDHT, key: Key, peerId: PeerId): UnixTimestamp =
+  ## 0 when no record matches.
+  let record = kad.findProviderRecord(key, peerId).valueOr:
+    return 0
+  record.expiresAt
+
+func providerAddrs*(kad: KadDHT, key: Key, peerId: PeerId): seq[MultiAddress] =
+  let record = kad.findProviderRecord(key, peerId).valueOr:
+    return @[]
+  record.provider.addrs
+
+func recordsPerPeer*(kad: KadDHT, peerId: PeerId): int =
+  kad.providerManager.recordsPerPeer.getOrDefault(peerId)
+
+func providerRecordsFull*(kad: KadDHT): bool =
+  let records = kad.providerManager.providerRecords
+  records.len() == records.capacity
+
+func providedKeysFull*(kad: KadDHT): bool =
+  let keys = kad.providerManager.providedKeys
+  keys.len() == keys.capacity
+
+func providedCount*(kad: KadDHT): int =
+  kad.providerManager.providedKeys.len()
+
+func isProvided*(kad: KadDHT, key: Key): bool =
+  kad.providerManager.providedKeys.hasKey(key)
+
+proc markProvided*(kad: KadDHT, key: Key, at: UnixTimestamp = nowUnixSeconds()) =
+  ## Provides `key` locally without announcing it.
+  kad.providerManager.providedKeys.provided[key] = at
+
+proc seedProvider*(
+    kad: KadDHT,
+    key: Key,
+    provider: Provider,
+    expiresAt: UnixTimestamp = UnixTimestamp.after(1.hours),
+) =
+  kad.providerManager.knownKeys.mgetOrPut(key, initHashSet[Provider]()).incl(provider)
+  kad.providerManager.providerRecords.push(
+    ProviderRecord(provider: provider, expiresAt: expiresAt, key: key)
+  )
+  provider.id.ifValue(id):
+    PeerId.init(id).ifValue(peerId):
+      kad.providerManager.recordsPerPeer.inc(peerId)
+
+proc backdateExpiry*(kad: KadDHT) =
+  ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
+  let records = kad.providerManager.providerRecords
+  var aged: seq[ProviderRecord]
+  while records.len() > 0:
+    var record = records.pop()
+    record.expiresAt -= 1
+    aged.add(record)
+  for record in aged:
+    records.push(record)
+
 proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
   let record = kad.dataTable.get(key).valueOr:
     checkpoint("containsData: key not found: " & $key.shortLog())
