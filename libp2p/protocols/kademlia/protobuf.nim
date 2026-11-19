@@ -72,6 +72,7 @@ type
     tWaitFor* {.fieldNumber: 4, ext.}: Opt[Duration]
       # field 4 - Remaining wait time in seconds
     signature* {.fieldNumber: 5.}: Opt[seq[byte]] # field 5 - Ed25519 signature
+    serviceIds* {.fieldNumber: 6.}: seq[seq[byte]] # field 6 - Service ids of the batch
 
   # Register message for Service Discovery
   RegisterMessage* {.proto2.} = object
@@ -79,6 +80,10 @@ type
     status* {.fieldNumber: 2, ext.}: Opt[RegistrationStatus]
       # field 2 - Registration status (response only)
     ticket* {.fieldNumber: 3.}: Opt[Ticket] # field 3 - Optional ticket
+    serviceIds* {.fieldNumber: 4.}: seq[seq[byte]]
+      # field 4 - Service ids registered beside `Message.key`
+    accepted* {.fieldNumber: 5.}: seq[seq[byte]]
+      # field 5 - Service ids admitted (response only)
 
   # GetAds message for Service Discovery
   GetAdsMessage* {.proto2.} = object
@@ -173,13 +178,18 @@ proc encode*(
 
 proc toBytes*(ticket: Ticket): seq[byte] {.raises: [], gcsafe.} =
   ## Returns the canonical byte representation of a Ticket used for signing.
-  ## Covers: advertisement || tInit || tMod || tWaitFor
+  ## Covers: advertisement || tInit || tMod || tWaitFor [|| count || (len || id)*]
   let ad = ticket.advertisement.get(@[])
   var buf = newSeqOfCap[byte](ad.len + 8 + 8 + 4)
   buf.add(ad)
   buf.add(@(toBytesBE(ticket.tInit.get(0).uint64)))
   buf.add(@(toBytesBE(ticket.tMod.get(0).uint64)))
   buf.add(@(toBytesBE(ticket.tWaitFor.get(ZeroDuration).seconds.uint32)))
+  if ticket.serviceIds.len > 0:
+    buf.add(@(toBytesBE(ticket.serviceIds.len.uint32)))
+    for id in ticket.serviceIds:
+      buf.add(@(toBytesBE(id.len.uint32)))
+      buf.add(id)
   buf
 
 proc sign*(

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[tables, math, sequtils, net]
+import std/[tables, math, sequtils, net, strformat]
 from std/times import getTime, toUnix
 import chronos, chronicles, results
 import
@@ -81,16 +81,26 @@ proc advertiserIps*(
 
   addrs.getIPs()
 
+func remainingBound[K](
+    timestamps, bounds: Table[K, Moment], key: K, now: Moment
+): Duration =
+  if key notin timestamps:
+    return ZeroDuration
+  bounds.getOrDefault(key, now) - now
+
 proc waitingTime*(
     registrar: Registrar,
     discoConfig: ServiceDiscoveryConfig,
-    serviceId: ServiceId,
+    serviceIds: openArray[ServiceId],
     advertiserIps: seq[IpAddress],
     now: Moment,
-): Duration =
+): Duration {.raises: [].} =
+  ## One wait for a batch: the service terms take the max over `serviceIds`.
   let advertCacheCap = registrar.ads.capacity
   let c = registrar.ads.len.uint64
-  let c_s = registrar.ads.serviceCacheAdsLen(serviceId)
+  var c_s = 0
+  for id in serviceIds:
+    c_s = max(c_s, registrar.ads.serviceCacheAdsLen(id))
 
   let occupancy =
     if c >= advertCacheCap:
@@ -114,27 +124,27 @@ proc waitingTime*(
 
   var waitDuration = w.int64.secs
 
-  if serviceId in registrar.timestampService:
-    let
-      prevTimestamp = registrar.timestampService.getOrDefault(serviceId, now)
-      prevBound = registrar.boundService.getOrDefault(serviceId, now)
-      elapsedDuration = now - prevTimestamp
-      prevWaitDuration = prevBound - prevTimestamp
-    if waitDuration < prevWaitDuration - elapsedDuration:
-      waitDuration = prevWaitDuration - elapsedDuration
+  for id in serviceIds:
+    waitDuration = max(
+      waitDuration,
+      remainingBound(registrar.timestampService, registrar.boundService, id, now),
+    )
 
   for ip in advertiserIps:
-    let ipKey = $ip
-    if ipKey in registrar.timestampIp:
-      let
-        prevTimestamp = registrar.timestampIp.getOrDefault(ipKey, now)
-        prevBound = registrar.boundIp.getOrDefault(ipKey, now)
-        elapsedDuration = now - prevTimestamp
-        prevWaitDuration = prevBound - prevTimestamp
-      if waitDuration < prevWaitDuration - elapsedDuration:
-        waitDuration = prevWaitDuration - elapsedDuration
+    waitDuration = max(
+      waitDuration, remainingBound(registrar.timestampIp, registrar.boundIp, $ip, now)
+    )
 
   return waitDuration
+
+proc waitingTime*(
+    registrar: Registrar,
+    discoConfig: ServiceDiscoveryConfig,
+    serviceId: ServiceId,
+    advertiserIps: seq[IpAddress],
+    now: Moment,
+): Duration {.raises: [].} =
+  registrar.waitingTime(discoConfig, [serviceId], advertiserIps, now)
 
 proc updateLowerBounds*(
     registrar: Registrar,
@@ -186,6 +196,29 @@ proc isValidAdvertisement*(
 
   return ok(ad)
 
+func batchServiceIds*(
+    key: ServiceId, extra: openArray[seq[byte]], maxBatch: int
+): LPResult[seq[ServiceId]] {.raises: [].} =
+  ## `key` first, then the extra ids in message order, without duplicates.
+  var batch = @[key]
+  for raw in extra:
+    if raw.len != IdLength:
+      return err(fmt"service id length {raw.len} != {IdLength}")
+    let id = ServiceId(raw)
+    if id notin batch:
+      batch.add(id)
+
+  if batch.len > maxBatch:
+    return err(fmt"{batch.len} > {maxBatch} service ids in one batch")
+
+  ok(batch)
+
+func bindsBatch(ticket: Ticket, batch: openArray[ServiceId]): bool =
+  ## A ticket with no ids covers `Message.key` alone.
+  if ticket.serviceIds.len == 0:
+    return batch.len == 1
+  ticket.serviceIds == batch.mapIt(seq[byte](it))
+
 proc updateWaitAfterRetry*(
     disco: ServiceDiscovery,
     ticketOpt: Opt[Ticket],
@@ -197,7 +230,10 @@ proc updateWaitAfterRetry*(
     wait -= totalWaitSoFar.seconds
 
 proc isValidTicket(
-    disco: ServiceDiscovery, regMsg: RegisterMessage, now: UnixTimestamp
+    disco: ServiceDiscovery,
+    regMsg: RegisterMessage,
+    batch: openArray[ServiceId],
+    now: UnixTimestamp,
 ): LPResult[Opt[Ticket]] {.raises: [].} =
   let ticket = regMsg.ticket.valueOr:
     return ok(Opt.none(Ticket))
@@ -210,6 +246,9 @@ proc isValidTicket(
 
   if not ticket.verify(registrarPubKey):
     return err("ticket fails verification")
+
+  if not ticket.bindsBatch(batch):
+    return err("message & ticket service ids mismatch")
 
   let
     windowStart = ticket.tMod.get() + ticket.tWaitFor.get().seconds
@@ -324,6 +363,17 @@ proc registration*(
 
     return msg
 
+  let batch = batchServiceIds(
+    serviceId, regMsg.serviceIds, disco.discoConfig.maxBatchServices
+  ).valueOr:
+    trace "Invalid service id batch", error
+
+    cd_register_requests.inc(
+      labelValues = [$kademlia_protobuf.RegistrationStatus.Rejected]
+    )
+
+    return msg
+
   let ad = isValidAdvertisement(regMsg, serviceId).valueOr:
     trace "Invalid advertisement", error
 
@@ -333,7 +383,18 @@ proc registration*(
 
     return msg
 
-  if disco.registrar.ads.hasNewer(serviceId, ad):
+  if not batch.allIt(ad.advertisesService(it)):
+    trace "Advertisement does not advertise every service of the batch",
+      services = batch.len
+
+    cd_register_requests.inc(
+      labelValues = [$kademlia_protobuf.RegistrationStatus.Rejected]
+    )
+
+    return msg
+
+  let fresh = batch.filterIt(not disco.registrar.ads.hasNewer(it, ad))
+  if fresh.len == 0:
     trace "Stale advertisement", peerId = ad.data.peerId, seqNo = ad.data.seqNo
 
     cd_register_requests.inc(
@@ -342,14 +403,15 @@ proc registration*(
 
     return msg
 
-  disco.tracker.recordProvider(serviceId, ad.data.peerId, FromRegistration)
+  for id in fresh:
+    disco.tracker.recordProvider(id, ad.data.peerId, FromRegistration)
 
   #Always use seconds granularity
   let now = Moment.init(Moment.now().epochSeconds, Second)
 
   let unixNow = getTime().toUnix()
 
-  let ticketOpt = disco.isValidTicket(regMsg, unixNow).valueOr:
+  let ticketOpt = disco.isValidTicket(regMsg, batch, unixNow).valueOr:
     trace "Invalid ticket", error
 
     cd_register_requests.inc(
@@ -358,17 +420,20 @@ proc registration*(
 
     return msg
 
-  disco.seatSender(serviceId, peerId)
+  for id in fresh:
+    disco.seatSender(id, peerId)
 
   let ips = disco.advertiserIps(peerId, connectionIps)
-  var tWait = disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now)
+  var tWait = disco.registrar.waitingTime(disco.discoConfig, fresh, ips, now)
 
   disco.updateWaitAfterRetry(ticketOpt, unixNow, tWait)
 
   if tWait <= ZeroDuration:
-    disco.acceptAdvertisement(now, serviceId, peerId, ad, ips)
+    for id in fresh:
+      disco.acceptAdvertisement(now, id, peerId, ad, ips)
 
     msg.register.get().status.get() = kademlia_protobuf.RegistrationStatus.Confirmed
+    msg.register.get().accepted = fresh.mapIt(seq[byte](it))
 
     cd_register_requests.inc(
       labelValues = [$kademlia_protobuf.RegistrationStatus.Confirmed]
@@ -378,13 +443,20 @@ proc registration*(
 
   tWait = min(disco.discoConfig.advertExpiry, tWait)
 
-  disco.registrar.updateLowerBounds(serviceId, ips, tWait, now)
+  for id in fresh:
+    disco.registrar.updateLowerBounds(id, ips, tWait, now)
 
   var ticket = Ticket(
     advertisement: regMsg.advertisement,
     tInit: Opt.some(unixNow),
     tMod: Opt.some(unixNow),
     tWaitFor: Opt.some(tWait),
+    serviceIds:
+      # An old advertiser drops field 6 on decode, and the signature then fails.
+      if batch.len > 1:
+        batch.mapIt(seq[byte](it))
+      else:
+        @[],
   )
 
   ticketOpt.ifValue(t):

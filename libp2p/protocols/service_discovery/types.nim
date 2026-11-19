@@ -35,6 +35,7 @@ const
   Default_P_occ* = 10.0
   Default_G* = 1e-7
   Default_Delta* = 1.secs
+  Default_MaxBatchServices* = 8
   Default_M_buckets* = 16
   Default_IpSimCoefficient* = 1.0
   Default_DialBackoffBase* = 30.secs
@@ -104,6 +105,7 @@ type
     safetyParam*: float64
     ipSimCoefficient*: float64
     registrationWindow*: Duration
+    maxBatchServices*: int ## Service ids one REGISTER may carry.
     bucketsCount*: int
     dialBackoffBase*: Duration
     dialBackoffMax*: Duration ## Cap of the exponential dial backoff.
@@ -162,6 +164,7 @@ proc new*(
     safetyParam = Default_G,
     ipSimCoefficient = Default_IpSimCoefficient,
     registrationWindow = Default_Delta,
+    maxBatchServices = Default_MaxBatchServices,
     bucketsCount = Default_M_buckets,
     dialBackoffBase = Default_DialBackoffBase,
     dialBackoffMax = Default_DialBackoffMax,
@@ -170,6 +173,7 @@ proc new*(
   doAssert advertCacheCap > 0, "advertCacheCap must be > 0"
   doAssert ipSimCoefficient >= 0.0, "ipSimCoefficient must be >= 0"
   doAssert maxDialFailures > 0, "maxDialFailures must be > 0"
+  doAssert maxBatchServices > 0, "maxBatchServices must be > 0"
   doAssert dialBackoffBase > 0.nanoseconds, "dialBackoffBase must be > 0"
   doAssert dialBackoffMax > 0.nanoseconds, "dialBackoffMax must be > 0"
   ServiceDiscoveryConfig(
@@ -183,6 +187,7 @@ proc new*(
     safetyParam: safetyParam,
     ipSimCoefficient: ipSimCoefficient,
     registrationWindow: registrationWindow,
+    maxBatchServices: maxBatchServices,
     bucketsCount: bucketsCount,
     dialBackoffBase: dialBackoffBase,
     dialBackoffMax: dialBackoffMax,
