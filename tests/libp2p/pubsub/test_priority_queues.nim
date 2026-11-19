@@ -442,6 +442,9 @@ suite "Priority queue behavior":
       lowBlockedByMedium.slowPeerPenaltyDelta == 0.0
 
 suite "Priority queue byte budgets":
+  # 2 of the 32 bytes are reserved for High, so Medium and Low together may use 30
+  const maxOutboundBytes = 32
+
   teardown:
     checkTrackers()
 
@@ -484,6 +487,29 @@ suite "Priority queue byte budgets":
       await peer.stopTasks()
       await conn.close()
 
+  asyncTest "A pending frame larger than the budget refuses all later traffic":
+    # TODO: iftech/nim-libp2p#3457
+    for (priority, isDisconnected, slowPeerPenalty) in [
+      (High, true, 0.0), # the peer is disconnected
+      (Medium, false, 1.0), # the message is dropped with a penalty
+      (Low, false, 1.0), # the message is dropped with a penalty
+    ]:
+      let disconnected = new bool
+      let peer = createTestPeer(
+        maxOutboundBytes = 2, onEvent = newDisconnectRecorder(disconnected)
+      )
+      let conn = peer.stallSendStream()
+      defer:
+        await peer.stopTasks()
+        await conn.close()
+      # with nothing retained, a publish larger than the budget is written at once
+      await peer.sendEncoded(@[1'u8, 2, 3], Medium)
+      # a message that fits the budget on its own, sent while that write is pending
+      await peer.sendEncoded(@[4'u8], priority)
+      check:
+        disconnected[] == isDisconnected
+        peer.slowPeerPenalty == slowPeerPenalty
+
   asyncTest "High-priority reservation limits non-high backlog":
     let peer = createTestPeer(maxHigh = 10, maxMedium = 10, maxOutboundBytes = 32)
     let conn = peer.stallSendStream()
@@ -525,6 +551,76 @@ suite "Priority queue byte budgets":
       peer.queuedBytes(Low) == 0
       peer.slowPeerPenalty == 0.0
       conn.pendingWrites.len == 2
+
+  asyncTest "High leaves queued medium traffic when evicting low traffic frees enough":
+    let peer = createTestPeer(maxOutboundBytes = 10)
+    let conn = peer.stallSendStream()
+    defer:
+      await peer.stopTasks()
+      await conn.close()
+    let highMsgs = @[@[1'u8], @[2'u8, 2, 2, 2]]
+    let lowMsg = @[3'u8, 3, 3, 3]
+    let mediumMsg = @[4'u8, 4, 4, 4]
+
+    # the first high message's write stays pending, so the worker leaves the next two messages queued
+    await peer.sendEncoded(highMsgs[0], High)
+    await peer.sendEncoded(lowMsg, Low)
+    await peer.sendEncoded(mediumMsg, Medium)
+    # 9 of the 10 bytes are retained, so the second high message needs 3 more,
+    # and evicting the low message alone frees 4
+    await peer.sendEncoded(highMsgs[1], High)
+
+    check:
+      # the eviction made room, so the second high message is written at once
+      conn.writes == highMsgs
+      # the low message was evicted
+      peer.queuedBytes(Low) == 0
+      # the medium message stays queued
+      peer.queuedBytes(Medium) == mediumMsg.len
+
+  asyncTest "Medium evicts queued low traffic when only one byte limit is short":
+    for (highSize, lowSize, mediumSize) in [
+      (1, 29, 2), # only Medium and Low are short: 29 + 2 = 31 of their 30 bytes
+      (10, 20, 5), # only the total is short: 10 + 20 + 5 = 35 of 32 bytes
+    ]:
+      let peer = createTestPeer(maxOutboundBytes = maxOutboundBytes)
+      let conn = peer.stallSendStream()
+      defer:
+        await peer.stopTasks()
+        await conn.close()
+      # the high message's write stays pending, so the worker leaves the next messages queued
+      await peer.sendEncoded(newSeq[byte](highSize), High)
+      await peer.sendEncoded(newSeq[byte](lowSize), Low)
+      await peer.sendEncoded(newSeq[byte](mediumSize), Medium)
+      check:
+        # the low message was evicted
+        peer.queuedBytes(Low) == 0
+        # the medium message is queued in its place
+        peer.queuedBytes(Medium) == mediumSize
+
+  asyncTest "Medium evicts no queued low traffic when the message would still be refused":
+    for (maxMedium, highSize, queuedMediumSize, lowSize, mediumSize) in [
+      (2, 1, 25, 3, 6), # without the low message, Medium and Low use 31 of 30 bytes
+      (2, 25, 2, 3, 6), # without the low message, the total is 33 of 32 bytes
+      (1, 1, 1, 28, 3), # evicting would make room, but the medium queue is full
+    ]:
+      let peer =
+        createTestPeer(maxMedium = maxMedium, maxOutboundBytes = maxOutboundBytes)
+      let conn = peer.stallSendStream()
+      defer:
+        await peer.stopTasks()
+        await conn.close()
+      # the high message's write stays pending, so the worker leaves the next messages queued
+      await peer.sendEncoded(newSeq[byte](highSize), High)
+      await peer.sendEncoded(newSeq[byte](queuedMediumSize), Medium)
+      await peer.sendEncoded(newSeq[byte](lowSize), Low)
+      await peer.sendEncoded(newSeq[byte](mediumSize), Medium)
+      check:
+        # the low message stays queued
+        peer.queuedBytes(Low) == lowSize
+        # the new medium message was dropped with a penalty
+        peer.queuedBytes(Medium) == queuedMediumSize
+        peer.slowPeerPenalty == 1.0
 
   asyncTest "Worker-held messages stay charged while waiting and writing":
     for priorityValue in [Medium, Low]:
