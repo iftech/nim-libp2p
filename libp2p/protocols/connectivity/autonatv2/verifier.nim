@@ -37,11 +37,12 @@ proc new*(
   client.setup(switch)
   T(switch: switch, client: client, rng: rng)
 
-proc selectPeer(self: AutonatV2Verifier): Opt[PeerId] =
+proc selectPeer(self: AutonatV2Verifier, excluded: seq[PeerId]): Opt[PeerId] =
   ## A peer which dialed us proves nothing. It has a path to us already.
   self.rng.pickOne(
     self.switch.connectedPeers(Direction.Out).filterIt(
-      $AutonatV2Codec.DialRequest in self.switch.peerStore[ProtoBook][it] and
+      it notin excluded and
+        $AutonatV2Codec.DialRequest in self.switch.peerStore[ProtoBook][it] and
         not self.switch.hasIncomingConn(it)
     )
   )
@@ -77,8 +78,17 @@ method verify*(
     trace "No incoming slots left, skipping verification", address
     return Opt.none(AddrState)
 
-  let peerId = self.selectPeer().valueOr:
-    trace "No peer to ask", address
-    return Opt.none(AddrState)
-
-  await self.askPeer(peerId, address)
+  var asked: seq[PeerId]
+  var failures = 0
+  for i in 0 ..< 3:
+    let peerId = self.selectPeer(asked).valueOr:
+      return Opt.none(AddrState)
+    asked.add(peerId)
+    let verdict = await self.askPeer(peerId, address)
+    if verdict == Opt.some(AddrState.Confirmed):
+      return verdict
+    if verdict == Opt.some(AddrState.Unreachable):
+      inc failures
+  if failures == 3:
+    return Opt.some(AddrState.Unreachable)
+  Opt.none(AddrState)
