@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[tables, sequtils, sets, heapqueue, hashes]
+import std/[tables, sequtils, sets, heapqueue, hashes, algorithm]
 from std/times import format, getTime, parse, toTime, toUnix, utc
 import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
@@ -116,8 +116,14 @@ proc toPeerId*(k: Key): LPResult[PeerId] =
 
 proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
   let peer = ?k.toPeerId()
-  let allAddrs = switch.peerStore[AddressBook][peer]
-  let addrs = allAddrs[0 ..< min(allAddrs.len, MaxPeerAddrs)]
+  let book = switch.peerStore[AddressBook]
+  let live = book[peer]
+  let addrs = book
+    .entries(peer)
+    .filterIt(it.address in live)
+    .sortedByIt(-ord(it.confidence))
+    .mapIt(it.address)
+    .take(MaxPeerAddrs)
   if addrs.len == 0:
     return err("Could not find peer addresses in address book")
 

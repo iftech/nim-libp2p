@@ -844,6 +844,57 @@ suite "AddressBook TTL / confidence":
       peerId2 in recorded[]
       peerId3 notin recorded[]
 
+suite "AddressBook resource limits":
+  test "connected addresses replace the oldest lowest-confidence entry":
+    let pid = PeerId.random()
+    let addrs = (1 .. MaxAddressesPerPeer).toSeq().mapIt(ma("/ip4/8.8.8.8/tcp/" & $it))
+    let connected = ma("/ip4/1.1.1.1/tcp/1")
+    for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
+      let book = AddressBook.new()
+      book.set(pid, addrs, confidence)
+      book.book[pid][5].lastUpdated = Moment.now() - 1.hours
+      book.markConnected(pid, connected)
+      check book[pid].len == MaxAddressesPerPeer
+      check connected in book[pid]
+      check addrs[5] notin book[pid]
+      check addrs[0] in book[pid]
+
+    let book = AddressBook.new()
+    book.set(pid, addrs, AddressConfidence.High)
+    book.book[pid][0].lastUpdated = Moment.now() - 2.hours
+    book.book[pid][5].confidence = AddressConfidence.Medium
+    book.book[pid][6].confidence = AddressConfidence.Medium
+    book.book[pid][6].lastUpdated = Moment.now() - 1.hours
+    book.markConnected(pid, connected)
+    check addrs[6] notin book[pid]
+    check addrs[0] in book[pid]
+    check addrs[5] in book[pid]
+
+  test "set and extend count normalized unique inputs within a bounded scan":
+    let pid = PeerId.random()
+    let expected =
+      (1 .. MaxAddressesPerPeer).toSeq().mapIt(ma("/ip4/8.8.8.8/tcp/" & $it))
+    var duplicated: seq[MultiAddress]
+    for address in expected:
+      duplicated.add(address)
+      duplicated.add(ma($address & "/p2p/" & $pid))
+    for useSet in [true, false]:
+      let book = AddressBook.new()
+      if useSet:
+        book.set(pid, duplicated)
+      else:
+        book.extend(pid, duplicated)
+      check book[pid] == expected
+
+      let sentinel = ma("/ip4/1.1.1.1/tcp/1")
+      let flood = repeat(expected[0], MaxAddressesPerPeer * 4) & @[sentinel]
+      discard book.del(pid)
+      if useSet:
+        book.set(pid, flood)
+      else:
+        book.extend(pid, flood)
+      check book[pid] == @[expected[0]]
+
 suite "AddressBook TTL pruning loop":
   let
     peerId1 = PeerId.random()

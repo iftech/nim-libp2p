@@ -116,8 +116,9 @@ proc updateShortlist*(state: LookupState, msg: Message): seq[PeerInfo] {.raises:
   var newPeerInfos: seq[PeerInfo]
   let cap = state.kad.config.limits.maxShortlistSize
   let pending = state.kad.pendingAdmissions(state.rtable.selfId)
+  let maxPeers = max(MaxCloserPeers, 2 * state.kad.config.replication)
 
-  for i in 0 ..< min(msg.closerPeers.len, MaxCloserPeers):
+  for i in 0 ..< min(msg.closerPeers.len, maxPeers):
     let newPeer = msg.closerPeers[i]
     let addrs = newPeer.addrs[0 ..< min(newPeer.addrs.len, MaxPeerAddrs)]
     let raw = newPeer.id.valueOr:
