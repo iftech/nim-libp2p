@@ -299,8 +299,7 @@ func replacementEntries(
   var newEntries = newSeqOfCap[AddressEntry](min(addrs.len, MaxAddressesPerPeer))
   for ma in addrs:
     let normalized = stripPeerId(ma)
-    if normalized in preserved or
-        newEntries.len + preserved.len < MaxAddressesPerPeer or
+    if normalized in preserved or newEntries.len + preserved.len < MaxAddressesPerPeer or
         newEntries.findWithAddress(normalized) >= 0:
       preserved.excl(normalized)
       newEntries.upsert(

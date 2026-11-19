@@ -4,7 +4,7 @@
 
 import std/sequtils
 import chronos
-import ../../../libp2p/[peerid, peerstore, multiaddress, protocols/kademlia]
+import ../../../libp2p/[peerid, peerinfo, peerstore, multiaddress, protocols/kademlia]
 import ../../../libp2p/protocols/kademlia/[find, types]
 import ../../tools/[unittest, multiaddress]
 import ./utils
@@ -81,3 +81,12 @@ suite "Kademlia reply resource limits":
     check reply.addrs.len == MaxPeerAddrs
     check reply.addrs[0 .. 1] == @[infinite, verified]
     check expired notin reply.addrs
+
+  test "admission filters undialable addresses before limiting stored addresses":
+    let kad = setupKad()
+    let pid = PeerId.random()
+    let direct = ma("/ip4/8.8.8.8/tcp/1")
+    let addrs = repeat(ma("/ip4/0.0.0.0/tcp/1"), MaxPeerAddrs) & @[direct]
+    kad.updatePeers(@[PeerInfo(peerId: pid, addrs: addrs)])
+    check kad.switch.peerStore[AddressBook][pid] == @[direct]
+    check pid.toKey() in kad.rtable.allKeys()

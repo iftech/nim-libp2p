@@ -870,7 +870,7 @@ suite "AddressBook resource limits":
     check addrs[0] in book[pid]
     check addrs[5] in book[pid]
 
-  test "set and extend count normalized unique inputs within a bounded scan":
+  test "set and extend count normalized unique inputs":
     let pid = PeerId.random()
     let expected =
       (1 .. MaxAddressesPerPeer).toSeq().mapIt(ma("/ip4/8.8.8.8/tcp/" & $it))
@@ -893,7 +893,36 @@ suite "AddressBook resource limits":
         book.set(pid, flood)
       else:
         book.extend(pid, flood)
-      check book[pid] == @[expected[0]]
+      check book[pid] == @[expected[0], sentinel]
+
+  test "set preserves verified addresses when incoming high-confidence addresses fill the book":
+    let pid = PeerId.random()
+    let incoming =
+      (1 .. MaxAddressesPerPeer).toSeq().mapIt(ma("/ip4/8.8.8.8/tcp/" & $it))
+    let verified = ma("/ip4/1.1.1.1/tcp/1")
+    for confidence in [AddressConfidence.High, AddressConfidence.Infinite]:
+      let book = AddressBook.new()
+      book.set(pid, @[verified], confidence)
+      book.set(pid, incoming, AddressConfidence.High)
+      check verified in book[pid]
+      check book[pid].len == MaxAddressesPerPeer
+      check book.entries(pid).filterIt(it.address == verified)[0].confidence ==
+        confidence
+
+  test "extend refreshes stored addresses beyond the capacity cutoff":
+    let pid = PeerId.random()
+    let stored = ma("/ip4/1.1.1.1/tcp/1")
+    let book = AddressBook.new()
+    book.set(pid, @[stored], AddressConfidence.High)
+    book.book[pid][0].lastUpdated = Moment.now() - 25.hours
+    let incoming =
+      (1 .. MaxAddressesPerPeer * 4).toSeq().mapIt(ma("/ip4/8.8.8.8/tcp/" & $it))
+    let before = Moment.now()
+    book.extend(pid, incoming & @[ma($stored & "/p2p/" & $pid)], AddressConfidence.High)
+    check stored in book[pid]
+    check book.entries(pid)[0].confidence == AddressConfidence.High
+    check book.entries(pid)[0].lastUpdated >= before
+    check book[pid].len == MaxAddressesPerPeer
 
 suite "AddressBook TTL pruning loop":
   let
