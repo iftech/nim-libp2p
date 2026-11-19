@@ -12,7 +12,7 @@ this directory provides the test fixtures, coordination, and assertions.
 ## Run the suite
 
 Install Nim, Rust 1.98.1, and Python 3, then configure the repository's Nim
-dependencies with `make setup`. CI uses Nim 2.2.10.
+dependencies with `make setup`. CI uses Nim 2.2.14.
 
 From the repository root, build both peers and run them together:
 

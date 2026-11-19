@@ -56,9 +56,9 @@ jobs:
             builder: windows-2022
             shell: "msys2 {0}"
         nim:
-          - ref: v2.2.4
+          - ref: v2.2.6
             memory_management: refc
-          - ref: v2.2.10
+          - ref: v2.2.14
             memory_management: refc
           - ref: devel
             memory_management: refc

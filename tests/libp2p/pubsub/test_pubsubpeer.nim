@@ -7,9 +7,10 @@ import std/sequtils
 import chronos
 import ./utils
 import ../../../libp2p/stream/bufferstream
+import ../../../libp2p/protocols/protocol
 import ../../../libp2p/protocols/pubsub/[pubsubpeer, gossipsub]
 import ../../../libp2p/protocols/pubsub/rpc/messages
-import ../../tools/[unittest, bufferstream]
+import ../../tools/[unittest, bufferstream, switch_builder, multiaddress]
 import ./extensions/extension_recording
 
 type
@@ -51,6 +52,8 @@ proc newPeer(
   )
 
 suite "PubSubPeer send stream":
+  const topic = "foobar"
+
   teardown:
     checkTrackers()
 
@@ -106,6 +109,142 @@ suite "PubSubPeer send stream":
 
     await peer.stopTasks()
 
+  asyncTest "budget rejection backs off and recovers when a slot is released":
+    let remote = newPeer(nil, 50.milliseconds, 200.milliseconds)
+    let admitted = Future[void].Raising([CancelledError]).init()
+    proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      if not admitted.finished:
+        admitted.complete()
+      await remote.handleRecvStream(stream)
+
+    let protocol =
+      LPProtocol.new(@[GossipSubCodec_12], handler, maxIncomingStreamsTotal = 1)
+    let listener = makeStandardSwitch(TcpAutoAddress)
+    let dialer = makeStandardSwitch(TcpAutoAddress)
+    listener.mount(protocol)
+    proc echoHandler(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      try:
+        for _ in 0 ..< 2:
+          await stream.writeLp(await stream.readLp(1024))
+      except LPStreamError:
+        discard
+
+    listener.mount(LPProtocol.new(@["/test/other/1"], echoHandler))
+    await listener.start()
+    await dialer.start()
+    defer:
+      await dialer.stop()
+      await listener.stop()
+    let other = await dialer.dial(
+      listener.peerInfo.peerId, listener.peerInfo.addrs, "/test/other/1"
+    )
+    # Complete optimistic negotiation so this idle stream does not block mplex reads.
+    await other.writeLp(@[byte 41])
+    check (await other.readLp(1024)) == @[byte 41]
+    let occupiedBy = PeerId.random()
+    check protocol.reserveIncoming(occupiedBy)
+    var attempts: seq[Moment]
+    let thirdAttempt = Future[void].Raising([CancelledError]).init()
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      attempts.add(Moment.now())
+      if attempts.len == 3:
+        thirdAttempt.complete()
+      try:
+        return await dialer.dial(listener.peerInfo.peerId, GossipSubCodec_12)
+      except DialFailedError as e:
+        raise newException(GetStreamDialError, e.msg)
+
+    let peer = newPeer(dial, 50.milliseconds, 200.milliseconds)
+    peer.connect()
+    defer:
+      await peer.stopTasks()
+      await remote.stopTasks()
+    await thirdAttempt
+    check not admitted.finished
+    check attempts[1] - attempts[0] >= 40.milliseconds
+    check attempts[2] - attempts[1] >= 80.milliseconds
+    check dialer.isConnected(listener)
+    await other.writeLp(@[byte 42])
+    check (await other.readLp(1024)) == @[byte 42]
+    await other.close()
+    protocol.releaseIncoming(occupiedBy)
+    await admitted
+    check peer.connected
+
+  asyncTest "short-lived send streams back off and recover":
+    var attempts: seq[Moment]
+    let survivor = TestBufferStream.new(noop)
+    let connected = Future[void].Raising([CancelledError]).init()
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      attempts.add(Moment.now())
+      if attempts.len <= 4:
+        let stream = TestBufferStream.new(noop)
+        await stream.close()
+        return stream
+      return survivor
+
+    proc onEvent(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].} =
+      if event.kind == PubSubPeerEventKind.StreamOpened and peer.sendStream == survivor:
+        connected.complete()
+
+    let peer = newPeer(dial, 50.milliseconds, 200.milliseconds, onEvent)
+    peer.connect()
+    defer:
+      await peer.stopTasks()
+    await connected
+    check attempts.len == 5
+    check:
+      attempts[1] - attempts[0] >= 40.milliseconds
+      attempts[2] - attempts[1] >= 80.milliseconds
+      attempts[3] - attempts[2] >= 160.milliseconds
+      attempts[4] - attempts[3] >= 160.milliseconds
+
+  asyncTest "a stable stream resets backoff after earlier failures":
+    var attempts = 0
+    let stable = TestBufferStream.new(noop)
+    let recovered = TestBufferStream.new(noop)
+    let stableOpened = Future[void].Raising([CancelledError]).init()
+    let recoveredOpened = Future[void].Raising([CancelledError]).init()
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      inc attempts
+      if attempts <= 3:
+        raise newException(GetStreamDialError, "unreachable")
+      if attempts == 4:
+        return stable
+      if attempts == 5:
+        let shortLived = TestBufferStream.new(noop)
+        await shortLived.close()
+        return shortLived
+      return recovered
+
+    proc onEvent(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].} =
+      if event.kind == PubSubPeerEventKind.StreamOpened:
+        if peer.sendStream == stable:
+          stableOpened.complete()
+        elif peer.sendStream == recovered:
+          recoveredOpened.complete()
+
+    let peer = newPeer(dial, 50.milliseconds, 400.milliseconds, onEvent)
+    peer.connect()
+    defer:
+      await peer.stopTasks()
+      await stable.close()
+      await recovered.close()
+    await stableOpened
+    await sleepAsync(peer.sendStreamRetryMaxDelay + 50.milliseconds)
+    await stable.close()
+    await recoveredOpened.wait(200.milliseconds)
+    check attempts == 6
+    check peer.connected
+
   asyncTest "topic stream routing preserves send observer changes":
     let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
     peer.extensionsState =
@@ -135,6 +274,85 @@ suite "PubSubPeer send stream":
       TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
         TopicRPC(publish: Opt.some(TopicScopedMessage(data: @[2.byte])))
       msg == RPCMsg.withMessages(Message(topic: "original", data: @[1.byte]))
+      recorder.violations == 0
+
+  asyncTest "topic stream routing carries a message a send observer adds to a subscription":
+    let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
+    peer.extensionsState =
+      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+    let recorder = TopicStreamsRecorder.new()
+    let added = Message(topic: topic, data: @[1.byte])
+
+    # the send observer adds a message to every RPC the peer sends
+    proc onSend(p: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
+      msg.messages.add(added)
+
+    peer.observers = new(seq[PubSubObserver])
+    peer.observers[].add(PubSubObserver(onSend: onSend))
+    peer.extensionsState.initTopicStreams(
+      peer.peerId, 1024, recorder.dial(), recorder.receive(), recorder.violation()
+    )
+    defer:
+      await peer.stopTasks()
+      await recorder.closeOutgoingStreams()
+    # topic streams negotiated, so messages to this peer must go on a topic stream
+    check peer.extensionsState.negotiateTopicStreams(
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
+    # an RPC without messages, only a subscription
+    peer.sendResponse(
+      RPCMsg.withSubscriptions(
+        @[SubOpts(topic: Opt.some(topic), subscribe: Opt.some(true))]
+      ),
+      false,
+      MessagePriority.High,
+    )
+    # the message the observer added goes out on a topic stream
+    check:
+      TopicRPCHeader.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        TopicRPCHeader(topic: Opt.some(topic))
+      TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        added.topicRPC()
+      recorder.violations == 0
+
+  asyncTest "topic stream writes a Medium priority message before an earlier Low priority one":
+    let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
+    peer.extensionsState =
+      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+    let recorder = TopicStreamsRecorder.new()
+    let allowDial = Future[void].Raising([CancelledError]).init("allowDial")
+
+    # the topic stream opens only after the test completes allowDial
+    proc heldDial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+      let stream = await recorder.dial()()
+      # the writer takes no message until the stream opens, so both messages queue first
+      await allowDial
+      return stream
+
+    peer.extensionsState.initTopicStreams(
+      peer.peerId, 1024, heldDial, recorder.receive(), recorder.violation()
+    )
+    defer:
+      await peer.stopTasks()
+      await recorder.closeOutgoingStreams()
+    # topic streams negotiated, so messages to this peer go on a topic stream
+    check peer.extensionsState.negotiateTopicStreams(
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
+    let relayed = Message(topic: topic, data: @[1.byte])
+    let published = Message(topic: topic, data: @[2.byte])
+    # the Low priority message is queued first, the Medium one second
+    peer.sendResponse(RPCMsg.withMessages(relayed), false, MessagePriority.Low)
+    peer.send(RPCMsg.withMessages(published), false, MessagePriority.Medium)
+    allowDial.complete() # the stream opens and the writer starts taking messages
+    # after the header, the Medium priority message is written before the Low one
+    check:
+      TopicRPCHeader.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        TopicRPCHeader(topic: Opt.some(topic))
+      TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        published.topicRPC()
+      TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        relayed.topicRPC()
       recorder.violations == 0
 
 suite "PubSubPeer receive streams":

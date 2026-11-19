@@ -336,16 +336,21 @@ proc mountKad(
     return err(e)
   ok()
 
-proc mountServiceDiscovery(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
+proc mountServiceDiscovery(
+    lib: LibP2P,
+    cfg: ParsedServiceDiscovery,
+    bootstrapNodes: seq[(PeerId, seq[MultiAddress])],
+): Result[void, string] =
   try:
     let sd = ServiceDiscovery.new(
       lib.switch,
-      bootstrapNodes = cfg.bootstrapNodes,
+      bootstrapNodes = bootstrapNodes,
       config = defaultKadConfig(),
       rng = lib.rng,
-      client = cfg.serviceDiscoveryMode == ServiceDiscoveryMode.Client,
+      client = cfg.client,
       codec = ExtendedServiceDiscoveryCodec,
-      xprPublishing = not cfg.serviceDiscoveryDisableXprPublishing,
+      discoConfig = cfg.config,
+      xprPublishing = cfg.xprPublishing,
     )
     lib.switch.mount(sd)
     lib.kad = Opt.some(KadDHT(sd))
@@ -357,8 +362,8 @@ proc mountProtocols(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
   if cfg.gossipsub.mount:
     ?mountGossipsub(lib, cfg.gossipsub)
 
-  if cfg.mountServiceDiscovery:
-    ?mountServiceDiscovery(lib, cfg)
+  if cfg.serviceDiscovery.mount:
+    ?mountServiceDiscovery(lib, cfg.serviceDiscovery, cfg.bootstrapNodes)
   elif cfg.mountKad:
     ?mountKad(lib, cfg.bootstrapNodes)
 
@@ -505,13 +510,24 @@ type CGossipsubConfig {.exportc: "libp2p_gossipsub_config", bycopy.} = object
   overheadRateLimit: CRateLimitConfig
   disconnectPeerAboveRateLimit: cint
 
+type CServiceDiscoveryConfig {.exportc: "libp2p_service_discovery_config", bycopy.} = object
+  mount: cint
+  mode: cint
+  disableXprPublishing: cint
+  kRegister: cint
+  kLookup: cint
+  fLookup: cint
+  fReturn: cint
+  bucketsCount: cint
+  advertExpiryMs: int64
+  registrationWindowMs: int64
+  advertCacheCap: cint
+
 type CLibp2pConfig {.exportc: "libp2p_config", bycopy.} = object
   logLevel: cint
   gossipsub: CGossipsubConfig
   mountKad: cint
-  mountServiceDiscovery: cint
-  serviceDiscoveryMode: cint
-  serviceDiscoveryDisableXprPublishing: cint
+  serviceDiscovery: CServiceDiscoveryConfig
   dnsResolver: cstring
   addrs: ptr cstring
   addrsLen: csize_t
@@ -923,8 +939,9 @@ proc libp2pKadPutValue*(
 proc libp2pKadGetValue*(
     lib: LibP2P, req: KadGetValueRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
-  ## Looks `key` up on the DHT. `quorum` is how many agreeing records to
-  ## require; pass a negative value for the default.
+  ## Looks `key` up on the DHT. `quorum` counts valid records for early stopping;
+  ## pass a negative value for the default. An exhausted search returns the best
+  ## valid record found even below quorum, or an error if none was found.
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
   if req.quorum == 0:

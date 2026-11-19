@@ -11,6 +11,8 @@
 
 static const char *ServiceId = "/cbind/disco/demo-service";
 static const char *ServiceData = "demo-payload";
+// Replaces the 900 s core default.
+static const int64_t AdvertExpiryMs = 120000;
 
 // A lookup answers with up to Default_F_lookup (30) records.
 #define MAX_RECORDS 32
@@ -61,7 +63,8 @@ static LibP2PCtx *discoNode(const char *listenAddr, const char *label,
   NimFfiStr addrSlot = nimffi_str(listenAddr);
   Libp2pConfig cfg;
   memset(&cfg, 0, sizeof(cfg));
-  cfg.mountServiceDiscovery = true;
+  cfg.serviceDiscovery.mount = true;
+  cfg.serviceDiscovery.advertExpiryMs = AdvertExpiryMs;
   cfg.addrs.data = &addrSlot;
   cfg.addrs.len = 1;
   cfg.muxer = MUXER_TYPE_MPLEX;

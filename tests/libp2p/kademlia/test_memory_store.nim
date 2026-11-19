@@ -18,4 +18,6 @@ suite "MemoryKadStore default limits":
         maxValues: Opt.some(DefaultMaxLocalRecords),
         maxProviders: Opt.some(DefaultProviderRecordCapacity),
         maxProvided: Opt.some(DefaultProvidedKeyCapacity),
+        maxProviderRecordsPerPeer:
+          Opt.some(defaultMaxProviderRecordsPerPeer(DefaultProviderRecordCapacity)),
       )

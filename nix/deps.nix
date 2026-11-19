@@ -5,8 +5,8 @@
 {
   nim = pkgs.fetchgit {
     url = "https://github.com/nim-lang/Nim.git";
-    rev = "9fe2137fa2f3f66cf5a44f357d461829ac9e20c4";
-    sha256 = "1d2d9pv3x3i7im1cbnbj3qg9rvqg34f320pzjb1xriay89d30kr7";
+    rev = "44b94bcab08cc3c61c942f91d8a7d2cd3ac222b6";
+    sha256 = "0k8591pzwsj4wni1yk51xlwayim2nazchg217vrwwkzkhnvya5jc";
     fetchSubmodules = true;
   };
 

@@ -22,12 +22,33 @@ suite "GossipSubParams validation":
       params.topicStreamsConfig.isNone
 
   test "topic stream configuration is validated":
-    check GossipSubParams
-      .init(topicStreamsConfig = Opt.some(TopicStreamsConfig()))
-      .validateParameters().isOk
-    check GossipSubParams
-      .init(topicStreamsConfig = Opt.some(TopicStreamsConfig(maxIncomingStreams: 2)))
-      .validateParameters().isErr
+    for config in [
+      TopicStreamsConfig(), # default limits
+      # each limit at its lowest accepted value
+      TopicStreamsConfig(maxIncomingStreams: 3),
+      TopicStreamsConfig(maxOutgoingStreams: 1),
+      TopicStreamsConfig(maxQueuedBytes: 1),
+      TopicStreamsConfig(maxIncomingBytes: 1),
+      TopicStreamsConfig(maxQueuedMessages: 1),
+    ]:
+      check GossipSubParams
+        .init(topicStreamsConfig = Opt.some(config))
+        .validateParameters()
+        .isOk()
+
+    # each limit just below its lowest accepted value
+    for config in [
+      TopicStreamsConfig(maxIncomingStreams: 2),
+      TopicStreamsConfig(maxOutgoingStreams: 0),
+      TopicStreamsConfig(maxQueuedBytes: 0),
+      TopicStreamsConfig(maxIncomingBytes: 0),
+      TopicStreamsConfig(maxQueuedMessages: 0),
+    ]:
+      let res =
+        GossipSubParams.init(topicStreamsConfig = Opt.some(config)).validateParameters()
+      check:
+        res.isErr()
+        res.error == "gossipsub: invalid topic stream limits"
 
   test "dOut fails when equal to dLow":
     const errorMessage =

@@ -163,6 +163,9 @@ type
     # Task for processing non-priority message queue.
     sendNonHighPriorityTask: Future[void]
 
+  ## Opens the requested codec. Topic-stream peers use /gsts/v0beta for
+  ## payloads and the GossipSub codec for control RPCs. Custom topic writers
+  ## reuse the stream until it closes or the topic is unsubscribed.
   CustomStreamCreationProc* = proc(
     destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
   ): Stream {.gcsafe, raises: [].}
@@ -200,6 +203,7 @@ type
     observers*: ref seq[PubSubObserver] # ref as in smart_ptr
     score*: float64
     subscribedTopics*: int # distinct topics this peer is tracked as subscribed to
+    subscribedTopicBytes*: int
     sentIHaves*: Deque[HashSet[MessageId]]
     iDontWants*: Deque[HashSet[SaltedId]]
       ## IDONTWANT contains unvalidated message id:s which may be long and/or
@@ -219,6 +223,7 @@ type
     maxLowPriorityQueueLen*: int
     sendStreamRetryBaseDelay*: Duration
     sendStreamRetryMaxDelay*: Duration
+      ## Caps retry backoff and sets the stream lifetime required to reset it.
     sendStreamWarnings: LogRateLimit
     rng: Rng
     validationSlots*: AsyncSemaphore
@@ -501,7 +506,7 @@ proc closeSendStream(
 
 proc connectOnce(
     p: PubSubPeer
-): Future[void] {.async: (raises: [CancelledError, GetStreamDialError]).} =
+): Future[Duration] {.async: (raises: [CancelledError, GetStreamDialError]).} =
   var opened = false
   try:
     if p.connectedFut.finished:
@@ -513,7 +518,7 @@ proc connectOnce(
         raise newException(GetStreamDialError, "establishing stream timed out")
     if p.stopped:
       await newStream.close()
-      return
+      return ZeroDuration
 
     # When the send channel goes up, subscriptions need to be sent to the
     # remote peer - if we had multiple channels up and one goes down, all
@@ -541,7 +546,9 @@ proc connectOnce(
     if p.onEvent != nil:
       p.onEvent(p, PubSubPeerEvent(kind: PubSubPeerEventKind.StreamOpened))
 
+    let openedAt = Moment.now()
     await p.runHandleLoop(newStream)
+    return Moment.now() - openedAt
   finally:
     if opened:
       await p.closeSendStream(PubSubPeerEventKind.StreamClosed)
@@ -563,18 +570,25 @@ func doubled(delay, maxDelay: Duration): Duration =
     delay * 2
 
 proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
-  ## Keeps a send stream open; a failed open retries with capped exponential backoff.
+  ## Back off failed opens and short-lived streams until a stream stays stable.
   var delay = p.sendStreamRetryBaseDelay
   try:
     while not p.stopped:
       try:
-        await p.connectOnce()
-        delay = p.sendStreamRetryBaseDelay
+        let lifetime = await p.connectOnce()
+        # A successful negotiation alone does not establish a stable stream.
+        if lifetime >= p.sendStreamRetryMaxDelay:
+          delay = p.sendStreamRetryBaseDelay
+          continue
+        if not p.stopped and p.sendStreamWarnings.allowLog():
+          debug "Send stream closed before becoming stable, retrying",
+            peer = p, lifetime, delay
       except GetStreamDialError as e:
         libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
         if p.sendStreamWarnings.allowLog():
           debug "Could not establish send stream, retrying",
             peer = p, err = e.msg, delay
+      if not p.stopped:
         await sleepAsync(p.jittered(delay))
         delay = delay.doubled(p.sendStreamRetryMaxDelay)
   except CancelledError:
@@ -957,16 +971,42 @@ proc sendEncoded*(
           action.slowPeerPenaltyDelta, action.priority, msg.len
         )
 
-proc sendTopicRPC*(p: PubSubPeer, msg: PreparedTopicRPC, priority: MessagePriority) =
+proc makeCustomDial(p: PubSubPeer): TopicStreamDial =
+  if p.customStreamCallbacks.isNone:
+    return nil
+  return proc(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+    let stream = p.customStreamCallbacks.get().customStreamCreationCB(
+        p.address, p.peerId, TopicStreamsCodec
+      )
+    if stream.isNil:
+      raise newException(LPStreamError, "custom stream creation failed")
+    return stream
+
+proc sendTopicRPC*(
+    p: PubSubPeer,
+    msg: PreparedTopicRPC,
+    priority: MessagePriority,
+    useCustomStream: bool = false,
+) =
   if p.stopped:
     return
-  let control =
-    p.extensionsState.sendTopicRPC(p.peerId, msg, priority == MessagePriority.Medium)
+  let customDial =
+    if useCustomStream:
+      p.makeCustomDial()
+    else:
+      nil
+  let control = p.extensionsState.sendTopicRPC(
+    p.peerId, msg, priority == MessagePriority.Medium, customDial
+  )
   if control.len > 0:
-    p.trackSend(p.sendEncoded(control, MessagePriority.High))
+    p.trackSend(p.sendEncoded(control, MessagePriority.High, useCustomStream))
 
 proc routeTopicRPC(
-    p: PubSubPeer, msg: RPCMsg, anonymize: bool, priority: MessagePriority
+    p: PubSubPeer,
+    msg: RPCMsg,
+    anonymize: bool,
+    priority: MessagePriority,
+    useCustomStream: bool,
 ): bool =
   if msg.messages.len == 0 and msg.partialMessageExtension.isNone and
       not p.hasObservers():
@@ -977,7 +1017,7 @@ proc routeTopicRPC(
   if p.hasObservers():
     p.sendObservers(msgCopy)
   sendMetrics(msgCopy)
-  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority)
+  p.sendTopicRPC(makePreparedTopicRPC(msgCopy, anonymize), priority, useCustomStream)
   true
 
 proc encodeRpcMsg(
@@ -1014,7 +1054,7 @@ proc send*(
   ##   High priority messages are sent immediately, medium and low priority messages are queued
   ##   and sent only after all high priority messages have been sent.
 
-  if p.routeTopicRPC(msg, anonymize, priority):
+  if p.routeTopicRPC(msg, anonymize, priority, useCustomStream):
     return
 
   var encoded = encodeRpcMsg(p, msg, anonymize)
@@ -1045,7 +1085,7 @@ proc sendResponse*(
   ## `maxMessageSize`, and individual messages that still exceed
   ## `maxMessageSize`, are dropped with a warning.
 
-  if p.routeTopicRPC(msg, anonymize, priority):
+  if p.routeTopicRPC(msg, anonymize, priority, useCustomStream):
     return
 
   proc send(toSendMsg: RPCMsg, saltedId = Opt.none(SaltedId)) =
