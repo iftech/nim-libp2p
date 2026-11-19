@@ -191,8 +191,9 @@ proc new*(
   ##
   ## `limits` selects the connection-cap strategy: `ConnectionLimits.maxTotal(n)`
   ## for a shared cap, or `ConnectionLimits.maxInOut(i, o)` for independent caps.
-  ## The default is 50 shared slots with no outbound reserve. Pass `outboundReserve`
-  ## to `maxTotal` to keep inbound connections from consuming every shared slot.
+  ## The default is `DefaultMaxConnections` shared slots with no outbound reserve.
+  ## Pass `outboundReserve` to `maxTotal` to keep inbound connections from consuming
+  ## every shared slot.
   ##
   ## When `watermark` is provided without `limits` the semaphore is omitted
   ## and hi/lo trimming is the only guard.  When both are provided the
