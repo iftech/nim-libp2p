@@ -14,6 +14,9 @@ static const char *ServiceData = "demo-payload";
 // Replaces the 900 s core default.
 static const int64_t AdvertExpiryMs = 120000;
 
+// Core MaxXPRSize.
+#define MAX_XPR_SIZE 1024
+
 // A lookup answers with up to Default_F_lookup (30) records.
 #define MAX_RECORDS 32
 typedef struct {
@@ -23,8 +26,33 @@ typedef struct {
   char peerIds[MAX_RECORDS][128];
   bool advertises[MAX_RECORDS];
   char serviceData[MAX_RECORDS][128];
+  uint8_t signedRecord[MAX_RECORDS][MAX_XPR_SIZE];
+  size_t signedLen[MAX_RECORDS];
   size_t n;
 } RecordsWaiter;
+
+typedef struct {
+  atomic_int done;
+  int err_code;
+  char err[256];
+  uint8_t xpr[MAX_XPR_SIZE];
+  size_t len;
+} XprWaiter;
+
+static void on_xpr(int ec, const NimFfiBytes *reply, const char *em, void *ud) {
+  XprWaiter *w = (XprWaiter *)ud;
+  w->err_code = ec;
+  if (reply && reply->len <= MAX_XPR_SIZE) {
+    memcpy(w->xpr, reply->data, reply->len);
+    w->len = reply->len;
+  } else if (reply) {
+    snprintf(w->err, sizeof(w->err), "reply of %zu bytes exceeds MAX_XPR_SIZE",
+             reply->len);
+  }
+  if (em)
+    snprintf(w->err, sizeof(w->err), "%s", em);
+  atomic_store(&w->done, 1);
+}
 
 static void copyServiceData(const ExtendedPeerRecordEntry *r, char *dst,
                             size_t cap, bool *found) {
@@ -49,6 +77,10 @@ static void on_records(int ec, const ExtendedRecordsResponse *reply,
       const ExtendedPeerRecordEntry *r = &reply->records.data[i];
       if (r->peerId.data)
         snprintf(w->peerIds[i], sizeof(w->peerIds[i]), "%s", r->peerId.data);
+      if (r->signedRecord.data && r->signedRecord.len <= MAX_XPR_SIZE) {
+        memcpy(w->signedRecord[i], r->signedRecord.data, r->signedRecord.len);
+        w->signedLen[i] = r->signedRecord.len;
+      }
       copyServiceData(r, w->serviceData[i], sizeof(w->serviceData[i]),
                       &w->advertises[i]);
     }
@@ -86,7 +118,8 @@ static LibP2PCtx *discoNode(const char *listenAddr, const char *label,
 
 // Registration is a background task, so the lookup retries.
 #define LOOKUP_ATTEMPTS 30
-static bool lookupProvider(LibP2PCtx *seeker, const char *providerId) {
+static bool lookupProvider(LibP2PCtx *seeker, const char *providerId,
+                           const XprWaiter *advertised) {
   LookupRequest req = {nimffi_str(ServiceId), {NULL, 0}};
   for (int attempt = 0; attempt < LOOKUP_ATTEMPTS; attempt++) {
     RecordsWaiter rw;
@@ -102,6 +135,11 @@ static bool lookupProvider(LibP2PCtx *seeker, const char *providerId) {
         continue;
       if (strcmp(rw.serviceData[i], ServiceData) != 0) {
         fprintf(stderr, "Error: service data did not round-trip\n");
+        return false;
+      }
+      if (rw.signedLen[i] != advertised->len ||
+          memcmp(rw.signedRecord[i], advertised->xpr, advertised->len) != 0) {
+        fprintf(stderr, "Error: signed record is not byte-identical\n");
         return false;
       }
       printf("Seeker found %s advertising '%s' with '%s'\n", providerId,
@@ -158,10 +196,22 @@ int main(void) {
       !await_connect(seeker, &providerInfo))
     goto cleanup_seeker;
 
+  ServiceInfoEntry svc = {nimffi_str(ServiceId),
+                          {(uint8_t *)ServiceData, strlen(ServiceData)}};
+  CreateXprRequest xprReq = {{NULL, 0}, {&svc, 1}, 0};
+  XprWaiter xw;
+  memset(&xw, 0, sizeof(xw));
+  libp2p_ctx_create_xpr(provider, &xprReq, on_xpr, &xw);
+  wait_done(&xw.done);
+  if (xw.err_code != 0 || xw.len == 0) {
+    fprintf(stderr, "create_xpr: %s\n", xw.err[0] ? xw.err : "unknown");
+    goto cleanup_seeker;
+  }
+
   StartAdvertisingRequest adReq = {
       nimffi_str(ServiceId),
       {(uint8_t *)ServiceData, strlen(ServiceData)},
-      {NULL, 0}};
+      {xw.xpr, xw.len}};
   if (!AWAIT_BOOL(bw,
                   libp2p_ctx_service_disco_start_advertising(provider, &adReq,
                                                              on_bool, &bw),
@@ -169,7 +219,7 @@ int main(void) {
     goto cleanup_seeker;
   printf("Provider advertises '%s'\n", ServiceId);
 
-  if (lookupProvider(seeker, providerInfo.peerId))
+  if (lookupProvider(seeker, providerInfo.peerId, &xw))
     status = 0;
 
 cleanup_seeker:
