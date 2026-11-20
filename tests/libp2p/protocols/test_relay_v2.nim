@@ -210,9 +210,12 @@ suite "Circuit Relay V2":
 
       check:
         SignedVoucher.decode(valid).isOk
-        SignedVoucher.decode(missingRelay).error == EnvelopeFieldMissing
-        SignedVoucher.decode(missingPeer).error == EnvelopeFieldMissing
-        SignedVoucher.decode(missingExpiration).error == EnvelopeFieldMissing
+        SignedVoucher.decode(missingRelay).error ==
+          EnvelopeError.init(EnvelopeFieldMissing, "relayPeerId")
+        SignedVoucher.decode(missingPeer).error ==
+          EnvelopeError.init(EnvelopeFieldMissing, "reservingPeerId")
+        SignedVoucher.decode(missingExpiration).error ==
+          EnvelopeError.init(EnvelopeFieldMissing, "expiration")
 
   suite "Reservation":
     asyncTeardown:
