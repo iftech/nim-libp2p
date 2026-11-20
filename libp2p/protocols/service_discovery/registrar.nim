@@ -66,6 +66,14 @@ proc pruneExpiredAds*(registrar: Registrar, advertExpiry: Duration) =
 
   debug "Pruned expired adverts", count = expiredCount
 
+proc pruneExpiredAdsThrottled*(registrar: Registrar, advertExpiry: Duration) =
+  let nowSecond = Moment.now().epochSeconds
+  if registrar.lastPruneSecond == nowSecond:
+    return
+
+  registrar.lastPruneSecond = nowSecond
+  registrar.pruneExpiredAds(advertExpiry)
+
 proc advertiserIps*(
     disco: ServiceDiscovery, advertiser: PeerId, connectionIps: seq[IpAddress] = @[]
 ): seq[IpAddress] {.raises: [].} =
@@ -301,6 +309,8 @@ proc registration*(
       ),
     )
 
+  disco.registrar.pruneExpiredAdsThrottled(disco.discoConfig.advertExpiry)
+
   let closerPeers = disco.getCloserPeers(serviceId, peerId, disco.discoConfig.fReturn)
 
   var msg = Message(
@@ -420,6 +430,7 @@ proc getAdvertisements*(
       getAds: Opt.some(GetAdsMessage(advertisements: @[])),
     )
 
+  disco.registrar.pruneExpiredAdsThrottled(disco.discoConfig.advertExpiry)
   disco.seatSender(serviceId, peerId)
 
   let cap = disco.discoConfig.fReturn

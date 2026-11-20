@@ -520,6 +520,47 @@ suite "Service Discovery Registrar - request handlers":
       reply.getAds.isNone()
       reply.closerPeers.len == 0
 
+  test "getAdvertisements omits an expired ad and still returns a fresh one":
+    let conf = ServiceDiscoveryConfig.new(advertExpiry = 100.secs)
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceId = makeServiceId()
+    let staleAd = makeAdvertisement($serviceId)
+    let freshAd = makeAdvertisement($serviceId)
+    let now = Moment.now()
+
+    disco.registrar.seedAd(serviceId, staleAd, now - 1000.secs)
+    disco.registrar.seedAd(serviceId, freshAd, now)
+
+    let reply = disco.getAdvertisements(
+      PeerId.random(),
+      kadprotobuf.Message(
+        msgType: kadprotobuf.MessageType.getAds, key: Opt.some(serviceId)
+      ),
+    )
+
+    check reply.getAds.get().advertisements == @[freshAd.encode().get()]
+
+  test "registration drops an expired ad and its IP tree entry":
+    let conf = ServiceDiscoveryConfig.new(advertExpiry = 100.secs)
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceId = makeServiceId()
+    let staleAd = makeAdvertisement($serviceId, addrs = @[makeMultiAddress("10.0.0.1")])
+
+    disco.registrar.seedAd(serviceId, staleAd, Moment.now() - 1000.secs)
+    check disco.registrar.ads.ipTree.ipsLen == 1
+
+    let reply = disco.registration(
+      PeerId.random(),
+      kadprotobuf.Message(
+        msgType: kadprotobuf.MessageType.register, key: Opt.some(serviceId)
+      ),
+    )
+
+    check:
+      reply.register.get().status.get() == kadprotobuf.RegistrationStatus.Rejected
+      disco.registrar.ads.len == 0
+      disco.registrar.ads.ipTree.ipsLen == 0
+
   test "updateWaitAfterRetry subtracts accumulated wait for retry":
     let disco = setupServiceDiscoveryNode()
     let ad = makeAdvertisement(addrs = @[makeMultiAddress("10.0.0.1")])
