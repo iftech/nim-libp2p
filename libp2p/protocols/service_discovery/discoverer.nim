@@ -23,6 +23,10 @@ type GetAdsResult = object
   ads: seq[Advertisement]
   closerPeers: seq[PeerInfo]
 
+func `$`(r: GetAdsResult): string =
+  ## `results` formats the value on a defect; `PeerInfo` has no `$`.
+  "GetAdsResult(ads: " & $r.ads.len & ", closerPeers: " & $r.closerPeers.len & ")"
+
 type BucketAds = object
   found: HashSet[Advertisement]
   closerPeers: seq[PeerInfo]

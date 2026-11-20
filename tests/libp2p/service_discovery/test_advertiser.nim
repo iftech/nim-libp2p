@@ -521,9 +521,6 @@ suite "Advertiser - removeProvidedService":
     check sid in disco.serviceBootstrapFuts # interest keeps the table alive
 
     disco.unregisterInterest(service.id)
-    check sid in disco.serviceBootstrapFuts # the self-ad keeps the table alive
-
-    disco.dropCachedAds()
     await stepsAsync(1) # let the pending cancellation run
 
     check:

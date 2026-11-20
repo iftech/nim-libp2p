@@ -15,6 +15,7 @@ import
     protocols/service_discovery/routing_table_manager,
     protocols/service_discovery/types,
     switch,
+    utils/iptree,
   ]
 import ../../../tools/[crypto, lifecycle, multiaddress, unittest, topology]
 import ../utils
@@ -392,7 +393,8 @@ suite "Service Discovery Component - Advertise Discover":
       lateRegistrar.countAdsInCache(serviceId) == 1
 
   asyncTest "an IPv6-only node is subject to IP-similarity throttling like an IPv4 node":
-    let registrarNode = setupServiceDiscoveryNode()
+    let conf = ServiceDiscoveryConfig.new(discountedServicesPerPeer = 0)
+    let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
     let advertiserNode = setupServiceDiscoveryNode(addresses = @[TcpAutoAddressIP6()])
     startAndDeferStop(@[registrarNode, advertiserNode])
     await connect(registrarNode, advertiserNode)
@@ -411,7 +413,8 @@ suite "Service Discovery Component - Advertise Discover":
     check registrarNode.countAdsInCache(secondServiceId) == 0
 
   asyncTest "a dual-stack node follows the normal path and is told to Wait":
-    let registrarNode = setupServiceDiscoveryNode()
+    let conf = ServiceDiscoveryConfig.new(discountedServicesPerPeer = 0)
+    let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
     let advertiserNode =
       setupServiceDiscoveryNode(addresses = @[TcpAutoAddressIP4(), TcpAutoAddressIP6()])
     startAndDeferStop(@[registrarNode, advertiserNode])
@@ -431,3 +434,116 @@ suite "Service Discovery Component - Advertise Discover":
     checkUntilTimeout:
       registrarNode.registrar.boundService.hasKey(secondServiceId)
     check registrarNode.countAdsInCache(secondServiceId) == 0
+
+  asyncTest "a node serves every service it advertises":
+    let advertiserNode = setupServiceDiscoveryNode()
+    let lookerNode = setupServiceDiscoveryNode(client = true)
+    startAndDeferStop(@[advertiserNode, lookerNode])
+    await connect(advertiserNode, lookerNode)
+
+    for name in ["first", "second"]:
+      check advertiserNode.addProvidedService(makeServiceInfo(name)).isOk()
+
+    for name in ["first", "second"]:
+      checkpoint name
+      let serviceId = makeServiceInfo(name).id.hashServiceId()
+      check advertiserNode.countAdsInCache(serviceId) == 1
+      check (await lookerNode.lookup(serviceId)).containsPeer(advertiserNode)
+
+  asyncTest "stopAdvertising drops the own ad at once":
+    let node = setupServiceDiscoveryNode()
+    startAndDeferStop(@[node])
+
+    let first = makeServiceInfo("first")
+    let second = makeServiceInfo("second")
+    check node.addProvidedService(first).isOk()
+    check node.addProvidedService(second).isOk()
+
+    await node.stopAdvertising(first.id)
+
+    check:
+      node.countAdsInCache(first.id.hashServiceId()) == 0
+      node.countAdsInCache(second.id.hashServiceId()) == 1
+      not node.localRegistrationLoop.finished()
+
+    let third = makeServiceInfo("third")
+    check node.addProvidedService(third).isOk()
+    check node.countAdsInCache(third.id.hashServiceId()) == 1
+
+  asyncTest "the last stopAdvertising ends the local registration":
+    let node = setupServiceDiscoveryNode()
+    startAndDeferStop(@[node])
+
+    let service = makeServiceInfo()
+    check node.addProvidedService(service).isOk()
+    await node.stopAdvertising(service.id)
+
+    check:
+      node.registrar.ads.len == 0
+      node.localRegistrationLoop.isNil()
+
+  asyncTest "own ads stay out of the registrar IP tree":
+    let node = setupServiceDiscoveryNode()
+    startAndDeferStop(@[node])
+
+    for name in ["first", "second"]:
+      check node.addProvidedService(makeServiceInfo(name)).isOk()
+
+    check:
+      node.registrar.ads.len == 2
+      node.registrar.ads.ipTree.ipsLen == 0
+
+  asyncTest "a replaced advert reaches the own cache at once":
+    let node = setupServiceDiscoveryNode()
+    startAndDeferStop(@[node])
+
+    let service = makeServiceInfo()
+    let serviceId = service.id.hashServiceId()
+    let advert = makeAdvertisement(service.id)
+    check node.addProvidedService(service).isOk()
+    check node.addProvidedService(service, Opt.some(advert.encode())).isOk()
+
+    check node.getAdsInCache(serviceId).mapIt(it.data.peerId) == @[advert.data.peerId]
+
+  asyncTest "the local registration refreshes own ads before they expire":
+    let conf = ServiceDiscoveryConfig.new(advertExpiry = 2.seconds)
+    let node = setupServiceDiscoveryNode(discoConfig = conf)
+    startAndDeferStop(@[node])
+
+    let service = makeServiceInfo()
+    let serviceId = service.id.hashServiceId()
+    let selfPeer = node.switch.peerInfo.peerId
+    check node.addProvidedService(service).isOk()
+    let first = node.registrar.ads.getCachedAd(serviceId, selfPeer).valueOr:
+      raiseAssert "own ad missing after addProvidedService"
+
+    checkUntilTimeout:
+      block:
+        let cur = node.registrar.ads.getCachedAd(serviceId, selfPeer)
+        cur.isSome() and cur.get().timestamp > first.timestamp
+
+  asyncTest "a remote registrar admits a node's second service at once":
+    let registrarNode = setupServiceDiscoveryNode()
+    let advertiserNode = setupServiceDiscoveryNode()
+    startAndDeferStop(@[registrarNode, advertiserNode])
+    await connect(registrarNode, advertiserNode)
+
+    for name in ["first", "second"]:
+      check advertiserNode.addProvidedService(makeServiceInfo(name)).isOk()
+
+    checkUntilTimeout:
+      registrarNode.countAdsInCache(makeServiceInfo("first").id.hashServiceId()) == 1
+      registrarNode.countAdsInCache(makeServiceInfo("second").id.hashServiceId()) == 1
+
+  asyncTest "a client-mode node rejects a provided service and keeps no own ad":
+    let node = setupServiceDiscoveryNode(client = true)
+    startAndDeferStop(@[node])
+
+    let res = node.addProvidedService(makeServiceInfo())
+    check:
+      res.isErr()
+      res.error == "cannot advertise in client mode"
+
+    check:
+      node.registrar.ads.len == 0
+      node.localRegistrationLoop.isNil()

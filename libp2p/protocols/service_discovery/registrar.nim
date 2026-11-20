@@ -69,17 +69,11 @@ proc pruneExpiredAds*(registrar: Registrar, advertExpiry: Duration) =
 proc advertiserIps*(
     disco: ServiceDiscovery, advertiser: PeerId, connectionIps: seq[IpAddress] = @[]
 ): seq[IpAddress] {.raises: [].} =
-  ## Prefer IPs from the live connection (`stream.observedAddr`).
-  ## Fall back to peerstore, then self listen addrs for local registration
-  ## when no connection IP is available.
+  ## Prefer IPs from the live connection (`stream.observedAddr`), else the peerstore.
   if connectionIps.len > 0:
     return connectionIps
 
-  var addrs = disco.switch.peerStore[AddressBook][advertiser]
-  if addrs.len == 0 and advertiser == disco.switch.peerInfo.peerId:
-    addrs = disco.switch.peerInfo.addrs
-
-  addrs.getIPs()
+  disco.switch.peerStore[AddressBook][advertiser].getIPs()
 
 proc waitingTime*(
     registrar: Registrar,
@@ -87,6 +81,7 @@ proc waitingTime*(
     serviceId: ServiceId,
     advertiserIps: seq[IpAddress],
     now: Moment,
+    advertiser: Opt[PeerId] = Opt.none(PeerId),
 ): Duration =
   let advertCacheCap = registrar.ads.capacity
   let c = registrar.ads.len.uint64
@@ -102,7 +97,9 @@ proc waitingTime*(
       1.0 / pow(base, exp)
 
   let serviceSim: float64 = c_s.float64 / advertCacheCap.float64
-  let ipSim = registrar.ads.ipTree.ipsMaxScore(advertiserIps)
+  let ipSim = registrar.ads.ipSimilarity(
+    advertiserIps, advertiser, serviceId, discoConfig.discountedServicesPerPeer
+  )
 
   var w: float64 =
     discoConfig.advertExpiry.seconds.float64 * occupancy *
@@ -219,6 +216,12 @@ proc isValidTicket(
     return err("ticket outside valid time window")
 
   return ok(Opt.some(ticket))
+
+proc removeAdvertisement*(
+    registrar: Registrar, serviceId: ServiceId, advertiser: PeerId
+) {.raises: [].} =
+  registrar.ads.remove(serviceId, advertiser)
+  registrar.updateRegistrarMetrics()
 
 proc acceptAdvertisement*(
     disco: ServiceDiscovery,
@@ -361,7 +364,9 @@ proc registration*(
   disco.seatSender(serviceId, peerId)
 
   let ips = disco.advertiserIps(peerId, connectionIps)
-  var tWait = disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now)
+  var tWait = disco.registrar.waitingTime(
+    disco.discoConfig, serviceId, ips, now, Opt.some(peerId)
+  )
 
   disco.updateWaitAfterRetry(ticketOpt, unixNow, tWait)
 

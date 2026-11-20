@@ -278,43 +278,6 @@ suite "Service Discovery Component - Register":
     check legitimateResp.isOk()
     check legitimateResp.get().status == kad_protobuf.RegistrationStatus.Wait
 
-  asyncTest "self-registration refresh after Wait-Confirmed does not present a stale ticket":
-    ## Regression: after Wait → Confirmed, `currentTicket` must be cleared. If the
-    ## next refresh reuses that ticket past its eligibility window
-    ## [tMod + tWaitFor, tMod + tWaitFor + registrationWindow], the registrar
-    ## rejects it as "ticket outside valid time window" and the local task exits.
-    let conf = ServiceDiscoveryConfig.new(
-      # empty-cache wait ≈ advertExpiry * safetyParam = 2s → first REGISTER is Wait
-      advertExpiry = 2.secs,
-      safetyParam = 1.0,
-      registrationWindow = 1.secs,
-    )
-    let disco = setupServiceDiscoveryNode(discoConfig = conf)
-    startAndDeferStop(@[disco])
-
-    let serviceName = "self-stale-ticket"
-    let serviceId = serviceName.hashServiceId()
-    check disco.rtManager.addService(
-      serviceId, disco.rtable, disco.config.replication, disco.discoConfig.bucketsCount,
-      Provided,
-    )
-
-    let adBytes =
-      makeAdvertisement(serviceName, disco.switch.peerInfo.privateKey).encode().get()
-    let selfPeer = disco.switch.peerInfo.peerId
-
-    let fut = disco.advertiseToRegistrar(serviceId, selfPeer, Opt.none(Ticket), adBytes)
-
-    let minTaskTime = conf.advertExpiry * 3
-    # Timeline with this config:
-    #   ~0s: Wait (tWaitFor ≈ 2s)
-    #   ~2s: retry with ticket → Confirmed (ticket cleared)
-    #   ~4s: sleep advertExpiry done; re-register with no ticket
-    # Task must still be running after the refresh.
-    check not (await fut.withTimeout(minTaskTime))
-
-    await fut.cancelAndWait()
-
   asyncTest "a Wait ticket without tWaitFor ends the task":
     let registrarNode = setupServiceDiscoveryNode()
     let advertiserNode = setupServiceDiscoveryNode()
