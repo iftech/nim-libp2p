@@ -3,6 +3,7 @@
 
 import lint
 import tools/chronicles_linter
+import tools/log_payload_linter
 
 runLint:
   sources = ["."]
@@ -33,9 +34,5 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
-    # Reported as a hint: without type information this check cannot tell a
-    # value that has a compact formatter from one that does not, so it reports
-    # values that `audit_logs.py` exempts. See the note in
-    # `tools/chronicles_linter.nim`.
-    check unboundedFields:
-      severity = hint
+    semCheck boundedLogPayloads:
+      severity = error
