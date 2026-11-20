@@ -215,6 +215,7 @@ suite "Priority queue behavior":
       peer.cancelQueuedRelays([cancelledId].toHashSet()) == cancelledMsg.len
       peer.cancelQueuedRelays([cancelledId].toHashSet()) == 0
       peer.queuedBytes(Low) == keptMsg.len
+      peer.outboundQueue.evictableBytes[Low] == keptMsg.len
 
     conn.releasePendingWrites()
 
