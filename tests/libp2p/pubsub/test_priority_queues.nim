@@ -451,7 +451,7 @@ suite "Priority queue byte budgets":
   teardown:
     checkTrackers()
 
-  asyncTest "High byte limit accepts the boundary and disconnects on overflow":
+  asyncTest "High byte limit accepts the boundary, disconnects on overflow and ignores later sends":
     let disconnected = new bool
     let peer = createTestPeer(
       maxHigh = 10, maxOutboundBytes = 5, onEvent = newDisconnectRecorder(disconnected)
@@ -472,6 +472,10 @@ suite "Priority queue byte budgets":
       disconnected[]
       conn.pendingWrites.len == 2
       peer.slowPeerPenalty == 0.0
+    # GossipSub keeps sending publishes to the peer until the switch drops it
+    await peer.sendEncoded(@[7'u8], Medium)
+    # the disconnected peer ignores it instead of dropping it with a penalty
+    check peer.slowPeerPenalty == 0.0
     await peer.stopTasks()
     check peer.queuedBytes(High) == 0
 
