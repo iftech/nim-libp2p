@@ -187,6 +187,57 @@ suite "GossipSub topic stream send side":
       (await written.popFirst()) == header # on a new stream
       (await written.popFirst()) == frames[0]
 
+  asyncTest "invalid accounting during pending topic write cancellation finishes cleanup":
+    let written = newAsyncQueue[seq[byte]]()
+    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+      return TestBufferStream.new(
+        proc(
+            data: sink seq[byte]
+        ) {.async: (raises: [CancelledError, LPStreamError]).} =
+          let frame = data[1 ..^ 1]
+          await written.put(frame)
+          if frame == frames[0]:
+            await newAsyncEvent().wait()
+      )
+
+    let disconnected = new bool
+    let peer = newQueuePeer(
+      onEvent = proc(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].} =
+        if event.kind == PubSubPeerEventKind.DisconnectionRequested:
+          disconnected[] = true
+    )
+    let recorder = TopicStreamsRecorder.new()
+    let state = TopicStreams.new(
+      TopicStreamsConfig(),
+      maxMessageSize,
+      dial,
+      recorder.receive(),
+      recorder.violation(),
+      recorder.penalize(),
+      peer.outboundQueue,
+    )
+    defer:
+      await state.stop()
+      await peer.stopTasks()
+    check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
+    state.sendTopic(topic, frames[0], High)
+    check:
+      (await written.popFirst()) == header
+      (await written.popFirst()) == frames[0]
+    state.sendTopic(topic, frames[1], Low)
+    peer.outboundQueue.bytes[High] = 0
+    await state.closeTopic(topic)
+    await state.stop()
+    await peer.stopTasks()
+    check:
+      disconnected[]
+      peer.outboundQueue.failed
+      peer.queuedBytes() == 0
+      peer.outboundQueue.topicCounts == default(array[MessagePriority, int])
+      peer.outboundQueue.evictableBytes == default(array[MessagePriority, int])
+      recorder.violations == 0
+      peer.slowPeerPenalty == 0
+
   asyncTest "pending dial is cancelled after the dial timeout, and the next frame dials again":
     var dials: seq[Future[Stream].Raising([CancelledError, LPStreamError])]
     proc dial(): Future[Stream] {.

@@ -641,8 +641,7 @@ proc chargeBytes(p: PubSubPeer, priority: MessagePriority, amount: int) =
   p.rpcmessagequeue.budget.bytes[priority] += amount
 
 proc releaseBytes(p: PubSubPeer, priority: MessagePriority, amount: int) =
-  doAssert p.rpcmessagequeue.budget.bytes[priority] >= amount
-  p.rpcmessagequeue.budget.bytes[priority] -= amount
+  discard p.outboundQueue.release(priority, amount)
 
 proc recordQueueDrop(
     p: PubSubPeer,
@@ -662,7 +661,7 @@ proc recordQueueDrop(
 proc evictQueuedBytes(
     p: PubSubPeer, priority: MessagePriority, bytesToFree: int
 ) {.gcsafe.} =
-  if priority == High:
+  if priority == High or p.outboundQueue.failed:
     return
 
   var freedBytes = 0
@@ -671,8 +670,10 @@ proc evictQueuedBytes(
     while freedBytes < bytesToFree and queue.len > 0:
       let msg = queue.popFirst()
       let messageBytes = msg.data.len
-      p.rpcmessagequeue.budget.evictableBytes[priority] -= messageBytes
-      p.releaseBytes(priority, messageBytes)
+      if not p.outboundQueue.release(
+        priority, messageBytes, evictableBytes = messageBytes
+      ):
+        return
       p.recordQueueDrop(priority, messageBytes, "peer_limit", penaltyDelta = 0.0)
       freedBytes += messageBytes
       when defined(pubsubpeer_queue_metrics):
@@ -688,7 +689,8 @@ proc evictQueuedBytes(
     evictFrom(p.rpcmessagequeue.lowPriorityQueue)
   of High:
     discard
-  if freedBytes < bytesToFree and p.outboundQueue.evictTopics != nil:
+  if not p.outboundQueue.failed and freedBytes < bytesToFree and
+      p.outboundQueue.evictTopics != nil:
     discard p.outboundQueue.evictTopics(priority, bytesToFree - freedBytes)
 
 proc makePeerRoom(p: PubSubPeer, priority: MessagePriority, messageBytes: int) =
@@ -810,6 +812,12 @@ proc disconnectPeer(p: PubSubPeer): Future[void] =
 
   return newFutureCompleted[void]()
 
+proc accountingFailed(p: PubSubPeer) =
+  error "disconnecting peer after outbound queue accounting failure", peer = p
+  if not p.stopped:
+    p.stopped = true
+    p.trackSend(p.closeSendStream(PubSubPeerEventKind.DisconnectionRequested))
+
 proc sendHighPriorityMessage(
     p: PubSubPeer, msg: sink seq[byte], useCustomStream: bool
 ): Future[void] =
@@ -893,9 +901,9 @@ proc cancelQueuedRelays*(p: PubSubPeer, duplicates: HashSet[SaltedId]): int =
       continue
 
     let messageBytes = queued.data.len
+    if not p.outboundQueue.release(Low, messageBytes, evictableBytes = messageBytes):
+      return savedBytes
     savedBytes += messageBytes
-    p.rpcmessagequeue.budget.evictableBytes[Low] -= messageBytes
-    p.releaseBytes(Low, messageBytes)
     when defined(pubsubpeer_queue_metrics):
       libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
 
@@ -916,6 +924,8 @@ proc admitMessage(
       p.makePeerRoom(priority, messageBytes)
   of Low:
     discard
+  if p.outboundQueue.failed:
+    return QueueAction(priority: priority)
   determineQueueAction(
     priority, p.rpcmessagequeue, p.maxHighPriorityQueueLen, p.maxMediumPriorityQueueLen,
     p.maxLowPriorityQueueLen, messageBytes, p.maxOutboundQueueBytes, promoteOnEmpty,
@@ -947,6 +957,8 @@ proc sendEncoded*(
     newFutureCompleted[void]()
   else:
     let action = p.admitMessage(priority, msg.len)
+    if p.outboundQueue.failed:
+      return newFutureCompleted[void]()
 
     case action.priority
     of High:
@@ -1155,7 +1167,7 @@ proc canAskIWant*(p: PubSubPeer, msgId: MessageId): bool =
   return false
 
 proc sendNonHighPriorityTask(p: PubSubPeer) {.async: (raises: [CancelledError]).} =
-  while true:
+  while not p.outboundQueue.failed:
     # we send non-priority messages only if there are no pending priority messages
     while p.rpcmessagequeue.mediumPriorityQueue.len == 0 and
         p.rpcmessagequeue.lowPriorityQueue.len == 0:
@@ -1169,6 +1181,8 @@ proc sendNonHighPriorityTask(p: PubSubPeer) {.async: (raises: [CancelledError]).
         # `race` keeps the awaited future alive when this task is cancelled.
         discard await race(p.rpcmessagequeue.sendPriorityQueue[^1])
 
+    if p.outboundQueue.failed:
+      return
     # Pop after the wait above, so a message that waits stays cancellable.
     var priority = MessagePriority.Low
     var msg =
@@ -1181,7 +1195,8 @@ proc sendNonHighPriorityTask(p: PubSubPeer) {.async: (raises: [CancelledError]).
         continue
 
     let messageBytes = msg.data.len
-    p.rpcmessagequeue.budget.evictableBytes[priority] -= messageBytes
+    if not p.outboundQueue.release(priority, 0, evictableBytes = messageBytes):
+      return
     when defined(pubsubpeer_queue_metrics):
       if priority == MessagePriority.Medium:
         libp2p_gossipsub_medium_priority_queue_size.dec(labelValues = [$p.peerId])
@@ -1231,12 +1246,12 @@ proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
   p.rpcmessagequeue.sendPriorityQueue.clear()
   p.rpcmessagequeue.mediumPriorityQueue.clear()
   p.rpcmessagequeue.lowPriorityQueue.clear()
-  for priority in MessagePriority:
-    if p.rpcmessagequeue.budget.bytes[priority] > 0:
-      p.releaseBytes(priority, p.rpcmessagequeue.budget.bytes[priority])
+  p.rpcmessagequeue.budget.bytes = default(array[MessagePriority, int])
+  p.rpcmessagequeue.budget.topicCounts = default(array[MessagePriority, int])
   p.rpcmessagequeue.budget.evictableBytes = default(array[MessagePriority, int])
   p.outboundQueue.admit = nil
   p.outboundQueue.evicted = nil
+  p.outboundQueue.onFailure = nil
 
   when defined(pubsubpeer_queue_metrics):
     libp2p_gossipsub_high_priority_queue_size.set(labelValues = [$p.peerId], value = 0)
@@ -1300,6 +1315,8 @@ proc new*(
   )
   let budget = OutboundQueue()
   response.rpcmessagequeue.budget = budget
+  budget.onFailure = proc() {.gcsafe, raises: [].} =
+    response.accountingFailed()
   budget.admit = proc(
       priority: MessagePriority, messageBytes: int
   ): QueueAction {.gcsafe, raises: [].} =
@@ -1307,6 +1324,8 @@ proc new*(
       return QueueAction(priority: priority)
     # Independent topic writers do not need the control stream's immediate-send promotion.
     let action = response.admitMessage(priority, messageBytes, promoteOnEmpty = false)
+    if budget.failed:
+      return QueueAction(priority: priority)
     if not action.send:
       if action.priority == High:
         response.trackSend(response.disconnectPeer())

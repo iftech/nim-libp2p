@@ -759,6 +759,98 @@ suite "Shared control and topic queue budgets":
     doAssert streams.negotiate(makeRPC(ControlExtensions(topicStreams: Opt.some(true))))
     return streams
 
+  asyncTest "invalid topic accounting disconnects without partially releasing a frame":
+    for counter in 0 .. 2:
+      let disconnected = new bool
+      let peer = createTestPeer(onEvent = newDisconnectRecorder(disconnected))
+      let recorder = TopicStreamsRecorder.new()
+      let topics = peer.topicState(recorder)
+      let queue = peer.outboundQueue
+      topics.sendTopic("a", newSeq[byte](4), Low)
+      case counter
+      of 0:
+        queue.bytes[Low] = 3
+      of 1:
+        queue.topicCounts[Low] = 0
+      else:
+        queue.evictableBytes[Low] = 3
+      let
+        bytes = queue.bytes
+        counts = queue.topicCounts
+        evictable = queue.evictableBytes
+      check queue.evictTopics(Low, 4) == 0
+      check:
+        disconnected[]
+        queue.failed
+        queue.bytes == bytes
+        queue.topicCounts == counts
+        queue.evictableBytes == evictable
+        peer.slowPeerPenalty == 0
+        recorder.violations == 0
+        not topics.isActive()
+      topics.sendTopic("b", @[1.byte], High)
+      await peer.sendEncoded(@[1.byte], High)
+      check queue.bytes == bytes
+      await topics.stop()
+      await peer.stopTasks()
+      await peer.stopTasks()
+      check:
+        peer.queuedBytes() == 0
+        queue.topicCounts == default(array[MessagePriority, int])
+        queue.evictableBytes == default(array[MessagePriority, int])
+        recorder.cancelledDials == 1
+
+  asyncTest "accounting failure during eviction rejects the incoming message":
+    for topicSend in [false, true]:
+      let disconnected = new bool
+      let peer = createTestPeer(
+        maxOutboundBytes = 16, onEvent = newDisconnectRecorder(disconnected)
+      )
+      let conn = peer.stallSendStream()
+      let topics = peer.topicState(TopicStreamsRecorder.new())
+      defer:
+        await topics.stop()
+        await peer.stopTasks()
+        await conn.close()
+      await peer.sendEncoded(@[1.byte], High)
+      topics.sendTopic("a", newSeq[byte](4), Low)
+      peer.outboundQueue.topicCounts[Low] = 0
+      if topicSend:
+        topics.sendTopic("b", newSeq[byte](9), High)
+      else:
+        await peer.sendEncoded(newSeq[byte](12), High)
+      check:
+        disconnected[]
+        peer.outboundQueue.failed
+        conn.writes.len == 1
+        peer.outboundQueue.topicCounts[High] == 0
+        peer.slowPeerPenalty == 0
+
+  asyncTest "invalid accounting in a pending control write stays local to its peer":
+    let disconnected = new bool
+    let peer = createTestPeer(onEvent = newDisconnectRecorder(disconnected))
+    let conn = peer.stallSendStream()
+    let healthy = createTestPeer()
+    let healthyConn = healthy.stallSendStream()
+    defer:
+      await peer.stopTasks()
+      await healthy.stopTasks()
+      await conn.close()
+      await healthyConn.close()
+    await peer.sendEncoded(@[1.byte], High)
+    await peer.sendEncoded(@[2.byte], High)
+    peer.outboundQueue.bytes[High] = 0
+    conn.releasePendingWrites()
+    checkUntilTimeout:
+      disconnected[]
+    await healthy.sendEncoded(@[3.byte], High)
+    check:
+      peer.outboundQueue.failed
+      peer.queuedBytes() == 0
+      not healthy.outboundQueue.failed
+      healthyConn.writes == @[@[3.byte]]
+      peer.slowPeerPenalty == 0
+
   asyncTest "control High and Medium evict queued topic Low frames":
     for priority in [High, Medium]:
       let peer = createTestPeer(maxOutboundBytes = 32)

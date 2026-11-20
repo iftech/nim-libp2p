@@ -132,7 +132,7 @@ proc new*(
   state
 
 func isActive*(s: TopicStreams): bool =
-  not s.isNil and not s.stopped and s.active
+  not s.isNil and not s.stopped and not s.queue.failed and s.active
 
 proc fail(s: sink TopicStreams, reason: string) =
   # Keep the transport alive while the violation callback disconnects the peer.
@@ -168,20 +168,20 @@ proc negotiate*(s: TopicStreams, rpc: RPCMsg): bool =
     return false
   true
 
-proc releaseFrame(s: TopicStreams, priority: MessagePriority, size: int, queued: bool) =
-  doAssert s.queue.bytes[priority] >= size
-  s.queue.bytes[priority] -= size
-  if queued or priority == High:
-    doAssert s.queue.topicCounts[priority] > 0
-    dec s.queue.topicCounts[priority]
-  if queued and priority != High:
-    doAssert s.queue.evictableBytes[priority] >= size
-    s.queue.evictableBytes[priority] -= size
+proc releaseFrame(
+    s: TopicStreams, priority: MessagePriority, size: int, queued: bool
+): bool =
+  s.queue.release(
+    priority,
+    size,
+    topicCount = ord(queued or priority == High),
+    evictableBytes = (if queued and priority != High: size else: 0),
+  )
 
 proc discardQueued(s: TopicStreams, w: TopicWriter) =
   for priority in MessagePriority:
     for data in w.pending[priority]:
-      s.releaseFrame(priority, data.len, true)
+      discard s.releaseFrame(priority, data.len, true)
     w.pending[priority].clear()
 
 proc evictQueued(s: TopicStreams, priority: MessagePriority, amount: int): int =
@@ -192,8 +192,9 @@ proc evictQueued(s: TopicStreams, priority: MessagePriority, amount: int): int =
   for w in s.writers.values:
     while w.pending[priority].len > 0 and freed < amount:
       let data = w.pending[priority].popFirst()
+      if not s.releaseFrame(priority, data.len, true):
+        return freed
       freed += data.len
-      s.releaseFrame(priority, data.len, true)
       if s.queue.evicted != nil:
         s.queue.evicted(priority, data.len)
     if freed >= amount:
@@ -216,7 +217,7 @@ proc monitorWriter(s: TopicStreams, w: TopicWriter) {.async: (raises: []).} =
 proc popNext(
     s: TopicStreams, w: TopicWriter
 ): Future[Opt[TopicFrame]] {.async: (raises: [CancelledError]).} =
-  while not s.stopped and not w.closing:
+  while not s.stopped and not s.queue.failed and not w.closing:
     for priority in MessagePriority:
       if w.pending[priority].len > 0:
         return
@@ -230,21 +231,23 @@ proc writeLoop(
 ) {.async: (raises: []).} =
   try:
     w.stream = await dial().wait(TopicStreamDialTimeout)
-    if s.stopped or w.closing:
+    if s.stopped or s.queue.failed or w.closing:
       return
     w.monitor = s.monitorWriter(w)
     await w.stream.writeLp(w.header)
     w.header = @[]
-    while not s.stopped and not w.closing:
+    while not s.stopped and not s.queue.failed and not w.closing:
       let frame = (await s.popNext(w)).valueOr:
         return
       if frame.priority != High:
-        s.queue.evictableBytes[frame.priority] -= frame.data.len
-        dec s.queue.topicCounts[frame.priority]
+        if not s.queue.release(
+          frame.priority, 0, topicCount = 1, evictableBytes = frame.data.len
+        ):
+          return
       try:
         await w.stream.writeLp(frame.data)
       finally:
-        s.releaseFrame(frame.priority, frame.data.len, false)
+        discard s.releaseFrame(frame.priority, frame.data.len, false)
   except CancelledError, LPStreamError, AsyncTimeoutError:
     discard
   finally:
@@ -261,7 +264,7 @@ proc writeLoop(
       await w.monitor.cancelAndWait()
     if w.stream != nil:
       await w.stream.close()
-    s.queue.bytes[w.headerPriority] -= w.headerBytes
+    discard s.queue.release(w.headerPriority, w.headerBytes)
     # Keep the entry until close completes: replacement must close before dial.
     if s.writers.getOrDefault(key) == w:
       s.writers.del(key)
@@ -273,7 +276,7 @@ proc sendTopic*(
     priority: MessagePriority,
     customDial: TopicStreamDial = nil,
 ) =
-  if s.stopped or s.queue.admit == nil or not s.active:
+  if s.stopped or s.queue.failed or s.queue.admit == nil or not s.active:
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["inactive"])
     return
   if data.len == 0 or data.len > s.maxMessageSize:

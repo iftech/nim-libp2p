@@ -3,6 +3,8 @@
 
 {.push raises: [].}
 
+import chronicles
+
 type
   MessagePriority* {.pure.} = enum
     High
@@ -29,6 +31,8 @@ type
     ## Accounting shared with topic writers; PubSubPeer owns admission and limits.
     bytes*, evictableBytes*: array[MessagePriority, int]
     topicCounts*: array[MessagePriority, int]
+    failed*: bool
+    onFailure*: proc() {.gcsafe, raises: [].}
     admit*: proc(priority: MessagePriority, messageBytes: int): QueueAction {.
       gcsafe, raises: []
     .}
@@ -38,3 +42,32 @@ type
 
 func queuedBytes*(q: OutboundQueue): int =
   q.bytes[High] + q.bytes[Medium] + q.bytes[Low]
+
+proc release*(
+    q: OutboundQueue,
+    priority: MessagePriority,
+    bytes: int,
+    topicCount = 0,
+    evictableBytes = 0,
+): bool =
+  ## Checks all counters before releasing. Failure permanently disables accounting.
+  if q.failed:
+    return false
+  if q.bytes[priority] < bytes or q.topicCounts[priority] < topicCount or
+      q.evictableBytes[priority] < evictableBytes:
+    q.failed = true
+    error "outbound queue accounting invariant failed",
+      priority,
+      bytes,
+      topicCount,
+      evictableBytes,
+      accountedBytes = q.bytes[priority],
+      accountedTopics = q.topicCounts[priority],
+      accountedEvictableBytes = q.evictableBytes[priority]
+    if q.onFailure != nil:
+      q.onFailure()
+    return false
+  q.bytes[priority] -= bytes
+  q.topicCounts[priority] -= topicCount
+  q.evictableBytes[priority] -= evictableBytes
+  true
