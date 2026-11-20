@@ -215,6 +215,7 @@ suite "Priority queue behavior":
       peer.cancelQueuedRelays([cancelledId].toHashSet()) == cancelledMsg.len
       peer.cancelQueuedRelays([cancelledId].toHashSet()) == 0
       peer.queuedBytes(Low) == keptMsg.len
+      peer.outboundQueue.evictableBytes[Low] == keptMsg.len
 
     conn.releasePendingWrites()
 
@@ -450,7 +451,7 @@ suite "Priority queue byte budgets":
   teardown:
     checkTrackers()
 
-  asyncTest "High byte limit accepts the boundary and disconnects on overflow":
+  asyncTest "High byte limit accepts the boundary, disconnects on overflow and ignores later sends":
     let disconnected = new bool
     let peer = createTestPeer(
       maxHigh = 10, maxOutboundBytes = 5, onEvent = newDisconnectRecorder(disconnected)
@@ -471,6 +472,10 @@ suite "Priority queue byte budgets":
       disconnected[]
       conn.pendingWrites.len == 2
       peer.slowPeerPenalty == 0.0
+    # GossipSub keeps sending publishes to the peer until the switch drops it
+    await peer.sendEncoded(@[7'u8], Medium)
+    # the disconnected peer ignores it instead of dropping it with a penalty
+    check peer.slowPeerPenalty == 0.0
     await peer.stopTasks()
     check peer.queuedBytes(High) == 0
 
@@ -645,6 +650,8 @@ suite "Priority queue byte budgets":
       check:
         peer.queuedBytes(High) == 0
         peer.queuedBytes(priority) == 15
+        # the worker popped the message, so eviction can no longer free its bytes
+        peer.outboundQueue.evictableBytes[priority] == 0
       await peer.sendEncoded(@[5'u8], priority)
       check:
         peer.slowPeerPenalty == 2.0
