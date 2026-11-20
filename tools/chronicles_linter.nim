@@ -156,7 +156,9 @@ proc isExceptionText(value: PNode): bool =
 
 # --- checks ---------------------------------------------------------------
 
-proc runMessageEndsWithPunctuation(ast: PNode, s: MessageSettings): seq[Finding] =
+proc runMessageEndsWithPunctuation(
+    source: string, ast: PNode, s: MessageSettings
+): seq[Finding] =
   if s.allowTrailingPunctuation:
     return
   for call in logCalls(ast):
@@ -164,7 +166,9 @@ proc runMessageEndsWithPunctuation(ast: PNode, s: MessageSettings): seq[Finding]
     if node != nil and node.strVal.strip()[^1] in s.trailingPunctuation:
       result.add(node.toFinding("log message must not end with punctuation"))
 
-proc runMessageMaxSentences(ast: PNode, s: MessageSettings): seq[Finding] =
+proc runMessageMaxSentences(
+    source: string, ast: PNode, s: MessageSettings
+): seq[Finding] =
   for call in logCalls(ast):
     let node = messageNode(call)
     if node == nil:
@@ -184,7 +188,9 @@ proc runMessageMaxSentences(ast: PNode, s: MessageSettings): seq[Finding] =
         )
         break
 
-proc runFieldNameLength(ast: PNode, s: FieldNameSettings): seq[Finding] =
+proc runFieldNameLength(
+    source: string, ast: PNode, s: FieldNameSettings
+): seq[Finding] =
   for call in logCalls(ast):
     for field in logFields(call):
       if field.name.len < s.minLength and field.name notin s.exceptions:
@@ -196,7 +202,9 @@ proc runFieldNameLength(ast: PNode, s: FieldNameSettings): seq[Finding] =
           )
         )
 
-proc runErrForException(ast: PNode, s: ExceptionSettings): seq[Finding] =
+proc runErrForException(
+    source: string, ast: PNode, s: ExceptionSettings
+): seq[Finding] =
   for call in logCalls(ast):
     for f in logFields(call):
       if f.name in s.aliases and isExceptionText(f.value):
@@ -206,7 +214,9 @@ proc runErrForException(ast: PNode, s: ExceptionSettings): seq[Finding] =
           )
         )
 
-proc runNoPayloadWhenElevated(ast: PNode, s: PayloadSettings): seq[Finding] =
+proc runNoPayloadWhenElevated(
+    source: string, ast: PNode, s: PayloadSettings
+): seq[Finding] =
   for call in logCalls(ast):
     if levelName(call) notin s.levels:
       continue
@@ -245,7 +255,9 @@ proc isBasicType(value: PNode, basicTypes: seq[string]): bool =
       convertedType(value)
   name.len > 0 and name in basicTypes
 
-proc runUnboundedFields(ast: PNode, s: UnboundedSettings): seq[Finding] =
+proc runUnboundedFields(
+    source: string, ast: PNode, s: UnboundedSettings
+): seq[Finding] =
   ## Flags fields that conventionally carry unbounded payloads unless the value
   ## is bounded.
   ##
