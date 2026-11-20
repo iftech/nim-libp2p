@@ -1143,6 +1143,25 @@ suite "Service Discovery Registrar - pruneExpiredAds":
     check ad notin registrar.ads.getServiceCachedAds(serviceId, int.high).mapIt(it.ad)
     check registrar.ads.len == 0
 
+  test "pruneExpiredAdsThrottled prunes on the first call of a second":
+    let registrar = Registrar.new()
+    let serviceId = makeServiceId()
+
+    registrar.seedAd(serviceId, makeAdvertisement($serviceId), initMoment(0))
+    pruneExpiredAdsThrottled(registrar, 1.secs)
+
+    check registrar.ads.len == 0
+
+  test "pruneExpiredAdsThrottled skips a second call in the same second":
+    let registrar = Registrar.new()
+    let serviceId = makeServiceId()
+
+    registrar.seedAd(serviceId, makeAdvertisement($serviceId), initMoment(0))
+    registrar.lastPruneSecond = Moment.now().epochSeconds
+    pruneExpiredAdsThrottled(registrar, 1.secs)
+
+    check registrar.ads.len == 1
+
 suite "Service Discovery Registrar - AdvertisementCache":
   test "cache can store multiple ads for same service ID":
     let registrar = Registrar.new()
