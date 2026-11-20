@@ -172,11 +172,13 @@ proc payloadType*(_: typedesc[Voucher]): seq[byte] =
 
 proc checkValid*(spr: SignedVoucher): Result[void, EnvelopeError] =
   let relayPeerId = spr.data.relayPeerId.valueOr:
-    return err(EnvelopeFieldMissing)
-  if spr.data.reservingPeerId.isNone or spr.data.expiration.isNone:
-    return err(EnvelopeFieldMissing)
+    return err(EnvelopeError.init(EnvelopeFieldMissing, "relayPeerId"))
+  if spr.data.reservingPeerId.isNone:
+    return err(EnvelopeError.init(EnvelopeFieldMissing, "reservingPeerId"))
+  if spr.data.expiration.isNone:
+    return err(EnvelopeError.init(EnvelopeFieldMissing, "expiration"))
 
   if not relayPeerId.match(spr.envelope.publicKey):
-    err(EnvelopeInvalidSignature)
+    err(EnvelopeError.init(EnvelopeInvalidSignature, "relayPeerId mismatch"))
   else:
     ok()

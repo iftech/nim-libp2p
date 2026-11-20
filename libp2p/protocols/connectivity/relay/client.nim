@@ -118,9 +118,7 @@ proc toRsvp(msg: HopMessage, relayPeerId: PeerId): LPResult[Rsvp] =
   )
   reservation.svoucher.ifValue(sv):
     let svoucher = SignedVoucher.decode(sv).valueOr:
-      if error == EnvelopeFieldMissing:
-        return err("Missing voucher field")
-      return err("Invalid voucher")
+      return err("Invalid voucher: " & $error)
     let voucherRelayPeerId = svoucher.data.relayPeerId.valueOr:
       return err("Missing voucher relay PeerId")
     if voucherRelayPeerId != relayPeerId:
