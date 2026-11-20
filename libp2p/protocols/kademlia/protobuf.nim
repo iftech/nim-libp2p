@@ -6,13 +6,16 @@ import chronos, chronicles
 import ../../utils/[opt, shortlog]
 import results
 import ../../multiaddress
-import stew/endians2
+import stew/[endians2, byteutils]
+import nimcrypto/sha2
 import ../../crypto/crypto
 import protobuf_serialization
 import protobuf_serialization/pkg/results
 import protobuf_serialization/std/enums
 import ../../utils/[protobuf, protobuf_chronos_sec, protobuf_distinct_seq]
 import ./key_value
+
+const ticketDomain = "logos-service-discovery-ticket-v1"
 
 distinctByteSeqSerialization(Key)
 distinctByteSeqSerialization(Value)
@@ -172,11 +175,12 @@ proc encode*(
   buffer
 
 proc toBytes*(ticket: Ticket): seq[byte] {.raises: [], gcsafe.} =
-  ## Returns the canonical byte representation of a Ticket used for signing.
-  ## Covers: advertisement || tInit || tMod || tWaitFor
+  ## Returns the domain-separated signing input for a Ticket.
+  ## Domain separation and a fixed-size digest prevent cross-protocol signing.
   let ad = ticket.advertisement.get(@[])
-  var buf = newSeqOfCap[byte](ad.len + 8 + 8 + 4)
-  buf.add(ad)
+  var buf = newSeqOfCap[byte](ticketDomain.len + 32 + 20)
+  buf.add(ticketDomain.toBytes())
+  buf.add(sha256.digest(ad).data)
   buf.add(@(toBytesBE(ticket.tInit.get(0).uint64)))
   buf.add(@(toBytesBE(ticket.tMod.get(0).uint64)))
   buf.add(@(toBytesBE(ticket.tWaitFor.get(ZeroDuration).seconds.uint32)))

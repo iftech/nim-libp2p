@@ -95,15 +95,13 @@ proc init*[T](
 
   ok(SignedPayload[T](data: data, envelope: envelope))
 
-proc decode*[T](
+proc fromVerifiedEnvelope[T](
     _: typedesc[SignedPayload[T]], envelope: Envelope
 ): Result[SignedPayload[T], EnvelopeError] =
   mixin decode
 
   if envelope.payloadType != T.payloadType:
     return err(EnvelopeWrongType)
-  if not envelope.verify(T.payloadDomain):
-    return err(EnvelopeInvalidSignature)
 
   let data = T.decode(envelope.payload).valueOr:
     return err(EnvelopeInvalidProtobuf)
@@ -115,10 +113,18 @@ proc decode*[T](
   ok(signedPayload)
 
 proc decode*[T](
+    _: typedesc[SignedPayload[T]], envelope: Envelope
+): Result[SignedPayload[T], EnvelopeError] =
+  if not envelope.verify(T.payloadDomain):
+    return err(EnvelopeInvalidSignature)
+
+  SignedPayload[T].fromVerifiedEnvelope(envelope)
+
+proc decode*[T](
     _: typedesc[SignedPayload[T]], buffer: sink seq[byte]
 ): Result[SignedPayload[T], EnvelopeError] =
   let envelope = ?Envelope.decode(move(buffer), T.payloadDomain)
-  SignedPayload[T].decode(envelope)
+  SignedPayload[T].fromVerifiedEnvelope(envelope)
 
 proc encode*[T](msg: SignedPayload[T]): seq[byte] =
   msg.envelope.encode()
