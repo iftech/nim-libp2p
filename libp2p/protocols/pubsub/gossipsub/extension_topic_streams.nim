@@ -9,9 +9,10 @@ import ../../../results
 import ../../../stream/connection
 import ../../../peerid
 import ./extensions_types
+import ../outboundqueue
 import ../rpc/[messages, message, protobuf, topicrpc]
 
-export topicrpc
+export topicrpc, outboundqueue
 
 const
   TopicStreamsCodec* = "/gsts/v0beta"
@@ -33,14 +34,12 @@ when defined(libp2p_testing):
 type
   TopicStreamsConfig* = object
     ## Experimental draft libp2p/specs#729. Limits apply per peer.
-    ## Byte budgets must each be at least twice maxMessageSize to hold one
-    ## maximum-size header and frame. Existing streams share these budgets.
+    ## The incoming byte budget must hold a maximum-size header and frame.
+    ## Outgoing traffic shares the peer's outbound queue policy.
     maxIncomingStreams*: int = 64 # includes pending headers
     ## Custom and direct writers for the same topic each consume a stream slot.
     maxOutgoingStreams*: int = 64 # includes pending dials
-    maxQueuedBytes*: int = 8 * 1024 * 1024 # queued/in-flight data and stream headers
     maxIncomingBytes*: int = 8 * 1024 * 1024 # in-flight frames and retained headers
-    maxQueuedMessages*: int = 1024
 
   TopicStreamDial* =
     proc(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).}
@@ -50,11 +49,16 @@ type
 
   TopicWriterKey = tuple[topic: string, custom: bool]
 
+  TopicFrame = object
+    data: seq[byte]
+    priority: MessagePriority
+
   TopicWriter = ref object
     stream: Stream
     header: seq[byte]
     headerBytes: int
-    medium, low: Deque[seq[byte]]
+    headerPriority: MessagePriority
+    pending: array[MessagePriority, Deque[seq[byte]]]
     wake: AsyncEvent
     task: Future[void]
     monitor: Future[void]
@@ -71,7 +75,9 @@ type
     receivedControl: bool
     stopped: bool
     maxMessageSize: int
-    queuedBytes, queuedMessages, incomingBytes: int
+    queue: OutboundQueue
+    eviction: QueueEviction
+    incomingBytes: int
     writers: Table[TopicWriterKey, TopicWriter]
     readers: seq[TopicReader]
     dial: TopicStreamDial
@@ -86,19 +92,18 @@ type
 
 func validate*(config: TopicStreamsConfig): Result[void, cstring] =
   if config.maxIncomingStreams < 3 or config.maxOutgoingStreams <= 0 or
-      config.maxQueuedBytes <= 0 or config.maxIncomingBytes <= 0 or
-      config.maxQueuedMessages <= 0:
+      config.maxIncomingBytes <= 0:
     return err("gossipsub: invalid topic stream limits")
   ok()
 
 func validate*(config: TopicStreamsConfig, maxMessageSize: int): Result[void, cstring] =
   ?config.validate()
   # Headers and frames are each bounded by maxMessageSize and share the budget.
-  if maxMessageSize > config.maxQueuedBytes div 2:
-    return err("gossipsub: maxQueuedBytes must be at least twice maxMessageSize")
   if maxMessageSize > config.maxIncomingBytes div 2:
     return err("gossipsub: maxIncomingBytes must be at least twice maxMessageSize")
   ok()
+
+proc evictQueued(s: TopicStreams, priority: MessagePriority, amount: int): int
 
 proc new*(
     T: type TopicStreams,
@@ -107,9 +112,11 @@ proc new*(
     dial: TopicStreamDial,
     receive: TopicStreamReceive,
     violation, penalize: proc() {.gcsafe, raises: [].},
+    queue: OutboundQueue,
 ): T =
-  T(
+  let state = T(
     config: config,
+    queue: queue,
     maxMessageSize: maxMessageSize,
     dial: dial,
     receive: receive,
@@ -117,8 +124,15 @@ proc new*(
     penalizePeer: penalize,
   )
 
+  state.eviction = proc(
+      priority: MessagePriority, amount: int
+  ): int {.gcsafe, raises: [].} =
+    state.evictQueued(priority, amount)
+  queue.evictTopics = state.eviction
+  state
+
 func isActive*(s: TopicStreams): bool =
-  not s.isNil and not s.stopped and s.active
+  not s.isNil and not s.stopped and not s.queue.failed and s.active
 
 proc fail(s: sink TopicStreams, reason: string) =
   # Keep the transport alive while the violation callback disconnects the peer.
@@ -154,15 +168,38 @@ proc negotiate*(s: TopicStreams, rpc: RPCMsg): bool =
     return false
   true
 
+proc releaseFrame(
+    s: TopicStreams, priority: MessagePriority, size: int, queued: bool
+): bool =
+  s.queue.release(
+    priority,
+    size,
+    topicCount = ord(queued or priority == High),
+    evictableBytes = (if queued and priority != High: size else: 0),
+  )
+
 proc discardQueued(s: TopicStreams, w: TopicWriter) =
-  for data in w.medium:
-    s.queuedBytes -= data.len
-    dec s.queuedMessages
-  for data in w.low:
-    s.queuedBytes -= data.len
-    dec s.queuedMessages
-  w.medium.clear()
-  w.low.clear()
+  for priority in MessagePriority:
+    for data in w.pending[priority]:
+      discard s.releaseFrame(priority, data.len, true)
+    w.pending[priority].clear()
+
+proc evictQueued(s: TopicStreams, priority: MessagePriority, amount: int): int =
+  ## Evicts at least `amount` bytes when possible; may overshoot by one frame.
+  if priority == High:
+    return 0
+  var freed = 0
+  for w in s.writers.values:
+    while w.pending[priority].len > 0 and freed < amount:
+      let data = w.pending[priority].popFirst()
+      if not s.releaseFrame(priority, data.len, true):
+        return freed
+      freed += data.len
+      if s.queue.evicted != nil:
+        s.queue.evicted(priority, data.len)
+    if freed >= amount:
+      break
+  return freed
 
 proc monitorWriter(s: TopicStreams, w: TopicWriter) {.async: (raises: []).} =
   try:
@@ -179,48 +216,55 @@ proc monitorWriter(s: TopicStreams, w: TopicWriter) {.async: (raises: []).} =
 
 proc popNext(
     s: TopicStreams, w: TopicWriter
-): Future[Opt[seq[byte]]] {.async: (raises: [CancelledError]).} =
-  while not s.stopped and not w.closing and w.medium.len == 0 and w.low.len == 0:
+): Future[Opt[TopicFrame]] {.async: (raises: [CancelledError]).} =
+  while not s.stopped and not s.queue.failed and not w.closing:
+    for priority in MessagePriority:
+      if w.pending[priority].len > 0:
+        return
+          Opt.some(TopicFrame(data: w.pending[priority].popFirst(), priority: priority))
     await w.wake.wait()
     w.wake.clear()
-  if s.stopped or w.closing:
-    return Opt.none(seq[byte])
-  if w.medium.len > 0:
-    return Opt.some(w.medium.popFirst())
-  return Opt.some(w.low.popFirst())
+  return Opt.none(TopicFrame)
 
 proc writeLoop(
     s: TopicStreams, key: TopicWriterKey, w: TopicWriter, dial: TopicStreamDial
 ) {.async: (raises: []).} =
   try:
     w.stream = await dial().wait(TopicStreamDialTimeout)
-    if s.stopped or w.closing:
+    if s.stopped or s.queue.failed or w.closing:
       return
     w.monitor = s.monitorWriter(w)
     await w.stream.writeLp(w.header)
     w.header = @[]
-    while not s.stopped and not w.closing:
-      let data = (await s.popNext(w)).valueOr:
+    while not s.stopped and not s.queue.failed and not w.closing:
+      let frame = (await s.popNext(w)).valueOr:
         return
+      if frame.priority != High:
+        if not s.queue.release(
+          frame.priority, 0, topicCount = 1, evictableBytes = frame.data.len
+        ):
+          return
       try:
-        await w.stream.writeLp(data)
+        await w.stream.writeLp(frame.data)
       finally:
-        s.queuedBytes -= data.len
-        dec s.queuedMessages
+        discard s.releaseFrame(frame.priority, frame.data.len, false)
   except CancelledError, LPStreamError, AsyncTimeoutError:
     discard
   finally:
     w.closing = true
-    if w.medium.len + w.low.len > 0:
+    var messages = 0
+    for pending in w.pending:
+      messages += pending.len
+    if messages > 0:
       trace "discarding queued topic frames as writer closes",
-        topic = key.topic, messages = w.medium.len + w.low.len
+        topic = key.topic, messages
     s.discardQueued(w)
     w.header = @[]
     if w.monitor != nil:
       await w.monitor.cancelAndWait()
     if w.stream != nil:
       await w.stream.close()
-    s.queuedBytes -= w.headerBytes
+    discard s.queue.release(w.headerPriority, w.headerBytes)
     # Keep the entry until close completes: replacement must close before dial.
     if s.writers.getOrDefault(key) == w:
       s.writers.del(key)
@@ -229,47 +273,52 @@ proc sendTopic*(
     s: TopicStreams,
     topic: string,
     data: sink seq[byte],
-    medium: bool,
+    priority: MessagePriority,
     customDial: TopicStreamDial = nil,
 ) =
-  if s.stopped or not s.active:
+  if s.stopped or s.queue.failed or s.queue.admit == nil or not s.active:
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["inactive"])
     return
   if data.len == 0 or data.len > s.maxMessageSize:
     trace "dropping invalid outgoing topic frame", topic, size = data.len
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["invalid_frame"])
     return
-  if data.len > s.config.maxQueuedBytes - s.queuedBytes or
-      s.queuedMessages >= s.config.maxQueuedMessages:
-    trace "dropping outgoing topic frame because queue is full", topic
-    libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["queue_full"])
-    return
   let key = (topic: topic, custom: customDial != nil)
   var w = s.writers.getOrDefault(key)
+  var header: seq[byte]
   if w == nil:
     if s.writers.len >= s.config.maxOutgoingStreams:
       trace "dropping outgoing topic frame because stream limit is reached", topic
       libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["stream_limit"])
       return
-    let header = TopicRPCHeader(topic: Opt.some(topic)).encode()
-    if header.len > s.maxMessageSize or
-        header.len > s.config.maxQueuedBytes - s.queuedBytes - data.len:
-      trace "dropping outgoing topic frame because header exceeds queue budget", topic
+    header = TopicRPCHeader(topic: Opt.some(topic)).encode()
+    if header.len > s.maxMessageSize:
+      trace "dropping outgoing topic frame because header exceeds message limit", topic
       libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["header_limit"])
       return
-    w = TopicWriter(wake: newAsyncEvent(), header: header, headerBytes: header.len)
-    s.queuedBytes += header.len
-    s.writers[key] = w
   elif w.closing:
     trace "dropping outgoing topic frame while writer closes", topic
     libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["writer_closing"])
     return
-  s.queuedBytes += data.len
-  inc s.queuedMessages
-  if medium:
-    w.medium.addLast(move(data))
-  else:
-    w.low.addLast(move(data))
+  let action = s.queue.admit(priority, data.len + header.len)
+  if not action.send:
+    trace "dropping outgoing topic frame because queue is full", topic
+    libp2p_gossipsub_topic_stream_frames_rejected.inc(labelValues = ["queue_full"])
+    return
+  if w == nil:
+    w = TopicWriter(
+      wake: newAsyncEvent(),
+      header: header,
+      headerBytes: header.len,
+      headerPriority: action.priority,
+    )
+    s.queue.bytes[action.priority] += header.len
+    s.writers[key] = w
+  s.queue.bytes[action.priority] += data.len
+  if action.priority != High:
+    s.queue.evictableBytes[action.priority] += data.len
+  inc s.queue.topicCounts[action.priority]
+  w.pending[action.priority].addLast(move(data))
   if w.task == nil:
     w.task = s.writeLoop(key, w, if customDial == nil: s.dial else: customDial)
   else:
@@ -396,6 +445,9 @@ proc stop*(s: TopicStreams) {.async: (raises: []).} =
   await noCancel allFutures(writers.mapIt(it.close()))
   let readers = move s.readers
   await noCancel allFutures(readers.mapIt(it.stream.close()))
+  if s.queue.evictTopics == s.eviction:
+    s.queue.evictTopics = nil
+  s.eviction = nil
 
 type PreparedTopicRPC* = object
   control: seq[byte]
@@ -421,11 +473,11 @@ proc makePreparedTopicRPC*(msg: RPCMsg, anonymize: bool): PreparedTopicRPC =
 proc sendTopicRPC*(
     s: TopicStreams,
     msg: PreparedTopicRPC,
-    medium: bool,
+    priority: MessagePriority,
     customDial: TopicStreamDial = nil,
 ): seq[byte] =
   for payload in msg.payloads:
-    s.sendTopic(payload.topic, payload.data, medium, customDial)
+    s.sendTopic(payload.topic, payload.data, priority, customDial)
   msg.control
 
 proc new*(
@@ -442,14 +494,16 @@ proc initTopicStreams*(
     dial: TopicStreamDial,
     receive: TopicStreamReceive,
     violation: proc() {.gcsafe, raises: [].},
+    queue: OutboundQueue,
 ) =
   const TopicStreamBehaviorPenalty = 0.1
   ext.config.ifValue(config):
     proc penalize() {.gcsafe, raises: [].} =
       ext.updatePeerBehaviorPenalty(peerId, TopicStreamBehaviorPenalty)
 
-    ext.peers[peerId] =
-      TopicStreams.new(config, maxMessageSize, dial, receive, violation, penalize)
+    ext.peers[peerId] = TopicStreams.new(
+      config, maxMessageSize, dial, receive, violation, penalize, queue
+    )
 
 proc peerHasTopicStreams*(ext: TopicStreamsExtension, peerId: PeerId): bool =
   ext.peers.getOrDefault(peerId).isActive()
@@ -476,11 +530,11 @@ proc sendTopicRPC*(
     ext: TopicStreamsExtension,
     peerId: PeerId,
     msg: PreparedTopicRPC,
-    medium: bool,
+    priority: MessagePriority,
     customDial: TopicStreamDial = nil,
 ): seq[byte] =
   ext.peers.withValue(peerId, streams):
-    return streams[].sendTopicRPC(msg, medium, customDial)
+    return streams[].sendTopicRPC(msg, priority, customDial)
 
 proc closeTopicStreams*(
     ext: TopicStreamsExtension, topic: string, incoming = false

@@ -27,9 +27,7 @@ suite "GossipSubParams validation":
       # each limit at its lowest accepted value
       TopicStreamsConfig(maxIncomingStreams: 3),
       TopicStreamsConfig(maxOutgoingStreams: 1),
-      TopicStreamsConfig(maxQueuedBytes: 1),
       TopicStreamsConfig(maxIncomingBytes: 1),
-      TopicStreamsConfig(maxQueuedMessages: 1),
     ]:
       check GossipSubParams
         .init(topicStreamsConfig = Opt.some(config))
@@ -40,9 +38,7 @@ suite "GossipSubParams validation":
     for config in [
       TopicStreamsConfig(maxIncomingStreams: 2),
       TopicStreamsConfig(maxOutgoingStreams: 0),
-      TopicStreamsConfig(maxQueuedBytes: 0),
       TopicStreamsConfig(maxIncomingBytes: 0),
-      TopicStreamsConfig(maxQueuedMessages: 0),
     ]:
       let res =
         GossipSubParams.init(topicStreamsConfig = Opt.some(config)).validateParameters()
