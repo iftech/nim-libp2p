@@ -513,7 +513,8 @@ suite "Priority queue byte budgets":
         peer.slowPeerPenalty == slowPeerPenalty
 
   asyncTest "High-priority reservation limits non-high backlog":
-    let peer = createTestPeer(maxHigh = 10, maxMedium = 10, maxOutboundBytes = 32)
+    let peer =
+      createTestPeer(maxHigh = 10, maxMedium = 10, maxOutboundBytes = maxOutboundBytes)
     let conn = peer.stallSendStream()
     defer:
       await peer.stopTasks()
@@ -530,7 +531,7 @@ suite "Priority queue byte budgets":
 
     await peer.sendEncoded(@[2'u8], High)
     check:
-      peer.queuedBytes() == 32
+      peer.queuedBytes() == maxOutboundBytes
       conn.pendingWrites.len == 2
 
   asyncTest "High evicts queued low then medium traffic":
