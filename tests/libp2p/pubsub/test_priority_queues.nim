@@ -646,6 +646,8 @@ suite "Priority queue byte budgets":
       check:
         peer.queuedBytes(High) == 0
         peer.queuedBytes(priority) == 15
+        # the worker popped the message, so eviction can no longer free its bytes
+        peer.outboundQueue.evictableBytes[priority] == 0
       await peer.sendEncoded(@[5'u8], priority)
       check:
         peer.slowPeerPenalty == 2.0
