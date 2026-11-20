@@ -35,7 +35,7 @@ proc newTopicStreamsSwitch*(rng: Rng): Switch =
     ms = MultistreamSelect.new()
     transports = @[Transport(QuicTransport.new(Upgrade(ms: ms), key, rng, connManager))]
   connManager.peerStore = peerStore
-  result = Switch(
+  let switch = Switch(
     peerInfo: peerInfo,
     peerStore: peerStore,
     connManager: connManager,
@@ -45,7 +45,8 @@ proc newTopicStreamsSwitch*(rng: Rng): Switch =
     addressManager: addressManager,
     rng: rng,
   )
-  result.mount(identify)
+  switch.mount(identify)
+  switch
 
 proc topicStreamsInteropTest*(
     otherAddr: MultiAddress, otherPeerId: PeerId, timeout: Duration = 45.seconds
@@ -80,10 +81,12 @@ proc topicStreamsInteropTest*(
     gossip.subscribe(topic, nil)
 
   proc topicStreams(): HashSet[Stream] =
+    var streams: HashSet[Stream]
     for mux in switch.connManager.getConnections(otherPeerId).get(@[]):
       for stream in mux.getStreams():
         if stream.protocol == TopicStreamsCodec:
-          result.incl(stream)
+          streams.incl(stream)
+    streams
 
   proc scenario(): Future[bool] {.async.} =
     await switch.connect(otherPeerId, @[otherAddr])
@@ -137,7 +140,7 @@ proc topicStreamsInteropTest*(
   defer:
     await switch.stop()
   try:
-    return await scenario().wait(timeout)
+    await scenario().wait(timeout)
   except AsyncTimeoutError:
     error "Topic streams interop timed out"
-    return false
+    false

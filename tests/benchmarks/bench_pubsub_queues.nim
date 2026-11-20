@@ -47,7 +47,7 @@ proc handler(
 
 proc bench(stalled: bool) {.async.} =
   let peer = PubSubPeer.new(
-    PeerId.random(rng()).expect("peer id"),
+    PeerId.random(),
     getStream,
     nil,
     "/meshsub/1.2.0",
