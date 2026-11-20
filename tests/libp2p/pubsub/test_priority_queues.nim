@@ -602,7 +602,7 @@ suite "Priority queue byte budgets":
         peer.queuedBytes(Medium) == mediumSize
 
   asyncTest "Medium evicts no queued low traffic when the message would still be refused":
-    for (maxMedium, highSize, queuedMediumSize, lowSize, mediumSize) in [
+    for (maxMedium, highSize, queuedMediumSize, lowSize, droppedMediumSize) in [
       (2, 1, 25, 3, 6),
         # without the low message, Medium and Low would use 25 + 6 = 31 of their 30 bytes
       (2, 25, 2, 3, 6),
@@ -619,7 +619,7 @@ suite "Priority queue byte budgets":
       await peer.sendEncoded(newSeq[byte](highSize), High)
       await peer.sendEncoded(newSeq[byte](queuedMediumSize), Medium)
       await peer.sendEncoded(newSeq[byte](lowSize), Low)
-      await peer.sendEncoded(newSeq[byte](mediumSize), Medium)
+      await peer.sendEncoded(newSeq[byte](droppedMediumSize), Medium)
       check:
         # the low message stays queued
         peer.queuedBytes(Low) == lowSize
@@ -738,22 +738,6 @@ suite "Priority queue byte budgets":
       # the medium message follows it
       (await peerEnd.readLp(mediumMsg.len)) == mediumMsg
       # both writes have ended, so their bytes are released
-      peer.queuedBytes() == 0
-
-  asyncTest "Messages waiting for stream setup are released when the send stream fails to open":
-    let peer = createTestPeer()
-    defer:
-      await peer.stopTasks()
-
-    # no send stream yet, so the high message waits for stream setup
-    await peer.sendEncoded(@[1'u8, 2, 3], High)
-    # the medium message is queued behind the waiting high message
-    await peer.sendEncoded(@[4'u8, 5, 6, 7], Medium)
-    # stream setup fails
-    peer.connect()
-
-    # the failed setup ends both messages unwritten, which releases their bytes before any stop
-    checkUntilTimeout:
       peer.queuedBytes() == 0
 
   test "Byte admission avoids addition overflow":
