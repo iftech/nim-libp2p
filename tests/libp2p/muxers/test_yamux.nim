@@ -479,6 +479,25 @@ suite "Yamux":
 
       await streamA.close()
 
+    asyncTest "reset aborts a stream closed for writing and wakes a pending read":
+      mSetup()
+      let blocker = newBlockerFut()
+
+      yamuxb.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
+        await blocker
+        await stream.close()
+
+      let streamA = await yamuxa.newStream()
+      await streamA.close()
+
+      let pendingRead = streamA.readLp(100)
+      await streamA.reset()
+
+      check streamA.closed
+      expect LPStreamError:
+        discard await pendingRead.wait(1.seconds)
+      blocker.complete()
+
     asyncTest "Peer must be able to read from stream after closing it for writing":
       mSetup()
 
