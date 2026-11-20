@@ -1,0 +1,963 @@
+{
+  "task_id": "20261120T114625-71ee3b",
+  "org": "iftech",
+  "repo": "nim-libp2p",
+  "domain": "spec",
+  "domains": [
+    "spec"
+  ],
+  "branch": "bork/proof/20261120T114625-71ee3b",
+  "unit": [
+    "libp2p/protocols/service_discovery.nim",
+    "libp2p/protocols/service_discovery",
+    "libp2p/extended_peer_record.nim"
+  ],
+  "workflow": "audit-spec",
+  "input": {
+    "path": "inflight/20261120T114625-71ee3b.input.json",
+    "sha256": "9b988dc60d9fffa52012360ea63347dff718fb66e2f4a6c9873e70bf1f2f834a"
+  },
+  "environment": {
+    "producer": "claude/claude-fable-5-2",
+    "verifier": null,
+    "reporter": "claude/claude-fable-5-2",
+    "claude_version": "2.1.329 (Claude Code)",
+    "codex_version": "codex-cli 0.171.0",
+    "image_id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "host": "Skritek"
+  },
+  "base": "master",
+  "base_sha": "2c6e50f98b5f251a776ddb5f988e37fb9b4a1708",
+  "generated": "2026-11-20T12:21:04Z",
+  "producer": "claude/claude-fable-5-2",
+  "verifier": null,
+  "reporter": "claude/claude-fable-5-2",
+  "proof_changes": {
+    "reverted": [],
+    "unit": [],
+    "other": []
+  },
+  "gate_sha": "6e8625e48ab3bafdad59ddf63be6e47bfe205a10",
+  "gate_base": "2c6e50f98b5f251a776ddb5f988e37fb9b4a1708",
+  "gate_setup": {
+    "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test service_discovery; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+    "exit": 2,
+    "clean": false
+  },
+  "gate_env": {
+    "tools": {
+      "node": "v22.23.4",
+      "npm": "10.9.9",
+      "pnpm": "12.21.0",
+      "yarn": "1.22.22",
+      "python3": "Python 3.14.4",
+      "pip": "pip 25.1.1 from /usr/lib/python3/dist-packages/pip (python 3.14)",
+      "go": "go version go1.23.4 linux/arm64",
+      "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+      "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "uv": "uv 0.13.5 (aarch64-unknown-linux-gnu)",
+      "git": "git version 2.53.0"
+    }
+  },
+  "image": {
+    "id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "source": "12c5e6288ddb645fcb44d35b601da5fbfead511d1919f26eca75db329cb5ef88",
+    "name": "bork/worker:latest"
+  },
+  "findings_count": 10,
+  "confirmed_count": 0,
+  "findings": [
+    {
+      "id": "20261120T114625-71ee3b/1",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "waitingTime rounds w to whole seconds, so G vanishes and a first REGISTER is admitted with no wait",
+      "claim": "Registrar.waitingTime computes w = E*occupancy*(serviceSim + ipSim + G) and then rounds it to whole seconds. With the default G = 1e-7 and E = 900 the G term is 9e-5 s, so for a new service from a distinct IP the waiting time is exactly 0. registration() then confirms a ticket-less first REGISTER at once. The spec says G ensures waiting times never reach zero, and that a REGISTER without a ticket gets a signed ticket with status Wait.",
+      "fingerprint": "sha256:1f3d589ac1b4bc4d07d353535aae98758af00f8633df2b76bd76099e7fc786ec",
+      "handle": "F-1f3d589a",
+      "fp_version": 1,
+      "subject": "Waiting Time Calculation / Safety Parameter G; Handling REGISTER requests step 2",
+      "evidence": "Spec (Safety Parameter): \"The safety parameter G ensures waiting times never reach zero even when: Service similarity is zero (new service). IP similarity is zero (completely distinct IP). It prevents ad_cache overflow in cases when attackers try to send ads for random services or from diverse IPs.\" Spec (Handling REGISTER requests, step 2): \"If no ticket is provided in the REGISTER request this is the advertiser's first registration attempt for the ad. Create a new signed ticket based on t_wait, and return the signed ticket in a response with status Wait.\"\n\nWalk: 1) registrar.nim:107-109 computes w as float seconds. 2) registrar.nim:112-113 clamps and `w = round(w)`; 900 * 1 * 1e-7 = 0.00009 rounds to 0. Any w below 0.5 s becomes 0, i.e. G only has an effect once occupancy exceeds about 5555 (c/C above ~0.58 at P_occ = 10). 3) registrar.nim:364-369: `tWait <= ZeroDuration` is true with no ticket, so acceptAdvertisement runs and the reply is Confirmed; no ticket is ever issued and no waiting time is accumulated. An existing unit test pins this behaviour (test_registrar.nim:124 `check w == ZeroDuration`), and the component test \"first REGISTER with no ticket returns Confirm\" relies on it.\n\nRan: make test 71ee3b_f01 -> exit 2, 2 of 2 proof tests FAILED:\ntest_20261120T114625_71ee3b_f01.nim(28, 12): Check failed: w > ZeroDuration\ntest_20261120T114625_71ee3b_f01.nim(52, 32): Check failed: register.status.get() == RegistrationStatus.Wait\ntest_20261120T114625_71ee3b_f01.nim(53, 32): Check failed: register.ticket.isSome()\ntest_20261120T114625_71ee3b_f01.nim(54, 43): Check failed: disco.countAdsInCache(serviceId) == 0\nThe example REGISTER pseudocode does allow Confirmed when t_wait <= 0, but the normative Safety Parameter text says that case cannot arise; the divergence is the rounding, not the branch. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Keep sub-second precision until the admission decision, or round up (ceil) so any positive w yields at least a 1 s ticket: in waitingTime replace `round(w)` with `ceil(w)` (or carry the Duration in milliseconds). Then a ticket-less REGISTER on an empty cache returns Wait with t_wait_for >= 1 and is confirmed on the retry. Update test_registrar.nim:124 and the component test that expects an immediate Confirm. The proof test test_20261120T114625_71ee3b_f01.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic. Every ticket-less REGISTER for a service with no cached ads from an IP with similarity score 0, while the cache is below roughly 58% occupancy.",
+        "scope": "Registrar admission control (REGISTER handling) for all services. Does not affect GET_ADS or the advertiser/discoverer roles."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            112,
+            113
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            368,
+            369
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f01; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=71ee3b_f01 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261120T114625-71ee3b/1 - safety parameter G\n  [Test   ]           waiting time never reaches zero for a new service and a distinct IP\n===================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/1 - safety parameter G::waiting time never reaches zero for a new service and a distinct IP'\n-------------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim(28, 12): Check failed: w > ZeroDuration\n\n  [FAILED ] (  0.00s) waiting time never reaches zero for a new service and a distinct IP\u001b[0m\n  [Test   ]           first REGISTER without a ticket is answered with Wait and a signed ticket\n=========================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/1 - safety parameter G::first REGISTER without a ticket is answered with Wait and a signed ticket'\n-------------------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim(52, 32): Check failed: register.status.get() == RegistrationStatus.Wait\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim(53, 32): Check failed: register.ticket.isSome()\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim(54, 43): Check failed: disco.countAdsInCache(serviceId) == 0\n\n  [FAILED ] (  0.01s) first REGISTER without a ticket is answered with Wait and a signed ticket\u001b[0m\n(0.01s)   Proof 20261120T114625-71ee3b/1 - safety parameter G\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 3 tests run (0.01s): 1 OK, 2 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) waiting time never reaches zero for a new service and a distinct IP\u001b[0m\n  [FAILED ] (  0.01s) first REGISTER without a ticket is answered with Wait and a signed ticket\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/1.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/2",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "Occupancy score is fixed at 100 when c >= C, so a full cache admits at once and evicts a live ad",
+      "claim": "waitingTime replaces the occupancy score with the constant 100.0 once the cache is full, far below its value just before full (4^10 at c = C-1 for C = 4; ~1e30 for C = 1000). For a new service from a distinct IP the wait is then 900*100*1e-7 = 0.009 s, rounded to 0: the REGISTER is Confirmed and AdvertisementCache.put evicts the oldest unexpired ad. The spec says the score tends to infinity as c -> C to prevent overflow, and that a full cache issues a ticket with a waiting time.",
+      "fingerprint": "sha256:1b5e0f51f82f8ddf59262c4af488fecab523bb6b7bdb4ebef8f3d9335eb9ab36",
+      "handle": "F-1b5e0f51",
+      "fp_version": 1,
+      "subject": "Waiting Time Calculation / Occupancy Score; Error Handling: Cache full (registrar)",
+      "evidence": "Spec (Occupancy Score): \"occupancy_score = 1 / (1 - c/C)^P_occ ... As c -> C: Score -> infinity (prevents overflow)\". Spec (Error Handling): \"Cache full (registrar) | Issue ticket with waiting time\".\n\nWalk: 1) registrar.nim:95-97: `if c >= advertCacheCap: 100.0`. 2) registrar.nim:107-113: with serviceSim = 0 and ipSim = 0, w = E * 100 * G = 0.009 s -> round -> 0. 3) registrar.nim:368-369: tWait <= 0 -> acceptAdvertisement. 4) advertisement_cache.nim:123-124: `if c.count.uint64 >= c.capacity: c.evictOldest()` removes an ad that has not expired. The waiting time is therefore non-monotonic in occupancy: it grows without bound up to c = C-1 and collapses at c = C. With a non-zero service or IP term the full-cache wait is still only 100x the bracket instead of unbounded (e.g. one cached ad of the same service at C = 1000 gives 90 s at full versus ~1e30 s, capped to E, at c = 999).\n\nRan: make test 71ee3b_f02 -> exit 2, 2 of 2 proof tests FAILED (capacity 4, default other parameters):\nwaiting time at c = C-1: 1m34s, at c = C: (zero)\ntest_20261120T114625_71ee3b_f02.nim(44, 16): Check failed: wFull >= wNearlyFull\ntest_20261120T114625_71ee3b_f02.nim(45, 16): Check failed: wFull > ZeroDuration\ntest_20261120T114625_71ee3b_f02.nim(73, 32): Check failed: register.status.get() == RegistrationStatus.Wait\ntest_20261120T114625_71ee3b_f02.nim(74, 32): Check failed: register.ticket.isSome()\ntest_20261120T114625_71ee3b_f02.nim(76, 40): Check failed: disco.registrar.ads.contains(sid, advertiser)\nThe last line is the eviction of a seeded, unexpired ad by a ticket-less REGISTER. Reaching it from the network needs an advertiser IP whose IP-tree path scores 0 (a prefix no cached entry shares) and a service id with no cached ads; each such registration displaces one honest ad. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "In waitingTime, make the c >= C branch at least as large as the c = C-1 value: return the maximum representable wait (it is capped to E by min(E, t_remaining) afterwards) instead of 100.0, so a full cache always answers Wait. With that, AdvertisementCache.put never needs evictOldest for a fresh admission; keep it only as a defensive path or drop it. The proof test test_20261120T114625_71ee3b_f02.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic once the cache holds C entries. Zero wait needs a service with no cached ads and an IP with similarity score 0; other requests get a wait far below the pre-full value.",
+        "scope": "Registrar admission control and ad_cache contents; honest unexpired ads are displaced. Not reached while the cache is below capacity."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            95,
+            97
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/advertisement_cache.nim",
+          "lines": [
+            123,
+            124
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f02; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=71ee3b_f02 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261120T114625-71ee3b/2 - full advertisement cache\n  [Test   ]           waiting time does not drop when the cache goes from nearly full to full\n=======================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/2 - full advertisement cache::waiting time does not drop when the cache goes from nearly full to full'\n-----------------------------------------------------------------------\n    waiting time at c = C-1: 1m34s, at c = C: \n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim(44, 16): Check failed: wFull >= wNearlyFull\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim(45, 16): Check failed: wFull > ZeroDuration\n\n  [FAILED ] (  0.01s) waiting time does not drop when the cache goes from nearly full to full\u001b[0m\n  [Test   ]           REGISTER on a full cache gets a ticket and evicts no unexpired ad\n=================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/2 - full advertisement cache::REGISTER on a full cache gets a ticket and evicts no unexpired ad'\n-----------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim(73, 32): Check failed: register.status.get() == RegistrationStatus.Wait\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim(74, 32): Check failed: register.ticket.isSome()\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim(76, 40): Check failed: disco.registrar.ads.contains(sid, advertiser)\n\n  [FAILED ] (  0.01s) REGISTER on a full cache gets a ticket and evicts no unexpired ad\u001b[0m\n(0.02s)   Proof 20261120T114625-71ee3b/2 - full advertisement cache\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 3 tests run (0.02s): 1 OK, 2 FAILED, 0 SKIPPED\n  [FAILED ] (  0.01s) waiting time does not drop when the cache goes from nearly full to full\u001b[0m\n  [FAILED ] (  0.01s) REGISTER on a full cache gets a ticket and evicts no unexpired ad\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/2.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/3",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "Expired ads are only dropped by a sweep every E, so GET_ADS serves them for up to 2E",
+      "claim": "The ad_cache stores the admission time and nothing checks it on read: getAdvertisements returns whatever is in the table, and len/serviceCacheAdsLen/the IP tree count it. The only removal is pruneExpiredAds, run by a heartbeat whose period is advertExpiry itself. An ad therefore stays served, and keeps inflating c, c(service) and the IP score, for up to E after it expired (up to 2E after admission). The spec gives each entry an expiry timestamp of admission + E.",
+      "fingerprint": "sha256:d9d70892682b354d5400ea9814d500c82374502bbda895f92945c0b8169b54b8",
+      "handle": "F-d9d70892",
+      "fp_version": 1,
+      "subject": "Registrars: ad_cache expiry timestamp (admission time + E); IP Similarity Score: decrement on expiry",
+      "evidence": "Spec (Registrars): the ad_cache associates each advertisement with an \"expiry timestamp based on admission time plus configured expiry time, E. Once an ad has expired, it SHOULD be removed from the ad_cache.\" Spec (step 5): \"add the ad to the ad_cache, with an expiry timestamp set to current_time + E\". Spec (IP Similarity Score): \"An entry expires after time E: MUST decrement the count for that IP\". Spec (Advertisers): a Confirmed registration \"is maintained in the registrar's ad_cache for E seconds\".\n\nWalk: 1) advertisement_cache.nim:128-130 stores `timestamp: now`. 2) service_discovery.nim:50-53: `heartbeat \"prune expired advertisements\", disco.discoConfig.advertExpiry, sleepFirst = true` is the only caller of pruneExpiredAds, so an ad admitted just after a sweep survives until the sweep after next, i.e. almost 2E. 3) registrar.nim:425-426 `getServiceCachedAds(serviceId, cap)` and advertisement_cache.nim:31-43 return entries without comparing timestamp to now. 4) registrar.nim:91-93,105 read ads.len, serviceCacheAdsLen and the IP tree with the expired entries still counted, so waiting times stay raised and the IP multiset is decremented late.\n\nRan: make test 71ee3b_f03 -> exit 2, 2 of 2 proof tests FAILED (an ad admitted E + 60 s ago, default E = 900 s):\ntest_20261120T114625_71ee3b_f03.nim(35, 48): Check failed: reply.getAds.get().advertisements.len == 0\ntest_20261120T114625_71ee3b_f03.nim(50, 78): Check failed: disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now) == fresh.waitingTime(disco.discoConfig, serviceId, ips, now)\nDiscoverers are handed advertisers whose registration lapsed (the advertiser has already rotated that slot to another registrar), and admission of new ads is delayed by entries that should be gone. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Either prune before each use (call pruneExpired at the top of registration() and getAdvertisements(), which is O(n) per call, or keep an expiry-ordered queue), or filter on read: skip entries with now - timestamp > E in getServiceCachedAds and exclude them from len, serviceCacheAdsLen and the IP tree. Shortening the sweep period alone only narrows the window. The proof test test_20261120T114625_71ee3b_f03.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Always: every admitted ad outlives its expiry by between 0 and E, depending on where the admission falls in the sweep period.",
+        "scope": "GET_ADS responses, waiting-time inputs (c, c(service), IP score) and lower-bound state pruning on every registrar."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery.nim",
+          "lines": [
+            50,
+            53
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            425,
+            426
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/advertisement_cache.nim",
+          "lines": [
+            31,
+            43
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f03; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=71ee3b_f03 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261120T114625-71ee3b/3 - expired advertisements\n  [Test   ]           GET_ADS does not serve an ad admitted more than E ago\n=====================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/3 - expired advertisements::GET_ADS does not serve an ad admitted more than E ago'\n-----------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim(35, 48): Check failed: reply.getAds.get().advertisements.len == 0\n\n  [FAILED ] (  0.00s) GET_ADS does not serve an ad admitted more than E ago\u001b[0m\n  [Test   ]           an ad admitted more than E ago no longer counts as cache occupancy\n==================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/3 - expired advertisements::an ad admitted more than E ago no longer counts as cache occupancy'\n------------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim(50, 78): Check failed: disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now) ==\n    fresh.waitingTime(disco.discoConfig, serviceId, ips, now)\n\n  [FAILED ] (  0.00s) an ad admitted more than E ago no longer counts as cache occupancy\u001b[0m\n(0.00s)   Proof 20261120T114625-71ee3b/3 - expired advertisements\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 3 tests run (0.00s): 1 OK, 2 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) GET_ADS does not serve an ad admitted more than E ago\u001b[0m\n  [FAILED ] (  0.00s) an ad admitted more than E ago no longer counts as cache occupancy\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@mlibp2p@sservice_discovery@stest_20261120T114625_71ee3b_f03.nim.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/3.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/4",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "XPR ads are signed under domain libp2p-peer-record with payload type 0x0301, not the spec's values",
+      "claim": "ExtendedPeerRecord.payloadDomain returns \"libp2p-peer-record\" and payloadType returns the bytes 03 01, the same pair the plain PeerRecord uses. The spec's VERIFY_ADVERTISEMENT asserts envelope.domain == \"libp2p-routing-state\" and payload_type == \"/libp2p/extensible-peer-record/\". An advertisement signed as the spec says fails Advertisement.decode here, and one produced here fails the spec's check, so registrars and discoverers of two implementations reject each other's ads. An XPR envelope is also indistinguishable by type from a plain signed peer record.",
+      "fingerprint": "sha256:f765f3012eb93b00ba227ae8b04f45d543b024163bb14b4725a3a5e7c4ca49ba",
+      "handle": "F-f765f301",
+      "fp_version": 1,
+      "subject": "Message Validation / Advertisement Signature Verification: envelope domain and payload_type",
+      "evidence": "Spec (Advertisement Signature Verification): \"Both registrars (on REGISTER) and discoverers (on GET_ADS response) MUST verify advertisement signatures. For XPR-encoded advertisements: ... assert(envelope.domain == \"libp2p-routing-state\") assert(envelope.payload_type == \"/libp2p/extensible-peer-record/\")\".\n\nWalk: 1) extended_peer_record.nim:62-63 `payloadDomain` = $multiCodec(\"libp2p-peer-record\"). 2) extended_peer_record.nim:65-66 `payloadType` = @[0x03, 0x01], identical to routing_record.nim's PeerRecord. 3) signed_envelope.nim (not in unit) signs and verifies with T.payloadDomain and rejects on payloadType mismatch, so both registration() via isValidAdvertisement (registrar.nim:177) and the discoverer's validAds (discoverer.nim:36) accept only envelopes built with these values.\n\nRan: make test 71ee3b_f04 -> exit 2, 3 of 3 proof tests FAILED:\ntest_20261120T114625_71ee3b_f04.nim(17, 45): Check failed: ExtendedPeerRecord.payloadDomain() == \"libp2p-routing-state\"\ntest_20261120T114625_71ee3b_f04.nim(33, 60): Check failed: Advertisement.decode(envelope.encode().get()).isOk()\ntest_20261120T114625_71ee3b_f04.nim(36, 43): Check failed: ExtendedPeerRecord.payloadType() != PeerRecord.payloadType()\nThe second line is an envelope signed under \"libp2p-routing-state\" being refused as an advertisement. This may be drift in the document rather than the code (libp2p RFC 0003 uses libp2p-peer-record / 0x0301 for peer records, and no multicodec named extensible-peer-record is registered in multicodec.nim); the companion extensible-peer-records.md was not on the bus, so which side to change is for the editors. No live peer of another implementation was available to show the interop failure end to end. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Decide which side is authoritative. To follow the LIP: return \"libp2p-routing-state\" from payloadDomain(ExtendedPeerRecord) and a payload type distinct from PeerRecord's (the multicodec the XPR spec assigns to /libp2p/extensible-peer-record/), and re-sign stored records. To keep the code: correct the two asserts in the LIP's VERIFY_ADVERTISEMENT. The proof test test_20261120T114625_71ee3b_f04.nim fails until code and document agree.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic for every advertisement exchanged with an implementation that follows the LIP's verification pseudocode.",
+        "scope": "Every REGISTER and GET_ADS advertisement, and the XPR values stored in the DHT. Nodes of this implementation interoperate with each other."
+      },
+      "location": [
+        {
+          "file": "libp2p/extended_peer_record.nim",
+          "lines": [
+            62,
+            66
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f04; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=71ee3b_f04 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261120T114625-71ee3b/4 - XPR envelope domain and payload type\n  [Test   ]           advertisement envelope is signed under the domain the spec names\n================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/4 - XPR envelope domain and payload type::advertisement envelope is signed under the domain the spec names'\n----------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim(17, 45): Check failed: ExtendedPeerRecord.payloadDomain() == \"libp2p-routing-state\"\n\n  [FAILED ] (  0.00s) advertisement envelope is signed under the domain the spec names\u001b[0m\n  [Test   ]           an XPR envelope signed under the spec domain verifies as an advertisement\n=========================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/4 - XPR envelope domain and payload type::an XPR envelope signed under the spec domain verifies as an advertisement'\n-------------------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim(33, 60): Check failed: Advertisement.decode(envelope.encode().get()).isOk()\n\n  [FAILED ] (  0.01s) an XPR envelope signed under the spec domain verifies as an advertisement\u001b[0m\n  [Test   ]           XPR payload type differs from the plain peer record payload type\n================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/4 - XPR envelope domain and payload type::XPR payload type differs from the plain peer record payload type'\n----------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim(36, 43): Check failed: ExtendedPeerRecord.payloadType() != PeerRecord.payloadType()\n\n  [FAILED ] (  0.00s) XPR payload type differs from the plain peer record payload type\u001b[0m\n(0.01s)   Proof 20261120T114625-71ee3b/4 - XPR envelope domain and payload type\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 4 tests run (0.01s): 1 OK, 3 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) advertisement envelope is signed under the domain the spec names\u001b[0m\n  [FAILED ] (  0.01s) an XPR envelope signed under the spec domain verifies as an advertisement\u001b[0m\n  [FAILED ] (  0.00s) XPR payload type differs from the plain peer record payload type\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/4.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/5",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "low",
+      "confidence": "medium",
+      "summary": "ad_cache is keyed by the sending peer, so one advertisement can hold several entries per service",
+      "claim": "AdvertisementCache.put keys entries by (serviceId, advertiser), where advertiser is the peer on the connection, not the peer_id inside the ad. The same signed ad submitted over two connections (or by two relaying peers) is stored twice; only a different seqNo triggers removeSuperseded. GET_ADS then returns the identical ad twice, using two of the F_return slots, and c, c(service) and the IP multiset count it twice. The spec replaces the existing entry for the ad's peer_id and service_id.",
+      "fingerprint": "sha256:8d385f47e37a558afc1abd73147774a6485ab110dac03d364cb1fa853e20a900",
+      "handle": "F-8d385f47",
+      "fp_version": 1,
+      "subject": "Handling REGISTER requests step 5: replace the entry for this peer_id and service_id",
+      "evidence": "Spec (Handling REGISTER requests, step 5): \"If t_remaining <= 0, add the ad to the ad_cache ... If an entry for this peer_id and service_id already exists, this replaces it.\" Example REGISTER algorithm: \"if ad_cache.contains(ad.peer_id, ad.service_id_hash): ad_cache.replace(ad)\". Spec (Registrars): the cache \"associates each advertisement to only one advertiser's peer_id, service_id and expiry timestamp\".\n\nWalk: 1) registrar.nim:369 passes `peerId` (the stream's remote peer) as the cache key; the ad's own peer id is `ad.data.peerId`. 2) advertisement_cache.nim:110-113: hasNewer / removeSuperseded act only when the cached seqNo is strictly higher or lower, so an equal seqNo passes through. 3) advertisement_cache.nim:115-121 replaces only when `advertiser in peers[]`; a second sender falls through to lines 126-132 and adds a new entry, inserting its IPs and incrementing count. 4) registrar.nim:426 returns both.\n\nRan: make test 71ee3b_f05 -> exit 2, proof test FAILED:\ntest_20261120T114625_71ee3b_f05.nim(33, 60): Check failed: disco.registrar.ads.serviceCacheAdsLen(serviceId) == 1\ntest_20261120T114625_71ee3b_f05.nim(34, 34): Check failed: disco.registrar.ads.len == 1\ntest_20261120T114625_71ee3b_f05.nim(39, 48): Check failed: reply.getAds.get().advertisements.len == 1\nThe proof calls acceptAdvertisement (the call registration() makes on Confirmed) for two senders rather than two network REGISTERs, because the second REGISTER would first have to sit out the waiting time the first entry creates. The spec also notes the advertiser's peer id and IP may differ from the ad's, so keeping the sender for IP scoring is right; the divergence is using it as the key. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Key the per-service table by ad.data.peerId and keep the sender only as CachedAd.advertiser/ips for IP accounting: in put(), look up the existing entry by the ad's peer id, remove its IPs from the tree, and replace it. removeSuperseded then reduces to the same lookup. The proof test test_20261120T114625_71ee3b_f05.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Whenever the same signed record reaches a registrar from two different connected peers with an equal seqNo; each sender must pass admission separately.",
+        "scope": "Registrar cache contents, GET_ADS responses and the occupancy/service/IP terms of the waiting time."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/advertisement_cache.nim",
+          "lines": [
+            115,
+            121
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            369,
+            369
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f05; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=71ee3b_f05 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261120T114625-71ee3b/5 - one cache entry per ad peer_id and service\n  [Test   ]           the same ad admitted from two connections keeps a single entry\n==============================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/5 - one cache entry per ad peer_id and service::the same ad admitted from two connections keeps a single entry'\n--------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim(33, 60): Check failed: disco.registrar.ads.serviceCacheAdsLen(serviceId) == 1\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim(34, 34): Check failed: disco.registrar.ads.len == 1\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim(39, 48): Check failed: reply.getAds.get().advertisements.len == 1\n\n  [FAILED ] (  0.00s) the same ad admitted from two connections keeps a single entry\u001b[0m\n(0.00s)   Proof 20261120T114625-71ee3b/5 - one cache entry per ad peer_id and service\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.00s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) the same ad admitted from two connections keeps a single entry\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/5.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/6",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "lookup counts distinct signed records toward F_lookup, so one advertiser can fill the quota",
+      "claim": "The discoverer accumulates results in a HashSet[Advertisement] hashed by envelope signature and stops when its size reaches fLookup. Two records of the same peer with different seqNo (normal after an address change, while older registrars still hold the previous record) count as two. The lookup then ends early and returns duplicates of one advertiser while other advertisers, further along the bucket walk, are never queried. The spec counts unique advertisers.",
+      "fingerprint": "sha256:ed6745c6b31ccd8643e6a1cfc37c8e4f54ead1a0512e51f1576d876e7142bb36",
+      "handle": "F-ed6745c6",
+      "fp_version": 1,
+      "subject": "Discoverers / Looking up services: unique foundPeers, stop at F_lookup advertisers",
+      "evidence": "Spec (Looking up services): \"The discoverer MUST attempt to find up to F_lookup advertisers for this service_id_hash ... During the lookup procedure, the discoverer SHOULD keep track of unique foundPeers, terminating the procedure once F_lookup advertisers have been found, or if all buckets have been traversed.\" Example LOOKUP: \"foundPeers.add(ad.peerID); if foundPeers.size >= F_lookup\".\n\nWalk: 1) types.nim:195-196 `hash(ad)` is the hash of the envelope signature and equality is whole-object, so records of one peer with different seqNo or addresses are distinct set members. 2) discoverer.nim:125-128 `found.incl(ad)` until `found.len >= limit`. 3) discoverer.nim:188 and 275 end the bucket and the walk on `found.len >= fLookup`. 4) discoverer.nim:294 returns `found.toSeq`. The advertiser side knows the hazard (advertiser.nim:559 \"a later seqNo would duplicate this node in a lookup\") but the discoverer does not guard against it.\n\nRan: make test 71ee3b_f06 -> exit 2, proof test FAILED. Topology on loopback: F_lookup = 2; two registrars in bucket 0 hold advertiser P at seqNo 1 and seqNo 2; a registrar in bucket 1 holds advertiser Q:\nads returned: 2, unique advertisers: 1\ntest_20261120T114625_71ee3b_f06.nim(59, 26): Check failed: advertisers.len == 2\ntest_20261120T114625_71ee3b_f06.nim(60, 26): Check failed: adQ.data.peerId in advertisers\nA registrar that returns many re-signed records of one identity can likewise exhaust a discoverer's F_lookup from the first bucket. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Track found advertisers by peer id: keep a Table[PeerId, Advertisement] (retain the highest seqNo) in lookup/collectBucketAds/processResponse, compare its len with fLookup, and return its values. The proof test test_20261120T114625_71ee3b_f06.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Whenever two registrars on the walk hold different records of one advertiser, e.g. for up to E after every address change or re-advertisement with a new seqNo.",
+        "scope": "Discoverer lookup results and termination for every service. Registrar and advertiser roles are unaffected."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            125,
+            128
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/types.nim",
+          "lines": [
+            195,
+            196
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            275,
+            276
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f06; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "solver service started  topics=\"libp2p wildcard-addresses\" tid=51869\nINF 2026-11-20 12:15:54.308+00:00 TCP transport started                      topics=\"libp2p tcp\" tid=51869 addresses=[/ip4/127.0.0.1/tcp/48433]\nINF 2026-11-20 12:15:54.308+00:00 Transport connection acceptance started    topics=\"libp2p switch\" tid=51869 addresses=[/ip4/127.0.0.1/tcp/48433]\nINF 2026-11-20 12:15:54.308+00:00 Kademlia DHT started                       topics=\"libp2p kademlia\" tid=51869\nINF 2026-11-20 12:15:54.314+00:00 Service Discovery started                  topics=\"libp2p service-discovery\" tid=51869\nINF 2026-11-20 12:15:54.314+00:00 Libp2p node started                        topics=\"libp2p switch\" tid=51869 peerId=12D3Ko...UPgNFb listenAddresses=[/ip4/127.0.0.1/tcp/48433] announcedAddresses=[/ip4/127.0.0.1/tcp/48433] protocols=\"[/ipfs/id/1.0.0, /logos/service-discovery/1.0.0]\" transports=1 services=1\nINF 2026-11-20 12:15:54.618+00:00 Stopping switch                            topics=\"libp2p switch\" tid=51869\nINF 2026-11-20 12:15:54.618+00:00 Stopping switch                            topics=\"libp2p switch\" tid=51869\nINF 2026-11-20 12:15:54.618+00:00 Stopping switch                            topics=\"libp2p switch\" tid=51869\nINF 2026-11-20 12:15:54.618+00:00 Stopping switch                            topics=\"libp2p switch\" tid=51869\nINF 2026-11-20 12:15:54.618+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=51869\nINF 2026-11-20 12:15:54.619+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=51869\nINF 2026-11-20 12:15:54.621+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=51869\nINF 2026-11-20 12:15:54.622+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=51869\nINF 2026-11-20 12:15:54.623+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=51869 addresses=[/ip4/127.0.0.1/tcp/38851]\nINF 2026-11-20 12:15:54.623+00:00 Switch stopped                             topics=\"libp2p switch\" tid=51869\nINF 2026-11-20 12:15:54.624+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=51869 addresses=[/ip4/127.0.0.1/tcp/57667]\nINF 2026-11-20 12:15:54.624+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=51869 addresses=[/ip4/127.0.0.1/tcp/40643]\nINF 2026-11-20 12:15:54.624+00:00 Switch stopped                             topics=\"libp2p switch\" tid=51869\nINF 2026-11-20 12:15:54.624+00:00 Switch stopped                             topics=\"libp2p switch\" tid=51869\nINF 2026-11-20 12:15:54.624+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=51869 addresses=[/ip4/127.0.0.1/tcp/48433]\nINF 2026-11-20 12:15:54.624+00:00 Switch stopped                             topics=\"libp2p switch\" tid=51869\n=====================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/6 - lookup counts unique advertisers::two records of one advertiser do not end a lookup for two advertisers'\n---------------------------------------------------------------------\n    ads returned: 2, unique advertisers: 1\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim(59, 26): Check failed: advertisers.len == 2\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim(60, 26): Check failed: adQ.data.peerId in advertisers\n\n  [FAILED ] (  0.34s) two records of one advertiser do not end a lookup for two advertisers\u001b[0m\n(0.34s)   Proof 20261120T114625-71ee3b/6 - lookup counts unique advertisers\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.34s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.34s) two records of one advertiser do not end a lookup for two advertisers\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/6.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/7",
+      "domain": "spec",
+      "class": "missing-requirement",
+      "severity": "low",
+      "confidence": "medium",
+      "summary": "Advertiser keeps no record of a Rejected registrar and re-registers with it on the next maintenance",
+      "claim": "On a Rejected reply advertiseToRegistrar just returns. Nothing remembers the registrar, so maintainRegistrations sees a free slot in that bucket and may pick the same registrar again for the same advertisement bytes, on every maintenance round. The spec says the advertiser SHOULD NOT attempt further registrations with that registrar for that advertisement.",
+      "fingerprint": "sha256:5ab53e01cbee87fa1886b9356be0d9b93379eee97819a80ddb4ac1a4d78937fc",
+      "handle": "F-5ab53e01",
+      "fp_version": 1,
+      "subject": "Advertisers / Distributing ads across registrars: status Rejected",
+      "evidence": "Spec (Distributing ads across registrars): \"If the status is Rejected, the advertiser MUST remove the registrar from the ongoing registrations for that bucket and SHOULD NOT attempt further registrations with this registrar for this advertisement.\"\n\nWalk: 1) advertiser.nim:370-372: `of Rejected: ... return`; the task finishes, which does remove it from the ongoing set (the MUST half is met via cleanupFinishedTasks). 2) advertiser.nim:204-220: the next maintainRegistrations computes `deficit = target - active.len` and builds `candidates` from every bucket peer that is not currently active and not self; there is no rejected set to exclude. 3) advertiser.nim:219-220 starts a new task with `advert.bytes`, the same advertisement. When the bucket has no more than kRegister peers the rejecting registrar is chosen with certainty.\n\nRan: make test 71ee3b_f07 -> exit 2, proof test FAILED. Two started nodes on loopback; the registrar holds a newer record of the advertiser, so it answers the advertised record with Rejected (asserted as a precondition through sendRegister); after the first task ends, one maintainRegistrations call:\ntest_20261120T114625_71ee3b_f07.nim(57, 10): Check failed: not toSeq(advertiserNode.advertiser.running).anyIt(it.registrar == registrarId and it.serviceId == serviceId)\nThe repeat happens once per maintenance period (config.bucketRefreshTime), so the cost is a steady trickle of doomed REGISTERs rather than a burst. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Record (serviceId, registrar) with the hash of the rejected advert bytes in the Advertiser when a task ends on Rejected, exclude those registrars from `candidates` in maintainRegistrations and from scheduleRegistrations, and clear the record when the service's advert bytes change or the service is removed. The proof test test_20261120T114625_71ee3b_f07.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Every maintenance round after a rejection; certain when the bucket holds at most K_register peers, probabilistic otherwise.",
+        "scope": "Advertiser registration maintenance for every provided service. Local self-registration is not affected."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/advertiser.nim",
+          "lines": [
+            370,
+            372
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/advertiser.nim",
+          "lines": [
+            209,
+            220
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f07; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "/tcp/59115]\nINF 2026-11-20 12:18:43.988+00:00 Transport connection acceptance started    topics=\"libp2p switch\" tid=63486 addresses=[/ip4/127.0.0.1/tcp/59115]\nINF 2026-11-20 12:18:43.989+00:00 Kademlia DHT started                       topics=\"libp2p kademlia\" tid=63486\nINF 2026-11-20 12:18:43.994+00:00 Service Discovery started                  topics=\"libp2p service-discovery\" tid=63486\nINF 2026-11-20 12:18:43.994+00:00 Libp2p node started                        topics=\"libp2p switch\" tid=63486 peerId=12D3Ko...pkxSxw listenAddresses=[/ip4/127.0.0.1/tcp/59115] announcedAddresses=[/ip4/127.0.0.1/tcp/59115] protocols=\"[/ipfs/id/1.0.0, /logos/service-discovery/1.0.0]\" transports=1 services=1\nINF 2026-11-20 12:18:43.994+00:00 Starting switch for peer                   topics=\"libp2p switch\" tid=63486 peerInfo=\"(peerId: 12D3KooWN2TgUTqUPbaQCoCUvXbjVW5k6FN5yT23USvViBxy3Coz, listenAddrs: [/ip4/127.0.0.1/tcp/0], addrs: [/ip4/127.0.0.1/tcp/9000], protocols: [/ipfs/id/1.0.0, /logos/service-discovery/1.0.0], protoVersion: , agentVersion: nim-libp2p)\"\nINF 2026-11-20 12:18:43.995+00:00 Wildcard address resolver service started  topics=\"libp2p wildcard-addresses\" tid=63486\nINF 2026-11-20 12:18:43.995+00:00 TCP transport started                      topics=\"libp2p tcp\" tid=63486 addresses=[/ip4/127.0.0.1/tcp/59871]\nINF 2026-11-20 12:18:43.995+00:00 Transport connection acceptance started    topics=\"libp2p switch\" tid=63486 addresses=[/ip4/127.0.0.1/tcp/59871]\nINF 2026-11-20 12:18:43.996+00:00 Kademlia DHT started                       topics=\"libp2p kademlia\" tid=63486\nINF 2026-11-20 12:18:44.001+00:00 Service Discovery started                  topics=\"libp2p service-discovery\" tid=63486\nINF 2026-11-20 12:18:44.001+00:00 Libp2p node started                        topics=\"libp2p switch\" tid=63486 peerId=12D3Ko...xy3Coz listenAddresses=[/ip4/127.0.0.1/tcp/59871] announcedAddresses=[/ip4/127.0.0.1/tcp/59871] protocols=\"[/ipfs/id/1.0.0, /logos/service-discovery/1.0.0]\" transports=1 services=1\nINF 2026-11-20 12:18:44.354+00:00 Stopping switch                            topics=\"libp2p switch\" tid=63486\nINF 2026-11-20 12:18:44.354+00:00 Stopping switch                            topics=\"libp2p switch\" tid=63486\nINF 2026-11-20 12:18:44.354+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=63486\nINF 2026-11-20 12:18:44.355+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=63486\nINF 2026-11-20 12:18:44.356+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=63486 addresses=[/ip4/127.0.0.1/tcp/59115]\nINF 2026-11-20 12:18:44.356+00:00 Switch stopped                             topics=\"libp2p switch\" tid=63486\nINF 2026-11-20 12:18:44.356+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=63486 addresses=[/ip4/127.0.0.1/tcp/59871]\nINF 2026-11-20 12:18:44.356+00:00 Switch stopped                             topics=\"libp2p switch\" tid=63486\n==============================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/7 - no retry at a rejecting registrar::a registrar that rejected the advertisement is not asked again'\n--------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim(57, 10): Check failed: not toSeq(advertiserNode.advertiser.running).anyIt(\n    it.registrar == registrarId and it.serviceId == serviceId)\n\n  [FAILED ] (  0.37s) a registrar that rejected the advertisement is not asked again\u001b[0m\n(0.37s)   Proof 20261120T114625-71ee3b/7 - no retry at a rejecting registrar\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.37s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.37s) a registrar that rejected the advertisement is not asked again\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/7.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/8",
+      "domain": "spec",
+      "class": "undefined-behaviour",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "GET_ADS reply of F_return accepted ads can exceed the 4096-byte read limit and is dropped whole",
+      "claim": "A registrar accepts ads up to MaxXPRSize = 1024 bytes and answers GET_ADS with up to F_return = 10 of them plus closerPeers, without bounding the encoded reply. The discoverer reads the reply with readLp(ServiceDiscoveryMaxMsgSize = 4096). Ten ads of about 480 bytes each (eight addresses) give a 4866-byte reply, which the discoverer fails to read: it gets none of the ten ads, resets the stream and records a dial failure against an honest registrar. The spec sets no message size, so the limits chosen here make a spec-conformant reply undeliverable.",
+      "fingerprint": "sha256:3142c75df3d34b3d8bb46050268e301ca6df051d6b82f53e1619f1448b667ef8",
+      "handle": "F-3142c75d",
+      "fp_version": 1,
+      "subject": "GET_ADS Response: up to F_return = 10 advertisements; Stream Management",
+      "evidence": "Spec (GET_ADS Response): \"getAds.advertisements | REQUIRED | List of encoded advertisements (up to F_return = 10)\". Spec (Handling GET_ADS requests): \"Include up to F_return advertisements from the ad_cache for the requested service_id_hash.\" The spec is silent on a maximum message size.\n\nWalk: 1) registrar.nim:174 accepts any ad with len <= MaxXPRSize (extended_peer_record.nim:22, 1024). 2) registrar.nim:425-434 builds the reply from `cap = fReturn` ads and up to fReturn closerPeers; connection.nim:109-115 writes it with no size check. 3) connection.nim:78 `stream.readLp(ServiceDiscoveryMaxMsgSize)` (types.nim:24, 4096) raises on a longer frame; connection.nim:79-82 calls recordDialFailure and returns an error, and the deferred reset drops the stream. 4) discoverer.nim:84-85 turns that into no ads and no closer peers from this registrar. Anything above roughly 380 bytes per ad overflows with ten ads; the same limit applies to REGISTER replies but those carry at most one ad.\n\nRan: make test 71ee3b_f08 -> exit 2, proof test FAILED. Two started nodes on loopback, registrar seeded with ten valid ads (4 direct + 4 circuit-relay addresses each):\nad size: 483 bytes (limit 1024), encoded GET_ADS reply: 4866 bytes, reader limit: 4096\ntest_20261120T114625_71ee3b_f08.nim(76, 29): Check failed: found.get(@[]).len == fReturn\n(lookup returned 0 of the 10 advertisements). After maxDialFailures such replies the registrar is removed from every service table. Popular services, whose registrars hold ten or more ads, are the ones hit. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Make the limits consistent: either raise ServiceDiscoveryMaxMsgSize to cover F_return * MaxXPRSize plus closerPeers (about 12 KiB at the defaults, derived from the configured fReturn), or have getAdvertisements stop adding ads once the encoded reply would pass the limit. Document the bound in the LIP. The proof test test_20261120T114625_71ee3b_f08.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic whenever a registrar holds F_return ads for a service whose encoded sizes sum past about 3.8 KiB, i.e. ads averaging more than ~380 bytes.",
+        "scope": "Discoverer lookups against well-populated registrars; also feeds dial backoff and service-table eviction of those registrars."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            425,
+            434
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/connection.nim",
+          "lines": [
+            78,
+            82
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/types.nim",
+          "lines": [
+            24,
+            24
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f08; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "ip4/127.0.0.1/tcp/51249]\nINF 2026-11-20 12:16:51.597+00:00 Transport connection acceptance started    topics=\"libp2p switch\" tid=55748 addresses=[/ip4/127.0.0.1/tcp/51249]\nINF 2026-11-20 12:16:51.598+00:00 Kademlia DHT started                       topics=\"libp2p kademlia\" tid=55748\nINF 2026-11-20 12:16:51.603+00:00 Service Discovery started                  topics=\"libp2p service-discovery\" tid=55748\nINF 2026-11-20 12:16:51.603+00:00 Libp2p node started                        topics=\"libp2p switch\" tid=55748 peerId=12D3Ko...JXuiNg listenAddresses=[/ip4/127.0.0.1/tcp/51249] announcedAddresses=[/ip4/127.0.0.1/tcp/51249] protocols=\"[/ipfs/id/1.0.0, /logos/service-discovery/1.0.0]\" transports=1 services=1\nINF 2026-11-20 12:16:51.603+00:00 Starting switch for peer                   topics=\"libp2p switch\" tid=55748 peerInfo=\"(peerId: 12D3KooWEKkdLTu6UJC2kSkUUtVT78gFpPLfGhE9zzjDUfYaeXYt, listenAddrs: [/ip4/127.0.0.1/tcp/0], addrs: [/ip4/127.0.0.1/tcp/9000], protocols: [/ipfs/id/1.0.0, /logos/service-discovery/1.0.0], protoVersion: , agentVersion: nim-libp2p)\"\nINF 2026-11-20 12:16:51.604+00:00 Wildcard address resolver service started  topics=\"libp2p wildcard-addresses\" tid=55748\nINF 2026-11-20 12:16:51.604+00:00 TCP transport started                      topics=\"libp2p tcp\" tid=55748 addresses=[/ip4/127.0.0.1/tcp/37747]\nINF 2026-11-20 12:16:51.604+00:00 Transport connection acceptance started    topics=\"libp2p switch\" tid=55748 addresses=[/ip4/127.0.0.1/tcp/37747]\nINF 2026-11-20 12:16:51.605+00:00 Kademlia DHT started                       topics=\"libp2p kademlia\" tid=55748\nINF 2026-11-20 12:16:51.610+00:00 Service Discovery started                  topics=\"libp2p service-discovery\" tid=55748\nINF 2026-11-20 12:16:51.610+00:00 Libp2p node started                        topics=\"libp2p switch\" tid=55748 peerId=12D3Ko...YaeXYt listenAddresses=[/ip4/127.0.0.1/tcp/37747] announcedAddresses=[/ip4/127.0.0.1/tcp/37747] protocols=\"[/ipfs/id/1.0.0, /logos/service-discovery/1.0.0]\" transports=1 services=1\nINF 2026-11-20 12:16:51.908+00:00 Stopping switch                            topics=\"libp2p switch\" tid=55748\nINF 2026-11-20 12:16:51.908+00:00 Stopping switch                            topics=\"libp2p switch\" tid=55748\nINF 2026-11-20 12:16:51.908+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=55748\nINF 2026-11-20 12:16:51.910+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=55748\nINF 2026-11-20 12:16:51.914+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=55748 addresses=[/ip4/127.0.0.1/tcp/51249]\nINF 2026-11-20 12:16:51.914+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=55748 addresses=[/ip4/127.0.0.1/tcp/37747]\nINF 2026-11-20 12:16:51.914+00:00 Switch stopped                             topics=\"libp2p switch\" tid=55748\nINF 2026-11-20 12:16:51.914+00:00 Switch stopped                             topics=\"libp2p switch\" tid=55748\n===========================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/8 - GET_ADS reply with F_return ads::a discoverer receives F_return valid ads from one registrar'\n-----------------------------------------------------------\n    ad size: 483 bytes (limit 1024), encoded GET_ADS reply: 4866 bytes, reader limit: 4096\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim(76, 29): Check failed: found.get(@[]).len == fReturn\n\n  [FAILED ] (  0.32s) a discoverer receives F_return valid ads from one registrar\u001b[0m\n(0.32s)   Proof 20261120T114625-71ee3b/8 - GET_ADS reply with F_return ads\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.32s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.32s) a discoverer receives F_return valid ads from one registrar\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/8.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/9",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "low",
+      "confidence": "medium",
+      "summary": "REGISTER with no key is answered with an empty message instead of REJECTED or a closed stream",
+      "claim": "registration() returns a default-initialised Message when the request carries no key: no type, no register field, no status. handleMessage encodes and writes that empty message and keeps the stream open. The spec requires the registrar to validate the key and respond with register.status = REJECTED when validation fails (its error table alternatively closes the stream for missing required fields). A key of the wrong length is rejected correctly; only the absent key is not.",
+      "fingerprint": "sha256:c114aaff7e593f7a8643c7a898361455fde50b6dc3fb092167d26808b6dca604",
+      "handle": "F-c114aaff",
+      "fp_version": 1,
+      "subject": "Message Validation / REGISTER Request Validation: key = 32 bytes, else REJECTED",
+      "evidence": "Spec (REGISTER Request Validation): \"Registrars MUST validate: 1. type = REGISTER (6) 2. key = 32 bytes (valid SHA-256) ... Respond with register.status = REJECTED if validation fails.\" Spec (REGISTER Response): type and register.status are REQUIRED. Spec (Error Handling): \"Missing required fields | Close stream\".\n\nWalk: 1) registrar.nim:282-284: `let serviceId = inMsg.key.valueOr: ... return` leaves `result` as the zero Message. 2) connection.nim:102-115 encodes it (zero bytes of payload) and writes it with writeLp; the handler loop in service_discovery.nim:134-166 then waits for the next request, so the stream is neither reset nor closed. 3) A client sees a reply with no register field; this implementation's own sendRegister reports \"register reply not found\" (advertiser.nim:287-288). The wrong-length branch at registrar.nim:286-302 shows the intended shape.\n\nRan: make test 71ee3b_f09 -> exit 2, proof test FAILED:\ntest_20261120T114625_71ee3b_f09.nim(42, 10): Check failed: isRegisterReply\ntest_20261120T114625_71ee3b_f09.nim(43, 10): Check failed: isRejected\ngetAdvertisements has the same early return for a missing key (registrar.nim:412-414); there the spec allows an empty list, and an empty message decodes as one, so only the missing type field differs. Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "In registration(), treat a missing key like a wrong-length key: return the Rejected message built at registrar.nim:293-302 (and count it in cd_register_requests), or have handleMessage reset the stream when the key is absent. The proof test test_20261120T114625_71ee3b_f09.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic for any REGISTER request that omits the key field; only malformed or hostile clients send one.",
+        "scope": "Registrar REGISTER handling. No state is changed by such a request."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            282,
+            284
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f09; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=71ee3b_f09 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261120T114625-71ee3b/9 - REGISTER without a key\n  [Test   ]           a REGISTER request with no key is answered with status Rejected\n===============================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/9 - REGISTER without a key::a REGISTER request with no key is answered with status Rejected'\n---------------------------------------------------------------\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim(42, 10): Check failed: isRegisterReply\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim(43, 10): Check failed: isRejected\n\n  [FAILED ] (  0.00s) a REGISTER request with no key is answered with status Rejected\u001b[0m\n(0.00s)   Proof 20261120T114625-71ee3b/9 - REGISTER without a key\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.00s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) a REGISTER request with no key is answered with status Rejected\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/9.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261120T114625-71ee3b/10",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "low",
+      "confidence": "medium",
+      "summary": "waitingTime silently caps the configured occupancy exponent P_occ at 10",
+      "claim": "waitingTime raises the occupancy base to min(discoConfig.occupancyExp, 10.0). The default P_occ is 10, so defaults are unaffected, but an operator who configures a larger exponent, as the spec invites, gets exactly the P_occ = 10 curve with no warning. The spec's formula uses P_occ as configured and says a higher value makes the score rise faster.",
+      "fingerprint": "sha256:b157a1c2ccdbff664615e73647817b9a92a7962dcb5c1fa906702f8177f70a8a",
+      "handle": "F-b157a1c2",
+      "fp_version": 1,
+      "subject": "Waiting Time Calculation / Formula and Occupancy Score: exponent P_occ",
+      "evidence": "Spec (Formula): \"The waiting time for an advertisement MUST be calculated using: w(ad) = E x (1/(1 - c/C)^P_occ) x (...)\". Spec (System Parameters): \"Implementations SHOULD modify them as needed based on specific requirements.\" Spec (Occupancy Score): \"The higher the value of P_occ, the faster the increase. Implementations should consider this while setting the value for P_occ\".\n\nWalk: 1) types.nim:103,161 exposes occupancyExp as a free float64 with default Default_P_occ = 10.0; ServiceDiscoveryConfig.new validates other fields but not this one. 2) registrar.nim:101-102: `let exp = min(discoConfig.occupancyExp, 10.0); 1.0 / pow(base, exp)`. The base is separately floored at 1e-9 (registrar.nim:100), which already bounds the result.\n\nRan: make test 71ee3b_f10 -> exit 2, proof test FAILED (C = 8, c = 4, all one service, so the bracket is 0.5 and the base 0.5; expected E*2^10*0.5 = 460800 s and E*2^12*0.5 = 1843200 s):\nP_occ = 10: 5d8h, P_occ = 12: 5d8h\ntest_20261120T114625_71ee3b_f10.nim(47, 22): Check failed: w12.seconds == 1843200 Audited tree: HEAD 2c6e50f98b5f251a776ddb5f988e37fb9b4a1708 (the baseline's base_sha; the brief names a2eb253f, which is an ancestor). A test rather than an exploit: the divergence is in a deterministic local decision, so a unit/component test on loopback reaches the same end state a remote peer would.",
+      "fix_hint": "Use discoConfig.occupancyExp as given in waitingTime; if an upper bound is wanted for numeric safety, enforce it in ServiceDiscoveryConfig.new with a doAssert so a misconfiguration is visible (the final clamp to uint32.high already prevents overflow). The proof test test_20261120T114625_71ee3b_f10.nim fails without the change.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic, but only when occupancyExp is configured above 10; the default configuration is not affected.",
+        "scope": "Registrar waiting-time calculation under non-default configuration."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/registrar.nim",
+          "lines": [
+            101,
+            102
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test 71ee3b_f10; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=71ee3b_f10 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261120T114625-71ee3b/10 - occupancy exponent P_occ\n  [Test   ]           a configured P_occ above 10 raises the waiting time of a half-full cache\n========================================================================\n  /w/work/20261120T114625-71ee3b/tests/test_all 'Proof 20261120T114625-71ee3b/10 - occupancy exponent P_occ::a configured P_occ above 10 raises the waiting time of a half-full cache'\n------------------------------------------------------------------------\n    P_occ = 10: 5d8h, P_occ = 12: 5d8h\n    /w/work/20261120T114625-71ee3b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim(47, 22): Check failed: w12.seconds == 1843200\n\n  [FAILED ] (  0.01s) a configured P_occ above 10 raises the waiting time of a half-full cache\u001b[0m\n(0.01s)   Proof 20261120T114625-71ee3b/10 - occupancy exponent P_occ\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.01s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.01s) a configured P_occ above 10 raises the waiting time of a half-full cache\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261120T114625-71ee3b/10.patch",
+        "sha256": "b5c4a45c7cb3fdfd1debdf50de4a3de41b8469200908a2cce2238ac290a4d137",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim",
+          "tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim"
+        ]
+      }
+    }
+  ],
+  "proof_sha": "6e8625e48ab3bafdad59ddf63be6e47bfe205a10",
+  "gate_on_proof": true
+}

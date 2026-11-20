@@ -1,0 +1,601 @@
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim
+new file mode 100644
+index 000000000..c9634c6e7
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f01.nim
+@@ -0,0 +1,54 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/1.
++# Spec, Safety Parameter: "The safety parameter G ensures waiting times never
++# reach zero even when service similarity is zero (new service) [and] IP
++# similarity is zero (completely distinct IP)".
++# Spec, Handling REGISTER requests, step 2: "If no ticket is provided in the
++# REGISTER request this is the advertiser's first registration attempt for the
++# ad. Create a new signed ticket based on t_wait, and return the signed ticket
++# in a response with status Wait."
++
++import chronos, results, net
++import ../../../libp2p/[extended_peer_record, peerid]
++import ../../tools/unittest
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/1 - safety parameter G":
++  test "waiting time never reaches zero for a new service and a distinct IP":
++    let registrar = Registrar.new()
++    let discoConfig = ServiceDiscoveryConfig.new()
++
++    let w = registrar.waitingTime(
++      discoConfig, makeServiceId(), @[parseIpAddress("10.0.0.1")], Moment.now()
++    )
++
++    check w > ZeroDuration
++
++  test "first REGISTER without a ticket is answered with Wait and a signed ticket":
++    let disco = setupServiceDiscoveryNode()
++    let serviceName = "proof-first-register"
++    let serviceId = serviceName.hashServiceId()
++    let ad = makeAdvertisement(serviceName, addrs = @[makeMultiAddress("10.0.0.1")])
++
++    let inMsg = Message(
++      msgType: MessageType.register,
++      key: serviceId,
++      register: Opt.some(
++        RegisterMessage(
++          advertisement: ad.encode().get(),
++          status: Opt.none(RegistrationStatus),
++          ticket: Opt.none(Ticket),
++        )
++      ),
++    )
++
++    let reply =
++      disco.registration(ad.data.peerId, inMsg, @[parseIpAddress("10.0.0.1")])
++    let register = reply.register.get()
++
++    check register.status.get() == RegistrationStatus.Wait
++    check register.ticket.isSome()
++    check disco.countAdsInCache(serviceId) == 0
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim
+new file mode 100644
+index 000000000..3c9fa6c33
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f02.nim
+@@ -0,0 +1,76 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/2.
++# Spec, Occupancy Score: "As c -> C: Score -> infinity (prevents overflow)".
++# Spec, Error Handling: "Cache full (registrar) | Issue ticket with waiting time".
++
++import chronos, results, net
++import ../../../libp2p/[extended_peer_record, peerid]
++import ../../../libp2p/protocols/service_discovery/advertisement_cache
++import ../../tools/unittest
++import ./utils
++
++const Capacity = 4
++
++proc fillCache(ads: AdvertisementCache, n: int, now: Moment): seq[(ServiceId, PeerId)] =
++  ## `n` ads under distinct services, from IPs whose first bit is 0.
++  var entries: seq[(ServiceId, PeerId)]
++  for i in 0 ..< n:
++    let sid = makeServiceId(byte(i + 1))
++    let ad = makeAdvertisement($sid)
++    ads.put(sid, ad.data.peerId, ad, @[parseIpAddress("10.0.0." & $(i + 1))], now)
++    entries.add((sid, ad.data.peerId))
++  entries
++
++suite "Proof 20261120T114625-71ee3b/2 - full advertisement cache":
++  test "waiting time does not drop when the cache goes from nearly full to full":
++    let discoConfig = ServiceDiscoveryConfig.new(advertCacheCap = Capacity)
++    let now = Moment.init(Moment.now().epochSeconds, Second)
++    # A new service from an IP that shares no prefix with any cached one.
++    let newService = makeServiceId(200)
++    let newIp = @[parseIpAddress("200.0.0.1")]
++
++    let nearlyFull = Registrar.new(Capacity)
++    discard nearlyFull.ads.fillCache(Capacity - 1, now)
++    let wNearlyFull = nearlyFull.waitingTime(discoConfig, newService, newIp, now)
++
++    let full = Registrar.new(Capacity)
++    discard full.ads.fillCache(Capacity, now)
++    let wFull = full.waitingTime(discoConfig, newService, newIp, now)
++
++    checkpoint "waiting time at c = C-1: " & $wNearlyFull & ", at c = C: " & $wFull
++    check wFull >= wNearlyFull
++    check wFull > ZeroDuration
++
++  test "REGISTER on a full cache gets a ticket and evicts no unexpired ad":
++    let conf = ServiceDiscoveryConfig.new(advertCacheCap = Capacity)
++    let disco = setupServiceDiscoveryNode(discoConfig = conf)
++    let now = Moment.init(Moment.now().epochSeconds, Second)
++    let entries = disco.registrar.ads.fillCache(Capacity, now)
++    check disco.registrar.ads.len == Capacity
++
++    let serviceName = "proof-full-cache"
++    let serviceId = serviceName.hashServiceId()
++    let ad = makeAdvertisement(serviceName)
++    let inMsg = Message(
++      msgType: MessageType.register,
++      key: serviceId,
++      register: Opt.some(
++        RegisterMessage(
++          advertisement: ad.encode().get(),
++          status: Opt.none(RegistrationStatus),
++          ticket: Opt.none(Ticket),
++        )
++      ),
++    )
++
++    let reply =
++      disco.registration(ad.data.peerId, inMsg, @[parseIpAddress("200.0.0.1")])
++    let register = reply.register.get()
++
++    check register.status.get() == RegistrationStatus.Wait
++    check register.ticket.isSome()
++    for (sid, advertiser) in entries:
++      check disco.registrar.ads.contains(sid, advertiser)
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim
+new file mode 100644
+index 000000000..fff604db0
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f03.nim
+@@ -0,0 +1,51 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/3.
++# Spec, Registrars: the ad_cache associates each advertisement with an "expiry
++# timestamp based on admission time plus configured expiry time, E. Once an ad
++# has expired, it SHOULD be removed from the ad_cache."
++# Spec, Handling REGISTER requests, step 5: "add the ad to the ad_cache, with an
++# expiry timestamp set to current_time + E".
++
++import chronos, results, net
++import ../../../libp2p/[extended_peer_record, peerid]
++import ../../tools/unittest
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/3 - expired advertisements":
++  test "GET_ADS does not serve an ad admitted more than E ago":
++    let disco = setupServiceDiscoveryNode()
++    let serviceName = "proof-expired-ad"
++    let serviceId = serviceName.hashServiceId()
++    let ad = makeAdvertisement(serviceName)
++
++    let now = Moment.init(Moment.now().epochSeconds, Second)
++    # Admitted E + 60s ago: its expiry timestamp (admission + E) passed a minute ago.
++    let admittedAt = now - disco.discoConfig.advertExpiry - 60.secs
++    disco.acceptAdvertisement(
++      admittedAt, serviceId, ad.data.peerId, ad, @[parseIpAddress("10.0.0.1")]
++    )
++
++    let reply = disco.getAdvertisements(
++      PeerId.random(), Message(msgType: MessageType.getAds, key: serviceId)
++    )
++
++    check reply.getAds.get().advertisements.len == 0
++
++  test "an ad admitted more than E ago no longer counts as cache occupancy":
++    let disco = setupServiceDiscoveryNode()
++    let serviceName = "proof-expired-occupancy"
++    let serviceId = serviceName.hashServiceId()
++    let ad = makeAdvertisement(serviceName)
++
++    let now = Moment.init(Moment.now().epochSeconds, Second)
++    let admittedAt = now - disco.discoConfig.advertExpiry - 60.secs
++    let ips = @[parseIpAddress("10.0.0.1")]
++    disco.acceptAdvertisement(admittedAt, serviceId, ad.data.peerId, ad, ips)
++
++    # With the entry expired, the same IP and service see an empty cache again.
++    let fresh = Registrar.new()
++    check disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now) ==
++      fresh.waitingTime(disco.discoConfig, serviceId, ips, now)
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim
+new file mode 100644
+index 000000000..e92c51d7e
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f04.nim
+@@ -0,0 +1,36 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/4.
++# Spec, Advertisement Signature Verification (XPR-encoded advertisements):
++#   assert(envelope.domain == "libp2p-routing-state")
++#   assert(envelope.payload_type == "/libp2p/extensible-peer-record/")
++
++import results
++import ../../../libp2p/[extended_peer_record, peerid, routing_record, signed_envelope]
++import ../../tools/unittest
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/4 - XPR envelope domain and payload type":
++  test "advertisement envelope is signed under the domain the spec names":
++    check ExtendedPeerRecord.payloadDomain() == "libp2p-routing-state"
++
++  test "an XPR envelope signed under the spec domain verifies as an advertisement":
++    let ad = makeAdvertisement("proof-domain")
++    let key = randomKey()
++    let envelope = Envelope
++      .init(
++        key,
++        ExtendedPeerRecord.payloadType(),
++        ExtendedPeerRecord
++        .init(PeerId.init(key).get(), @[], services = ad.data.services)
++        .encode(),
++        "libp2p-routing-state",
++      )
++      .get()
++
++    check Advertisement.decode(envelope.encode().get()).isOk()
++
++  test "XPR payload type differs from the plain peer record payload type":
++    check ExtendedPeerRecord.payloadType() != PeerRecord.payloadType()
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim
+new file mode 100644
+index 000000000..a338e1c03
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f05.nim
+@@ -0,0 +1,39 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/5.
++# Spec, Handling REGISTER requests, step 5: "add the ad to the ad_cache ... If
++# an entry for this peer_id and service_id already exists, this replaces it."
++# Example REGISTER algorithm: "if ad_cache.contains(ad.peer_id,
++# ad.service_id_hash): ad_cache.replace(ad)".
++
++import chronos, results, net
++import ../../../libp2p/[extended_peer_record, peerid]
++import ../../../libp2p/protocols/service_discovery/advertisement_cache
++import ../../tools/unittest
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/5 - one cache entry per ad peer_id and service":
++  test "the same ad admitted from two connections keeps a single entry":
++    let disco = setupServiceDiscoveryNode()
++    let serviceName = "proof-single-entry"
++    let serviceId = serviceName.hashServiceId()
++    let ad = makeAdvertisement(serviceName)
++    let now = Moment.init(Moment.now().epochSeconds, Second)
++
++    # Two different connected peers submit the very same signed advertisement.
++    disco.acceptAdvertisement(
++      now, serviceId, PeerId.random(), ad, @[parseIpAddress("10.0.0.1")]
++    )
++    disco.acceptAdvertisement(
++      now, serviceId, PeerId.random(), ad, @[parseIpAddress("200.0.0.1")]
++    )
++
++    check disco.registrar.ads.serviceCacheAdsLen(serviceId) == 1
++    check disco.registrar.ads.len == 1
++
++    let reply = disco.getAdvertisements(
++      PeerId.random(), Message(msgType: MessageType.getAds, key: serviceId)
++    )
++    check reply.getAds.get().advertisements.len == 1
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim
+new file mode 100644
+index 000000000..926e4794b
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f06.nim
+@@ -0,0 +1,60 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/6.
++# Spec, Looking up services: "The discoverer MUST attempt to find up to F_lookup
++# advertisers for this service_id_hash ... During the lookup procedure, the
++# discoverer SHOULD keep track of unique foundPeers, terminating the procedure
++# once F_lookup advertisers have been found, or if all buckets have been
++# traversed."
++
++import std/sequtils
++import chronos, results
++import
++  ../../../libp2p/[
++    crypto/crypto, extended_peer_record, peerid, protocols/service_discovery/discoverer
++  ]
++import ../../tools/[lifecycle, unittest]
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/6 - lookup counts unique advertisers":
++  teardown:
++    checkTrackers()
++
++  asyncTest "two records of one advertiser do not end a lookup for two advertisers":
++    let conf = ServiceDiscoveryConfig.new(fLookup = 2)
++    # Two registrars in bucket 0 of the service table, one in bucket 1.
++    let (farRegistrars, serviceName) = setupRegistrarsInSameBucket(conf, 2)
++    let closeKey = PrivateKey.init(serviceBucketLookupTable[serviceName][1][0]).get()
++    let closeRegistrar =
++      setupServiceDiscoveryNode(discoConfig = conf, privateKey = Opt.some(closeKey))
++    let discovererNode = setupServiceDiscoveryNode(discoConfig = conf)
++    startAndDeferStop(farRegistrars & @[closeRegistrar, discovererNode])
++    for registrar in farRegistrars & @[closeRegistrar]:
++      await connect(registrar, discovererNode)
++
++    let serviceId = serviceName.hashServiceId()
++
++    # Advertiser P re-published after an address change: the two far registrars
++    # hold its record at different sequence numbers.
++    let keyP = randomKey()
++    farRegistrars[0].registrar.seedAd(
++      serviceId, makeAdvertisement(serviceName, keyP, seqNo = 1)
++    )
++    farRegistrars[1].registrar.seedAd(
++      serviceId, makeAdvertisement(serviceName, keyP, seqNo = 2)
++    )
++    # A second advertiser Q is registered one bucket closer to the service.
++    let adQ = makeAdvertisement(serviceName)
++    closeRegistrar.registrar.seedAd(serviceId, adQ)
++
++    let found = await discovererNode.lookup(serviceId)
++    require found.isOk()
++
++    let advertisers = found.get().mapIt(it.data.peerId).deduplicate()
++    checkpoint "ads returned: " & $found.get().len & ", unique advertisers: " &
++      $advertisers.len
++    # F_lookup = 2 and two advertisers are reachable.
++    check advertisers.len == 2
++    check adQ.data.peerId in advertisers
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim
+new file mode 100644
+index 000000000..38a39f981
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f07.nim
+@@ -0,0 +1,59 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/7.
++# Spec, Distributing ads across registrars: "If the status is Rejected, the
++# advertiser MUST remove the registrar from the ongoing registrations for that
++# bucket and SHOULD NOT attempt further registrations with this registrar for
++# this advertisement."
++
++import std/sequtils
++import chronos, results, sets
++import
++  ../../../libp2p/
++    [extended_peer_record, peerid, protocols/service_discovery/advertiser, switch]
++import ../../tools/[lifecycle, unittest]
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/7 - no retry at a rejecting registrar":
++  teardown:
++    checkTrackers()
++
++  asyncTest "a registrar that rejected the advertisement is not asked again":
++    let registrarNode = setupServiceDiscoveryNode()
++    let advertiserNode = setupServiceDiscoveryNode()
++    startAndDeferStop(@[registrarNode, advertiserNode])
++    await connect(registrarNode, advertiserNode)
++    defer:
++      await advertiserNode.stopRegistrations()
++
++    let service = makeServiceInfo("proof-rejected-registrar")
++    let serviceId = service.id.hashServiceId()
++    let registrarId = registrarNode.switch.peerInfo.peerId
++    let key = advertiserNode.switch.peerInfo.privateKey
++
++    # The registrar already caches a newer record of this advertiser, so it
++    # answers the older one below with Rejected.
++    registrarNode.registrar.seedAd(
++      serviceId, makeAdvertisement(service.id, key, seqNo = 100)
++    )
++    let advert = makeAdvertisement(service.id, key, seqNo = 1).encode().get()
++
++    let direct = await advertiserNode.sendRegister(registrarId, serviceId, advert)
++    require direct.isOk()
++    require direct.get().status == RegistrationStatus.Rejected
++
++    # Advertising schedules a registration with the only registrar in the table.
++    require advertiserNode.startAdvertising(service, Opt.some(advert)).isOk()
++    let first = toSeq(advertiserNode.advertiser.running)
++    require first.len == 1
++    require first[0].registrar == registrarId
++    require await first[0].fut.withTimeout(5.seconds) # ends on the Rejected reply
++
++    # The next maintenance round must leave the rejecting registrar alone.
++    await advertiserNode.maintainRegistrations()
++
++    check not toSeq(advertiserNode.advertiser.running).anyIt(
++      it.registrar == registrarId and it.serviceId == serviceId
++    )
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim
+new file mode 100644
+index 000000000..b0a69473a
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f08.nim
+@@ -0,0 +1,76 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/8.
++# Spec, GET_ADS Response: "getAds.advertisements | REQUIRED | List of encoded
++# advertisements (up to F_return = 10)". Spec, Handling GET_ADS requests:
++# "Include up to F_return advertisements from the ad_cache for the requested
++# service_id_hash."
++
++import chronos, results
++import
++  ../../../libp2p/[
++    extended_peer_record, multiaddress, peerid,
++    protocols/service_discovery/discoverer, switch,
++  ]
++import ../../tools/[lifecycle, unittest]
++import ./utils
++
++proc nodeAddresses(i: int): seq[MultiAddress] =
++  ## A dual-stack node on TCP and QUIC that is also reachable through four
++  ## circuit relays.
++  let v4 = "/ip4/10.0." & $i & ".1"
++  let v6 = "/ip6/2001:db8:0:" & $i & "::1"
++  var addrs = @[
++    MultiAddress.init(v4 & "/tcp/9000").get(),
++    MultiAddress.init(v4 & "/udp/9000/quic-v1").get(),
++    MultiAddress.init(v6 & "/tcp/9000").get(),
++    MultiAddress.init(v6 & "/udp/9000/quic-v1").get(),
++  ]
++  for relay in 1 .. 4:
++    addrs.add(
++      MultiAddress
++      .init(
++        "/ip4/192.0.2." & $relay & "/tcp/4001/p2p/" & $PeerId.random() & "/p2p-circuit"
++      )
++      .get()
++    )
++  addrs
++
++suite "Proof 20261120T114625-71ee3b/8 - GET_ADS reply with F_return ads":
++  teardown:
++    checkTrackers()
++
++  asyncTest "a discoverer receives F_return valid ads from one registrar":
++    let registrarNode = setupServiceDiscoveryNode()
++    let discovererNode = setupServiceDiscoveryNode()
++    startAndDeferStop(@[registrarNode, discovererNode])
++    await connect(registrarNode, discovererNode)
++
++    let serviceName = "proof-f-return"
++    let serviceId = serviceName.hashServiceId()
++    let fReturn = registrarNode.discoConfig.fReturn
++
++    var allAccepted = true
++    var adSize = 0
++    for i in 0 ..< fReturn:
++      let ad = makeAdvertisement(serviceName, addrs = nodeAddresses(i))
++      # Every ad is one this implementation accepts on REGISTER.
++      adSize = ad.encode().get().len
++      allAccepted = allAccepted and ad.isValid() and adSize <= MaxXPRSize
++      registrarNode.registrar.seedAd(serviceId, ad)
++    check allAccepted
++
++    let reply = registrarNode.getAdvertisements(
++      discovererNode.switch.peerInfo.peerId,
++      Message(msgType: MessageType.getAds, key: serviceId),
++    )
++    check reply.getAds.get().advertisements.len == fReturn
++    checkpoint "ad size: " & $adSize & " bytes (limit " & $MaxXPRSize &
++      "), encoded GET_ADS reply: " & $reply.encode().len & " bytes, reader limit: " &
++      $ServiceDiscoveryMaxMsgSize
++
++    let found = await discovererNode.lookup(serviceId)
++    check found.isOk()
++    check found.get(@[]).len == fReturn
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim
+new file mode 100644
+index 000000000..4e5023e7f
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f09.nim
+@@ -0,0 +1,43 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/9.
++# Spec, REGISTER Request Validation: "Registrars MUST validate: ... 2. key = 32
++# bytes (valid SHA-256) ... Respond with register.status = REJECTED if
++# validation fails."
++# Spec, REGISTER Response: "type | REQUIRED | REGISTER (6)", "register.status |
++# REQUIRED | CONFIRMED, WAIT, or REJECTED".
++
++import results
++import ../../../libp2p/[extended_peer_record, peerid]
++import ../../../libp2p/protocols/kademlia/types as kadtypes
++import ../../tools/unittest
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/9 - REGISTER without a key":
++  test "a REGISTER request with no key is answered with status Rejected":
++    let disco = setupServiceDiscoveryNode()
++    let ad = makeAdvertisement("proof-missing-key")
++
++    let inMsg = Message(
++      msgType: MessageType.register,
++      key: Opt.none(Key),
++      register: Opt.some(
++        RegisterMessage(
++          advertisement: ad.encode().get(),
++          status: Opt.none(RegistrationStatus),
++          ticket: Opt.none(Ticket),
++        )
++      ),
++    )
++
++    let reply = disco.registration(ad.data.peerId, inMsg)
++
++    let isRegisterReply = reply.msgType == Opt.some(MessageType.register)
++    let isRejected =
++      reply.register.isSome() and
++      reply.register.get().status == Opt.some(RegistrationStatus.Rejected)
++
++    check isRegisterReply
++    check isRejected
+diff --git a/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim
+new file mode 100644
+index 000000000..a3d53e682
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261120T114625_71ee3b_f10.nim
+@@ -0,0 +1,47 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261120T114625-71ee3b/10.
++# Spec, Formula: "The waiting time for an advertisement MUST be calculated using:
++# w(ad) = E x (1/(1 - c/C)^P_occ) x (c(ad.service_id_hash)/C + score(...) + G)".
++# Spec, System Parameters: "Implementations SHOULD modify them as needed";
++# Occupancy Score: "The higher the value of P_occ, the faster the increase."
++
++import chronos, results, net
++import ../../../libp2p/[extended_peer_record, peerid]
++import ../../../libp2p/protocols/service_discovery/advertisement_cache
++import ../../tools/unittest
++import ./utils
++
++suite "Proof 20261120T114625-71ee3b/10 - occupancy exponent P_occ":
++  test "a configured P_occ above 10 raises the waiting time of a half-full cache":
++    let registrar = Registrar.new(8)
++    let serviceId = makeServiceId(1)
++    let now = Moment.init(Moment.now().epochSeconds, Second)
++
++    # c = 4 of C = 8, all under one service: occupancy base (1 - c/C) = 0.5.
++    for i in 0 ..< 4:
++      let ad = makeAdvertisement($serviceId)
++      registrar.ads.put(
++        serviceId, ad.data.peerId, ad, @[parseIpAddress("10.0.0." & $(i + 1))], now
++      )
++
++    let ips = @[parseIpAddress("200.0.0.1")]
++    let w10 = registrar.waitingTime(
++      ServiceDiscoveryConfig.new(advertCacheCap = 8, occupancyExp = 10.0),
++      serviceId,
++      ips,
++      now,
++    )
++    let w12 = registrar.waitingTime(
++      ServiceDiscoveryConfig.new(advertCacheCap = 8, occupancyExp = 12.0),
++      serviceId,
++      ips,
++      now,
++    )
++
++    # E * 2^10 * 0.5 = 460800 s and E * 2^12 * 0.5 = 1843200 s.
++    checkpoint "P_occ = 10: " & $w10 & ", P_occ = 12: " & $w12
++    check w10.seconds == 460800
++    check w12.seconds == 1843200
