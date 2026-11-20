@@ -328,16 +328,17 @@ proc withRng*(b: SwitchBuilder, rng: Rng): SwitchBuilder =
   b
 
 proc withConnectionLimits*(b: SwitchBuilder, limits: ConnectionLimits): SwitchBuilder =
-  ## Set the connection limits for the switch. Construct `limits` via
-  ## `ConnectionLimits.maxTotal` for a shared cap or `ConnectionLimits.maxInOut`
-  ## for independent per-direction caps.
+  ## Use `ConnectionLimits.maxTotal` for a shared cap with an optional outbound
+  ## reserve, or `ConnectionLimits.maxInOut` for independent per-direction caps.
   b.limits = Opt.some(limits)
   b
 
-proc withMaxConnections*(b: SwitchBuilder, maxConnections: int): SwitchBuilder =
-  ## Maximum concurrent connections of the switch. You should either use this,
-  ## or `withMaxInOut <#withMaxInOut,SwitchBuilder,int,int>`_.
-  b.limits = Opt.some(ConnectionLimits.maxTotal(maxConnections))
+proc withMaxConnections*(
+    b: SwitchBuilder, maxConnections: int, outboundReserve: int = 0
+): SwitchBuilder =
+  ## Shares the total cap between both directions. An optional `outboundReserve`
+  ## lowers the inbound ceiling, leaving those slots available for outbound dials.
+  b.limits = Opt.some(ConnectionLimits.maxTotal(maxConnections, outboundReserve))
   b
 
 proc withMaxInOut*(b: SwitchBuilder, maxIn: int, maxOut: int): SwitchBuilder =

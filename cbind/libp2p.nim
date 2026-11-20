@@ -172,6 +172,8 @@ type ExtendedPeerRecordEntry {.ffi.} = object
   seqNo: uint64
   addrs: seq[string]
   services: seq[ServiceInfoEntry]
+  signedRecord: seq[byte]
+    ## Encoded signed record as `start_advertising` takes it; empty for random walks and `decode_xpr`.
 
 type ExtendedRecordsResponse {.ffi.} = object
   records: seq[ExtendedPeerRecordEntry]
@@ -892,6 +894,16 @@ func toExtendedRecordsResponse(
 ): ExtendedRecordsResponse =
   ExtendedRecordsResponse(records: records.mapIt(toExtendedRecordEntry(it)))
 
+func toExtendedRecordsResponse(ads: seq[Advertisement]): ExtendedRecordsResponse =
+  ExtendedRecordsResponse(
+    records: ads.mapIt(
+      block:
+        var entry = toExtendedRecordEntry(it.data)
+        entry.signedRecord = it.encode()
+        entry
+    )
+  )
+
 proc libp2pKadFindNode*(
     lib: LibP2P, peerId: string
 ): Future[Result[PeersResponse, string]] {.ffi.} =
@@ -1102,7 +1114,7 @@ proc libp2pServiceDiscoLookup*(
   let res = await disco.lookup(service)
   let ads = res.valueOr:
     return err(error)
-  ok(toExtendedRecordsResponse(ads.mapIt(it.data)))
+  ok(toExtendedRecordsResponse(ads))
 
 proc libp2pServiceDiscoRandomLookup*(
     lib: LibP2P

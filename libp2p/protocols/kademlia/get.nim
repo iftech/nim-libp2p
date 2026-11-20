@@ -11,6 +11,10 @@ import ./[protobuf, types, find, put, rpc, kademlia_metrics, local_record]
 logScope:
   topics = "libp2p kademlia"
 
+const
+  NoPeerReplied* = "No peer replied"
+  NoValidRecords* = "No valid records found"
+
 proc dispatchGetVal*(
     kad: KadDHT, peer: PeerId, key: RecordKey
 ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
@@ -27,7 +31,7 @@ proc bestValidRecord(
     validRecords.add(record)
 
   if validRecords.len() == 0:
-    return err("No valid records found")
+    return err(NoValidRecords)
 
   let selectedIdx = kad.config.selector.select(key, validRecords).valueOr:
     return err(error, "Could not select best value")
@@ -38,10 +42,12 @@ proc getValue*(
     kad: KadDHT, key: RecordKey, quorumOverride: Opt[int] = Opt.none(int)
 ): Future[LPResult[EntryRecord]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Quorum counts valid records for early stopping. An exhausted search returns
-  ## the best valid record found, or an error if none was found.
+  ## the best valid record, else `NoPeerReplied` or `NoValidRecords`.
   # Some entries have passed validation; None entries are kept for repair.
   let received = ReceivedTable()
-  var validCount = 0
+  var
+    validCount = 0
+    replied = 0
 
   # if locally present and not expired, include our own copy
   let local = kad.getLocalRecord(key).valueOr:
@@ -60,6 +66,8 @@ proc getValue*(
   let onReply = proc(
       peer: PeerId, msgOpt: Opt[Message], state: LookupState
   ): Future[void] {.async: (raises: []), gcsafe.} =
+    replied.inc()
+
     if received.getOrDefault(peer).isSome():
       return
     if received.len < kad.config.limits.maxReceivedSize:
@@ -122,7 +130,10 @@ proc getValue*(
 
   discard await kad.iterativeLookup(key.toKey(), dispatch, onReply, quorumReached)
 
-  let best = ?kad.bestValidRecord(key, received)
+  let best = kad.bestValidRecord(key, received).valueOr:
+    if replied == 0 and error == NoValidRecords:
+      return err(NoPeerReplied)
+    return err(error)
 
   discard
     kad.putBestLocalRecord(key, EntryRecord(value: best.value, time: Timestamp.now()))

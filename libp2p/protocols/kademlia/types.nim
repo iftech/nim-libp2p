@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[tables, sequtils, sets, heapqueue, hashes]
+import std/[tables, sequtils, sets, heapqueue, hashes, algorithm]
 from std/times import format, getTime, parse, toTime, toUnix, utc
 import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
@@ -56,6 +56,9 @@ const
   DefaultProviderExpirationInterval* = 48.hours
   DefaultRecordExpirationInterval* = 24.hours
     # KV entries older than this are considered stale and will be evicted
+
+  MaxCloserPeers* = 2 * DefaultReplication
+  MaxPeerAddrs* = 16
 
   MaxMsgSize* = 1 shl 22 # 4 MiB
 
@@ -112,7 +115,14 @@ proc toPeerId*(k: Key): LPResult[PeerId] =
 
 proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
   let peer = ?k.toPeerId()
-  let addrs = switch.peerStore[AddressBook][peer]
+  let book = switch.peerStore[AddressBook]
+  let live = book[peer]
+  let addrs = book
+    .entries(peer)
+    .filterIt(it.address in live)
+    .sortedByIt(-ord(it.confidence))
+    .mapIt(it.address)
+    .take(MaxPeerAddrs)
   if addrs.len == 0:
     return err("Could not find peer addresses in address book")
 
@@ -127,7 +137,7 @@ proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
 proc toPeer*(peerInfo: PeerInfo): Peer =
   Peer(
     id: Opt.some(peerInfo.peerId.getBytes()),
-    addrs: peerInfo.addrs,
+    addrs: peerInfo.addrs[0 ..< min(peerInfo.addrs.len, MaxPeerAddrs)],
     connection: Opt.none(ConnectionStatus),
   )
 

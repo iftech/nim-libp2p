@@ -66,6 +66,39 @@ suite "KadDHT Get":
       kads[0].containsData(key, value)
       kads[1].containsData(key, value)
 
+  asyncTest "Get with no peers reports that no peer replied":
+    let kads = setupKadSwitches(1)
+    startAndDeferStop(kads)
+
+    let res = await kads[0].getValue(kads[0].rtable.selfId)
+
+    check:
+      res.isErr()
+      res.error() == NoPeerReplied
+
+  asyncTest "Get with unreachable peer reports that no peer replied":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+    await kads[1].switch.stop()
+
+    let res = await kads[0].getValue(kads[1].rtable.selfId)
+
+    check:
+      res.isErr()
+      res.error() == NoPeerReplied
+
+  asyncTest "Get where peers replied without a record reports no valid records":
+    let kads = setupKadSwitches(2)
+    startAndDeferStop(kads)
+    await connect(kads[0], kads[1])
+
+    let res = await kads[0].getValue(kads[1].rtable.selfId)
+
+    check:
+      res.isErr()
+      res.error() == NoValidRecords
+
   asyncTest "Get value that is locally present":
     let kads = setupKadSwitches(1)
     startAndDeferStop(kads)

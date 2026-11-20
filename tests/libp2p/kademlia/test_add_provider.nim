@@ -17,7 +17,7 @@ proc setupOptimisticHub(): seq[KadDHT] =
 
 proc setupKadProvidingAtMost(capacity: int): KadDHT =
   var cfg = testKadConfig()
-  cfg.providedKeyCapacity = capacity
+  cfg.storeLimits.maxProvided = Opt.some(capacity)
   setupKad(cfg)
 
 proc holdsProviderRecord(kad: KadDHT): bool =
@@ -209,9 +209,9 @@ suite "KadDHT - Add Provider":
 
   asyncTest "Provider limits":
     var senderConfig = testKadConfig(republishProvidedKeysInterval = chronos.hours(1))
-    senderConfig.providedKeyCapacity = 2
+    senderConfig.storeLimits.maxProvided = Opt.some(2)
     var receiverConfig = testKadConfig(republishProvidedKeysInterval = chronos.hours(1))
-    receiverConfig.providerRecordCapacity = 1
+    receiverConfig.storeLimits.maxProviders = Opt.some(1)
     let kads = @[setupKad(senderConfig), setupKad(receiverConfig)]
     startAndDeferStop(kads)
 
