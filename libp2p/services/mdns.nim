@@ -3,9 +3,11 @@
 
 {.push raises: [].}
 
-import std/[strutils, tables, net]
+import std/[strutils, tables, net, sequtils]
 import chronos, chronicles
-import ../[switch, peerinfo, multicodec, address_manager, results, wire]
+import ../[switch, peerinfo, peerstore, multicodec, address_manager, results, wire]
+import ../peeraddrpolicy
+import ../logging
 import ../nameresolving/dnsmessage
 import ../crypto/rng
 import ./mdns/[network, ratelimit]
@@ -18,6 +20,7 @@ const
   MdnsMinQueryInterval* = 60.seconds
   MdnsMaxQueryInterval* = (int64(high(uint32)) div 2).seconds
   MdnsResponseInterval* = 1.seconds
+  MdnsDefaultMaxPendingCallbacks* = 10
   RecordTtl = 120'u32
 
 type
@@ -25,10 +28,16 @@ type
     peerId*: PeerId
     addrs*: seq[MultiAddress]
 
-  MdnsPeerFound* = proc(peer: MdnsPeer) {.gcsafe, raises: [].}
+  MdnsPeerFound* = proc(
+    switch: Switch, peer: MdnsPeer
+  ): Future[void].Raising([CancelledError]) {.gcsafe, raises: [].}
 
   MdnsService* = ref object of Service
     onPeerFound: MdnsPeerFound
+    callbacks: seq[Future[void].Raising([CancelledError])]
+    maxPendingCallbacks: int
+    callbackLimitWarnings: LogRateLimit
+    stopping: bool
     serviceName: DnsName
     instance: string
     interval: Duration
@@ -56,13 +65,27 @@ proc new*(
     serviceName = MdnsServiceName,
     queryInterval = MdnsDefaultQueryInterval,
     networkInterfaceProvider: NetworkInterfaceProvider = getAddresses,
+    maxPendingCallbacks: int = MdnsDefaultMaxPendingCallbacks,
 ): T =
   ## A custom service name isolates applications on the same LAN.
-  ## A nil callback ignores discovered peers.
+  ## 
+  ## Discovered addresses are added to the switch's peerstore with low
+  ## confidence before `onPeerFound` runs. The callback controls whether to
+  ## dial; a nil callback stores discoveries without connecting. It may be
+  ## called repeatedly for the same peer. 
+  ##
+  ## An async callback can dial using the supplied switch. Its future is owned
+  ## by the service and cancelled when it stops; handle dial errors in it.
+  ## At most `maxPendingCallbacks` callbacks can be pending; further discoveries
+  ## are stored in the peerstore but their callbacks are skipped.
+  ## Detached work started by the callback remains the application's responsibility.
+  ## Do not await stopping the switch or this service from that callback.
+  ## 
   ## The query interval must be within MdnsMinQueryInterval and
   ## MdnsMaxQueryInterval, inclusive.
   doAssert queryInterval >= MdnsMinQueryInterval and
     queryInterval <= MdnsMaxQueryInterval, "mDNS query interval is out of range"
+  doAssert maxPendingCallbacks >= 0, "mDNS callback limit cannot be negative"
   let name =
     try:
       let name = serviceName.toDnsName() & @["local"]
@@ -72,17 +95,11 @@ proc new*(
     except ValueError as exc:
       raiseAssert "Invalid mDNS service name: " & exc.msg
 
-  let callback =
-    if onPeerFound.isNil:
-      proc(peer: MdnsPeer) {.gcsafe, raises: [].} =
-        discard
-    else:
-      onPeerFound
-
   return T(
-    onPeerFound: callback,
+    onPeerFound: onPeerFound,
     serviceName: name,
     interval: queryInterval,
+    maxPendingCallbacks: maxPendingCallbacks,
     network: MdnsNetwork.new(networkInterfaceProvider),
   )
 
@@ -253,68 +270,112 @@ proc maintain(service: MdnsService) {.async: (raises: [CancelledError]).} =
     if remaining > 0.seconds:
       await sleepAsync(remaining)
 
+proc storeDiscovery(peerStore: PeerStore, peer: MdnsPeer) =
+  let addrs =
+    peerStore.addressPolicy.dialableAddrs(peer.addrs, peerStore.allowUndialableAddrs)
+  peerStore[AddressBook].extend(peer.peerId, addrs, AddressConfidence.Low)
+
+proc notifyPeerFound(service: MdnsService, switch: Switch, peer: MdnsPeer) =
+  if service.onPeerFound.isNil:
+    return
+
+  service.callbacks.keepItIf(not it.finished())
+  if service.callbacks.len < service.maxPendingCallbacks:
+    let callback = service.onPeerFound(switch, peer)
+    callback.addCallback proc(udata: pointer) {.gcsafe, raises: [].} =
+      let completed = FutureBase(callback)
+      if not completed.cancelled() and completed.failed():
+        warn "mDNS discovery callback failed", err = completed.error().msg
+    service.callbacks.add(callback)
+  elif service.callbackLimitWarnings.allowLog():
+    warn "mDNS discovery callback skipped: pending callback limit reached",
+      peerId = peer.peerId, limit = service.maxPendingCallbacks
+
+proc handleResponse(service: MdnsService, switch: Switch, message: DnsMessage) =
+  for peer in service.peers(message, switch.peerInfo.peerId):
+    switch.peerStore.storeDiscovery(peer)
+    service.notifyPeerFound(switch, peer)
+
+proc isOwnQuery(service: MdnsService, message: DnsMessage): bool =
+  # Our periodic query carries our own PTR as a known answer. This also
+  # distinguishes it from queries sent by other services on this host.
+  for record in message.answers:
+    if record.kind == PTR and sameName(record.name, service.serviceName) and
+        sameName(record.target, @[service.instance] & service.serviceName):
+      return true
+  false
+
+proc findQuestion(service: MdnsService, message: DnsMessage): int =
+  for i, question in message.questions:
+    if sameName(question.name, service.serviceName) or
+        sameName(question.name, @[service.instance] & service.serviceName) or
+        sameName(question.name, @[service.instance, "local"]):
+      return i
+  -1
+
+proc replyUnicast(
+    service: MdnsService, message: DnsMessage, context: MdnsReplyContext
+) {.async: (raises: []).} =
+  var response = service.advertisement
+  for record in response.answers.mitems:
+    record.cacheFlush = false
+  for record in response.additionals.mitems:
+    record.cacheFlush = false
+  if context.isLegacyQuery:
+    response.id = message.id
+    response.questions = message.questions
+  let packet =
+    try:
+      encodeMessage(response)
+    except ValueError:
+      debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
+      return
+  # Chronos requires a non-cancellable datagram callback.
+  discard await noCancel service.network.reply(packet, context, true)
+
+proc handleQuery(
+    service: MdnsService, message: DnsMessage, context: MdnsReplyContext
+) {.async: (raises: []).} =
+  if not context.isLegacyQuery and service.isOwnQuery(message):
+    return
+
+  let matched = service.findQuestion(message)
+  if matched < 0 or service.advertisement.answers.len == 0:
+    return
+
+  if message.questions[matched].unicastResponse or context.isLegacyQuery:
+    await service.replyUnicast(message, context)
+    return
+
+  let ipv6 = context.isIpv6
+  if not service.multicastLimits.acquire(ipv6, Moment.now()):
+    return
+
+  var sent = false
+  try:
+    # Chronos requires a non-cancellable datagram callback.
+    sent =
+      await noCancel service.network.reply(service.advertisementBytes, context, false)
+  finally:
+    service.multicastLimits.finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
+
 proc received(
     service: MdnsService, switch: Switch, datagram: seq[byte], context: MdnsReplyContext
 ) {.async: (raises: []).} =
-  if not service.network.isLocalSource(context):
+  if service.stopping or switch.isStopping or not service.network.isLocalSource(context):
     return
+
   let message =
     try:
       parseMessage(datagram)
     except ValueError:
       debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
       return
+
   if message.response:
-    for peer in service.peers(message, switch.peerInfo.peerId):
-      service.onPeerFound(peer)
+    service.handleResponse(switch, message)
   else:
-    # Our periodic query carries our own PTR as a known answer. This also
-    # distinguishes it from queries sent by other services on this host.
-    if not context.isLegacyQuery:
-      for record in message.answers:
-        if record.kind == PTR and sameName(record.name, service.serviceName) and
-            sameName(record.target, @[service.instance] & service.serviceName):
-          return
-    var matched = -1
-    for i, question in message.questions:
-      if sameName(question.name, service.serviceName) or
-          sameName(question.name, @[service.instance] & service.serviceName) or
-          sameName(question.name, @[service.instance, "local"]):
-        matched = i
-        break
-    if matched < 0:
-      return
-    let question = message.questions[matched]
-    let unicast = question.unicastResponse or context.isLegacyQuery
-    if service.advertisement.answers.len == 0:
-      return
-    var packet = service.advertisementBytes
-    if unicast:
-      var response = service.advertisement
-      for record in response.answers.mitems:
-        record.cacheFlush = false
-      for record in response.additionals.mitems:
-        record.cacheFlush = false
-      if context.isLegacyQuery:
-        response.id = message.id
-        response.questions = message.questions
-      try:
-        packet = encodeMessage(response)
-      except ValueError:
-        debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
-        return
-    # Chronos requires a non-cancellable datagram callback.
-    if unicast:
-      discard await noCancel service.network.reply(packet, context, true)
-      return
-    let ipv6 = context.isIpv6
-    if not service.multicastLimits.acquire(ipv6, Moment.now()):
-      return
-    var sent = false
-    try:
-      sent = await noCancel service.network.reply(packet, context, false)
-    finally:
-      service.multicastLimits.finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
+    await service.handleQuery(message, context)
 
 proc makeInstanceName(rng: Rng): string =
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -326,6 +387,7 @@ proc makeInstanceName(rng: Rng): string =
 proc tryStart*(
     service: MdnsService, switch: Switch
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
+  service.stopping = false
   if service.network.isOpen:
     return ok()
   service.owner = switch
@@ -354,8 +416,11 @@ method start*(
 method stop*(
     service: MdnsService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
+  service.stopping = true
   if not service.network.isOpen:
     return
+  await noCancel service.callbacks.cancelAndWait()
+  service.callbacks.setLen(0)
   if not service.loop.isNil:
     await noCancel service.loop.cancelAndWait()
     service.loop = nil
