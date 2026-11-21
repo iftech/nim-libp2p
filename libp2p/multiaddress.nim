@@ -674,10 +674,24 @@ proc getParts[U, V](ma: MultiAddress, slice: HSlice[U, V]): MaResult[MultiAddres
   let
     indexStart = normalizeIndex(slice.a)
     indexEnd = normalizeIndex(slice.b)
+  if indexEnd < indexStart:
+    return ok(MultiAddress())
+  if indexStart < 0:
+    return err("multiaddress: negative slice index")
+
+  mixin items, validate
   var res: MultiAddress
-  for i in indexStart .. indexEnd:
-    ?res.append(?ma[i])
-  ok(res)
+  var index = 0
+  for item in ma:
+    let part = ?item
+    if index >= indexStart:
+      res.data.buffer.add(part.data.buffer)
+    if index == indexEnd:
+      if not res.validate():
+        return err("multiaddress: Incorrect MultiAddress!")
+      return ok(res)
+    inc index
+  err("multiaddress: slice index out of bounds")
 
 proc `[]`*(ma: MultiAddress, i: int | BackwardsIndex): MaResult[MultiAddress] =
   ## Returns part with index ``i`` of MultiAddress ``ma``.

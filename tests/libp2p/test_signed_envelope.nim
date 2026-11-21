@@ -49,7 +49,11 @@ suite "Signed envelope":
     var envelope =
       Envelope.init(privKey, @[byte 12, 0], "payload".toBytes(), "domain").tryGet()
     envelope.signature = Signature()
-    check Envelope.decode(envelope.encode(), "domain").error == EnvelopeFieldMissing
+    check Envelope.decode(envelope.encode(), "domain").error ==
+      EnvelopeError.init(EnvelopeFieldMissing, "signature")
+
+  test "Error without message prints the kind":
+    check $EnvelopeError.init(EnvelopeWrongType) == "EnvelopeWrongType"
 
 # needs to be exported to work
 type
@@ -70,13 +74,33 @@ proc checkValid*(pd: SignedDummy): Result[void, EnvelopeError] =
   if pd.data.awesome == 12.byte:
     ok()
   else:
-    err(EnvelopeInvalidSignature)
+    err(EnvelopeError.init(EnvelopeInvalidSignature))
 
 proc payloadDomain*(T: typedesc[DummyPayload]): string =
   "dummy"
 
 proc payloadType*(T: typedesc[DummyPayload]): seq[byte] =
   @[(byte) 0x00, (byte) 0x00]
+
+type
+  RejectedPayload = object
+  SignedRejected = SignedPayload[RejectedPayload]
+
+const RejectReason = "the field `x` is missing"
+
+proc decode(
+    T: typedesc[RejectedPayload], buffer: seq[byte]
+): Result[RejectedPayload, string] =
+  err(RejectReason)
+
+proc encode(pd: RejectedPayload): seq[byte] =
+  @[0x00'u8]
+
+proc payloadDomain(T: typedesc[RejectedPayload]): string =
+  "rejected"
+
+proc payloadType(T: typedesc[RejectedPayload]): seq[byte] =
+  @[0x01'u8]
 
 suite "Signed payload":
   test "Simple encode -> decode":
@@ -110,3 +134,31 @@ suite "Signed payload":
       encoded = signed.encode()
 
     check SignedDummy.decode(encoded).error == EnvelopeWrongType
+
+  test "Envelope overload verifies the signature":
+    let
+      privKey = PrivateKey.random(rng()).tryGet()
+      signed = SignedDummy.init(privKey, DummyPayload(awesome: 12.byte)).tryGet()
+      other = SignedDummy.init(privKey, DummyPayload(awesome: 13.byte)).tryGet()
+    var tampered = signed.envelope
+    tampered.signature = other.envelope.signature
+
+    check SignedDummy.decode(tampered).error == EnvelopeInvalidSignature
+
+  test "Payload decode error reaches the caller":
+    let
+      privKey = PrivateKey.random(rng()).tryGet()
+      envelope = Envelope
+        .init(
+          privKey,
+          RejectedPayload.payloadType(),
+          RejectedPayload().encode(),
+          RejectedPayload.payloadDomain(),
+        )
+        .tryGet()
+      decoded = SignedRejected.decode(envelope.encode())
+
+    check:
+      decoded.isErr()
+      decoded.error == EnvelopeError.init(EnvelopeInvalidProtobuf, RejectReason)
+      $decoded.error == "EnvelopeInvalidProtobuf: " & RejectReason

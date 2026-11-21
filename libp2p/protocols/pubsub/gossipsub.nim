@@ -365,7 +365,7 @@ method onNewPeer*(g: GossipSub, peer: PubSubPeer) =
       g.pendingTasks.trackFut(g.disconnectPeer(peer))
 
     g.extensionsState.initTopicStreams(
-      peer.peerId, g.maxMessageSize, dial, receive, violation
+      peer.peerId, g.maxMessageSize, dial, receive, violation, peer.outboundQueue
     )
 
   peer.iHaveBudget = IHavePeerBudget
@@ -460,8 +460,15 @@ proc handleSubscribe(
       peer.behaviourPenalty += SubscriptionFloodPenalty
       return false
 
+    # Bound retained topic names across RPCs using the existing message-size budget.
+    if not g.gossipsub.hasPeer(topic, peer) and
+        topic.len > g.maxMessageSize - peer.subscribedTopicBytes:
+      trace "ignoring subscription over topic byte budget", limit = g.maxMessageSize
+      return false
+
     if g.gossipsub.addPeer(topic, peer):
       peer.subscribedTopics.inc()
+      peer.subscribedTopicBytes += topic.len
       debug "peer subscribed to topic"
     if peer.peerId in g.parameters.directPeers:
       discard g.subscribedDirectPeers.addPeer(topic, peer)
@@ -476,6 +483,7 @@ proc handleSubscribe(
     let wasSubscribed = g.gossipsub.hasPeer(topic, peer)
     if wasSubscribed:
       peer.subscribedTopics.dec()
+      peer.subscribedTopicBytes -= topic.len
     g.gossipsub.removePeer(topic, peer)
 
     g.fanout.removePeer(topic, peer)
@@ -569,6 +577,7 @@ proc acquireValidationSlot(
     await peer.validationSlots.acquire()
   except CancelledError as e:
     g.validationSeen.del(saltedId)
+    discard g.seen.del(saltedId)
     libp2p_gossipsub_pending_validations.dec()
     raise e
 
@@ -1378,6 +1387,14 @@ method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   g.parameters.validateParameters().onErrorRaise(InitializationError)
   g.parameters.topicStreamsConfig.ifValue(config):
     config.validate(g.maxMessageSize).onErrorRaise(InitializationError)
+    let nonHighBudget =
+      g.parameters.maxOutboundQueueBytes -
+      highPriorityQueueReservedBytes(g.parameters.maxOutboundQueueBytes)
+    if g.maxMessageSize > nonHighBudget div 2:
+      raise newException(
+        InitializationError,
+        "gossipsub: non-High outbound budget must be at least twice maxMessageSize with topic streams",
+      )
 
   # init the floodsub stuff here, we customize timedcache in gossip!
   g.seen =

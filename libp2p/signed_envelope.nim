@@ -12,17 +12,33 @@ import protobuf_serialization
 export crypto
 
 type
-  EnvelopeError* = enum
+  EnvelopeErrorKind* = enum
     EnvelopeInvalidProtobuf
     EnvelopeFieldMissing
     EnvelopeInvalidSignature
     EnvelopeWrongType
+
+  EnvelopeError* = object
+    kind*: EnvelopeErrorKind
+    msg*: string
 
   Envelope* {.proto3.} = object
     publicKey* {.fieldNumber: 1, ext.}: PublicKey
     payloadType* {.fieldNumber: 2.}: seq[byte]
     payload {.fieldNumber: 3.}: seq[byte]
     signature* {.fieldNumber: 5, ext.}: Signature
+
+func init*(T: type EnvelopeError, kind: EnvelopeErrorKind, msg = ""): EnvelopeError =
+  EnvelopeError(kind: kind, msg: msg)
+
+func `==`*(e: EnvelopeError, kind: EnvelopeErrorKind): bool =
+  e.kind == kind
+
+func `$`*(e: EnvelopeError): string =
+  if e.msg.len == 0:
+    return $e.kind
+
+  $e.kind & ": " & e.msg
 
 proc getSignatureBuffer(e: Envelope, domain: string): seq[byte] =
   var buffer = initVBuffer()
@@ -62,17 +78,17 @@ proc decode*(
   let envelope =
     try:
       Protobuf.decode(buf, Envelope)
-    except SerializationError:
-      return err(EnvelopeInvalidProtobuf)
+    except SerializationError as e:
+      return err(EnvelopeError.init(EnvelopeInvalidProtobuf, e.msg))
 
   if envelope.publicKey.getBytes().isErr:
-    return err(EnvelopeFieldMissing)
+    return err(EnvelopeError.init(EnvelopeFieldMissing, "publicKey"))
 
   if envelope.signature.data.len == 0:
-    return err(EnvelopeFieldMissing)
+    return err(EnvelopeError.init(EnvelopeFieldMissing, "signature"))
 
   if not envelope.verify(domain):
-    return err(EnvelopeInvalidSignature)
+    return err(EnvelopeError.init(EnvelopeInvalidSignature))
 
   ok(envelope)
 
@@ -95,18 +111,16 @@ proc init*[T](
 
   ok(SignedPayload[T](data: data, envelope: envelope))
 
-proc decode*[T](
+proc fromVerifiedEnvelope[T](
     _: typedesc[SignedPayload[T]], envelope: Envelope
 ): Result[SignedPayload[T], EnvelopeError] =
   mixin decode
 
   if envelope.payloadType != T.payloadType:
-    return err(EnvelopeWrongType)
-  if not envelope.verify(T.payloadDomain):
-    return err(EnvelopeInvalidSignature)
+    return err(EnvelopeError.init(EnvelopeWrongType))
 
   let data = T.decode(envelope.payload).valueOr:
-    return err(EnvelopeInvalidProtobuf)
+    return err(EnvelopeError.init(EnvelopeInvalidProtobuf, $error))
   let signedPayload = SignedPayload[T](envelope: envelope, data: data)
 
   when compiles(?signedPayload.checkValid()):
@@ -115,10 +129,18 @@ proc decode*[T](
   ok(signedPayload)
 
 proc decode*[T](
+    _: typedesc[SignedPayload[T]], envelope: Envelope
+): Result[SignedPayload[T], EnvelopeError] =
+  if not envelope.verify(T.payloadDomain):
+    return err(EnvelopeError.init(EnvelopeInvalidSignature))
+
+  SignedPayload[T].fromVerifiedEnvelope(envelope)
+
+proc decode*[T](
     _: typedesc[SignedPayload[T]], buffer: sink seq[byte]
 ): Result[SignedPayload[T], EnvelopeError] =
   let envelope = ?Envelope.decode(move(buffer), T.payloadDomain)
-  SignedPayload[T].decode(envelope)
+  SignedPayload[T].fromVerifiedEnvelope(envelope)
 
 proc encode*[T](msg: SignedPayload[T]): seq[byte] =
   msg.envelope.encode()

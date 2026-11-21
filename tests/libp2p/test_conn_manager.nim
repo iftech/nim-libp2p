@@ -19,10 +19,12 @@ method newStream*(
 ): Future[MuxedStream] {.async: (raises: [CancelledError, LPStreamError, MuxerError]).} =
   Connection.new(m.peerId, Direction.Out)
 
-proc newMaxTotal(maxConnections = 10, maxConnsPerPeer = 1): ConnManager =
+proc newMaxTotal(
+    maxConnections = 10, maxConnsPerPeer = 1, outboundReserve = 0
+): ConnManager =
   return ConnManager.new(
     maxConnsPerPeer = maxConnsPerPeer,
-    limits = Opt.some(ConnectionLimits.maxTotal(maxConnections)),
+    limits = Opt.some(ConnectionLimits.maxTotal(maxConnections, outboundReserve)),
   )
 
 proc newMaxInOut(maxIn: int, maxOut: int, maxConnsPerPeer = 1): ConnManager =
@@ -1063,3 +1065,96 @@ suite "Connection Manager: watermark with connection limiting":
     check connMngr.getOutgoingSlot().isErr()
 
     await connMngr.stop()
+
+suite "Shared connection cap with outbound reserve":
+  teardown:
+    checkTrackers()
+
+  test "invalid outbound reserves are rejected":
+    for reserve in [-1, 5, 6]:
+      expect AssertionDefect:
+        discard ConnectionLimits.maxTotal(5, outboundReserve = reserve)
+
+  asyncTest "default and unreserved total caps retain all inbound slots":
+    for total in [1, 50, 150, 160]:
+      let manager =
+        if total == 50:
+          ConnManager.new()
+        else:
+          newMaxTotal(total)
+      var slots: seq[ConnectionSlot]
+      for _ in 0 ..< total:
+        slots.add(await manager.getIncomingSlot())
+      check:
+        manager.tryGetIncomingSlot().isNone()
+        manager.getOutgoingSlot().isErr()
+      for slot in slots:
+        slot.release()
+      check:
+        manager.availableSlots(Direction.In) == total
+        manager.availableSlots(Direction.Out) == total
+      await manager.stop()
+
+  asyncTest "an explicit reserve leaves outbound capacity within the total cap":
+    for (total, reserve) in [(50, 10), (150, 30), (160, 32), (2, 1), (50, 7)]:
+      let manager = newMaxTotal(total, outboundReserve = reserve)
+      let inboundLimit = total - reserve
+      var slots: seq[ConnectionSlot]
+      for _ in 0 ..< inboundLimit:
+        let slot = manager.tryGetIncomingSlot()
+        require slot.isSome()
+        slots.add(slot.get())
+      check:
+        manager.tryGetIncomingSlot().isNone()
+        manager.availableSlots(Direction.In) == 0
+        manager.availableSlots(Direction.Out) == total - inboundLimit
+      for _ in inboundLimit ..< total:
+        slots.add(manager.getOutgoingSlot().tryGet())
+      check manager.getOutgoingSlot().isErr()
+      for slot in slots:
+        slot.release()
+      check:
+        manager.availableSlots(Direction.In) == inboundLimit
+        manager.availableSlots(Direction.Out) == total
+      await manager.stop()
+
+  asyncTest "outbound connections can use the entire total cap":
+    for (total, reserve) in [(1, 0), (2, 1), (50, 10)]:
+      let manager = newMaxTotal(total, outboundReserve = reserve)
+      var slots: seq[ConnectionSlot]
+      for _ in 0 ..< total:
+        slots.add(manager.getOutgoingSlot().tryGet())
+      check:
+        manager.getOutgoingSlot().isErr()
+        manager.tryGetIncomingSlot().isNone()
+      for slot in slots:
+        slot.release()
+      await manager.stop()
+
+  asyncTest "failed acquisitions and cancellation restore the inbound budget":
+    let manager = newMaxTotal(5, outboundReserve = 1)
+    var slots: seq[ConnectionSlot]
+    for _ in 0 ..< 5:
+      slots.add(manager.getOutgoingSlot().tryGet())
+    for _ in 0 ..< 5:
+      check manager.tryGetIncomingSlot().isNone()
+    let pending = manager.getIncomingSlot()
+    check not pending.finished()
+    await pending.cancelAndWait()
+    for slot in slots:
+      slot.release()
+    check:
+      manager.availableSlots(Direction.In) == 4
+      manager.availableSlots(Direction.Out) == 5
+    slots.setLen(0)
+    for _ in 0 ..< 4:
+      slots.add(await manager.getIncomingSlot())
+    let waitingForInbound = manager.getIncomingSlot()
+    check not waitingForInbound.finished()
+    await waitingForInbound.cancelAndWait()
+    for slot in slots:
+      slot.release()
+    check:
+      manager.availableSlots(Direction.In) == 4
+      manager.availableSlots(Direction.Out) == 5
+    await manager.stop()

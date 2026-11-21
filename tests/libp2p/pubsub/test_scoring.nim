@@ -591,3 +591,14 @@ suite "GossipSub Scoring":
     # Score should be zero since topic weight is zero
     check:
       round(peers[0].score, 1) == 0.0
+
+  asyncTest "receive peer without send stream is still scored":
+    let (g, conns, peers) = setupGossipSubWithPeers(1, "topic")
+    defer:
+      await teardownGossipSub(g, conns)
+    let stream = peers[0].sendStream
+    peers[0].sendStream = nil
+    peers[0].behaviourPenalty = 100
+    g.updateScores()
+    check peers[0].score == -10000.0
+    peers[0].sendStream = stream
