@@ -123,21 +123,21 @@ suite "AutonatV2 Service":
     let
       (service, _) = newService(NotReachable)
       switch = createSwitch()
-      peer = createSwitch()
+      peer1 = createSwitch()
       peer2 = createSwitch()
       peer3 = createSwitch()
       notified = service.awaitReachability(NotReachable)
       publicAddr = ma("/ip4/1.2.3.4/tcp/4040")
 
     await allFuturesRaising(
-      startAutonatSwitch(switch, service), peer.start(), peer2.start(), peer3.start()
+      startAutonatSwitch(switch, service), peer1.start(), peer2.start(), peer3.start()
     )
     defer:
       await allFuturesRaising(
-        stopAutonatSwitch(switch, service), peer.stop(), peer2.stop(), peer3.stop()
+        stopAutonatSwitch(switch, service), peer1.stop(), peer2.stop(), peer3.stop()
       )
     switch.addressManager.add(publicAddr, AddrSource.Upnp)
-    await switch.connect(peer)
+    await switch.connect(peer1)
     await switch.connect(peer2)
     await switch.connect(peer3)
 
@@ -148,6 +148,27 @@ suite "AutonatV2 Service":
       switch.addressManager.confirmedAddrs().len == 0
       publicAddr notin switch.peerInfo.addrs
       switch.peerInfo.addrs.len > 0
+
+  asyncTest "a configured quorum of one allows one server to mark addresses unreachable":
+    let
+      (service, _) = newService(
+        NotReachable, config = AutonatV2ServiceConfig.new(negativeQuorum = 1)
+      )
+      switch = createSwitch()
+      peer = createSwitch()
+      notified = service.awaitReachability(NotReachable)
+      publicAddr = ma("/ip4/1.2.3.4/tcp/4040")
+
+    await allFuturesRaising(startAutonatSwitch(switch, service), peer.start())
+    defer:
+      await allFuturesRaising(stopAutonatSwitch(switch, service), peer.stop())
+    switch.addressManager.add(publicAddr, AddrSource.Upnp)
+    await switch.connect(peer)
+    await notified
+
+    checkUntilTimeout:
+      service.networkReachability == NotReachable
+      publicAddr notin switch.peerInfo.addrs
 
   asyncTest "one negative server cannot withdraw a confirmed public address":
     let

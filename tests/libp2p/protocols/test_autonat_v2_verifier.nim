@@ -44,7 +44,9 @@ method sendDialRequest(
   response
 
 proc makePair(
-    reachability: NetworkReachability, expectedDials = 1
+    reachability: NetworkReachability,
+    expectedDials = 1,
+    negativeQuorum: Positive = DefaultNegativeQuorum,
 ): VerifierPair {.raises: [LPError].} =
   let
     switch = makeStandardSwitch(ma("/memorytransport/*"))
@@ -64,7 +66,8 @@ proc makePair(
     peer:
       makeStandardSwitchBuilder(ma("/memorytransport/*")).withAutonatV2Server().build(),
     client: client,
-    verifier: AutonatV2Verifier.new(switch, client, rng()),
+    verifier:
+      AutonatV2Verifier.new(switch, client, rng(), negativeQuorum = negativeQuorum),
   )
 
 proc start(self: VerifierPair) {.async.} =
@@ -189,3 +192,26 @@ suite "AutonatV2 verifier":
     check:
       (await pair.verifier.verify(ma("/ip4/1.2.3.4/tcp/1"))).isNone()
       pair.client.dials == 1
+
+  asyncTest "the negative quorum is configurable":
+    let
+      pair = makePair(NotReachable, expectedDials = 3, negativeQuorum = 2)
+      second = makeStandardSwitchBuilder(ma("/memorytransport/*"))
+        .withAutonatV2Server()
+        .build()
+      address = ma("/ip4/1.2.3.4/tcp/1")
+    defer:
+      await allFuturesRaising(pair.stop(), second.stop())
+    await allFuturesRaising(pair.start(), second.start())
+    await pair.dialPeer()
+
+    check (await pair.verifier.verify(address)).isNone()
+    check pair.client.dials == 1
+
+    pair.client.peers.setLen(0)
+    await pair.switch.connect(second)
+    check:
+      (await pair.verifier.verify(address)) == AddrState.Unreachable
+      pair.client.peers.len == 2
+      pair.client.peers[0] != pair.client.peers[1]
+      pair.client.dials == 3

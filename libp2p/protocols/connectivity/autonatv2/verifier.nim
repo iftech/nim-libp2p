@@ -23,19 +23,26 @@ import
 logScope:
   topics = "libp2p autonat"
 
-const AskTimeout = 2 * DefaultDialTimeout ## Twice the time a server has to dial back.
+const
+  AskTimeout = 2 * DefaultDialTimeout ## Twice the time a server has to dial back.
+  DefaultNegativeQuorum* = 3
 
 type AutonatV2Verifier* = ref object of Verifier
   switch: Switch
   client: AutonatV2Client
   rng: Rng
+  negativeQuorum: Positive
 
 proc new*(
-    T: typedesc[AutonatV2Verifier], switch: Switch, client: AutonatV2Client, rng: Rng
+    T: typedesc[AutonatV2Verifier],
+    switch: Switch,
+    client: AutonatV2Client,
+    rng: Rng,
+    negativeQuorum: Positive = DefaultNegativeQuorum,
 ): T =
   ## The switch must mount `client`, which receives the dial back.
   client.setup(switch)
-  T(switch: switch, client: client, rng: rng)
+  T(switch: switch, client: client, rng: rng, negativeQuorum: negativeQuorum)
 
 proc selectPeer(self: AutonatV2Verifier, excluded: openArray[PeerId]): Opt[PeerId] =
   ## A peer which dialed us proves nothing. It has a path to us already.
@@ -73,13 +80,12 @@ proc askPeer(
 method verify*(
     self: AutonatV2Verifier, address: MultiAddress
 ): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
-  ## Confirm on a successful dial-back; require three distinct negative replies
+  ## Confirm on a successful dial-back; require `negativeQuorum` distinct negative replies
   ## to mark the address unreachable. Insufficient or inconclusive replies leave
   ## its state unchanged.
-  const negativeQuorum = 3
   var asked: seq[PeerId]
   var failures = 0
-  for i in 0 ..< negativeQuorum:
+  for i in 0 ..< self.negativeQuorum:
     if not self.switch.hasEnoughIncomingSlots():
       trace "No incoming slots left, skipping verification", address
       return Opt.none(AddrState)
@@ -93,6 +99,6 @@ method verify*(
       return verdict
     if verdict == Opt.some(AddrState.Unreachable):
       inc failures
-  if failures == negativeQuorum:
+  if failures == self.negativeQuorum:
     return Opt.some(AddrState.Unreachable)
   Opt.none(AddrState)

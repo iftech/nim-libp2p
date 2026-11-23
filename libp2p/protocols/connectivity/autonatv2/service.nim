@@ -27,6 +27,7 @@ type
     scheduleInterval: Opt[Duration]
     enableAddressMapper: bool
     enableDialableCandidates: bool
+    negativeQuorum: int
 
   AutonatV2Service* = ref object of Service
     reachabilityObservers*: ReachabilityObservers
@@ -47,11 +48,14 @@ proc new*(
     scheduleInterval: Opt[Duration] = noneDuration,
     enableAddressMapper = true,
     enableDialableCandidates = false,
+    negativeQuorum: Positive = DefaultNegativeQuorum,
 ): T =
+  ## `negativeQuorum` distinct negative replies are required to mark an address unreachable.
   T(
     scheduleInterval: scheduleInterval,
     enableAddressMapper: enableAddressMapper,
     enableDialableCandidates: enableDialableCandidates,
+    negativeQuorum: negativeQuorum,
   )
 
 proc new*(
@@ -89,7 +93,9 @@ proc addressMapper(
 
 proc configure(self: AutonatV2Service, switch: Switch) =
   self.addressManager = switch.addressManager
-  self.verifier = AutonatV2Verifier.new(switch, self.client, self.rng)
+  self.verifier = AutonatV2Verifier.new(
+    switch, self.client, self.rng, negativeQuorum = self.config.negativeQuorum
+  )
 
   self.addressMapper = proc(
       listenAddrs: seq[MultiAddress]
