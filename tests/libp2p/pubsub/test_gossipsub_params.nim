@@ -401,8 +401,12 @@ suite "GossipSubParams validation":
       check:
         res.isErr()
         res.error == "gossipsub: maxOutboundQueueBytes parameter error, Must be > 0"
-    params.maxOutboundQueueBytes = 1
-    check params.validateParameters().isOk()
+    for valid in [
+      1, # the lowest accepted budget
+      int.high, # count-only limits
+    ]:
+      params.maxOutboundQueueBytes = valid
+      check params.validateParameters().isOk()
 
   test "overheadRateLimit.bytes fails when zero":
     const errorMessage =

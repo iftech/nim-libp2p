@@ -124,6 +124,7 @@ suite "GossipSub topic stream send side":
         (await written.popFirst()) == header
         (await written.popFirst()) == frames[0]
         written.len == 0
+        peer.outboundQueue.evictableBytes[Medium] == frames[1].len
 
       let rejected =
         metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["queue_full"])
