@@ -387,6 +387,7 @@ proc initKadBase*(
   kad.admissionSem = newAsyncSemaphore(config.limits.maxConcurrentProbes)
   kad.livenessSem = newAsyncSemaphore(config.limits.maxConcurrentLivenessProbes)
   kad.isServer = isServer
+  kad.unadvertised = not isServer
   kad.codec = codec
   kad.msgSender = MessageSender.new(switch, codec, MaxMsgSize)
   kad.bootstrapNodes = bootstrapNodes.toPeerInfos()
@@ -469,17 +470,22 @@ proc resetServerStreams(kad: KadDHT) {.async: (raises: []).} =
   await noCancel allFutures(streams.mapIt(it.reset()))
   trace "Reset inbound Kad DHT streams", streams = streams.len
 
+proc advertiseMode(kad: KadDHT) =
+  kad.unadvertised = not kad.isServer
+  kad.switch.setAdvertised(kad.codec, kad.isServer)
+
 proc setMode(kad: KadDHT, isServer: bool, now: Moment) {.async: (raises: []).} =
   kad.autoModePolicy.applied(isServer, now)
   kad.isServer = isServer
+  kad.advertiseMode()
   if not isServer:
     await kad.resetServerStreams()
   info "Kad DHT changed mode", isServer
 
 proc changeMode*(kad: KadDHT, isServer: bool): Future[bool] {.async: (raises: []).} =
   ## Start or stop serving inbound queries, and report whether the mode changed.
-  ## Stopping resets the in-flight inbound streams; the codec stays mounted (no
-  ## unmount exists), so peers drop us once the handler refuses to serve.
+  ## A downgrade drops the codec from identify and resets the in-flight inbound
+  ## streams. Identify push then sends the new protocol list to peers.
   if isServer == kad.isServer:
     return false
 
@@ -562,6 +568,7 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
     kad.isServer = false
     kad.autoModePolicy = kad.autoModePolicy.restarted(isServer = kad.isServer)
     await kad.observeReachability(kad.currentReachability())
+  kad.advertiseMode()
   kad.msgSender.start()
 
   if not kad.config.disableBootstrapping:

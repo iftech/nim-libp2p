@@ -142,8 +142,10 @@ proc setupKad*(
     config: KadDHTConfig = testKadConfig(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     isServer: bool = true,
+    identifyPush: bool = false,
 ): KadDHT =
-  let switch = makeStandardSwitch(TcpAutoAddress)
+  let switch =
+    makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher(identifyPush).build()
   let kad = KadDHT.new(switch, bootstrapNodes, config, rng(), isServer)
   kad.switch.mount(kad)
   kad
