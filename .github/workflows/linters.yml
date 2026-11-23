@@ -47,7 +47,7 @@ jobs:
         run: python3 tools/check-nimble-lock.py
 
       - name: Run nim-lint checks
-        uses: iftech/nim-lint@develop
+        uses: iftech/nim-lint@1.1.0
         with:
           config: linter.nim
           semantic: true
