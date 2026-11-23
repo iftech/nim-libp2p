@@ -180,4 +180,4 @@ clean-nim:
 lint:
 	nimble list -i 2>/dev/null | grep -qx lint || \
 		nimble install https://github.com/iftech/nim-lint@#1.1.0
-	nim r linter.nim
+	nim r -d:release linter.nim
