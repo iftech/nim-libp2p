@@ -38,6 +38,12 @@ suite "SwitchBuilder":
     expect AssertionDefect:
       discard tcpBuilder().withMdns(queryInterval = MdnsMaxQueryInterval + 1.seconds)
 
+  test "mDNS rejects negative callback limits":
+    expect AssertionDefect:
+      discard tcpBuilder().withMdns(maxPendingCallbacks = -1)
+    expect AssertionDefect:
+      discard MdnsService.new(maxPendingCallbacks = -1)
+
   test "disabling mDNS after enabling it prevents service creation":
     let node = tcpBuilder().withMdns().withMdns(enabled = false).build()
     check not node.services.anyIt(it of MdnsService)

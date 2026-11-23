@@ -9,7 +9,6 @@ import
   ../../../multiaddress,
   ../../../wire,
   ../../../services/reachabilityobservers,
-  ../../../crypto/crypto,
   ../autonat/types,
   ./client,
   ./verifier
@@ -27,6 +26,7 @@ type
     scheduleInterval: Opt[Duration]
     enableAddressMapper: bool
     enableDialableCandidates: bool
+    negativeQuorum: int
 
   AutonatV2Service* = ref object of Service
     reachabilityObservers*: ReachabilityObservers
@@ -36,7 +36,6 @@ type
     verifier: AutonatV2Verifier
     peerHandler: PeerEventHandler
     client*: AutonatV2Client
-    rng: Rng
     configured: bool
 
   StatusAndConfidenceHandler* = ReachabilityHandler
@@ -47,25 +46,22 @@ proc new*(
     scheduleInterval: Opt[Duration] = noneDuration,
     enableAddressMapper = true,
     enableDialableCandidates = false,
+    negativeQuorum: Positive = DefaultNegativeQuorum,
 ): T =
+  ## `negativeQuorum` distinct negative replies are required to mark an address unreachable.
   T(
     scheduleInterval: scheduleInterval,
     enableAddressMapper: enableAddressMapper,
     enableDialableCandidates: enableDialableCandidates,
+    negativeQuorum: negativeQuorum,
   )
 
 proc new*(
     T: typedesc[AutonatV2Service],
-    rng: Rng,
     client: AutonatV2Client = AutonatV2Client.new(),
     config: AutonatV2ServiceConfig = AutonatV2ServiceConfig.new(),
 ): T =
-  T(
-    reachabilityObservers: ReachabilityObservers.new(),
-    config: config,
-    client: client,
-    rng: rng,
-  )
+  T(reachabilityObservers: ReachabilityObservers.new(), config: config, client: client)
 
 func networkReachability*(self: AutonatV2Service): NetworkReachability =
   ## The address manager's summary; `Unknown` before start.
@@ -89,7 +85,9 @@ proc addressMapper(
 
 proc configure(self: AutonatV2Service, switch: Switch) =
   self.addressManager = switch.addressManager
-  self.verifier = AutonatV2Verifier.new(switch, self.client, self.rng)
+  self.verifier = AutonatV2Verifier.new(
+    switch, self.client, negativeQuorum = self.config.negativeQuorum
+  )
 
   self.addressMapper = proc(
       listenAddrs: seq[MultiAddress]

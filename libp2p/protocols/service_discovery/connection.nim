@@ -94,19 +94,19 @@ proc send*(
   disco.clearDialFailures(peerId)
   return ok(reply)
 
-proc dropCloserPeers(msg: var Message, excess: int) {.raises: [].} =
-  ## A popped peer frees at least its bytes plus a tag and a length byte.
-  var left = excess
-  while left > 0 and msg.closerPeers.len > 0:
-    left -= msg.closerPeers.pop().encode().len + 2
-
 proc encodeWithinReadLimit*(msg: var Message): seq[byte] {.raises: [].} =
-  let bytes = msg.encode()
-  if bytes.len <= ServiceDiscoveryMaxMsgSize:
-    return bytes
+  var bytes = msg.encode()
+  while bytes.len > ServiceDiscoveryMaxMsgSize:
+    if msg.closerPeers.len > 0:
+      discard msg.closerPeers.pop()
+    elif msg.getAds.isSome() and msg.getAds.get().advertisements.len > 0:
+      discard msg.getAds.get().advertisements.pop()
+    else:
+      break
 
-  msg.dropCloserPeers(bytes.len - ServiceDiscoveryMaxMsgSize)
-  msg.encode()
+    bytes = msg.encode()
+
+  return bytes
 
 proc handleMessage*(
     disco: ServiceDiscovery, stream: Stream, msg: Message

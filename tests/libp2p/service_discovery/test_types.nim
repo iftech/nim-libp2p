@@ -23,12 +23,11 @@ proc longAddrs(): seq[MultiAddress] =
 
 proc getAdsReply(count: int, addrs: seq[MultiAddress]): Message =
   Message(
-    msgType: Opt.some(MessageType.getAds),
+    msgType: MessageType.getAds,
     getAds: Opt.some(
       GetAdsMessage(advertisements: newSeqWith(count, newSeq[byte](MaxXPRSize)))
     ),
-    closerPeers:
-      (0 ..< count).mapIt(Peer(id: Opt.some(PeerId.random().getBytes()), addrs: addrs)),
+    closerPeers: (0 ..< count).mapIt(Peer(id: PeerId.random().getBytes(), addrs: addrs)),
   )
 
 suite "Service Discovery types":
