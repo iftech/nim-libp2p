@@ -502,7 +502,7 @@ proc withKademlia*(
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     config: KadDHTConfig = KadDHTConfig.new(),
     mode: KadMode = KadMode.Server,
-    autoMode = AutoModeConfig.init(),
+    autoMode: AutoModeConfig = AutoModeConfig.init(),
 ): SwitchBuilder =
   b.kad = Opt.some(
     KadInfo(

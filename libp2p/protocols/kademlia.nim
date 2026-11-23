@@ -473,11 +473,12 @@ proc resetServerStreams(kad: KadDHT) {.async: (raises: []).} =
   await noCancel allFutures(streams.mapIt(it.reset()))
   trace "Reset inbound Kad DHT streams", streams = streams.len
 
-proc setMode(kad: KadDHT, isServer: bool) {.async: (raises: []).} =
+proc setMode(kad: KadDHT, isServer: bool, now: Moment) {.async: (raises: []).} =
+  kad.autoModePolicy.applied(isServer, now)
   kad.isServer = isServer
   if not isServer:
     await kad.resetServerStreams()
-  info "Kad DHT changed mode", previousIsServer = not isServer, isServer
+  info "Kad DHT changed mode", isServer
 
 proc changeMode*(kad: KadDHT, isServer: bool): Future[bool] {.async: (raises: []).} =
   ## Start or stop serving inbound queries, and report whether the mode changed.
@@ -486,39 +487,50 @@ proc changeMode*(kad: KadDHT, isServer: bool): Future[bool] {.async: (raises: []
   if isServer == kad.isServer:
     return false
 
-  await kad.setMode(isServer)
+  await kad.setMode(isServer, Moment.now())
   true
 
-proc applyPendingMode(kad: KadDHT, now: Moment) {.async: (raises: []).} =
-  let isServer = not kad.isServer
-  kad.autoModePolicy.applied(isServer, now)
-  await kad.setMode(isServer)
-
 proc runModeTimer(kad: KadDHT, deadline: Moment) {.async: (raises: [CancelledError]).} =
+  if not kad.started or kad.stopping:
+    return
+
   await sleepAsync(deadline - Moment.now())
+  if not kad.started or kad.stopping:
+    return
+
   let now = Moment.now()
   if kad.autoModePolicy.due(now):
-    await kad.applyPendingMode(now)
+    await kad.setMode(not kad.isServer, now)
 
-proc cancelModeTimer(kad: KadDHT) {.async: (raises: []).} =
-  # loop: a verdict racing this await can arm a new timer
-  while not kad.modeTimer.isNil():
-    let timer = kad.modeTimer
-    kad.modeTimer = nil
-    await noCancel timer.cancelAndWait()
+proc dropModeTimer(kad: KadDHT) =
+  if kad.modeTimer.isNil():
+    return
+
+  kad.modeTimer.cancelSoon()
+  kad.modeTimer = nil
+
+proc armModeTimer(kad: KadDHT, deadline: Moment) =
+  let timer = kad.runModeTimer(deadline)
+  kad.modeTimer = timer
+  timer.addCallback(
+    proc(udata: pointer) {.gcsafe, raises: [].} =
+      if kad.modeTimer == timer:
+        kad.modeTimer = nil
+  )
 
 proc observeReachability(
     kad: KadDHT, reachability: NetworkReachability
 ) {.async: (raises: []).} =
+  kad.dropModeTimer()
   let now = Moment.now()
   let deadline = kad.autoModePolicy.observe(reachability, now).valueOr:
     return
 
   if deadline <= now:
-    await kad.applyPendingMode(now)
+    await kad.setMode(not kad.isServer, now)
     return
 
-  kad.modeTimer = kad.runModeTimer(deadline)
+  kad.armModeTimer(deadline)
 
 proc enableAutoMode*(
     kad: KadDHT, current: CurrentReachability, config = AutoModeConfig.init()
@@ -535,7 +547,6 @@ proc enableAutoMode*(
       confidence: Opt[float],
       dialBackAddr: Opt[MultiAddress],
   ) {.async: (raises: [CancelledError]).} =
-    await kad.cancelModeTimer()
     if not kad.started or kad.stopping:
       return
 
@@ -583,7 +594,10 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
   # drain loop below can then finish for good rather than chasing new arrivals.
   kad.stopping = true
   kad.started = false
-  await kad.cancelModeTimer()
+  if not kad.modeTimer.isNil():
+    let timer = kad.modeTimer
+    kad.modeTimer = nil
+    await noCancel timer.cancelAndWait()
 
   if not kad.bootstrapFut.isNil():
     await noCancel kad.bootstrapFut.cancelAndWait()

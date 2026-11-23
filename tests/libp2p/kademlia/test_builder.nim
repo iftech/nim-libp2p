@@ -10,6 +10,10 @@ import ../../../libp2p/services/[natservice, reachabilityobservers]
 import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 import ./utils.nim
 
+const ImmediateAutoMode = AutoModeConfig.init(
+  promotionWindow = ZeroDuration, demotionWindow = ZeroDuration, cooldown = ZeroDuration
+)
+
 proc buildKadSwitch(mode: KadMode): Switch {.raises: [LPError].} =
   makeStandardSwitchBuilder(TcpAutoAddress).withKademlia(mode = mode).build()
 
@@ -18,7 +22,7 @@ proc buildAutoKadSwitch(): Switch {.raises: [LPError].} =
   makeStandardSwitchBuilder(TcpAutoAddress)
     .withAutonat()
     .withNAT(autonatConfig(AutonatV1, Opt.some(1.seconds)))
-    .withKademlia(mode = KadMode.Auto)
+    .withKademlia(mode = KadMode.Auto, autoMode = ImmediateAutoMode)
     .build()
 
 proc buildAutonatPeer(): Switch {.raises: [LPError].} =
@@ -28,7 +32,7 @@ proc buildAutonatPeer(): Switch {.raises: [LPError].} =
 proc buildV2KadSwitch(mode: KadMode): Switch {.raises: [LPError].} =
   makeStandardSwitchBuilder(TcpAutoAddress)
     .withNAT(autonatConfig(AutonatV2))
-    .withKademlia(mode = mode)
+    .withKademlia(mode = mode, autoMode = ImmediateAutoMode)
     .build()
 
 type FixedVerdictVerifier = ref object of Verifier
@@ -88,6 +92,19 @@ suite "KadDHT Switch Builder":
       not buildKadSwitch(KadMode.Client).mountedKad().get().isServer
       # Auto serves nothing until autonat proves the node reachable.
       not buildKadSwitch(KadMode.Auto).mountedKad().get().isServer
+
+  test "withKademlia passes the auto mode windows to the policy":
+    let windows = AutoModeConfig.init(
+      promotionWindow = 2.seconds,
+      demotionWindow = 3.seconds,
+      cooldown = 4.seconds,
+      unknownDemotion = Opt.some(5.seconds),
+    )
+    let node = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withNAT(autonatConfig(AutonatV2))
+      .withKademlia(mode = KadMode.Auto, autoMode = windows)
+      .build()
+    check node.mountedKad().get().autoModePolicy.autoModeConfig == windows
 
   asyncTest "Auto mode starts serving once autonat reports the node reachable":
     let node = buildAutoKadSwitch()
