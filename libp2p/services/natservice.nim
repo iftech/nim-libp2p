@@ -481,7 +481,7 @@ proc setupAutonatV2(
       AutonatV2ServiceConfig.new()
     autonatV2Client = AutonatV2Client.new(self.rng)
     autonatV2Service =
-      AutonatV2Service.new(self.rng, client = autonatV2Client, config = serviceConfig)
+      AutonatV2Service.new(client = autonatV2Client, config = serviceConfig)
   autonatV2Client.setup(switch)
   switch.tryMount(autonatV2Client).isOkOr:
     return err(error, "NATService failed to mount AutonatV2Client")

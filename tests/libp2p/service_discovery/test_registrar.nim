@@ -164,11 +164,10 @@ suite "Service Discovery Registrar - waitingTime":
     check w.inFloatSecs >= expectedSecs - 1e-9
 
   test "waitingTime caps the formula at MaxLowerBoundFactor * advertExpiry":
-    let registrar = Registrar.new()
+    let registrar = Registrar.new(advertCacheCap = 10)
     let advertExpiry = 100.secs
-    let discoConfig = ServiceDiscoveryConfig.new(
-      advertExpiry = advertExpiry, safetyParam = 8.0, advertCacheCap = 10
-    )
+    let discoConfig =
+      ServiceDiscoveryConfig.new(advertExpiry = advertExpiry, safetyParam = 8.0)
     let serviceId = makeServiceId()
     let ips = makeAdvertisement().ipsFromAd()
     let now = Moment.now()
