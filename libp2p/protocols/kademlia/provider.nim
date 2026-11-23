@@ -430,8 +430,6 @@ method handleAddProvider*(
   let now = UnixTimestamp.now()
   var atCap = false
   for peer in validPeers:
-    let providerId = PeerId.init(peer.id.get()).valueOr:
-      continue
     let stored = StoredProvider(
       provider: peer,
       expiresAt: UnixTimestamp.after(kad.config.providerExpirationInterval),
@@ -443,11 +441,11 @@ method handleAddProvider*(
 
     case outcome
     of AddProviderOutcome.added, AddProviderOutcome.refreshed:
-      kad.admitPeers(@[PeerInfo(peerId: providerId, addrs: peer.addrs)])
+      kad.admitPeers(@[PeerInfo(peerId: stream.peerId, addrs: peer.addrs)])
     of AddProviderOutcome.keyFull, AddProviderOutcome.peerFull,
         AddProviderOutcome.storeFull:
       atCap = true
-      trace "Add-provider request rejected", reason = $outcome, peerId = providerId
+      trace "Add-provider request rejected", reason = $outcome, peerId = stream.peerId
 
   if kad.config.providerRejection:
     let status =
