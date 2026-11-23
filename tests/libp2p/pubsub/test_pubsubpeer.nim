@@ -324,6 +324,8 @@ suite "PubSubPeer send stream":
       TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
         added.topicRPC()
       recorder.violations == 0
+      # the written frame no longer counts toward the High count limit
+      peer.outboundQueue.topicCounts[MessagePriority.High] == 0
 
   asyncTest "topic stream writes a Medium priority message before an earlier Low priority one":
     let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)

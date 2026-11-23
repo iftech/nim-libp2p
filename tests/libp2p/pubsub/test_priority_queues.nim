@@ -559,6 +559,8 @@ suite "Priority queue byte budgets":
       peer.queuedBytes(Low) == 0
       peer.slowPeerPenalty == 0.0
       conn.pendingWrites.len == 2
+      # the evicted messages no longer count as evictable
+      peer.outboundQueue.evictableBytes == default(array[MessagePriority, int])
 
   asyncTest "High leaves queued medium traffic when evicting low traffic frees enough":
     let peer = createTestPeer(maxOutboundBytes = 10)
@@ -1007,6 +1009,25 @@ suite "Shared control and topic queue budgets":
         peer.queuedBytes(Low) == 3 # retained topic header
         peer.slowPeerPenalty == 0
 
+  asyncTest "High evicts the oldest queued topic frame and stops once it has room":
+    let peer = createTestPeer(maxOutboundBytes = 32)
+    let conn = peer.stallSendStream()
+    let recorder = TopicStreamsRecorder.new()
+    let topics = peer.topicState(recorder)
+    defer:
+      await topics.stop()
+      await conn.close()
+      await peer.stopTasks()
+    let newerSize = 12
+    # the dial stays pending, so both frames stay queued
+    topics.sendTopic("a", newSeq[byte](10), Low)
+    topics.sendTopic("a", newSeq[byte](newerSize), Low)
+    # 3 + 10 + 12 + 17 = 42 of 32 bytes, so 10 must be evicted
+    await peer.sendEncoded(newSeq[byte](17), High)
+    check:
+      # the older frame was evicted; the header and the newer frame stay queued
+      peer.queuedBytes(Low) == 3 + newerSize
+
   asyncTest "topic traffic shares control-stream eviction and overflow policy":
     let peer = createTestPeer(maxOutboundBytes = 32)
     let conn = peer.stallSendStream()
@@ -1050,6 +1071,29 @@ suite "Shared control and topic queue budgets":
         check peer.slowPeerPenalty == 1
         check peer.queuedBytes() == (if topicFirst: 5 else: 2)
 
+  asyncTest "Medium evicts no queued Low traffic when a topic frame fills the Medium queue":
+    let peer = createTestPeer(maxMedium = 1, maxOutboundBytes = 32)
+    let conn = peer.stallSendStream()
+    let recorder = TopicStreamsRecorder.new()
+    let topics = peer.topicState(recorder)
+    defer:
+      await topics.stop()
+      await conn.close()
+      await peer.stopTasks()
+    let lowSize = 25
+    await peer.sendEncoded(newSeq[byte](1), High)
+    # the topic frame fills the Medium queue
+    topics.sendTopic("a", newSeq[byte](1), Medium)
+    # the worker waits for the pending high write, so the low message stays queued
+    await peer.sendEncoded(newSeq[byte](lowSize), Low)
+    # evicting would make room, but the Medium queue is full
+    await peer.sendEncoded(newSeq[byte](3), Medium)
+    check:
+      # the low message stays queued
+      peer.queuedBytes(Low) == lowSize
+      # the new medium message was dropped with a penalty
+      peer.slowPeerPenalty == 1
+
   asyncTest "idle topic frames retain their priority and leave High slots available":
     for priority in [Medium, Low]:
       let disconnected = new bool
@@ -1077,6 +1121,7 @@ suite "Shared control and topic queue budgets":
         peer.queuedBytes(High) == 13
         peer.queuedBytes(priority) == 3 # retained header after frame eviction
         peer.outboundQueue.topicCounts[priority] == 0
+        peer.outboundQueue.evictableBytes[priority] == 0
 
   asyncTest "idle topic frames respect the non-High byte budget":
     for priority in [Medium, Low]:
