@@ -13,11 +13,10 @@
 ## - ``getProviders`` returns the providers of a key in no fixed order.
 ## - ``err`` means the backend failed. The core logs it and treats the call as "not stored" or "not found".
 ## - A ``limit`` below 1 returns no entries.
-## - A method must not block the chronos event loop. Slow I/O goes through ``await``.
-## - A method is atomic: concurrent calls never interleave a check and its write.
+## - A method is synchronous and must not block for long: ``KadDHT`` calls it on the chronos event loop.
+## - A method is atomic: a check and its write run in one call, so no other write lands between them.
 ## - The application opens and closes the store. ``KadDHT`` does not.
 
-import chronos
 import ../../[peerid, results]
 import ./[key_value, protobuf, types]
 
@@ -39,81 +38,63 @@ type
     storeFull
       ## the store holds its total cap of live providers and none expires before the new one
 
-  KadStoreLimits* = object
-    maxValues*: Opt[int]
-    maxProviders*: Opt[int]
-    maxProvided*: Opt[int]
-    maxProviderRecordsPerPeer*: Opt[int]
-
-  KadStore* = ref object of RootObj
-
 method getValue*(
     store: KadStore, key: RecordKey, now: UnixTimestamp
-): Future[LPResult[Opt[StoredValue]]] {.
-    async: (raises: [CancelledError]), base, gcsafe
-.} =
+): LPResult[Opt[StoredValue]] {.base, gcsafe, raises: [].} =
   raiseAssert "[KadStore.getValue] abstract method not implemented!"
 
 method putValue*(
     store: KadStore, value: StoredValue, now: UnixTimestamp
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), base, gcsafe.} =
+): LPResult[bool] {.base, gcsafe, raises: [].} =
   ## Inserts or replaces the value of ``value.key``. ``false`` when live values fill the store.
   raiseAssert "[KadStore.putValue] abstract method not implemented!"
 
 method delValue*(
     store: KadStore, key: RecordKey
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), base, gcsafe.} =
+): LPResult[void] {.base, gcsafe, raises: [].} =
   raiseAssert "[KadStore.delValue] abstract method not implemented!"
 
 method listValues*(
     store: KadStore, after: Opt[RecordKey], now: UnixTimestamp, limit: int
-): Future[LPResult[seq[StoredValue]]] {.
-    async: (raises: [CancelledError]), base, gcsafe
-.} =
+): LPResult[seq[StoredValue]] {.base, gcsafe, raises: [].} =
   ## Keyset paging in ``Key`` byte order. ``after`` is exclusive. Deletes the expired values.
   raiseAssert "[KadStore.listValues] abstract method not implemented!"
 
 method addProvider*(
     store: KadStore, key: Key, p: StoredProvider, now: UnixTimestamp, maxPerKey: int
-): Future[LPResult[AddProviderOutcome]] {.
-    async: (raises: [CancelledError]), base, gcsafe
-.} =
+): LPResult[AddProviderOutcome] {.base, gcsafe, raises: [].} =
   ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey``, the cap per peer or the total cap.
   ## An id that is missing or is not a ``PeerId`` is ``err``.
   raiseAssert "[KadStore.addProvider] abstract method not implemented!"
 
 method getProviders*(
     store: KadStore, key: Key, now: UnixTimestamp, limit: int
-): Future[LPResult[seq[StoredProvider]]] {.
-    async: (raises: [CancelledError]), base, gcsafe
-.} =
+): LPResult[seq[StoredProvider]] {.base, gcsafe, raises: [].} =
   raiseAssert "[KadStore.getProviders] abstract method not implemented!"
 
 method removeProvider*(
     store: KadStore, key: Key, peerId: PeerId
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), base, gcsafe.} =
+): LPResult[void] {.base, gcsafe, raises: [].} =
   raiseAssert "[KadStore.removeProvider] abstract method not implemented!"
 
 method addProvided*(
     store: KadStore, key: ProvidedKey
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), base, gcsafe.} =
+): LPResult[bool] {.base, gcsafe, raises: [].} =
   ## Stores or refreshes the key and returns ``true``. A full store evicts the key provided least recently; a re-add of a stored key refreshes its position. ``false`` when the cap is below 1.
   raiseAssert "[KadStore.addProvided] abstract method not implemented!"
 
 method delProvided*(
     store: KadStore, key: ProvidedKey
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), base, gcsafe.} =
+): LPResult[void] {.base, gcsafe, raises: [].} =
   raiseAssert "[KadStore.delProvided] abstract method not implemented!"
 
 method hasProvided*(
     store: KadStore, key: ProvidedKey
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), base, gcsafe.} =
+): LPResult[bool] {.base, gcsafe, raises: [].} =
   raiseAssert "[KadStore.hasProvided] abstract method not implemented!"
 
 method listProvided*(
     store: KadStore, after: Opt[ProvidedKey], limit: int
-): Future[LPResult[seq[ProvidedKey]]] {.
-    async: (raises: [CancelledError]), base, gcsafe
-.} =
+): LPResult[seq[ProvidedKey]] {.base, gcsafe, raises: [].} =
   ## Keyset paging in byte order. ``after`` is exclusive.
   raiseAssert "[KadStore.listProvided] abstract method not implemented!"

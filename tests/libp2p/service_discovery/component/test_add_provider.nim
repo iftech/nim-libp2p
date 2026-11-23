@@ -5,6 +5,7 @@
 import chronos
 import ../../../../libp2p/protocols/kademlia
 import ../../../tools/[lifecycle, unittest]
+import ../../kademlia/utils as kad_utils
 import ../utils
 
 suite "Service Discovery Component - Add Provider":
@@ -19,5 +20,5 @@ suite "Service Discovery Component - Add Provider":
     await nodes[0].startProviding(nodes[1].rtable.selfId.toCid())
 
     checkUntilTimeout:
-      nodes[1].providerManager.providerRecords.len == 1
-      nodes[0].providerManager.providedKeys.len == 1
+      nodes[1].providerCount() == 1
+      nodes[0].providedCount() == 1

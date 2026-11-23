@@ -5,11 +5,13 @@
 
 import std/sequtils
 import chronos, results
+import ../../../../libp2p/protocols/pubsub/pubsubpeer
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/[bridgestream, bufferstream]
 import ../../../tools/[unittest, bufferstream, crypto, metrics_utils]
 import ../converters
+import ../peer_helpers
 import ./extension_recording
 
 const topic = "foobar"
@@ -123,9 +125,12 @@ suite "GossipSub topic stream lifecycle":
     checkTrackers()
 
   asyncTest "independent topic writers, replacement, and bounded queue":
+    let peer = newQueuePeer(maxOutboundQueueBytes = 128)
+    defer:
+      await peer.stopTasks()
     let recorder = TopicStreamsRecorder.new()
     let state = TopicStreams.new(
-      recorder, TopicStreamsConfig(maxOutgoingStreams: 3, maxQueuedBytes: 128)
+      recorder, TopicStreamsConfig(maxOutgoingStreams: 3), queue = peer.outboundQueue
     )
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
@@ -134,8 +139,8 @@ suite "GossipSub topic stream lifecycle":
       await recorder.closeOutgoingStreams()
 
     let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
-    state.sendTopic("a", payload, true)
-    state.sendTopic("b", payload, true)
+    state.sendTopic("a", payload, Medium)
+    state.sendTopic("b", payload, Medium)
     check recorder.outgoingStreams.len == 2
 
     # Reading b does not depend on consuming a's application payload.
@@ -144,20 +149,20 @@ suite "GossipSub topic stream lifecycle":
     check TopicRPCHeader.decode(headerB).get().topic.get() == "b"
     check TopicRPC.decode(payloadB).isOk
 
-    state.sendTopic("c", payload, true)
+    state.sendTopic("c", payload, Medium)
     check recorder.outgoingStreams.len == 3
     let rejected =
       metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"])
-    state.sendTopic("d", payload, true)
+    state.sendTopic("d", payload, Medium)
     check:
       recorder.outgoingStreams.len == 3
       metricValue(libp2p_gossipsub_topic_stream_frames_rejected, ["stream_limit"]) ==
         rejected + 1
-    state.sendTopic("a", newSeq[byte](129), true)
-    check recorder.penalties == 0
+    state.sendTopic("a", newSeq[byte](129), Medium)
+    check peer.slowPeerPenalty == 1.0
 
     await state.closeTopic("a")
-    state.sendTopic("a", payload, true)
+    state.sendTopic("a", payload, Medium)
     check recorder.outgoingStreams.len == 4
     let headerA = await recorder.outgoingStreams[3].readLp(1024)
     let payloadA = await recorder.outgoingStreams[3].readLp(1024)
@@ -185,7 +190,7 @@ suite "GossipSub topic stream lifecycle":
         await remote.close()
       await recorder.closeOutgoingStreams()
 
-    state.sendTopic("outgoing", @[1.byte], true)
+    state.sendTopic("outgoing", @[1.byte], Medium)
     for i in 0 .. 3:
       let (remote, local) = bridgedConnections()
       remotes.add(remote)
@@ -203,26 +208,29 @@ suite "GossipSub topic stream lifecycle":
   asyncTest "closing a pending writer cancels its dial and releases queue capacity":
     let recorder = TopicStreamsRecorder.new()
     let payload = Message(data: @[1.byte], topic: "a").topicRPC().encode()
+    let peer = newQueuePeer(
+      maxOutboundQueueBytes = TopicRPCHeader(topic: "a").encode().len + payload.len
+    )
+    defer:
+      await peer.stopTasks()
     let state = TopicStreams.new(
-      TopicStreamsConfig(
-        maxQueuedBytes: TopicRPCHeader(topic: "a").encode().len + payload.len,
-        maxQueuedMessages: 1,
-      ),
+      TopicStreamsConfig(),
       1024,
       recorder.pendingDial(),
       recorder.receive(),
       recorder.violation(),
       recorder.penalize(),
+      peer.outboundQueue,
     )
     defer:
       await state.stop()
     check state.negotiate(makeRPC(ControlExtensions(topicStreams: true)))
 
-    state.sendTopic("a", payload, true)
+    state.sendTopic("a", payload, Medium)
     await state.closeTopic("a")
     check recorder.cancelledDials == 1
 
-    state.sendTopic("b", payload, true)
+    state.sendTopic("b", payload, Medium)
     await state.stop()
     check:
       recorder.cancelledDials == 2

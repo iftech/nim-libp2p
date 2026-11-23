@@ -47,6 +47,8 @@ const
   ConcurrentUpgrades* = 32
   MaxRejectedConnectionCloses = ConcurrentUpgrades
   UpgradeTimeout* = 30.seconds
+  IncomingUpgradeTimeout* = 10.seconds
+  MaxPendingUpgradesPerSource = 8
 
 # a Switch built field by field, as TorSwitch and SwitchStub do, must copy it
 const MissingAddressManager = "switch has no AddressManager"
@@ -60,6 +62,8 @@ type
     ms*: MultistreamSelect
     acceptFuts: seq[Future[void]]
     upgradeFuts: seq[Future[void]]
+    pendingUpgrades: int
+    pendingUpgradesBySource: Table[string, int]
     rejectedConnCloseFuts: seq[Future[void]]
     dialer*: Dialer
     peerStore*: PeerStore
@@ -305,10 +309,10 @@ proc unmount*(s: Switch, proto: LPProtocol): bool =
   true
 
 proc upgrader(
-    switch: Switch, trans: Transport, conn: RawConn
+    switch: Switch, trans: Transport, conn: RawConn, observer: string
 ) {.async: (raises: [CancelledError, UpgradeError]).} =
   try:
-    let muxed = await trans.upgrade(conn, Opt.none(PeerId))
+    let muxed = await trans.upgrade(conn, Opt.none(PeerId)).wait(IncomingUpgradeTimeout)
     (await switch.connManager.storeMuxer(muxed)).onErrorRaise(UpgradeError)
     await switch.peerStore.identify(muxed, conn.transportDir)
     await switch.connManager.triggerPeerEvents(
@@ -319,17 +323,22 @@ proc upgrader(
     raise e
   except CatchableError as e:
     raise newException(UpgradeError, "catchable error upgrader: " & e.msg, e)
+  finally:
+    # Identify and application callbacks must remain within the pending budget.
+    switch.pendingUpgrades.dec()
+    if observer.len > 0:
+      switch.pendingUpgradesBySource.withValue(observer, pending):
+        pending[].dec()
+        if pending[] == 0:
+          switch.pendingUpgradesBySource.del(observer)
 
 proc upgradeMonitor(
-    switch: Switch, trans: Transport, conn: RawConn, upgrades: AsyncSemaphore
+    switch: Switch, trans: Transport, conn: RawConn, observer: string
 ) {.async: (raises: []).} =
-  var semAcquired = false
   var upgradeSuccessful = false
   let deadlineFut = sleepAsync(UpgradeTimeout)
   try:
-    await upgrades.acquire().wait(deadlineFut)
-    semAcquired = true
-    await switch.upgrader(trans, conn).wait(deadlineFut)
+    await switch.upgrader(trans, conn, observer).wait(deadlineFut)
     trace "Incoming connection upgrade completed", conn
     upgradeSuccessful = true
   except CancelledError:
@@ -344,16 +353,13 @@ proc upgradeMonitor(
     deadlineFut.cancelSoon()
     if (not upgradeSuccessful) and (not isNil(conn)):
       await conn.close()
-    if semAcquired:
-      try:
-        upgrades.release()
-      except AsyncSemaphoreError:
-        raiseAssert "semaphore released without acquire"
 
 proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
   ## switch accept loop, ran for every transport
   ##
-  let upgrades = newAsyncSemaphore(ConcurrentUpgrades)
+  # Keep pending handshakes below inbound capacity when the cap allows it.
+  let pendingLimit =
+    min(ConcurrentUpgrades, max(1, s.connManager.maxConnections(Direction.In) div 2))
 
   info "Transport connection acceptance started", addresses = transport.addrs
 
@@ -362,15 +368,36 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
     try:
       conn = await transport.accept()
 
-      let slot = s.connManager.tryGetIncomingSlot().valueOr:
-        debug "Incoming connection limit reached", conn
+      var observer = ""
+      conn.observedAddr.ifValue(address):
+        address.getIp().ifValue(ip):
+          case ip.family
+          of IpAddressFamily.IPv4:
+            observer = $ip.address_v4
+          of IpAddressFamily.IPv6:
+            # Rotating addresses within an IPv6 /56 must not bypass admission.
+            observer = $ip.address_v6[0 .. 6]
+      # Without an IP, only the global pending budget applies.
+      let slot =
+        if s.pendingUpgrades >= pendingLimit or (
+          observer.len > 0 and
+          s.pendingUpgradesBySource.getOrDefault(observer) >= MaxPendingUpgradesPerSource
+        ):
+          Opt.none(ConnectionSlot)
+        else:
+          s.connManager.tryGetIncomingSlot()
+      if slot.isNone:
+        debug "Incoming connection or pending upgrade limit reached", conn
         s.rejectedConnCloseFuts.trackFut(conn.close())
         s.connManager.triggerTrim()
         if s.rejectedConnCloseFuts.len >= MaxRejectedConnectionCloses:
           discard await one(s.rejectedConnCloseFuts)
         continue
 
-      slot.trackConnection(conn)
+      slot.get().trackConnection(conn)
+      s.pendingUpgrades.inc()
+      if observer.len > 0:
+        s.pendingUpgradesBySource.mgetOrPut(observer, 0).inc()
 
       # set the direction of this bottom level transport
       # in order to be able to consume this information in gossipsub if required
@@ -378,7 +405,7 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
       conn.transportDir = Direction.In
 
       trace "Transport connection accepted", conn
-      s.upgradeFuts.trackFut(s.upgradeMonitor(transport, conn, upgrades))
+      s.upgradeFuts.trackFut(s.upgradeMonitor(transport, conn, observer))
     except CancelledError:
       return
     except CatchableError as exc:
@@ -388,6 +415,8 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
       return
 
 when defined(libp2p_testing):
+  const PendingUpgradesPerSourceForTesting* = MaxPendingUpgradesPerSource
+
   proc acceptFuts*(s: Switch): seq[Future[void]] =
     s.acceptFuts
 

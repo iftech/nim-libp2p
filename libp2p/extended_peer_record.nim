@@ -67,7 +67,7 @@ proc payloadType*(T: typedesc[ExtendedPeerRecord]): seq[byte] =
 
 proc checkValid*(spr: SignedExtendedPeerRecord): Result[void, EnvelopeError] =
   if not spr.data.peerId.match(spr.envelope.publicKey):
-    err(EnvelopeInvalidSignature)
+    err(EnvelopeError.init(EnvelopeInvalidSignature, "peerId mismatch"))
   else:
     ok()
 

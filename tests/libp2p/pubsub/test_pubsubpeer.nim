@@ -257,7 +257,12 @@ suite "PubSubPeer send stream":
     peer.observers = new(seq[PubSubObserver])
     peer.observers[].add(PubSubObserver(onSend: onSend))
     peer.extensionsState.initTopicStreams(
-      peer.peerId, 1024, recorder.dial(), recorder.receive(), recorder.violation()
+      peer.peerId,
+      1024,
+      recorder.dial(),
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
     )
     defer:
       await peer.extensionsState.stopTopicStreams(peer.peerId)
@@ -290,7 +295,12 @@ suite "PubSubPeer send stream":
     peer.observers = new(seq[PubSubObserver])
     peer.observers[].add(PubSubObserver(onSend: onSend))
     peer.extensionsState.initTopicStreams(
-      peer.peerId, 1024, recorder.dial(), recorder.receive(), recorder.violation()
+      peer.peerId,
+      1024,
+      recorder.dial(),
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
     )
     defer:
       await peer.stopTasks()
@@ -330,7 +340,12 @@ suite "PubSubPeer send stream":
       return stream
 
     peer.extensionsState.initTopicStreams(
-      peer.peerId, 1024, heldDial, recorder.receive(), recorder.violation()
+      peer.peerId,
+      1024,
+      heldDial,
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
     )
     defer:
       await peer.stopTasks()
@@ -341,6 +356,8 @@ suite "PubSubPeer send stream":
     )
     let relayed = Message(topic: topic, data: @[1.byte])
     let published = Message(topic: topic, data: @[2.byte])
+    # A pending control write prevents empty-queue promotion of the first topic frame.
+    await peer.sendEncoded(@[0.byte], MessagePriority.High)
     # the Low priority message is queued first, the Medium one second
     peer.sendResponse(RPCMsg.withMessages(relayed), false, MessagePriority.Low)
     peer.send(RPCMsg.withMessages(published), false, MessagePriority.Medium)

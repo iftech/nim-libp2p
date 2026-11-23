@@ -45,9 +45,11 @@ pkgs.stdenv.mkDerivation {
     # ffiThreadExitTimeoutMs: bound the FFI thread's graceful-shutdown wait; the
     # 1500ms default is too tight for libp2pDestroy's switch.stop() over many conns.
     # RfcUtcTime: libc localtime() writes one static buffer for all FFI threads.
+    # EventQueueCapacity: headroom for gossipsub bursts; cbind drops events past it.
     commonArgs="--noNimblePath ${cbindPathArgs} ${pathArgs} \
       --threads:on --opt:size --noMain --mm:refc --d:metrics \
       -d:ffiThreadExitTimeoutMs=5000 -d:chronicles_timestamps=RfcUtcTime \
+      -d:EventQueueCapacity=4096 \
       --nimMainPrefix:liblibp2p --nimcache:$NIMCACHE"
 
     echo "== Building FFI library (dynamic/shared) =="

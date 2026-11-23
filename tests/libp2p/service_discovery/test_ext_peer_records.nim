@@ -77,7 +77,8 @@ suite "Signed Extended Peer Record":
 
     check:
       encoded.len > 0
-      SignedExtendedPeerRecord.decode(encoded).error == EnvelopeInvalidSignature
+      SignedExtendedPeerRecord.decode(encoded).error ==
+        EnvelopeError.init(EnvelopeInvalidSignature, "peerId mismatch")
 
   test "Decode fails if some addresses are invalid":
     let
@@ -132,3 +133,15 @@ suite "Signed Extended Peer Record":
     check:
       decoded.isOk() == true
       decoded.get().services.len == 0
+
+suite "Signed record compatibility":
+  test "peer and extended records can be decoded interchangeably":
+    let key = PrivateKey.random(rng()).get()
+    let peer = PeerId.init(key).get()
+    let extended = SignedExtendedPeerRecord
+      .init(key, ExtendedPeerRecord.init(peer, @[], 42, @[ServiceInfo(id: "test")]))
+      .get()
+      .encode()
+    let ordinary = SignedPeerRecord.init(key, PeerRecord.init(peer, @[])).get().encode()
+    check SignedPeerRecord.decode(extended).isOk()
+    check SignedExtendedPeerRecord.decode(ordinary).isOk()
