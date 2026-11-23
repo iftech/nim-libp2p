@@ -10,10 +10,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/root/.nimble/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates build-essential git make python3 \
+      ca-certificates build-essential curl git make python3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN nimble install "nimble@#${NIMBLE_COMMIT}" -y
+
+# Same nph as the linters workflow, so `make format` works offline.
+ARG NPH_VERSION=0.7.0
+ARG NPH_SHA256=1a01337e704e18471cf5d584547ff82ce92cb54df1e44b25c5027c73cc67479f
+RUN curl -fsSL -o /tmp/nph.tgz \
+      "https://github.com/arnetheduck/nph/releases/download/v${NPH_VERSION}/nph-linux_x64.tar.gz" \
+    && echo "${NPH_SHA256}  /tmp/nph.tgz" | sha256sum -c - \
+    && tar xzf /tmp/nph.tgz -C /usr/local/bin nph \
+    && rm /tmp/nph.tgz
 
 # scanner contract: the checkout lives inside the image, at /src
 COPY . /src
