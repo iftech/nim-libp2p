@@ -281,12 +281,7 @@ proc notifyPeerFound(service: MdnsService, switch: Switch, peer: MdnsPeer) =
 
   service.callbacks.keepItIf(not it.finished())
   if service.callbacks.len < service.maxPendingCallbacks:
-    let callback = service.onPeerFound(switch, peer)
-    callback.addCallback proc(udata: pointer) {.gcsafe, raises: [].} =
-      let completed = FutureBase(callback)
-      if not completed.cancelled() and completed.failed():
-        warn "mDNS discovery callback failed", err = completed.error().msg
-    service.callbacks.add(callback)
+    service.callbacks.add(service.onPeerFound(switch, peer))
   elif service.callbackLimitWarnings.allowLog():
     warn "mDNS discovery callback skipped: pending callback limit reached",
       peerId = peer.peerId, limit = service.maxPendingCallbacks

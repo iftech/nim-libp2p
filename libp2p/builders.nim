@@ -182,13 +182,7 @@ proc withMdns*(
     queryInterval: Duration = MdnsDefaultQueryInterval,
     maxPendingCallbacks: int = MdnsDefaultMaxPendingCallbacks,
 ): SwitchBuilder =
-  ## Enable mDNS and optionally handle discovered peers. The query interval must
-  ## be between MdnsMinQueryInterval and MdnsMaxQueryInterval, inclusive.
-  ## Discovered addresses are filtered by the configured address policy and
-  ## stored in the switch's AddressBook with AddressConfidence.Low, even when
-  ## `onPeerFound` is nil. A nil callback does not initiate connections.
-  ## Async callback futures are cancelled when the service stops.
-  ## Discoveries beyond `maxPendingCallbacks` are stored without invoking the callback.
+  ## Enable mDNS and optionally handle discovered peers.
   if enabled:
     doAssert queryInterval >= MdnsMinQueryInterval and
       queryInterval <= MdnsMaxQueryInterval, "mDNS query interval is out of range"
