@@ -1,0 +1,643 @@
+{
+  "task_id": "20261123T002054-cd9688",
+  "org": "iftech",
+  "repo": "nim-libp2p",
+  "domain": "spec",
+  "domains": [
+    "spec"
+  ],
+  "branch": "bork/proof/20261123T002054-cd9688",
+  "unit": [
+    "libp2p/protocols/service_discovery.nim",
+    "libp2p/protocols/service_discovery/types.nim",
+    "libp2p/protocols/service_discovery/connection.nim",
+    "libp2p/protocols/service_discovery/dial_backoff.nim",
+    "libp2p/extended_peer_record.nim"
+  ],
+  "workflow": "audit-spec",
+  "input": {
+    "path": "inflight/20261123T002054-cd9688.input.json",
+    "sha256": "04c3463fbf078af26751b676941886d03541ef412cabbaf2f03862b5b1ec2192"
+  },
+  "environment": {
+    "producer": "claude/claude-fable-5-2",
+    "verifier": "codex",
+    "reporter": "claude/claude-fable-5-2",
+    "claude_version": "2.1.329 (Claude Code)",
+    "codex_version": "codex-cli 0.171.0",
+    "image_id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "host": "Skritek"
+  },
+  "base": "master",
+  "base_sha": "e174279123abb34670f898f0fefabfec0674a101",
+  "generated": "2026-11-23T00:50:28Z",
+  "producer": "claude/claude-fable-5-2",
+  "verifier": "codex",
+  "reporter": "claude/claude-fable-5-2",
+  "proof_changes": {
+    "reverted": [],
+    "unit": [],
+    "other": []
+  },
+  "gate_sha": "493f52c778286333d6e43eda4350eec5d0e4f0bf",
+  "gate_base": "e174279123abb34670f898f0fefabfec0674a101",
+  "gate_setup": {
+    "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test service_discovery; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+    "exit": 2,
+    "clean": false
+  },
+  "gate_env": {
+    "tools": {
+      "node": "v22.23.4",
+      "npm": "10.9.9",
+      "pnpm": "12.21.0",
+      "yarn": "1.22.22",
+      "python3": "Python 3.14.4",
+      "pip": "pip 25.1.1 from /usr/lib/python3/dist-packages/pip (python 3.14)",
+      "go": "go version go1.23.4 linux/arm64",
+      "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+      "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "uv": "uv 0.13.5 (aarch64-unknown-linux-gnu)",
+      "git": "git version 2.53.0"
+    }
+  },
+  "image": {
+    "id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "source": "12c5e6288ddb645fcb44d35b601da5fbfead511d1919f26eca75db329cb5ef88",
+    "name": "bork/worker:latest"
+  },
+  "findings_count": 7,
+  "confirmed_count": 4,
+  "findings": [
+    {
+      "id": "20261123T002054-cd9688/1",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "XPR ads are signed in envelope domain libp2p-peer-record, not libp2p-routing-state",
+      "claim": "ExtendedPeerRecord.payloadDomain returns \"libp2p-peer-record\". The spec's VERIFY_ADVERTISEMENT asserts envelope.domain == \"libp2p-routing-state\". The domain is part of the signed buffer, so every advertisement this node builds fails verification in the spec's domain, and every advertisement signed in the spec's domain is rejected here as an invalid signature, on REGISTER and on GET_ADS alike.",
+      "fingerprint": "sha256:f765f3012eb93b00ba227ae8b04f45d543b024163bb14b4725a3a5e7c4ca49ba",
+      "handle": "F-f765f301",
+      "fp_version": 1,
+      "subject": "RPC Messages / Advertisement Signature Verification: assert(envelope.domain == \"libp2p-routing-state\")",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. libp2p/extended_peer_record.nim:62-63: `proc payloadDomain*(T: typedesc[ExtendedPeerRecord]): string = $multiCodec(\"libp2p-peer-record\")` - the string is \"libp2p-peer-record\".\n2. libp2p/signed_envelope.nim (outside the unit) builds the signed buffer as varint-prefixed domain || payloadType || payload (getSignatureBuffer), signs it in Envelope.init and checks it in Envelope.decode / verify with `T.payloadDomain`. The domain is therefore bound into every advertisement signature.\n3. `Advertisement = SignedExtendedPeerRecord` (types.nim:58); registrar.isValidAdvertisement and discoverer.validAds both call Advertisement.decode, so both verification sites of the spec use this domain.\n4. Spec, Advertisement Signature Verification: `assert(envelope.domain == \"libp2p-routing-state\")`.\n\nThe existing test 'peer and extended records can be decoded interchangeably' (tests/libp2p/service_discovery/test_ext_peer_records.nim:137) shows the shared domain with PeerRecord is deliberate, so this may be a place where the document should change instead (go-libp2p signs routing records in \"libp2p-peer-record\"); against the spec as written it is a contradiction.\n\nProof: tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim, three checks written from the spec sentence. Ran `make test test_20261123T002054_cd9688_1 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`; exit 2, output:\n\n  test_20261123T002054_cd9688_1.nim(26, 45): Check failed: ExtendedPeerRecord.payloadDomain() == SpecEnvelopeDomain\n  [FAILED ] the XPR envelope domain is libp2p-routing-state\n  test_20261123T002054_cd9688_1.nim(30, 28): Check failed: ad.envelope.verify(SpecEnvelopeDomain)\n  [FAILED ] an advertisement built by this node verifies in the spec's domain\n  test_20261123T002054_cd9688_1.nim(52, 54): Check failed: Advertisement.decode(envelope.encode()).isOk()\n  [FAILED ] an advertisement signed in the spec's domain is accepted\n  [Summary] 4 tests run (0.01s): 1 OK, 3 FAILED, 0 SKIPPED\n\nIn the third check the envelope itself verifies in the spec's domain (that check passes); only this implementation's decode rejects it.\n\nNo exploit: the impact is non-interoperability with a spec-following peer, and no second implementation is available in the container.",
+      "fix_hint": "Decide which side is authoritative. To follow the spec, make ExtendedPeerRecord.payloadDomain return \"libp2p-routing-state\" (this breaks the deliberate interchangeability with SignedPeerRecord and every stored XPR, so it needs a network-wide switch). If the shared libp2p-peer-record domain is intended, change the spec's VERIFY_ADVERTISEMENT pseudocode. tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim fails until the two agree.",
+      "found_by": "claude",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic: every advertisement built or verified by this implementation.",
+        "scope": "REGISTER validation and GET_ADS advertisement verification against any implementation that follows the spec's domain; nim-libp2p nodes interoperate with each other."
+      },
+      "location": [
+        {
+          "file": "libp2p/extended_peer_record.nim",
+          "lines": [
+            62,
+            63
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim",
+        "cmd": "make test test_20261123T002054_cd9688_1 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=test_20261123T002054_cd9688_1 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Spec proof 20261123T002054-cd9688/1 - XPR envelope domain\n  [Test   ]           the XPR envelope domain is libp2p-routing-state\n===============================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/1 - XPR envelope domain::the XPR envelope domain is libp2p-routing-state'\n-----------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim(26, 45): Check failed: ExtendedPeerRecord.payloadDomain() == SpecEnvelopeDomain\n\n  [FAILED ] (  0.00s) the XPR envelope domain is libp2p-routing-state\u001b[0m\n  [Test   ]           an advertisement built by this node verifies in the spec's domain\n=================================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/1 - XPR envelope domain::an advertisement built by this node verifies in the spec'\"'\"'s domain'\n-----------------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim(30, 28): Check failed: ad.envelope.verify(SpecEnvelopeDomain)\n\n  [FAILED ] (  0.00s) an advertisement built by this node verifies in the spec's domain\u001b[0m\n  [Test   ]           an advertisement signed in the spec's domain is accepted\n========================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/1 - XPR envelope domain::an advertisement signed in the spec'\"'\"'s domain is accepted'\n--------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim(52, 54): Check failed: Advertisement.decode(envelope.encode()).isOk()\n\n  [FAILED ] (  0.01s) an advertisement signed in the spec's domain is accepted\u001b[0m\n(0.01s)   Spec proof 20261123T002054-cd9688/1 - XPR envelope domain\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 4 tests run (0.01s): 1 OK, 3 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) the XPR envelope domain is libp2p-routing-state\u001b[0m\n  [FAILED ] (  0.00s) an advertisement built by this node verifies in the spec's domain\u001b[0m\n  [FAILED ] (  0.01s) an advertisement signed in the spec's domain is accepted\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "confirmed",
+          "note": "Read the source at scanned base e174279123abb34670f898f0fefabfec0674a101. The proof checkout is 34d535292685b6a6b4ade510e2f740c375a9c2da and adds three tests. The full-mode baseline has no carry rows or replay results. ExtendedPeerRecord.payloadDomain at extended_peer_record.nim:62–63 selects libp2p-peer-record. SignedPayload.init and decode both supply it to signed_envelope.nim, where getSignatureBuffer incorporates the domain in the authenticated bytes. The spec requires libp2p-routing-state, so the two signing inputs differ even for identical payload bytes. Peer ID binding follows from the verified envelope key matching the decoded XPR peer ID at extended_peer_record.nim:68–72. The two roles call the shared decoder and compare the requested key via advertisesService, which hashes each service ID with SHA-256. Address fields hold validated multiaddresses. Also ran the focused test from the compiled service_discovery target and observed that the XPR envelope domain assertion failed."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T002054-cd9688/1.patch",
+        "sha256": "e9728e0dc0a7f054ff6387f5b4261ba095f7e89fc09525f6b942b366c0a79649",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T002054-cd9688/2",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "XPR ads use envelope payload type 0x0301, not /libp2p/extensible-peer-record/",
+      "claim": "ExtendedPeerRecord.payloadType returns the two bytes 0x03 0x01, the type of an ordinary libp2p peer record. The spec's VERIFY_ADVERTISEMENT asserts envelope.payload_type == \"/libp2p/extensible-peer-record/\". Advertisements built here carry the wrong type, advertisements carrying the spec's type are rejected with EnvelopeWrongType, and a plain signed peer record passes the type check the spec uses to tell an advertisement apart.",
+      "fingerprint": "sha256:fe66cfe4c718d2e82fa0641a722ebb77c463dfa312c6a01cfd12eeb9b918ac05",
+      "handle": "F-fe66cfe4",
+      "fp_version": 1,
+      "subject": "RPC Messages / Advertisement Signature Verification: assert(envelope.payload_type == \"/libp2p/extensible-peer-record/\")",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. libp2p/extended_peer_record.nim:65-66: `proc payloadType*(T: typedesc[ExtendedPeerRecord]): seq[byte] = @[(byte) 0x03, (byte) 0x01]` - identical to PeerRecord.payloadType in libp2p/routing_record.nim:58-59.\n2. libp2p/signed_envelope.nim (outside the unit): SignedPayload.init writes T.payloadType into the envelope and signs over it; fromVerifiedEnvelope returns EnvelopeWrongType when `envelope.payloadType != T.payloadType`.\n3. Spec, Advertisement Signature Verification: `assert(envelope.payload_type == \"/libp2p/extensible-peer-record/\")`.\n\nThe existing test 'peer and extended records can be decoded interchangeably' (test_ext_peer_records.nim:137) asserts the shared type on purpose, so the document may be the side to change; against the spec as written the code contradicts it.\n\nProof: tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim. Ran `make test test_20261123T002054_cd9688_2 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`; exit 2, output:\n\n  test_20261123T002054_cd9688_2.nim(29, 43): Check failed: ExtendedPeerRecord.payloadType() == SpecPayloadType.toBytes()\n  [FAILED ] the XPR payload type is /libp2p/extensible-peer-record/\n  test_20261123T002054_cd9688_2.nim(33, 34): Check failed: ad.envelope.payloadType == SpecPayloadType.toBytes()\n  [FAILED ] an advertisement built by this node carries the spec's payload type\n  test_20261123T002054_cd9688_2.nim(54, 54): Check failed: Advertisement.decode(envelope.encode()).isOk()\n  [FAILED ] an advertisement carrying the spec's payload type is accepted\n  test_20261123T002054_cd9688_2.nim(66, 61): Check failed: Advertisement.decode(ordinary.encode().get()).isErr()\n  [FAILED ] an envelope that is not an extensible peer record is not an advertisement\n  [Summary] 5 tests run (0.01s): 1 OK, 4 FAILED, 0 SKIPPED\n\nThe last check shows a SignedPeerRecord decoding as an Advertisement. It carries no services, so the later service check (advertisesService) still drops it for REGISTER and GET_ADS; the effect of that part is confined to the type assert.\n\nNo exploit: the impact is non-interoperability with a spec-following peer, and no second implementation is available in the container.",
+      "fix_hint": "Decide which side is authoritative. To follow the spec, make ExtendedPeerRecord.payloadType return the bytes of \"/libp2p/extensible-peer-record/\" (and drop the interchangeable-decoding test), coordinated network-wide since the type is signed. If sharing 0x0301 with PeerRecord is intended, change the spec's pseudocode. tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim fails until the two agree.",
+      "found_by": "claude",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic: every advertisement built or verified by this implementation.",
+        "scope": "REGISTER validation and GET_ADS advertisement verification against any implementation that follows the spec's payload type; nim-libp2p nodes interoperate with each other."
+      },
+      "location": [
+        {
+          "file": "libp2p/extended_peer_record.nim",
+          "lines": [
+            65,
+            66
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim",
+        "cmd": "make test test_20261123T002054_cd9688_2 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=test_20261123T002054_cd9688_2 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Spec proof 20261123T002054-cd9688/2 - XPR envelope payload type\n  [Test   ]           the XPR payload type is /libp2p/extensible-peer-record/\n=======================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/2 - XPR envelope payload type::the XPR payload type is /libp2p/extensible-peer-record/'\n-------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim(29, 43): Check failed: ExtendedPeerRecord.payloadType() == SpecPayloadType.toBytes()\n\n  [FAILED ] (  0.00s) the XPR payload type is /libp2p/extensible-peer-record/\u001b[0m\n  [Test   ]           an advertisement built by this node carries the spec's payload type\n===================================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/2 - XPR envelope payload type::an advertisement built by this node carries the spec'\"'\"'s payload type'\n-------------------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim(33, 34): Check failed: ad.envelope.payloadType == SpecPayloadType.toBytes()\n\n  [FAILED ] (  0.00s) an advertisement built by this node carries the spec's payload type\u001b[0m\n  [Test   ]           an advertisement carrying the spec's payload type is accepted\n=============================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/2 - XPR envelope payload type::an advertisement carrying the spec'\"'\"'s payload type is accepted'\n-------------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim(54, 54): Check failed: Advertisement.decode(envelope.encode()).isOk()\n\n  [FAILED ] (  0.01s) an advertisement carrying the spec's payload type is accepted\u001b[0m\n  [Test   ]           an envelope that is not an extensible peer record is not an advertisement\n=========================================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/2 - XPR envelope payload type::an envelope that is not an extensible peer record is not an advertisement'\n-------------------------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim(66, 61): Check failed: Advertisement.decode(ordinary.encode().get()).isErr()\n\n  [FAILED ] (  0.01s) an envelope that is not an extensible peer record is not an advertisement\u001b[0m\n(0.01s)   Spec proof 20261123T002054-cd9688/2 - XPR envelope payload type\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 5 tests run (0.01s): 1 OK, 4 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) the XPR payload type is /libp2p/extensible-peer-record/\u001b[0m\n  [FAILED ] (  0.00s) an advertisement built by this node carries the spec's payload type\u001b[0m\n  [FAILED ] (  0.01s) an advertisement carrying the spec's payload type is accepted\u001b[0m\n  [FAILED ] (  0.01s) an envelope that is not an extensible peer record is not an advertisement\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "confirmed",
+          "note": "Read extended_peer_record.nim:65–66 and signed_envelope.nim:100–143. Initialization puts 03 01 into the envelope and fromVerifiedEnvelope compares the incoming bytes against that exact pair. The spec's payload type is the byte string /libp2p/extensible-peer-record/. A plain peer record can pass the shared type check and still fail the subsequent requested-service check. Also ran the focused test from the compiled service_discovery target and observed that the XPR payload type assertion failed."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T002054-cd9688/2.patch",
+        "sha256": "e9728e0dc0a7f054ff6387f5b4261ba095f7e89fc09525f6b942b366c0a79649",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T002054-cd9688/3",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "4096-byte reply read limit rejects GET_ADS responses carrying F_return valid ads",
+      "claim": "Every reply is read with readLp(ServiceDiscoveryMaxMsgSize = 4096), while one advertisement may be up to MaxXPRSize = 1024 bytes and a GET_ADS response carries up to F_return = 10 of them plus closerPeers. A registrar holding ten valid multi-address ads builds a response over 4096 bytes; the discoverer's read fails, it gets none of the ads, and it records the exchange as a dial failure against the registrar.",
+      "fingerprint": "sha256:6e44602b5d36af5030526fd3bbadfff7364347f71f0c55ab098294587564fc5e",
+      "handle": "F-6e44602b",
+      "fp_version": 1,
+      "subject": "RPC Messages / GET_ADS Response: getAds.advertisements REQUIRED, list of encoded advertisements (up to F_return = 10)",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. libp2p/protocols/service_discovery/types.nim:24: `ServiceDiscoveryMaxMsgSize* = 4096`.\n2. libp2p/protocols/service_discovery/connection.nim:78: `replyBuf = await stream.readLp(ServiceDiscoveryMaxMsgSize)`; on LPStreamError (lines 79-82) it calls recordDialFailure and returns an error. The same limit is on the inbound side at libp2p/protocols/service_discovery.nim:137.\n3. libp2p/extended_peer_record.nim:22: `MaxXPRSize* = 1024`; registrar.isValidAdvertisement admits any ad up to that size, and types.nim:210-216 `encode(ads, fReturn)` caps only the count, not the bytes. registrar.getAdvertisements (outside the unit) adds up to fReturn closerPeers on top. Ten admissible ads can therefore reach about 10 KiB, 2.5x the read limit; the limit is already exceeded at an average of roughly 400 bytes per ad.\n4. Spec, GET_ADS Response: `getAds.advertisements | REQUIRED | List of encoded advertisements (up to F_return = 10)`; the spec sets no message size limit.\n\nProof: tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim. Each ad has eight /dns4/.../tcp/443/wss addresses (by my estimate about 550 bytes encoded; not printed by the test), is built with SignedExtendedPeerRecord.build and passes isValid and the MaxXPRSize check. Ran `make test test_20261123T002054_cd9688_3 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`; exit 2, output:\n\n  test_20261123T002054_cd9688_3.nim(71, 32): Check failed: response.encode().len <= ServiceDiscoveryMaxMsgSize\n  [FAILED ] a GET_ADS response of F_return valid ads fits the reader's limit\n  test_20261123T002054_cd9688_3.nim(87, 26): Check failed: found.get().len == fReturn\n  [FAILED ] a discoverer receives the F_return ads a registrar holds\n  [Summary] 3 tests run (0.30s): 1 OK, 2 FAILED, 0 SKIPPED\n\nThe first check is the registrar's own response to a GET_ADS for a service with ten cached ads. The second is end to end over TCP between two started nodes: the registrar's cache holds ten ads (that check passes), `lookup` returns ok but not the ten ads. That the failed read is then counted by recordDialFailure, and that maxDialFailures (default 5) such failures remove the registrar from every service table (dial_backoff.nim:36-37), is from reading the code; the test does not assert it.\n\nA REGISTER request or WAIT response stays under the limit (two copies of a 1024-byte ad plus a signature), so this is confined to GET_ADS.",
+      "fix_hint": "Make the read limit and the response agree: either raise ServiceDiscoveryMaxMsgSize to cover F_return * MaxXPRSize plus closerPeers and framing (deriving it from the configured fReturn), or have the registrar stop adding ads once the encoded response would exceed the limit. A size-related read failure should also not be counted as a dial failure against an honest registrar. tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim fails until a response of F_return valid ads is readable.",
+      "found_by": "claude",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic once a registrar's response for a service exceeds 4096 bytes: ten ads averaging about 400 bytes, fewer when ads are larger. Ads with a single short address stay under it.",
+        "scope": "GET_ADS lookups (connection.send reply read). REGISTER exchanges are not affected. Popular services on nodes advertising several or long addresses are hit first."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/types.nim",
+          "lines": [
+            24,
+            24
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/connection.nim",
+          "lines": [
+            78,
+            78
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim",
+        "cmd": "make test test_20261123T002054_cd9688_3 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "esses=[/ip4/127.0.0.1/tcp/60399]\nINF 2026-11-23 00:48:05.052+00:00 Transport connection acceptance started    topics=\"libp2p switch\" tid=46882 addresses=[/ip4/127.0.0.1/tcp/60399]\nINF 2026-11-23 00:48:05.053+00:00 Kademlia DHT started                       topics=\"libp2p kademlia\" tid=46882\nINF 2026-11-23 00:48:05.058+00:00 Service Discovery started                  topics=\"libp2p service-discovery\" tid=46882\nINF 2026-11-23 00:48:05.058+00:00 Libp2p node started                        topics=\"libp2p switch\" tid=46882 peerId=12D3Ko...TW2tAE listenAddresses=[/ip4/127.0.0.1/tcp/60399] announcedAddresses=[/ip4/127.0.0.1/tcp/60399] protocols=\"[/ipfs/id/1.0.0, /logos/service-discovery/1.0.0]\" transports=1 services=1\nINF 2026-11-23 00:48:05.058+00:00 Starting switch for peer                   topics=\"libp2p switch\" tid=46882 peerInfo=\"(peerId: 12D3KooWAfdfjFELaps2EpyPxwAe6RhVHLe9ZTMMdGmSioZynjjD, listenAddrs: [/ip4/127.0.0.1/tcp/0], addrs: [/ip4/127.0.0.1/tcp/9000], protocols: [/ipfs/id/1.0.0, /logos/service-discovery/1.0.0], protoVersion: , agentVersion: nim-libp2p)\"\nINF 2026-11-23 00:48:05.059+00:00 Wildcard address resolver service started  topics=\"libp2p wildcard-addresses\" tid=46882\nINF 2026-11-23 00:48:05.059+00:00 TCP transport started                      topics=\"libp2p tcp\" tid=46882 addresses=[/ip4/127.0.0.1/tcp/41955]\nINF 2026-11-23 00:48:05.059+00:00 Transport connection acceptance started    topics=\"libp2p switch\" tid=46882 addresses=[/ip4/127.0.0.1/tcp/41955]\nINF 2026-11-23 00:48:05.059+00:00 Kademlia DHT started                       topics=\"libp2p kademlia\" tid=46882\nINF 2026-11-23 00:48:05.065+00:00 Service Discovery started                  topics=\"libp2p service-discovery\" tid=46882\nINF 2026-11-23 00:48:05.065+00:00 Libp2p node started                        topics=\"libp2p switch\" tid=46882 peerId=12D3Ko...ZynjjD listenAddresses=[/ip4/127.0.0.1/tcp/41955] announcedAddresses=[/ip4/127.0.0.1/tcp/41955] protocols=\"[/ipfs/id/1.0.0, /logos/service-discovery/1.0.0]\" transports=1 services=1\nINF 2026-11-23 00:48:05.361+00:00 Stopping switch                            topics=\"libp2p switch\" tid=46882\nINF 2026-11-23 00:48:05.361+00:00 Stopping switch                            topics=\"libp2p switch\" tid=46882\nINF 2026-11-23 00:48:05.361+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=46882\nINF 2026-11-23 00:48:05.363+00:00 Stopping WildcardAddressResolverService    topics=\"libp2p wildcard-addresses\" tid=46882\nINF 2026-11-23 00:48:05.366+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=46882 addresses=[/ip4/127.0.0.1/tcp/60399]\nINF 2026-11-23 00:48:05.366+00:00 TCP transport stopped                      topics=\"libp2p tcp\" tid=46882 addresses=[/ip4/127.0.0.1/tcp/41955]\nINF 2026-11-23 00:48:05.366+00:00 Switch stopped                             topics=\"libp2p switch\" tid=46882\nINF 2026-11-23 00:48:05.366+00:00 Switch stopped                             topics=\"libp2p switch\" tid=46882\n========================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Spec proof 20261123T002054-cd9688/3 - GET_ADS response of F_return ads::a discoverer receives the F_return ads a registrar holds'\n--------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim(87, 26): Check failed: found.get().len == fReturn\n\n  [FAILED ] (  0.32s) a discoverer receives the F_return ads a registrar holds\u001b[0m\n(0.33s)   Spec proof 20261123T002054-cd9688/3 - GET_ADS response of F_return ads\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 3 tests run (0.33s): 1 OK, 2 FAILED, 0 SKIPPED\n  [FAILED ] (  0.02s) a GET_ADS response of F_return valid ads fits the reader's limit\u001b[0m\n  [FAILED ] (  0.32s) a discoverer receives the F_return ads a registrar holds\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "confirmed",
+          "note": "Read connection.nim:78–82, types.nim:24 and 210–216, extended_peer_record.nim:20–22, registrar.nim:433–441, and stream/lpstream.nim:227–240. The registrar bounds its list by count and sends the full encode. readLp rejects a frame over 4096 bytes before decoding the reply and send records that failure. Ten individually accepted XPRs of just over 410 bytes exceed the frame limit even before protobuf overhead or closer peers. Checked all ten system parameter defaults in types.nim:26–38 and their constructor wiring at 154–187. E is passed as discovery configuration to the entry heartbeat and remains absent from the ad and ticket wire fields. Also ran the focused test from the compiled service_discovery target and observed that the end-to-end lookup returned fewer than F_return ads."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T002054-cd9688/3.patch",
+        "sha256": "e9728e0dc0a7f054ff6387f5b4261ba095f7e89fc09525f6b942b366c0a79649",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T002054-cd9688/4",
+      "domain": "spec",
+      "class": "undefined-behaviour",
+      "severity": "info",
+      "confidence": "low",
+      "summary": "Inbound handler closes, not resets, the stream on an undecodable or unknown-type message",
+      "claim": "When an inbound frame fails to decode, exceeds the read limit, or carries an unknown message type, the handler returns and its defer runs stream.close(), a graceful half-close. Stream Management says to reset the stream on protocol errors. The spec's own Error Handling table says 'Invalid message format: Close stream', so the document is inconsistent and the code follows one of its two statements.",
+      "fingerprint": "sha256:444a4fdcf5c0cf4439c3c72d75c0855d8821c381e189af55809d1f4a91a7a09b",
+      "handle": "F-444a4fdc",
+      "fp_version": 1,
+      "subject": "RPC Messages / Stream Management: Reset stream on protocol errors or validation failures",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101. Code inspection only; no test was written or run, hence low confidence.\n\nlibp2p/protocols/service_discovery.nim:130-166: the handler registers `defer: ... await stream.close()`; the LPStreamError branch of readLp (lines 140-142, which includes an oversized frame), a failed Message.decode (143-145) and an unknown message type (164-166) all `return`, so the stream is closed, not reset. stream.reset() is used only for the not-serving case (125-128).\n\nSpec, Stream Management: 'Reset stream on protocol errors or validation failures'. Spec, Error Handling: 'Invalid message format | Close stream' and 'Missing required fields | Close stream'. Message Validation asks for a REJECTED response on a failed REGISTER validation, which also is not a reset. The three statements cannot all hold; which one applies to a malformed frame is not determined by the text.\n\nProse-only finding: no test exists. The second pass read the same lines and returned 'unclear', because Stream Management ('Reset stream on protocol errors or validation failures') and the Error Handling table ('Invalid message format | Close stream') disagree.",
+      "fix_hint": "Settle in the spec whether a malformed frame ends the stream by reset or by close, then make the handler's error returns match (reset in the decode-failure and unknown-type branches if Stream Management wins) and add a test that sends an undecodable frame and observes the chosen termination.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Every malformed, oversized or unknown-type inbound frame.",
+        "scope": "Inbound stream handler only; the outbound side (connection.send) already resets a stream whose reply was not read."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery.nim",
+          "lines": [
+            131,
+            145
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "manual"
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "unclear",
+          "note": "Read service_discovery.nim:130–166. The defer calls stream.close() on read and decode errors. Stream Management says “Reset stream on protocol errors or validation failures” and Error Handling says “Invalid message format | Close stream.” Clarify whether Close stream permits a graceful close on malformed input or requires an abortive reset. Outbound abandonment uses reset in connection.nim:54–62. Valid inbound requests loop and use unsigned-varint framing via readLp/writeLp."
+        }
+      ]
+    },
+    {
+      "id": "20261123T002054-cd9688/5",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "high",
+      "confidence": "medium",
+      "summary": "REGISTER and GET_ADS are encoded and dispatched as RPC types 16 and 17, not 6 and 7",
+      "claim": "The spec's MessageType enum sets REGISTER = 6 and GET_ADS = 7. The shared Kademlia codec defines register = 16 and getAds = 17, and the service discovery handler dispatches on those symbols. Requests built here carry type 16 or 17, which a spec-following registrar does not know, and a spec-following request with type 6 or 7 is not routed to REGISTER/GET_ADS handling here. The numbers live in kademlia/protobuf.nim, outside the audited unit; the unit's handler is where they take effect.",
+      "fingerprint": "sha256:7f680511ec195a8193010b77db1059025b1c1b0b9762ac51ec7c4e07a30882c8",
+      "handle": "F-7f680511",
+      "fp_version": 1,
+      "subject": "RPC Messages / Base Message Structure / service discovery dispatch",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. Spec, Base Message Structure: `enum MessageType { ... PING = 5; REGISTER = 6; // New  GET_ADS = 7; // New }`; the request tables repeat `REGISTER` (6) and `GET_ADS` (7).\n2. libp2p/protocols/kademlia/protobuf.nim:36-37 (outside the unit): `register = 16 # REGISTER for Service Discovery`, `getAds = 17 # GET_ADS for Service Discovery`.\n3. libp2p/protocols/service_discovery.nim:143-166 (in unit): the handler decodes Message and hands only MessageType.register / MessageType.getAds to handleMessage; any other unknown value ends the stream.\n\nThe first pass saw the same numbers and left the row untraced as 'not in unit'; the second pass filed it because the unit's dispatch depends on them.\n\nProof: tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim, a wire-format test that needs no second implementation. Merge pass ran `make test test_20261123T002054_cd9688_5 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` on proof branch commit 493f52c778286333d6e43eda4350eec5d0e4f0bf (scanned base e174279123abb34670f898f0fefabfec0674a101); exit 2. Output:\n\n  test_20261123T002054_cd9688_5.nim(12, 68): Check failed: Message(msgType: Opt.some(MessageType.register)).encode() == @[8'u8, 6]\n  test_20261123T002054_cd9688_5.nim(16, 34): Check failed: decoded.get().msgType == Opt.some(MessageType.register)\n  [FAILED ] REGISTER uses protobuf field 1 value 6\n  test_20261123T002054_cd9688_5.nim(19, 66): Check failed: Message(msgType: Opt.some(MessageType.getAds)).encode() == @[8'u8, 7]\n  test_20261123T002054_cd9688_5.nim(23, 34): Check failed: decoded.get().msgType == Opt.some(MessageType.getAds)\n  [FAILED ] GET_ADS uses protobuf field 1 value 7\n  [Summary] 3 tests run (0.00s): 1 OK, 2 FAILED, 0 SKIPPED\n\nNot established: why 16 and 17 were chosen (the code comment gives no reason), and any effect between nim-libp2p nodes, which agree with each other. The merge pass lowered severity from the second pass's high to medium, to match findings 1 and 2, which have the same kind of effect (no interoperation with a spec-following peer). Ticket signing and field representation, also mentioned by the second pass, are outside the unit and are not part of this finding.",
+      "fix_hint": "Decide which side is authoritative. To follow the spec, set register = 6 and getAds = 7 in libp2p/protocols/kademlia/protobuf.nim (a wire change that needs a network-wide switch, since deployed nodes use 16 and 17). If 16 and 17 are intended, change the spec's enum and the request tables. tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim fails until the two agree.",
+      "found_by": "codex",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic: every REGISTER and GET_ADS message sent or received.",
+        "scope": "All service discovery RPCs against an implementation that follows the spec's numbers; nim-libp2p nodes interoperate with each other. Kademlia types 0-5 are unaffected."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery.nim",
+          "lines": [
+            143,
+            166
+          ]
+        },
+        {
+          "file": "libp2p/protocols/kademlia/protobuf.nim",
+          "lines": [
+            36,
+            37
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim",
+        "cmd": "make test test_20261123T002054_cd9688_5 PATH=/w/cache/nim-2.2.14/bin:\"$PATH\"",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=test_20261123T002054_cd9688_5 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Service discovery RPC type numbers\n  [Test   ]           REGISTER uses protobuf field 1 value 6\n======================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Service discovery RPC type numbers::REGISTER uses protobuf field 1 value 6'\n--------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim(12, 68): Check failed: Message(msgType: Opt.some(MessageType.register)).encode() == @[8'u8, 6]\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim(16, 34): Check failed: decoded.get().msgType == Opt.some(MessageType.register)\n\n  [FAILED ] (  0.00s) REGISTER uses protobuf field 1 value 6\u001b[0m\n  [Test   ]           GET_ADS uses protobuf field 1 value 7\n=====================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Service discovery RPC type numbers::GET_ADS uses protobuf field 1 value 7'\n-------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim(19, 66): Check failed: Message(msgType: Opt.some(MessageType.getAds)).encode() == @[8'u8, 7]\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim(23, 34): Check failed: decoded.get().msgType == Opt.some(MessageType.getAds)\n\n  [FAILED ] (  0.00s) GET_ADS uses protobuf field 1 value 7\u001b[0m\n(0.00s)   Service discovery RPC type numbers\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 3 tests run (0.00s): 1 OK, 2 FAILED, 0 SKIPPED\n  [FAILED ] (  0.00s) REGISTER uses protobuf field 1 value 6\u001b[0m\n  [FAILED ] (  0.00s) GET_ADS uses protobuf field 1 value 7\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@shash@smultihash.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@sint@si62_modpow2.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_vrfy.c.o",
+            "nimcache/test_all/@pchronicles@slog_output.nim.c.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pchronos@shandles.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@pnimcrypto@ssha2@ssha2_common.nim.c",
+            "nimcache/test_all/@pnimcrypto@ssha2@ssha2_neon.nim.c.o",
+            "nimcache/test_all/@pprotobuf_serialization@sreader.nim.c",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psequtils.nim.c",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pstew@sstrings.nim.c",
+            "nimcache/test_all/@pstrformat.nim.c",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "claude",
+          "verdict": "confirmed",
+          "note": "Read kademlia/protobuf.nim:29-37 (register = 16, getAds = 17), service_discovery.nim:143-166 (dispatch on those symbols) and the staged spec lines 414-418 (REGISTER = 6, GET_ADS = 7). Ran `make test test_20261123T002054_cd9688_5 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` on the proof branch: exit 2, 3 tests run, 1 OK, 2 FAILED; both encode comparisons against field-1 values 6 and 7 failed and decoding 6 and 7 did not yield register/getAds. Reproduced. Severity lowered from high to medium to match findings 1 and 2."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T002054-cd9688/5.patch",
+        "sha256": "e9728e0dc0a7f054ff6387f5b4261ba095f7e89fc09525f6b942b366c0a79649",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T002054-cd9688/6",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "Ad for a requested service is rejected when another service entry has over 33 data bytes",
+      "claim": "XPR validation applies a 33-byte data limit to every ServiceInfo in an advertisement, so a signed ad that lists the requested service and fits the 1024-byte record limit is refused when an unrelated service entry carries 34 data bytes. The spec's note calls other entries in xpr.services opaque to registrars and discoverers. Whether the limit breaks that note depends on the ExtensiblePeerRecord specification, which was not staged; if that document sets the limit, the code is enforcing the encoding, not interpreting the entry.",
+      "fingerprint": "sha256:ffd2e25a57c2e6a591a5567bfc6b74f177c55c749e626d5249855575808c9e2d",
+      "handle": "F-ffd2e25a",
+      "fp_version": 1,
+      "subject": "RPC Messages / Advertisement Signature Verification / opaque other services",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. libp2p/extended_peer_record.nim:74-84: `isValid(ServiceInfo)` is `si.data.get(@[]).len <= MaxServiceDataSize` (33); `isValid(SignedExtendedPeerRecord)` returns false if any entry fails it, then checks the encoded size against MaxXPRSize (1024).\n2. libp2p/protocols/service_discovery/registrar.nim:188-190 (outside the unit): isValidAdvertisement runs the same per-entry loop over all services and returns 'oversized service data' before it checks advertisesService.\n3. Spec, note under Advertisement Signature Verification (lines 727-734): 'Any other entries in `xpr.services` are opaque to registrars and discoverers - they are meaningful only to the application that ultimately receives the advertisement.' The sentence is in a note, not in the pseudocode or a MUST.\n4. The spec recommends XPR encoding and links extensible-peer-records.md for it. That document was not supplied to any pass. The first pass's trace row for this sentence passed it for that reason: the limits 'presumably come from the XPR specification ... so they were not judged'.\n\nProof: tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim. Two records signed with one key differ only by an added ServiceInfo for another service with MaxServiceDataSize + 1 data bytes. Merge pass ran `make test test_20261123T002054_cd9688_6 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` on proof branch commit 493f52c778286333d6e43eda4350eec5d0e4f0bf (scanned base e174279123abb34670f898f0fefabfec0674a101); exit 2. Output:\n\n  test_20261123T002054_cd9688_6.nim(35, 10): Check failed: isValidAdvertisement(RegisterMessage(advertisement: Opt.some(encoded)), serviceId).isOk()\n  [FAILED ] unrelated service metadata does not affect the requested service\n  [Summary] 2 tests run (0.02s): 1 OK, 1 FAILED, 0 SKIPPED\n\nThe preceding checks in the same test pass: the baseline ad is valid, the extended ad is within MaxXPRSize, decodes with a valid signature, and advertises the requested service. The rejection is therefore caused by the other entry alone.\n\nShown: the behaviour. Not shown: that the spec forbids it. A length cap on a field does not read the field's meaning, and it may be required by the XPR format. The test exercises the registrar's validation (outside the unit); the discoverer path named by the second pass was not exercised by the test or read by the merge pass.",
+      "fix_hint": "First check the ExtensiblePeerRecord specification. If it caps ServiceInfo data at 33 bytes for every entry, no code change is needed; say in this spec's note that 'opaque' does not exempt entries from XPR format limits. If it does not, keep the whole-record size limit and signature check, apply the per-entry data limit only to the entry whose hash matches the requested service_id_hash (extended_peer_record.nim:74-84 and registrar.nim:188-190), and tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim then passes.",
+      "found_by": "codex",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic for any ad listing a second service with more than 33 data bytes.",
+        "scope": "REGISTER validation (shown by the test). GET_ADS result filtering was claimed by the second pass and not exercised."
+      },
+      "location": [
+        {
+          "file": "libp2p/extended_peer_record.nim",
+          "lines": [
+            74,
+            84
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim",
+        "cmd": "make test test_20261123T002054_cd9688_6 PATH=/w/cache/nim-2.2.14/bin:\"$PATH\"",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=test_20261123T002054_cd9688_6 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Service discovery advertisement binding\n  [Test   ]           unrelated service metadata does not affect the requested service\n================================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Service discovery advertisement binding::unrelated service metadata does not affect the requested service'\n----------------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim(35, 10): Check failed: isValidAdvertisement(RegisterMessage(advertisement: Opt.some(encoded)),\n                     serviceId).isOk()\n\n  [FAILED ] (  0.01s) unrelated service metadata does not affect the requested service\u001b[0m\n(0.01s)   Service discovery advertisement binding\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.01s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.01s) unrelated service metadata does not affect the requested service\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "claude",
+          "verdict": "unclear",
+          "note": "Ran `make test test_20261123T002054_cd9688_6 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` on the proof branch: exit 2, 1 FAILED at test line 35 (isValidAdvertisement refuses the ad with the extra 34-byte entry); the size, decode and binding checks before it pass. Read extended_peer_record.nim:74-84 and registrar.nim:176-195. The behaviour is reproduced. The contradiction is not settled: the 'opaque' sentence is in a note (staged spec lines 727-734), a length cap does not interpret the entry, and the XPR specification that may define the 33-byte limit was not staged."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T002054-cd9688/6.patch",
+        "sha256": "e9728e0dc0a7f054ff6387f5b4261ba095f7e89fc09525f6b942b366c0a79649",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T002054-cd9688/7",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "Client-mode node keeps configured services in the signed XPR it publishes under its peer ID",
+      "claim": "A client-mode node constructed with services keeps them in disco.services even though registration is refused, and record() signs that list into the node's own XPR, which the XPR publisher puts into the DHT under the node's peer ID. The spec says client mode nodes MUST be only Discoverer. The node sends no REGISTER and is not returned by GET_ADS, so whether listing services in its own peer record makes it an Advertiser is a question of reading; the proof also checks the publication candidate, not a publication.",
+      "fingerprint": "sha256:e21720ea489f4246b7579842938013966ce2994b696eea5e1883fa27f49dac5c",
+      "handle": "F-e21720ea",
+      "fp_version": 1,
+      "subject": "Client and Server Mode / configured services in published XPR",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. libp2p/protocols/service_discovery.nim:89-104: ServiceDiscovery.new stores `services: toHashSet(services)` and `xprPublishing` (default true) regardless of `client`; isServer = not client.\n2. service_discovery.nim:175-182: start() calls addProvidedService for each configured service, which refuses in client mode (advertiser.nim:516-517, outside the unit) with only a warning; the entries stay in disco.services. start() then starts maintainXprs unconditionally.\n3. libp2p/protocols/service_discovery/types.nim:300-316: record() builds the node's ExtendedPeerRecord with `services = disco.services.toSeq()` and signs it.\n4. advertiser.nim:425-472 (outside the unit): xprsToPublish adds the own XPR when xprPublishing is set, with no isServer check; publishXpr calls putValue under the peer-ID key.\n5. Spec, Client and Server Mode (line 1465): 'Client mode nodes: MUST be only Discoverer'. Spec, Protocol Roles (lines 84-85): 'Advertisers are nodes that participate in a service and want to be discovered by other peers.' Spec, DHT Routing Table (lines 105-110): the peer discovery layer stores signed peer records under peer IDs for every participant.\n\nProof: tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim builds a client with one configured service and inspects xprsToPublish(). Merge pass ran `make test test_20261123T002054_cd9688_7 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` on proof branch commit 493f52c778286333d6e43eda4350eec5d0e4f0bf (scanned base e174279123abb34670f898f0fefabfec0674a101); exit 2. Output:\n\n  test_20261123T002054_cd9688_7.nim(22, 14): Check failed: not decoded.get().advertisesService(service.id.hashServiceId())\n  [FAILED ] a configured service is omitted from records published by clients\n  [Summary] 2 tests run (0.01s): 1 OK, 1 FAILED, 0 SKIPPED\n\nShown: a client's publication candidate is a validly signed XPR that lists the configured service. Not shown: an actual putValue from a started client (the node in the test is never started, and no second node receives the record), and that this is the Advertiser role. The first-pass trace row passed 'MUST be only Discoverer' on the grounds that a client serves no inbound REGISTER/GET_ADS and cannot register an ad. A peer that looks up the service through GET_ADS never receives this client; only a peer that fetches the client's own record by peer ID sees the services list. The first-pass reading takes Advertiser to mean registering ads; the second-pass reading takes it to mean any signed, published statement of service participation.",
+      "fix_hint": "If the spec's intent is that a client discloses no service participation, make the client path drop configured services: either reject or clear `services` in ServiceDiscovery.new when client is true, or have record() (types.nim:309-314) pass an empty services list when not isServer. tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim then passes. If publishing a peer record with services is acceptable for a client, state in the spec that the Advertiser role means registering advertisements with registrars, and close this finding.",
+      "found_by": "codex",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Only when a node is constructed with client = true and a non-empty services list; then deterministic.",
+        "scope": "The node's own XPR in the Kademlia value store. REGISTER and GET_ADS exchanges are not affected."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery.nim",
+          "lines": [
+            175,
+            182
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/types.nim",
+          "lines": [
+            309,
+            316
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim",
+        "cmd": "make test test_20261123T002054_cd9688_7 PATH=/w/cache/nim-2.2.14/bin:\"$PATH\"",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "nim c --styleCheck:usages --styleCheck:error --verbosity:0 --skipUserCfg -f --threads:on --opt:speed   \\\n  --nimcache:nimcache/test_all \\\n  -d:path=test_20261123T002054_cd9688_7 \\\n  tests/test_all.nim\n\n\n==================================\nDynamic test import\nImported 1 files.\n\ntests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim\n==================================\n\n\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Service discovery client mode\n  [Test   ]           a configured service is omitted from records published by clients\n=================================================================\n  /w/work/20261123T002054-cd9688/tests/test_all 'Service discovery client mode::a configured service is omitted from records published by clients'\n-----------------------------------------------------------------\n    /w/work/20261123T002054-cd9688/tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim(22, 14): Check failed: not decoded.get().advertisesService(service.id.hashServiceId())\n\n  [FAILED ] (  0.01s) a configured service is omitted from records published by clients\u001b[0m\n(0.01s)   Service discovery client mode\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.01s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.01s) a configured service is omitted from records published by clients\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "claude",
+          "verdict": "unclear",
+          "note": "Ran `make test test_20261123T002054_cd9688_7 PATH=/w/cache/nim-2.2.14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` on the proof branch: exit 2, 1 FAILED at test line 22 (the client's publication candidate advertises the configured service). Read service_discovery.nim:80-104 and 170-190, types.nim:300-316, advertiser.nim:425-472 and 516-517. The behaviour is reproduced at the level of xprsToPublish; no publication from a started client was run. The spec defines roles around REGISTER and GET_ADS and separately says every participant stores signed peer records under peer IDs (lines 105-110), so it is not settled that a services list in a client's own peer record breaks 'MUST be only Discoverer' (line 1465)."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T002054-cd9688/7.patch",
+        "sha256": "e9728e0dc0a7f054ff6387f5b4261ba095f7e89fc09525f6b942b366c0a79649",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_7.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_5.nim",
+          "tests/libp2p/service_discovery/test_20261123T002054_cd9688_6.nim"
+        ]
+      }
+    }
+  ],
+  "proof_sha": "493f52c778286333d6e43eda4350eec5d0e4f0bf",
+  "gate_on_proof": true
+}
