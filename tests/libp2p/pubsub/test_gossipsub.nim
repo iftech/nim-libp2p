@@ -568,6 +568,12 @@ suite "GossipSub":
           rng = rng(),
         )
 
+  test "a zero outbound budget fails GossipSub construction":
+    let params = GossipSubParams.init(maxOutboundQueueBytes = 0)
+    expectMsg InitializationError,
+      "gossipsub: maxOutboundQueueBytes parameter error, Must be > 0":
+      discard GossipSub.init(makeStandardSwitch(), parameters = params, rng = rng())
+
   test "topic streams reject an outbound budget below the minimum":
     const maxMessageSize = 64
     for budget in [127, 128, 135]:
