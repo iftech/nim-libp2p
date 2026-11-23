@@ -20,7 +20,7 @@ import
   ]
 import
   ../../tools/
-    [unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder]
+    [unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder, futures]
 import ../../stubs/[acme_api_stub, peer_id_auth_client_stub]
 
 suite "AutoTLS certificate issuance and renewal":
@@ -135,7 +135,7 @@ suite "AutoTLS certificate issuance and renewal":
         discoveryAttempts.inc()
         if discoveryAttempts == 1:
           # Stay blocked until the discovery timeout cancels this attempt.
-          await newAsyncEvent().wait()
+          await waitForCancellation()
         return addrs
     )
 
@@ -646,7 +646,7 @@ suite "AutoTLS on a switch":
           return addrs
         discoveryAttempts.inc()
         try:
-          await newAsyncEvent().wait()
+          await waitForCancellation()
           return addrs
         finally:
           cancelledAttempts.inc()

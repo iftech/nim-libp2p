@@ -15,6 +15,7 @@ import
     upgrademngrs/upgrade,
     crypto/crypto,
   ]
+import ../tools/futures
 
 type
   StubAcceptBehavior* = enum
@@ -124,11 +125,11 @@ method dial*(
     raise newException(MemoryTransportError, "stub dial fails as scripted")
 
   try:
-    await sleepAsync(1.hours)
+    await waitForCancellation()
   except CancelledError as e:
     self.cancelledAddrs.add(ma)
     raise e
-  raise newException(MemoryTransportError, "stub dial stalled past its hour")
+  raise newException(MemoryTransportError, "stub dial unexpectedly resumed")
 
 method accept*(
     self: MemoryTransportStub
@@ -140,7 +141,7 @@ method accept*(
     raise newException(MemoryTransportError, "stub accept always fails")
   of BlockingClose:
     if self.acceptLimit > 0 and self.acceptCalls > self.acceptLimit:
-      await sleepAsync(1.hours)
+      await waitForCancellation()
     await stepsAsync(1)
     let conn = BlockingCloseConnection(transport: self)
     conn.initStream()

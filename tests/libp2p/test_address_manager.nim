@@ -9,7 +9,7 @@ import
   ../../libp2p/
     [address_manager, crypto/crypto, multiaddress, multicodec, peerinfo, switch]
 import ../../libp2p/services/natservice
-import ../tools/[unittest, crypto, switch_builder, multiaddress, lifecycle]
+import ../tools/[unittest, crypto, switch_builder, multiaddress, lifecycle, futures]
 
 const VerifyInterval = 10.milliseconds
 
@@ -1066,7 +1066,7 @@ suite "AddressManager address mapper":
     ) {.async: (raises: [CancelledError]).} =
       handlerStarted.fire()
       try:
-        await newAsyncEvent().wait()
+        await waitForCancellation()
       except CancelledError as exc:
         handlerCancelled.fire()
         raise exc

@@ -7,7 +7,7 @@ import chronos
 import ./utils
 import ../../../libp2p/connmanager
 import ../../../libp2p/protocols/pubsub/[pubsub, pubsubpeer, floodsub, gossipsub]
-import ../../tools/[unittest, switch_builder, bufferstream, multiaddress, lifecycle]
+import ../../tools/[unittest, switch_builder, bufferstream, multiaddress, lifecycle, futures]
 
 suite "PubSub shutdown":
   teardown:
@@ -18,7 +18,6 @@ suite "PubSub shutdown":
       sw = makeStandardSwitch()
       gossip = GossipSub.init(sw, rng = rng())
       dialing = newAsyncEvent()
-      never = newAsyncEvent()
     var
       attempts = 0
       cancelled = false
@@ -30,7 +29,7 @@ suite "PubSub shutdown":
       inc attempts
       dialing.fire()
       try:
-        await never.wait()
+        await waitForCancellation()
       finally:
         cancelled = true
         connectionsRunningAtCancellation = sw.connManager.isRunning()
@@ -56,14 +55,13 @@ suite "PubSub shutdown":
     let
       sw = makeStandardSwitch()
       flood = FloodSub.init(sw, rng = rng())
-      never = newAsyncEvent()
     var cancelled = false
 
     proc getStream(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
       try:
-        await never.wait()
+        await waitForCancellation()
       finally:
         cancelled = true
 
@@ -145,7 +143,6 @@ suite "PubSub shutdown":
     let
       sw = makeStandardSwitch()
       flood = FloodSub.init(sw, rng = rng())
-      never = newAsyncEvent()
       cleaningUp = newAsyncEvent()
       releaseCleanup = newAsyncEvent()
     var cleanupFinished = false
@@ -154,7 +151,7 @@ suite "PubSub shutdown":
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
       try:
-        await never.wait()
+        await waitForCancellation()
       finally:
         cleaningUp.fire()
         await noCancel releaseCleanup.wait()
@@ -185,14 +182,13 @@ suite "PubSub shutdown":
       let
         sw = makeStandardSwitch()
         gossip = GossipSub.init(sw, rng = rng())
-        never = newAsyncEvent()
         cleaningUp = newAsyncEvent()
         releaseCleanup = newAsyncEvent()
       var cleanupFinished = false
 
       proc pendingTask() {.async: (raises: [CancelledError]).} =
         try:
-          await never.wait()
+          await waitForCancellation()
         finally:
           cleaningUp.fire()
           await noCancel releaseCleanup.wait()
