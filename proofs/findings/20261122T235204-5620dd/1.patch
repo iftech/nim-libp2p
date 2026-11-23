@@ -1,0 +1,259 @@
+diff --git a/tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim b/tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim
+new file mode 100644
+index 000000000..2b20c6e2d
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim
+@@ -0,0 +1,111 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261122T235204-5620dd/1.
++#
++# Spec, "Distributing ads across registrars":
++#   If the `status` is `Rejected`, the advertiser MUST remove the registrar from
++#   the ongoing registrations for that bucket and SHOULD NOT attempt further
++#   registrations with this registrar for this advertisement.
++
++import std/sequtils
++import chronos, results, sets, tables
++import
++  ../../../libp2p/[
++    multiaddress,
++    peerid,
++    peerstore,
++    protocols/kademlia,
++    protocols/service_discovery,
++    protocols/service_discovery/advertiser,
++    stream/connection,
++    switch,
++  ]
++import ../../tools/[fault_stream, unittest]
++import ./utils
++
++type RejectingSwitch = ref object of Switch
++  ## Every dial reaches a registrar that answers REGISTER with `Rejected`.
++  reply: seq[byte]
++  dialed: seq[PeerId]
++  streams: seq[FaultStream]
++
++proc new(T: typedesc[RejectingSwitch], base: Switch, reply: seq[byte]): T =
++  T(
++    peerInfo: base.peerInfo,
++    peerStore: base.peerStore,
++    connManager: base.connManager,
++    transports: base.transports,
++    muxedUpgrade: base.muxedUpgrade,
++    ms: base.ms,
++    dialer: base.dialer,
++    nameResolver: base.nameResolver,
++    addressManager: base.addressManager,
++    services: base.services,
++    rng: base.rng,
++    reply: reply,
++  )
++
++method dial*(
++    self: RejectingSwitch,
++    peerId: PeerId,
++    addrs: seq[MultiAddress],
++    protos: seq[string],
++    forceDial = false,
++): Future[Stream] {.async: (raises: [DialFailedError, CancelledError]).} =
++  self.dialed.add(peerId)
++  let stream = FaultStream.new(reply = self.reply)
++  self.streams.add(stream)
++  stream
++
++proc rejectedReply(): seq[byte] =
++  let encoded = Message(
++    msgType: Opt.some(MessageType.register),
++    register: Opt.some(
++      RegisterMessage(
++        advertisement: Opt.none(seq[byte]),
++        status: Opt.some(RegistrationStatus.Rejected),
++        ticket: Opt.none(Ticket),
++      )
++    ),
++  ).encode()
++  doAssert encoded.len < 128, "single byte length prefix"
++  @[encoded.len.byte] & encoded
++
++proc settle(disco: ServiceDiscovery) {.async.} =
++  for task in toSeq(disco.advertiser.running):
++    await task.fut.join().wait(5.seconds)
++
++suite "Proof 20261122T235204-5620dd/1 - rejected registrar":
++  asyncTest "a registrar that replied Rejected gets no further REGISTER for the same advertisement":
++    let disco = setupServiceDiscoveryNode()
++    let rejecting = RejectingSwitch.new(disco.switch, rejectedReply())
++    disco.switch = rejecting
++    defer:
++      await disco.stopRegistrations()
++      for s in rejecting.streams:
++        await s.close()
++
++    let registrar = PeerId.random()
++    check disco.rtable.insert(registrar)
++    disco.switch.peerStore[AddressBook][registrar] = @[makeMultiAddress("127.0.0.1")]
++
++    let service = makeServiceInfo()
++    let serviceId = service.id.hashServiceId()
++    check disco.addProvidedService(service).isOk()
++    let advertBefore = disco.advertiser.providedAdverts[serviceId].bytes
++
++    # the first attempt runs to its Rejected reply and the task ends
++    await disco.settle()
++    require rejecting.dialed == @[registrar]
++
++    # two more maintenance rounds, the same advertisement, the same bucket
++    await disco.maintainRegistrations()
++    await disco.settle()
++    await disco.maintainRegistrations()
++    await disco.settle()
++
++    check disco.advertiser.providedAdverts[serviceId].bytes == advertBefore
++    # SHOULD NOT attempt further registrations with this registrar
++    check rejecting.dialed.countIt(it == registrar) == 1
+diff --git a/tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim b/tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim
+new file mode 100644
+index 000000000..e1043fdf2
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim
+@@ -0,0 +1,66 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++# Proof for finding 20261122T235204-5620dd/2.
++#
++# Spec, "Error Handling":
++#   | Timeout | Close stream, retry with exponential backoff |
++# Spec, "Distributing ads across registrars": ongoing registrations include
++# registrars "for which there is an ongoing registration attempt", and
++# K_register caps active registrations + ongoing attempts per bucket.
++
++import std/sequtils
++import chronos, results, sets
++import
++  ../../../libp2p/[
++    peerid,
++    peerstore,
++    protocols/kademlia,
++    protocols/service_discovery,
++    protocols/service_discovery/advertiser,
++    stream/connection,
++    switch,
++  ]
++import ../../tools/[fault_stream, unittest]
++import ./utils
++
++const RequestTimeout = 200.milliseconds
++
++suite "Proof 20261122T235204-5620dd/2 - REGISTER timeout":
++  asyncTest "a REGISTER whose registrar never answers times out and frees its slot":
++    let disco = setupServiceDiscoveryNode(
++      kadConfig = KadDHTConfig.new(
++        ExtEntryValidator(),
++        ExtEntrySelector(),
++        timeout = RequestTimeout,
++        disableBootstrapping = true,
++      )
++    )
++    # the registrar accepts the stream and the request, and never replies
++    let stream = FaultStream.new(onRead = Fault.Hang)
++    disco.switch = FaultSwitch.new(disco.switch, stream)
++    defer:
++      await disco.stopRegistrations()
++      await stream.close()
++
++    let registrar = PeerId.random()
++    check disco.rtable.insert(registrar)
++    disco.switch.peerStore[AddressBook][registrar] = @[makeMultiAddress("127.0.0.1")]
++
++    let service = makeServiceInfo()
++    check disco.addProvidedService(service).isOk()
++    require disco.advertiser.running.len == 1
++    let task = toSeq(disco.advertiser.running)[0]
++
++    await stream.hung.wait().wait(5.seconds)
++
++    # 25 request timeouts later, and a maintenance round in between
++    await sleepAsync(RequestTimeout * 10)
++    await disco.maintainRegistrations()
++    await sleepAsync(RequestTimeout * 15)
++
++    # Timeout: close stream
++    check stream.closed()
++    # the attempt ended, so the registrar left the ongoing registrations
++    check task.fut.finished()
+diff --git a/tests/libp2p/service_discovery/test_20261122T235204_5620dd_3.nim b/tests/libp2p/service_discovery/test_20261122T235204_5620dd_3.nim
+new file mode 100644
+index 000000000..13664080b
+--- /dev/null
++++ b/tests/libp2p/service_discovery/test_20261122T235204_5620dd_3.nim
+@@ -0,0 +1,64 @@
++# SPDX-License-Identifier: Apache-2.0 OR MIT
++# Copyright (c) Status Research & Development GmbH
++{.used.}
++
++import std/sequtils
++import chronos, results, sets, tables
++import
++  ../../../libp2p/[
++    peerid,
++    peerstore,
++    protocols/kademlia,
++    protocols/service_discovery,
++    protocols/service_discovery/advertiser,
++    stream/connection,
++    switch,
++  ]
++import ../../tools/[fault_stream, unittest]
++import ./utils
++
++proc confirmedReply(): seq[byte] =
++  let reply = Message(
++    msgType: Opt.some(MessageType.register),
++    register: Opt.some(RegisterMessage(status: Opt.some(RegistrationStatus.Confirmed))),
++  ).encode()
++  doAssert reply.len < 128
++  @[reply.len.byte] & reply
++
++suite "Proof 20261122T235204-5620dd/3 - confirmed registration lifetime":
++  asyncTest "eviction from the candidate table preserves a confirmed registration slot":
++    let disco = setupServiceDiscoveryNode(
++      discoConfig = ServiceDiscoveryConfig.new(kRegister = 1)
++    )
++    let stream = FaultStream.new(reply = confirmedReply())
++    disco.switch = FaultSwitch.new(disco.switch, stream)
++    defer:
++      await disco.stopRegistrations()
++      await stream.close()
++
++    let registrar = PeerId.random()
++    require disco.rtable.insert(registrar)
++    disco.switch.peerStore[AddressBook][registrar] = @[makeMultiAddress("127.0.0.1")]
++    let service = makeServiceInfo()
++    let sid = service.id.hashServiceId()
++    require disco.addProvidedService(service).isOk()
++    require disco.advertiser.running.len == 1
++    let confirmed = toSeq(disco.advertiser.running)[0]
++    for step in 0 ..< 20:
++      if stream.closed():
++        break
++      await stepsAsync(1)
++    require stream.closed()
++    require not confirmed.fut.finished()
++
++    let table = disco.rtManager.getTable(sid).get()
++    var replacement = PeerId.random()
++    while table.bucketIndex(replacement.toKey()) != confirmed.bucketIdx:
++      replacement = PeerId.random()
++    require table.removePeer(registrar, "test eviction")
++    require table.insert(replacement)
++
++    await disco.maintainRegistrations()
++
++    check confirmed in disco.advertiser.running
++    check toSeq(disco.advertiser.running).allIt(it.registrar != replacement)

@@ -1,0 +1,236 @@
+{
+  "task_id": "20261122T235204-5620dd",
+  "org": "iftech",
+  "repo": "nim-libp2p",
+  "domain": "spec",
+  "domains": [
+    "spec"
+  ],
+  "branch": "bork/proof/20261122T235204-5620dd",
+  "unit": [
+    "libp2p/protocols/service_discovery/advertiser.nim",
+    "libp2p/protocols/service_discovery/routing_table_manager.nim"
+  ],
+  "workflow": "audit-spec",
+  "input": {
+    "path": "inflight/20261122T235204-5620dd.input.json",
+    "sha256": "b84090203c05c722921112a1cea392bcc2041688cc2513cc2ba4a21a046a143e"
+  },
+  "environment": {
+    "producer": "claude/claude-fable-5-2",
+    "verifier": null,
+    "reporter": "claude/claude-fable-5-2",
+    "claude_version": "2.1.329 (Claude Code)",
+    "codex_version": "codex-cli 0.171.0",
+    "image_id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "host": "Skritek"
+  },
+  "base": "master",
+  "base_sha": "e174279123abb34670f898f0fefabfec0674a101",
+  "generated": "2026-11-23T00:09:01Z",
+  "producer": "claude/claude-fable-5-2",
+  "verifier": null,
+  "reporter": "claude/claude-fable-5-2",
+  "proof_changes": {
+    "reverted": [],
+    "unit": [],
+    "other": []
+  },
+  "gate_sha": "03c7e701161f93d7c1b7608eb08cb94680dbef2d",
+  "gate_base": "e174279123abb34670f898f0fefabfec0674a101",
+  "gate_setup": {
+    "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test service_discovery; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+    "exit": 2,
+    "clean": false
+  },
+  "gate_env": {
+    "tools": {
+      "node": "v22.23.4",
+      "npm": "10.9.9",
+      "pnpm": "12.21.0",
+      "yarn": "1.22.22",
+      "python3": "Python 3.14.4",
+      "pip": "pip 25.1.1 from /usr/lib/python3/dist-packages/pip (python 3.14)",
+      "go": "go version go1.23.4 linux/arm64",
+      "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+      "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "uv": "uv 0.13.5 (aarch64-unknown-linux-gnu)",
+      "git": "git version 2.53.0"
+    }
+  },
+  "image": {
+    "id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "source": "12c5e6288ddb645fcb44d35b601da5fbfead511d1919f26eca75db329cb5ef88",
+    "name": "bork/worker:latest"
+  },
+  "findings_count": 2,
+  "confirmed_count": 0,
+  "findings": [
+    {
+      "id": "20261122T235204-5620dd/1",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "maintainRegistrations re-selects a registrar that replied Rejected and re-sends the same advert",
+      "claim": "The spec says that after a Rejected reply the advertiser SHOULD NOT attempt further registrations with this registrar for this advertisement. advertiseToRegistrar only returns on Rejected and nothing records the rejection. The next maintainRegistrations pass finds the bucket below K_register, treats the rejected registrar as an ordinary candidate (only registrars with a running task are excluded) and starts a new task with the same advertisement bytes. A rejecting registrar is therefore re-sent the same advert on maintenance passes for as long as the service is provided.",
+      "fingerprint": "sha256:e89a894ecd348c4c523d882555d9b5960b159a49ac003ee16b60a07949cb15a0",
+      "handle": "F-e89a894e",
+      "fp_version": 1,
+      "subject": "Advertisers / Distributing ads across registrars / status Rejected: SHOULD NOT attempt further registrations with this registrar for this advertisement",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. advertiser.nim:370-372: `of RegistrationStatus.Rejected: trace ...; return`. The task future completes; no state about (registrar, advertisement) is kept anywhere (Advertiser holds only `running`, `seqNo`, `providedAdverts`, see types.nim:92-95).\n2. advertiser.nim:167 `cleanupFinishedTasks` drops the finished task from `running`, which satisfies 'MUST remove the registrar from the ongoing registrations'.\n3. advertiser.nim:180-183 builds `activePerBucket` from unfinished tasks only. advertiser.nim:204-207 computes `deficit = min(kRegister, bucket.peers.len) - active.len`, now > 0.\n4. advertiser.nim:209-214 builds `candidates` from every bucket peer that is `notin active and != selfPeer`. The rejected registrar is in the bucket and not active, so it is a candidate.\n5. advertiser.nim:216-220 picks from candidates and calls `trackAdvertiseTask(sid, registrar, bucketIdx, advert.bytes)` with the unchanged `providedAdverts[sid].bytes`, i.e. the same advertisement, with no ticket.\n6. `maintainAdvertiser` (advertiser.nim:249-254) runs this every `config.bucketRefreshTime`, so the cycle repeats indefinitely. In a bucket with <= K_register peers the re-selection is certain; in larger buckets it is a random draw each round.\n\nRejected is reachable in normal operation: an advert the registrar considers invalid or stale (registrar.nim:337-353), or a ticket retry that lands outside the registration window (registrar.nim:226-227).\n\nProof (test written from the spec sentence): tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim. One registrar in the service table; a switch stub answers every REGISTER with status Rejected. After the first task ends, two `maintainRegistrations()` rounds are run and the test checks the registrar was dialed exactly once.\n\nFirst pass ran: `make test test_20261122T235204_5620dd_1` with nim 2.2.14 on PATH. Output it recorded:\n\n  [Suite  ] Proof 20261122T235204-5620dd/1 - rejected registrar\n  test_20261122T235204_5620dd_1.nim(111, 52): Check failed: rejecting.dialed.countIt(it == registrar) == 1\n  [FAILED ] (  0.01s) a registrar that replied Rejected gets no further REGISTER for the same advertisement\n  [Summary] 2 tests run (0.01s): 1 OK, 1 FAILED, 0 SKIPPED\n\nThe `require rejecting.dialed == @[registrar]` before the maintenance rounds passed, so the failure is the re-registration itself. No exploit was staged: the forbidden state is the second REGISTER on the wire, which the test observes directly at the dial.\n\nNot covered by existing tests: component/test_advertise_discover.nim 'advertiser stops after the registrar replies Rejected' only checks that the single task returns.\n\nScope of the clause: it is a SHOULD NOT, not a MUST NOT; the finding is a divergence from a recommendation, with no stated justification in the code.\n\nVerification state: the second pass recorded no verdict for this finding (review.json has an empty verdicts list). The merge pass re-read advertiser.nim:167-220 and 370-372 on the proof branch and found the cited lines as described, but could not rerun the test (the test command was not permitted in the merge session), so the failing run above is the first pass's only.",
+      "fix_hint": "Keep, per provided service, the set of registrars that rejected the current advertisement (e.g. a HashSet[PeerId] on ProvidedAdvert, or keyed by serviceId on Advertiser). Add the registrar to it in the Rejected branch of advertiseToRegistrar (advertiser.nim:370). Exclude that set when building `candidates` in maintainRegistrations (advertiser.nim:209-214) and when picking in scheduleRegistrations (advertiser.nim:408) for an unchanged advert. Clear the set when the advertisement bytes change (addProvidedService replacing, republishProvidedAdverts) and when the service is removed, since the rule is scoped to 'this advertisement'. The test tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim fails without the change and passes with it.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic when the bucket holds at most K_register peers; otherwise a random re-pick each maintenance interval (config.bucketRefreshTime). Needs a registrar to answer Rejected.",
+        "scope": "Remote registrations of every provided service. The local self-registration loop is not affected (it is not driven by maintainRegistrations candidates)."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/advertiser.nim",
+          "lines": [
+            209,
+            220
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/advertiser.nim",
+          "lines": [
+            370,
+            372
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261122T235204_5620dd_1; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "n of `waitImpl` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1634, 11) template/generic instantiation of `failed` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(234, 12) Warning: No exceptions possible with this operation, `failed` always returns false [User]\n/w/work/20261122T235204-5620dd/tests/test_all.nim(21, 14) template/generic instantiation of `importTests` from here\n/w/work/20261122T235204-5620dd/tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim(80, 1) template/generic instantiation of `suite` from here\n/w/work/20261122T235204-5620dd/tests/tools/unittest.nim(43, 32) template/generic instantiation of `withSuiteAsyncTestTimeout` from here\n/w/work/20261122T235204-5620dd/tests/tools/unittest.nim(44, 18) template/generic instantiation of `suite` from here\n/w/work/20261122T235204-5620dd/tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim(81, 3) template/generic instantiation of `asyncTest` from here\n/w/work/20261122T235204-5620dd/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1144, 24) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261122T235204-5620dd/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1148, 26) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261122T235204-5620dd/tests/tools/unittest.nim(87, 40) template/generic instantiation of `wait` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1635, 25) template/generic instantiation of `error` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(241, 12) Warning: No exceptions possible with this operation, `error` always returns nil [User]\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261122T235204-5620dd/1 - rejected registrar\n  [Test   ]           a registrar that replied Rejected gets no further REGISTER for the same advertisement\n=====================================================================================\n  /w/work/20261122T235204-5620dd/tests/test_all 'Proof 20261122T235204-5620dd/1 - rejected registrar::a registrar that replied Rejected gets no further REGISTER for the same advertisement'\n-------------------------------------------------------------------------------------\n    /w/work/20261122T235204-5620dd/tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim(111, 52): Check failed: rejecting.dialed.countIt(it == registrar) == 1\n\n  [FAILED ] (  0.01s) a registrar that replied Rejected gets no further REGISTER for the same advertisement\u001b[0m\n(0.01s)   Proof 20261122T235204-5620dd/1 - rejected registrar\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.01s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.01s) a registrar that replied Rejected gets no further REGISTER for the same advertisement\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261122T235204-5620dd/1.patch",
+        "sha256": "7964f00c9bb2e8ae063ed29cd9cc119674d6b99b26882de3a00091a0d8d60aaa",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim",
+          "tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim",
+          "tests/libp2p/service_discovery/test_20261122T235204_5620dd_3.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261122T235204-5620dd/2",
+      "domain": "spec",
+      "class": "missing-requirement",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "REGISTER reply is awaited with no timeout, so a silent registrar keeps its K_register slot",
+      "claim": "The spec's error handling for Timeout is 'Close stream, retry with exponential backoff'. The advertiser sends REGISTER and awaits the reply with no deadline: advertiseToRegistrar awaits sendRegister, which awaits the connection send, and none bounds the wait. A registrar that accepts the stream and never answers keeps the attempt pending, the stream open and one of the bucket's K_register slots occupied; maintainRegistrations counts the task as active and does not replace it. The discoverer's GET_ADS path does apply config.timeout.",
+      "fingerprint": "sha256:11b5c5baeaaae3eb11bc5044043ae098317aea0bfba17c84b07ad8bd53d3fe37",
+      "handle": "F-11b5c5ba",
+      "fp_version": 1,
+      "subject": "Error Handling / Timeout: Close stream, retry with exponential backoff (advertiser side)",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\n1. advertiser.nim:326-330: `let response = (await disco.sendRegister(registrar, serviceId, advert, currentTicket)).valueOr: ... return` - no withTimeout / wait.\n2. advertiser.nim:278-282 (sendRegister): `await disco.send(peerId, msg)` - no deadline.\n3. connection.nim:72-82 (not in unit): `writeLp` then `readLp` with no deadline; the stream is closed or reset only in the `defer` once the proc leaves, which it does not while the read is parked.\n4. advertiser.nim:180-183 and 204-207: an unfinished task counts toward `active`, so `deficit` stays 0 for that slot and no other registrar is tried. The only exits are the registrar leaving the bucket (advertiser.nim:191-202), the service being replaced/removed, or stop.\n5. For comparison, discoverer.nim:167-174 (not in unit) bounds GET_ADS with `disco.config.timeout`; grep for withTimeout/timeout in advertiser.nim finds only the XPR publishing loop (line 470).\n6. The only timeout-like handling the advertiser has is for failures that surface as errors (dial failure, write/read error): the task returns and connection.nim/dial_backoff.nim record an exponential dial backoff. A reply that never arrives produces no error, so that path is never reached.\n\nProof: tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim. KadDHT timeout is set to 200 ms. One registrar in the service table; the dialed stream (FaultStream, onRead = Hang) accepts the write and never answers. The test waits for the read to hang, sleeps 10 timeouts, runs `maintainRegistrations()`, sleeps another 15 timeouts (5 s total, 25x the request timeout) and checks that the stream was closed and the attempt ended.\n\nFirst pass ran: `make test test_20261122T235204_5620dd_2` with nim 2.2.14 on PATH. Output it recorded:\n\n  [Suite  ] Proof 20261122T235204-5620dd/2 - REGISTER timeout\n  test_20261122T235204_5620dd_2.nim(64, 23): Check failed: stream.closed()\n  test_20261122T235204_5620dd_2.nim(66, 27): Check failed: task.fut.finished()\n  [FAILED ] (  5.02s) a REGISTER whose registrar never answers times out and frees its slot\n  [Summary] 2 tests run (5.02s): 1 OK, 1 FAILED, 0 SKIPPED\n\nWhy medium and not high confidence: the spec row names no timeout value, so the test uses KadDHTConfig.timeout (the request timeout this implementation applies to GET_ADS) as the yardstick; and the test uses a stub stream, so it does not show what a real muxed stream's own idle timeout (outside the unit, not checked in this audit) would eventually do. With a real transport the hang may be bounded by that layer rather than unbounded. The existing test 'a registrar that left its bucket loses its stalled task' (test_advertiser.nim:451) already relies on a stalled REGISTER staying pending. No exploit was staged because it would need a live remote peer that withholds replies; the stub reproduces the same code path.\n\nVerification state: the second pass recorded no verdict for this finding (review.json has an empty verdicts list). The merge pass re-read advertiser.nim:259-330 on the proof branch and found no deadline around the REGISTER exchange in the unit, but could not rerun the test (the test command was not permitted in the merge session), so the failing run above is the first pass's only.",
+      "fix_hint": "Bound each REGISTER exchange in the advertiser: wrap the `sendRegister` await in advertiseToRegistrar (advertiser.nim:326) with `disco.config.timeout` (as discoverer.nim does for GET_ADS), cancelling the send on expiry so connection.send's defer resets the stream. Treat expiry like a failed exchange: record it through recordDialFailure so the existing exponential dial backoff applies, and end the task so maintainRegistrations can fill the slot (or retry the same registrar after the backoff, keeping the cached ticket if still inside its window). The test tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim fails without the change and passes with it.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic whenever a selected registrar accepts the stream and withholds the REGISTER reply; a misbehaving or stalled registrar can do it at will.",
+        "scope": "Remote registration tasks of every provided service: up to K_register silent registrars per bucket stall that bucket's placement. Self-registration is a local call and is not affected. GET_ADS (discoverer) is bounded and not affected."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/advertiser.nim",
+          "lines": [
+            326,
+            330
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/advertiser.nim",
+          "lines": [
+            278,
+            282
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261122T235204_5620dd_2; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+        "expect": "nonzero",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "tImpl` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1634, 11) template/generic instantiation of `failed` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(234, 12) Warning: No exceptions possible with this operation, `failed` always returns false [User]\n/w/work/20261122T235204-5620dd/tests/test_all.nim(21, 14) template/generic instantiation of `importTests` from here\n/w/work/20261122T235204-5620dd/tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim(30, 1) template/generic instantiation of `suite` from here\n/w/work/20261122T235204-5620dd/tests/tools/unittest.nim(43, 32) template/generic instantiation of `withSuiteAsyncTestTimeout` from here\n/w/work/20261122T235204-5620dd/tests/tools/unittest.nim(44, 18) template/generic instantiation of `suite` from here\n/w/work/20261122T235204-5620dd/tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim(31, 3) template/generic instantiation of `asyncTest` from here\n/w/work/20261122T235204-5620dd/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1144, 24) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261122T235204-5620dd/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1148, 26) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261122T235204-5620dd/tests/tools/unittest.nim(87, 40) template/generic instantiation of `wait` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1635, 25) template/generic instantiation of `error` from here\n/w/work/20261122T235204-5620dd/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(241, 12) Warning: No exceptions possible with this operation, `error` always returns nil [User]\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261122T235204-5620dd/2 - REGISTER timeout\n  [Test   ]           a REGISTER whose registrar never answers times out and frees its slot\n=====================================================================\n  /w/work/20261122T235204-5620dd/tests/test_all 'Proof 20261122T235204-5620dd/2 - REGISTER timeout::a REGISTER whose registrar never answers times out and frees its slot'\n---------------------------------------------------------------------\n    /w/work/20261122T235204-5620dd/tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim(64, 23): Check failed: stream.closed()\n    /w/work/20261122T235204-5620dd/tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim(66, 27): Check failed: task.fut.finished()\n\n  [FAILED ] (  5.02s) a REGISTER whose registrar never answers times out and frees its slot\u001b[0m\n(5.02s)   Proof 20261122T235204-5620dd/2 - REGISTER timeout\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (5.02s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  5.02s) a REGISTER whose registrar never answers times out and frees its slot\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "proof": {
+        "patch": "findings/20261122T235204-5620dd/2.patch",
+        "sha256": "7964f00c9bb2e8ae063ed29cd9cc119674d6b99b26882de3a00091a0d8d60aaa",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261122T235204_5620dd_2.nim",
+          "tests/libp2p/service_discovery/test_20261122T235204_5620dd_1.nim",
+          "tests/libp2p/service_discovery/test_20261122T235204_5620dd_3.nim"
+        ]
+      }
+    }
+  ],
+  "proof_sha": "03c7e701161f93d7c1b7608eb08cb94680dbef2d",
+  "gate_on_proof": true
+}
