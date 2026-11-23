@@ -7,7 +7,9 @@ import
   ../../../libp2p/[
     protocols/kademlia, switch, builders, cid, multicodec, multihash, stream/connection
   ]
+import ../../../libp2p/protocols/kademlia/memory_store
 import ../../tools/[crypto, unittest, switch_builder, multiaddress]
+import std/importutils
 import ./mock_kademlia
 
 export crypto
@@ -110,7 +112,6 @@ proc testKadConfig*(
     providerRejection: bool = false,
     providerExpirationInterval: Duration = 1.seconds,
     recordExpirationInterval: Duration = DefaultRecordExpirationInterval,
-    cleanupDataEntriesInterval: Duration = chronos.milliseconds(100),
     republishRegionBits: Opt[int] = Opt.none(int),
     livenessGracePeriod: Duration = DefaultLivenessGracePeriod,
     livenessIdleInterval: Duration = DefaultLivenessIdleInterval,
@@ -131,7 +132,6 @@ proc testKadConfig*(
     retries = retries,
     providerRejection = providerRejection,
     recordExpirationInterval = recordExpirationInterval,
-    cleanupDataEntriesInterval = cleanupDataEntriesInterval,
     republishRegionBits = republishRegionBits,
     livenessGracePeriod = livenessGracePeriod,
     livenessIdleInterval = livenessIdleInterval,
@@ -177,7 +177,6 @@ proc setupKadSwitches*(
     replication: int = DefaultReplication,
     beta: int = DefaultBeta,
     recordExpirationInterval: Duration = DefaultRecordExpirationInterval,
-    cleanupDataEntriesInterval: Duration = chronos.milliseconds(100),
 ): seq[KadDHT] =
   var kads: seq[KadDHT]
   for i in 0 ..< count:
@@ -189,7 +188,6 @@ proc setupKadSwitches*(
       replication = replication,
       beta = beta,
       recordExpirationInterval = recordExpirationInterval,
-      cleanupDataEntriesInterval = cleanupDataEntriesInterval,
     )
     kads.add(setupKad(config, bootstrapNodes))
   kads
@@ -305,8 +303,42 @@ proc backdateExpiry*(kad: KadDHT) =
   for record in aged:
     records.push(record)
 
+privateAccess(MemoryKadStore)
+privateAccess(typeof(MemoryKadStore().values))
+privateAccess(typeof(MemoryKadStore().values.byKey.values()))
+
+func mem(kad: KadDHT): MemoryKadStore =
+  doAssert kad.store of MemoryKadStore, "the store of this kad is not a MemoryKadStore"
+  MemoryKadStore(kad.store)
+
+proc valueCount*(kad: KadDHT): int =
+  let now = nowUnixSeconds()
+  var n = 0
+  for value in kad.mem().values.byKey.values():
+    if value.expiresAt > now:
+      inc n
+  n
+
+proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
+  kad.mem().values.byKey.withValue(key, value):
+    if value[].expiresAt > nowUnixSeconds():
+      return Opt.some(value[].record)
+  Opt.none(EntryRecord)
+
+proc seedLocalValue*(
+    kad: KadDHT, key: RecordKey, value: Value, expiresAt = Opt.none(UnixTimestamp)
+): bool =
+  let now = nowUnixSeconds()
+  let stored = StoredValue(
+    key: key,
+    record: EntryRecord(value: value, time: Timestamp.now()),
+    expiresAt: expiresAt.get(now + kad.config.recordExpirationInterval.ceilSeconds()),
+  )
+  kad.store.putValue(stored, now).valueOr:
+    raiseAssert "seedLocalValue: " & $error
+
 proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
-  let record = kad.dataTable.get(key).valueOr:
+  let record = kad.localValue(key).valueOr:
     checkpoint("containsData: key not found: " & $key.shortLog())
     return false
 
@@ -320,7 +352,7 @@ proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
   true
 
 proc containsNoData*(kad: KadDHT, key: RecordKey): bool =
-  kad.dataTable.get(key).isNone()
+  kad.localValue(key).isNone()
 
 proc pluckPeerIds*(kads: seq[KadDHT]): seq[PeerId] =
   kads.mapIt(it.switch.peerInfo.peerId)
@@ -498,3 +530,25 @@ proc seedLinearMeasurements*(est: NetworkSizeEstimator, netSize: int) =
       est.measurements[i].add(
         NetSizeMeasurement(distance: base + delta, weight: 1.0, timestamp: now)
       )
+
+type StubStore* = ref object of KadStore
+  ## Wraps ``inner`` and fails its reads on ``failReads``.
+  inner*: KadStore
+  failReads*: bool
+
+method getValue*(
+    store: StubStore, key: RecordKey, now: UnixTimestamp
+): LPResult[Opt[StoredValue]] {.gcsafe, raises: [].} =
+  if store.failReads:
+    return err("stub read failed")
+  store.inner.getValue(key, now)
+
+method putValue*(
+    store: StubStore, value: StoredValue, now: UnixTimestamp
+): LPResult[bool] {.gcsafe, raises: [].} =
+  store.inner.putValue(value, now)
+
+proc setupStubKad*(store: StubStore): KadDHT =
+  var config = testKadConfig()
+  config.store = Opt.some(KadStore(store))
+  setupKad(config)

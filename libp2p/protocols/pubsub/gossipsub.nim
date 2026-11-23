@@ -365,7 +365,7 @@ method onNewPeer*(g: GossipSub, peer: PubSubPeer) =
       g.pendingTasks.trackFut(g.disconnectPeer(peer))
 
     g.extensionsState.initTopicStreams(
-      peer.peerId, g.maxMessageSize, dial, receive, violation
+      peer.peerId, g.maxMessageSize, dial, receive, violation, peer.outboundQueue
     )
 
   peer.iHaveBudget = IHavePeerBudget
@@ -1387,6 +1387,14 @@ method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   g.parameters.validateParameters().onErrorRaise(InitializationError)
   g.parameters.topicStreamsConfig.ifValue(config):
     config.validate(g.maxMessageSize).onErrorRaise(InitializationError)
+    let nonHighBudget =
+      g.parameters.maxOutboundQueueBytes -
+      highPriorityQueueReservedBytes(g.parameters.maxOutboundQueueBytes)
+    if g.maxMessageSize > nonHighBudget div 2:
+      raise newException(
+        InitializationError,
+        "gossipsub: non-High outbound budget must be at least twice maxMessageSize with topic streams",
+      )
 
   # init the floodsub stuff here, we customize timedcache in gossip!
   g.seen =

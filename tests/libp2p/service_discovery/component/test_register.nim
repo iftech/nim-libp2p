@@ -156,9 +156,8 @@ suite "Service Discovery Component - Register":
       third.tMod.get() >= second.tMod.get()
 
   asyncTest "REGISTER replaces ad for the same advertiser":
-    # Use a non-zero subsecond expiry: the waiting-time formula rounds it down
-    # to zero seconds, while registrar maintenance still has a real interval.
-    let conf = ServiceDiscoveryConfig.new(advertExpiry = 999.millis)
+    # Zero wait without a sub-second expiry, which whole-second timestamps would prune between REGISTERs.
+    let conf = ServiceDiscoveryConfig.new(advertExpiry = 1.secs, ipSimCoefficient = 0.0)
     let registrarNode = setupServiceDiscoveryNode(discoConfig = conf)
     let advertiserNode = setupServiceDiscoveryNode(discoConfig = conf)
 

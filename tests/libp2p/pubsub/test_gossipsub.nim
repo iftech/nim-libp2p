@@ -556,9 +556,8 @@ suite "GossipSub":
     const largeMessageSize = 10 * 1024 * 1024
     for (config, maxMessageSize) in [
       (TopicStreamsConfig(maxIncomingStreams: 2), DefaultPubSubMaxMessageSize),
-      # Raising the message limit must not silently leave either byte budget too small.
+      # Raising the message limit must not leave the incoming byte budget too small.
       (TopicStreamsConfig(), largeMessageSize),
-      (TopicStreamsConfig(maxQueuedBytes: 2 * largeMessageSize), largeMessageSize),
     ]:
       let params = GossipSubParams.init(topicStreamsConfig = Opt.some(config))
       expect InitializationError:
@@ -568,6 +567,40 @@ suite "GossipSub":
           maxMessageSize = maxMessageSize,
           rng = rng(),
         )
+
+  test "topic streams reject an outbound budget below the minimum":
+    const maxMessageSize = 64
+    for budget in [127, 128, 135]:
+      let params = GossipSubParams.init(
+        topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+        maxOutboundQueueBytes = budget,
+      )
+      expectMsg InitializationError,
+        "gossipsub: non-High outbound budget must be at least twice maxMessageSize with topic streams":
+        discard GossipSub.init(
+          makeStandardSwitch(),
+          parameters = params,
+          maxMessageSize = maxMessageSize,
+          rng = rng(),
+        )
+
+  test "topic streams accept the minimum outbound budget including the High reserve":
+    let params = GossipSubParams.init(
+      topicStreamsConfig = Opt.some(TopicStreamsConfig()), maxOutboundQueueBytes = 136
+    )
+    discard GossipSub.init(
+      makeStandardSwitch(), parameters = params, maxMessageSize = 64, rng = rng()
+    )
+
+  test "disabled topic streams accept outbound budgets below the topic stream minimum":
+    for budget in [127, 128, 135, 136]:
+      let params = GossipSubParams.init(
+        topicStreamsConfig = Opt.none(TopicStreamsConfig),
+        maxOutboundQueueBytes = budget,
+      )
+      discard GossipSub.init(
+        makeStandardSwitch(), parameters = params, maxMessageSize = 64, rng = rng()
+      )
 
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())

@@ -71,7 +71,8 @@ suite "Signed Routing Record":
         .tryGet()
       buffer = routingRecord.envelope.encode()
 
-    check SignedPeerRecord.decode(buffer).error == EnvelopeInvalidSignature
+    check SignedPeerRecord.decode(buffer).error ==
+      EnvelopeError.init(EnvelopeInvalidSignature, "peerId mismatch")
 
   test "Decode fails if some addresses are invalid":
     let

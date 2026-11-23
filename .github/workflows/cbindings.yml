@@ -66,19 +66,19 @@ jobs:
           nimble genbindings_c
           nimble genbindings_cddl
 
-      # The only linux build of the shipped refc library; `examples` builds orc.
+      - name: Run cbind tests and examples
+        env:
+          LIBP2P_SAN: ${{ matrix.san }}
+        run: |
+          cd cbind
+          nimble test
+
+      # The only linux build of the shipped refc library; `test` builds orc.
       - name: Build FFI library
         if: matrix.san == 'asan'
         run: |
           cd cbind
           nimble buildffi
-
-      - name: Build and run C bindings examples
-        env:
-          LIBP2P_SAN: ${{ matrix.san }}
-        run: |
-          cd cbind
-          nimble examples
 
   # macOS coverage for the FFI library build + C/CDDL binding generation; the
   # main c-bindings job above covers linux.

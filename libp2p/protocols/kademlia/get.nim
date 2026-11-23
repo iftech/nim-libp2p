@@ -6,7 +6,7 @@ import chronos, chronicles, results
 import ../../[peerid, switch, multihash]
 import ../../utils/future
 import ../protocol
-import ./[protobuf, types, find, put, rpc, kademlia_metrics]
+import ./[protobuf, types, find, put, rpc, kademlia_metrics, local_record]
 
 logScope:
   topics = "libp2p kademlia"
@@ -50,16 +50,15 @@ proc getValue*(
     replied = 0
 
   # if locally present and not expired, include our own copy
-  kad.dataTable.get(key).ifValue(localRecord):
-    if not localRecord.isExpired(kad.config.recordExpirationInterval):
-      if kad.config.validator.isValid(key, localRecord):
-        received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
-        validCount.inc()
-      else:
-        received[kad.switch.peerInfo.peerId] = Opt.none(EntryRecord)
+  let local = kad.getLocalRecord(key).valueOr:
+    warn "Get-value: local record read failed", err = error
+    Opt.none(EntryRecord)
+  local.ifValue(localRecord):
+    if kad.config.validator.isValid(key, localRecord):
+      received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
+      validCount.inc()
     else:
-      kad.dataTable.del(key)
-      trace "Local record expired on read", key = key
+      received[kad.switch.peerInfo.peerId] = Opt.none(EntryRecord)
 
   let quorum = quorumOverride.valueOr:
     kad.config.quorum
@@ -136,11 +135,8 @@ proc getValue*(
       return err(NoPeerReplied)
     return err(error)
 
-  # insert value to our localtable
-  if kad.canStoreLocalRecord(key):
-    kad.dataTable.insert(key, best.value, Timestamp.now())
-  else:
-    debug "GetValue: local record limit reached", key = key, current = kad.dataTable.len
+  discard
+    kad.putBestLocalRecord(key, EntryRecord(value: best.value, time: Timestamp.now()))
 
   # update peers that
   # - don't have best value
@@ -160,21 +156,6 @@ proc getValue*(
 
   ok(best)
 
-proc liveLocalRecord(kad: KadDHT, key: Key): Opt[EntryRecord] =
-  ## Evicts an expired entry so the caller treats it as absent.
-  let recordKey = RecordKey.init(key).valueOr:
-    return Opt.none(EntryRecord)
-
-  let record = kad.dataTable.get(recordKey).valueOr:
-    return Opt.none(EntryRecord)
-
-  if record.isExpired(kad.config.recordExpirationInterval):
-    trace "Record expired, dropping", key
-    kad.dataTable.del(recordKey)
-    return Opt.none(EntryRecord)
-
-  Opt.some(record)
-
 method handleGetValue*(
     kad: KadDHT, stream: Stream, msg: Message
 ) {.base, async: (raises: [CancelledError]).} =
@@ -183,7 +164,10 @@ method handleGetValue*(
       reason = "missingKey", messageType = "getValue", stream
     return
 
-  let entryRecord = kad.liveLocalRecord(key).valueOr:
+  let local = kad.getLocalRecord(key).valueOr:
+    warn "Get-value request: local record read failed", err = error, stream
+    Opt.none(EntryRecord)
+  let entryRecord = local.valueOr:
     let response = Message(
       msgType: Opt.some(MessageType.getValue),
       key: Opt.some(key),

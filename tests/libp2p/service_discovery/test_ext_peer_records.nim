@@ -77,7 +77,8 @@ suite "Signed Extended Peer Record":
 
     check:
       encoded.len > 0
-      SignedExtendedPeerRecord.decode(encoded).error == EnvelopeInvalidSignature
+      SignedExtendedPeerRecord.decode(encoded).error ==
+        EnvelopeError.init(EnvelopeInvalidSignature, "peerId mismatch")
 
   test "Decode fails if some addresses are invalid":
     let

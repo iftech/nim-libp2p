@@ -4,7 +4,6 @@
 ## The default ``KadStore``: plain tables in memory. A ``none`` capacity means no limit.
 
 import std/[heapqueue, sequtils, tables]
-import chronos
 import ../../[peerid, results]
 import ../../utils/opt
 import ./[key_value, protobuf, store, types]
@@ -46,16 +45,7 @@ type
     providers: Providers
     provided: ProvidedKeys
 
-func new*(
-    T: typedesc[MemoryKadStore],
-    limits = KadStoreLimits(
-      maxValues: Opt.some(DefaultMaxLocalRecords),
-      maxProviders: Opt.some(DefaultProviderRecordCapacity),
-      maxProvided: Opt.some(DefaultProvidedKeyCapacity),
-      maxProviderRecordsPerPeer:
-        Opt.some(defaultMaxProviderRecordsPerPeer(DefaultProviderRecordCapacity)),
-    ),
-): T =
+func new*(T: typedesc[MemoryKadStore], limits = KadStoreLimits.new()): T =
   T(
     values: Values(cap: limits.maxValues),
     providers:
@@ -157,23 +147,23 @@ func list(
 
 method getValue*(
     store: MemoryKadStore, key: RecordKey, now: UnixTimestamp
-): Future[LPResult[Opt[StoredValue]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[Opt[StoredValue]] {.gcsafe, raises: [].} =
   ok(store.values.get(key, now))
 
 method putValue*(
     store: MemoryKadStore, value: StoredValue, now: UnixTimestamp
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[bool] {.gcsafe, raises: [].} =
   ok(store.values.put(value, now))
 
 method delValue*(
     store: MemoryKadStore, key: RecordKey
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[void] {.gcsafe, raises: [].} =
   store.values.drop(key)
   ok()
 
 method listValues*(
     store: MemoryKadStore, after: Opt[RecordKey], now: UnixTimestamp, limit: int
-): Future[LPResult[seq[StoredValue]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[seq[StoredValue]] {.gcsafe, raises: [].} =
   ok(store.values.list(after, now, limit))
 
 func `<`(a, b: ProviderSlot): bool =
@@ -295,7 +285,7 @@ method addProvider*(
     p: StoredProvider,
     now: UnixTimestamp,
     maxPerKey: int,
-): Future[LPResult[AddProviderOutcome]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[AddProviderOutcome] {.gcsafe, raises: [].} =
   let id = p.provider.id.valueOr:
     return err("provider of key " & $key & " has no id", "provider without id")
   let peerId = PeerId.init(id).valueOr:
@@ -305,12 +295,12 @@ method addProvider*(
 
 method getProviders*(
     store: MemoryKadStore, key: Key, now: UnixTimestamp, limit: int
-): Future[LPResult[seq[StoredProvider]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[seq[StoredProvider]] {.gcsafe, raises: [].} =
   ok(store.providers.get(key, now, limit))
 
 method removeProvider*(
     store: MemoryKadStore, key: Key, peerId: PeerId
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[void] {.gcsafe, raises: [].} =
   store.providers.drop(key, peerId)
   ok()
 
@@ -352,21 +342,21 @@ func list(
 
 method addProvided*(
     store: MemoryKadStore, key: ProvidedKey
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[bool] {.gcsafe, raises: [].} =
   ok(store.provided.add(key))
 
 method delProvided*(
     store: MemoryKadStore, key: ProvidedKey
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[void] {.gcsafe, raises: [].} =
   store.provided.drop(key)
   ok()
 
 method hasProvided*(
     store: MemoryKadStore, key: ProvidedKey
-): Future[LPResult[bool]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[bool] {.gcsafe, raises: [].} =
   ok(key in store.provided)
 
 method listProvided*(
     store: MemoryKadStore, after: Opt[ProvidedKey], limit: int
-): Future[LPResult[seq[ProvidedKey]]] {.async: (raises: [CancelledError]), gcsafe.} =
+): LPResult[seq[ProvidedKey]] {.gcsafe, raises: [].} =
   ok(store.provided.list(after, limit))
