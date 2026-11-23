@@ -9,7 +9,7 @@ import ../../../../libp2p/protocols/pubsub/pubsubpeer
 import ../../../../libp2p/protocols/pubsub/gossipsub/extension_topic_streams
 import ../../../../libp2p/protocols/pubsub/rpc/messages
 import ../../../../libp2p/stream/[bridgestream, bufferstream]
-import ../../../tools/[unittest, bufferstream, metrics_utils]
+import ../../../tools/[unittest, bufferstream, metrics_utils, futures]
 import ../converters
 import ../peer_helpers
 import ./extension_recording
@@ -149,7 +149,7 @@ suite "GossipSub topic stream send side":
           let frame = data[1 ..^ 1] # without the 1-byte length prefix
           await written.put(frame)
           if frame == frames[0]:
-            await newAsyncEvent().wait() # completes only by cancellation
+            await waitForCancellation()
       )
 
     let peer = newQueuePeer(maxOutboundQueueBytes = header.len + frames[0].len)
@@ -197,7 +197,7 @@ suite "GossipSub topic stream send side":
           let frame = data[1 ..^ 1]
           await written.put(frame)
           if frame == frames[0]:
-            await newAsyncEvent().wait()
+            await waitForCancellation()
       )
 
     let disconnected = new bool

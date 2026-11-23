@@ -11,7 +11,7 @@ import ../../../libp2p/protocols/pubsub/gossipsub/types
 import ../../../libp2p/protocols/pubsub/rpc/[messages, protobuf]
 import ../../../libp2p/stream/bridgestream
 import ../../../libp2p/utils/future
-import ../../tools/[unittest, crypto, stall_stream]
+import ../../tools/[unittest, crypto, stall_stream, futures]
 import ./extensions/extension_recording
 import ./peer_helpers
 
@@ -1123,7 +1123,7 @@ suite "Shared control and topic queue budgets":
     let releaseCleanup = newAsyncEvent()
     proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
       try:
-        await newAsyncEvent().wait()
+        await waitForCancellation()
       except CancelledError as exc:
         cleaningUp.fire()
         await noCancel releaseCleanup.wait()
