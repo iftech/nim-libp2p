@@ -1,0 +1,502 @@
+{
+  "task_id": "20261123T000851-4f8e42",
+  "org": "iftech",
+  "repo": "nim-libp2p",
+  "domain": "spec",
+  "domains": [
+    "spec"
+  ],
+  "branch": "bork/proof/20261123T000851-4f8e42",
+  "unit": [
+    "libp2p/protocols/service_discovery/discoverer.nim",
+    "libp2p/protocols/service_discovery/random_find.nim",
+    "libp2p/protocols/service_discovery/discovery_tracker.nim"
+  ],
+  "workflow": "audit-spec",
+  "input": {
+    "path": "inflight/20261123T000851-4f8e42.input.json",
+    "sha256": "af4fd0205f1ea50fcd6ba0e72533baf8b3c166c7b9153bcdc53f8c0830b06d19"
+  },
+  "environment": {
+    "producer": "claude/claude-fable-5-2",
+    "verifier": "codex",
+    "reporter": "claude/claude-fable-5-2",
+    "claude_version": "2.1.329 (Claude Code)",
+    "codex_version": "codex-cli 0.171.0",
+    "image_id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "host": "Skritek"
+  },
+  "base": "master",
+  "base_sha": "e174279123abb34670f898f0fefabfec0674a101",
+  "generated": "2026-11-23T00:32:53Z",
+  "producer": "claude/claude-fable-5-2",
+  "verifier": "codex",
+  "reporter": "claude/claude-fable-5-2",
+  "proof_changes": {
+    "reverted": [],
+    "unit": [],
+    "other": []
+  },
+  "gate_sha": "c93ac6dc953eced2cf75b50660124de112a609bb",
+  "gate_base": "e174279123abb34670f898f0fefabfec0674a101",
+  "gate_setup": {
+    "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test service_discovery; rc=$?; git ls-files --error-unmatch tests/.gitignore >/dev/null 2>&1 || rm -f tests/.gitignore; exit $rc",
+    "exit": 2,
+    "clean": false
+  },
+  "gate_env": {
+    "tools": {
+      "node": "v22.23.4",
+      "npm": "10.9.9",
+      "pnpm": "12.21.0",
+      "yarn": "1.22.22",
+      "python3": "Python 3.14.4",
+      "pip": "pip 25.1.1 from /usr/lib/python3/dist-packages/pip (python 3.14)",
+      "go": "go version go1.23.4 linux/arm64",
+      "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+      "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+      "uv": "uv 0.13.5 (aarch64-unknown-linux-gnu)",
+      "git": "git version 2.53.0"
+    }
+  },
+  "image": {
+    "id": "sha256:dbf158674332a81fa11202bf4ef6c07016563fbb4b945e824e6fe159fe805ea4",
+    "source": "12c5e6288ddb645fcb44d35b601da5fbfead511d1919f26eca75db329cb5ef88",
+    "name": "bork/worker:latest"
+  },
+  "findings_count": 5,
+  "confirmed_count": 4,
+  "findings": [
+    {
+      "id": "20261123T000851-4f8e42/1",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "lookup counts advertisements, not unique advertisers, toward F_lookup",
+      "claim": "lookup collects results in a HashSet[Advertisement] keyed by the envelope signature and stops when that set reaches F_lookup. Two adverts signed by one advertiser (an older copy and a re-signed one with a newer seqNo) count as two found peers. The lookup then ends with fewer than F_lookup unique advertisers, discards other advertisers it was offered, and returns the same peer twice. The spec requires tracking unique foundPeers and stopping once F_lookup advertisers are found.",
+      "fingerprint": "sha256:61f166196deb3b5bbf309cae556b156972ba40e83ec4b90e0ebc569aa9f79454",
+      "handle": "F-61f16619",
+      "fp_version": 1,
+      "subject": "Discoverers / Looking up services: unique foundPeers, terminate once F_lookup advertisers found",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\nSpec (Looking up services): \"The discoverer MUST attempt to find up to F_lookup advertisers ... the discoverer SHOULD keep track of unique foundPeers, terminating the procedure once F_lookup advertisers have been found\"; the example adds `ad.peerID` to a SET<Peers>.\n\nCode walk:\n1. discoverer.nim:256 `var found = initHashSet[Advertisement]()`; BucketAds.found (line 27) has the same type.\n2. types.nim:185 `hash(ad: Advertisement)` hashes `ad.envelope.signature.data`, and equality is whole-object, so two adverts of one peer with different seqNo/addresses are distinct set members.\n3. discoverer.nim:125-128 processResponse: `if found.len >= limit: break` / `found.incl(ad)` - the limit is applied to the number of adverts.\n4. discoverer.nim:275 and 188 stop the bucket walk on `found.len >= fLookup`; line 294 returns `found.toSeq` unreduced.\nThe advertiser module itself notes the effect (advertiser.nim:559: \"a later seqNo would duplicate this node in a lookup\"), but the discoverer does not defend against it, and a registrar is free to return several adverts of one peer in one response.\n\nProof test tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim: F_lookup = 2. The local registrar cache holds advert A(seqNo 1); the one remote registrar answers GET_ADS with [A(seqNo 2), B]. Two distinct advertisers are available. Run:\n  export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_1\nOutput:\n  test_20261123T000851_4f8e42_1.nim(83, 22): Check failed: advertisers.len == fLookup\n  test_20261123T000851_4f8e42_1.nim(84, 16): Check failed: found.len == advertisers.len\n  [FAILED ] two adverts of one advertiser do not fill F_lookup\nThe lookup returned two adverts, both for advertiser A; B was discarded.\n\nA test rather than an exploit: the forbidden end state (early termination with duplicate advertisers) is reached inside the unit test with a canned registrar response; no live network is available in the container.",
+      "fix_hint": "Key the lookup's found set by advertiser peer id (e.g. Table[PeerId, Advertisement], keeping the advert with the highest seqNo) in lookup/processResponse/collectBucketAds, apply the F_lookup limit to the number of distinct peer ids, and return one advert per peer. The proof test test_20261123T000851_4f8e42_1.nim fails without this and passes with it.",
+      "found_by": "claude",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic whenever responses carry more than one distinct advert of the same peer: an advertiser that re-signed its advert while older copies are still cached, or any registrar that chooses to return several adverts of one peer.",
+        "scope": "Every ServiceDiscovery.lookup call; result list and F_lookup termination. The DiscoveryTracker is not affected (it dedups by peer id)."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            125,
+            128
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            256,
+            256
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_1",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": ") template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1634, 11) template/generic instantiation of `failed` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(234, 12) Warning: No exceptions possible with this operation, `failed` always returns false [User]\n/w/work/20261123T000851-4f8e42/tests/test_all.nim(21, 14) template/generic instantiation of `importTests` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim(48, 1) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(43, 32) template/generic instantiation of `withSuiteAsyncTestTimeout` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(44, 18) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim(52, 3) template/generic instantiation of `asyncTest` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1144, 24) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1148, 26) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(87, 40) template/generic instantiation of `wait` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1635, 25) template/generic instantiation of `error` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(241, 12) Warning: No exceptions possible with this operation, `error` always returns nil [User]\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261123T000851-4f8e42/1 - F_lookup counts unique advertisers\n  [Test   ]           two adverts of one advertiser do not fill F_lookup\n==================================================\n  /w/work/20261123T000851-4f8e42/tests/test_all 'Proof 20261123T000851-4f8e42/1 - F_lookup counts unique advertisers::two adverts of one advertiser do not fill F_lookup'\n--------------------------------------------------\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim(83, 22): Check failed: advertisers.len == fLookup\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim(84, 16): Check failed: found.len == advertisers.len\n\n  [FAILED ] (  0.02s) two adverts of one advertiser do not fill F_lookup\u001b[0m\n(0.02s)   Proof 20261123T000851-4f8e42/1 - F_lookup counts unique advertisers\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.02s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.02s) two adverts of one advertiser do not fill F_lookup\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "confirmed",
+          "note": "F-61f16619. Read discoverer.nim:113–128, 256–294 and types.nim:196–197. Two signed revisions of the same peer are distinct entries in the lookup result set. When those entries reach F_lookup, the response loop and bucket walk stop even if the lookup could still find another peer. The tracker deduplicates by PeerId, but its separate state never controls the returned result or stopping condition. The independent Nim 2.2.14 test run failed both the distinct advertiser count and result uniqueness checks."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T000851-4f8e42/1.patch",
+        "sha256": "6cde1aa589e2f52e21ce85ce23c3f638b5a932a7be5b70604001774765f691ea",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T000851-4f8e42/2",
+      "domain": "spec",
+      "class": "missing-requirement",
+      "severity": "medium",
+      "confidence": "medium",
+      "summary": "GET_ADS query that times out is cancelled with no retry and no backoff recorded",
+      "claim": "When a registrar does not answer GET_ADS within the lookup timeout, collectBucketAds breaks out and cancels the query. The stream is reset, but the timeout is not recorded as a failure: nothing is retried and no backoff applies. A registrar that accepts the stream and stays silent is never backed off or evicted, so every later lookup can pick it again at once and wait the full timeout for its bucket. The spec's error table requires 'Close stream, retry with exponential backoff' on timeout.",
+      "fingerprint": "sha256:15dfc6ac236f6edac51351d942a209f82b06ce5198db8f2ef36cd574d7801485",
+      "handle": "F-15dfc6ac",
+      "fp_version": 1,
+      "subject": "Error Handling: Timeout - Close stream, retry with exponential backoff (discoverer, GET_ADS)",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\nSpec (Error Handling): \"Timeout | Close stream, retry with exponential backoff\".\n\nCode walk:\n1. discoverer.nim:167-175: the per-bucket deadline is `disco.config.timeout`; when `wrapper.withTimeout(timeLeft)` returns false the loop just `break`s.\n2. discoverer.nim:157-165 (defer): unfinished queries are only counted in `stats.pending` and cancelled via `pending.cancelSoon()`.\n3. connection.nim:37-93 `send` has no timeout of its own. On cancellation only its defer runs (stream.reset()). `recordDialFailure` is called for dial errors, write/read LPStreamError and undecodable replies, never for cancellation. So dial_backoff (the module that implements the exponential backoff and the maxDialFailures eviction) never hears about the timeout.\n4. lookup (discoverer.nim:273-290) makes a single pass; there is no retry of the timed-out registrar, with or without backoff, and the next lookup selects it again immediately.\n\nProof test tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim: one registrar in DiscT whose stream accepts the request and hangs on the reply (FaultStream onRead = Hang), timeout 300 ms. After lookup the test confirms the request was sent and cancelled and the stream was reset (those checks pass), then asserts the registrar is in backoff. Run:\n  export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_2\nOutput:\n  test_20261123T000851_4f8e42_2.nim(73, 16): Check failed: registrar in disco.dialFailures\n  test_20261123T000851_4f8e42_2.nim(74, 25): Check failed: disco.dialBackedOff(registrar, addrs)\n  [FAILED ] a registrar that never answers GET_ADS is backed off\n\nNote on the assertion: the test expresses 'retry with exponential backoff' through the implementation's existing backoff book (disco.dialFailures / dialBackedOff). A fix that retried inside the lookup with its own backoff schedule would satisfy the spec without satisfying this assertion as written.\n\nA test rather than an exploit: the stall on a silent registrar is staged with a fault stream; a real silent remote peer is not available in the container.",
+      "fix_hint": "Treat a timed-out GET_ADS like the other failed exchanges: in collectBucketAds (or in send, by wrapping the exchange in a timeout) call recordDialFailure(peerId, addrs) for every query still pending at the deadline, so the existing exponential dial backoff and maxDialFailures eviction apply and the registrar is retried only after its backoff. The proof test test_20261123T000851_4f8e42_2.nim fails without this.",
+      "found_by": "claude",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic for any registrar that accepts the stream and does not reply within KadDHTConfig.timeout.",
+        "scope": "lookup GET_ADS queries. Each bucket containing such a peer among its K_lookup picks costs the full timeout, on every lookup, indefinitely. Dial errors, stream errors and undecodable replies are backed off correctly (connection.nim, outside the unit)."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            173,
+            175
+          ]
+        },
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            157,
+            165
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_2",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "Impl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1634, 11) template/generic instantiation of `failed` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(234, 12) Warning: No exceptions possible with this operation, `failed` always returns false [User]\n/w/work/20261123T000851-4f8e42/tests/test_all.nim(21, 14) template/generic instantiation of `importTests` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim(37, 1) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(43, 32) template/generic instantiation of `withSuiteAsyncTestTimeout` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(44, 18) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim(41, 3) template/generic instantiation of `asyncTest` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1144, 24) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1148, 26) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(87, 40) template/generic instantiation of `wait` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1635, 25) template/generic instantiation of `error` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(241, 12) Warning: No exceptions possible with this operation, `error` always returns nil [User]\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261123T000851-4f8e42/2 - GET_ADS timeout backs the registrar off\n  [Test   ]           a registrar that never answers GET_ADS is backed off\n====================================================\n  /w/work/20261123T000851-4f8e42/tests/test_all 'Proof 20261123T000851-4f8e42/2 - GET_ADS timeout backs the registrar off::a registrar that never answers GET_ADS is backed off'\n----------------------------------------------------\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim(73, 16): Check failed: registrar in disco.dialFailures\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim(74, 25): Check failed: disco.dialBackedOff(registrar, addrs)\n\n  [FAILED ] (  0.41s) a registrar that never answers GET_ADS is backed off\u001b[0m\n(0.41s)   Proof 20261123T000851-4f8e42/2 - GET_ADS timeout backs the registrar off\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.41s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.41s) a registrar that never answers GET_ADS is backed off\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "confirmed",
+          "note": "F-15dfc6ac. Read discoverer.nim:153–175 and 273–290 and connection.nim:37–93. A GET_ADS exchange waiting on a response at the bucket deadline is cancelled. The send defer resets its stream, and the cancellation bypasses the recordDialFailure calls for dial errors, stream errors, and decode failures. The lookup advances through the remaining buckets and has no retry for this exchange. The spec requires a timeout retry with exponential backoff. The independent test run failed both the recorded-failure and active-backoff checks."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T000851-4f8e42/2.patch",
+        "sha256": "6cde1aa589e2f52e21ce85ce23c3f638b5a932a7be5b70604001774765f691ea",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T000851-4f8e42/3",
+      "domain": "spec",
+      "class": "missing-requirement",
+      "severity": "low",
+      "confidence": "medium",
+      "summary": "dispatchGetAds accepts a response whose type is missing or not GET_ADS",
+      "claim": "dispatchGetAds only checks that the reply carries a getAds field. It never reads the reply's message type, so a response typed REGISTER, or one with no type at all, is processed as a valid GET_ADS response and its advertisements and closerPeers are accepted. The spec makes type = GET_ADS a REQUIRED field of the response and lists missing required fields as an error that closes the stream. Advertisements are still signature-checked, so this is a conformance gap, not a trust bypass.",
+      "fingerprint": "sha256:38a27514b8cfccd32ada449c6daf939ca2f37b8462115ba808f6fa9e7eb13457",
+      "handle": "F-38a27514",
+      "fp_version": 1,
+      "subject": "GET_ADS Response: type REQUIRED GET_ADS (7); Error Handling: Missing required fields",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\nSpec (GET_ADS Response): \"type | REQUIRED | GET_ADS (7)\". Error Handling: \"Missing required fields | Close stream\", \"Invalid message format | Close stream\".\n\nCode walk:\n1. discoverer.nim:84-88: `let reply = replyRes.valueOr: return err(error)` then `let getAdsMsg = reply.getAds.valueOr: return err(...)`. `reply.msgType` is not read anywhere in the unit.\n2. connection.nim:91 `Message.decode` accepts a message without field 1 (msgType is Opt in kademlia/protobuf.nim:92).\n3. discoverer.nim:93-98 then validates and returns the ads and closer peers, which lookup merges into foundPeers and DiscT.\n\nProof test tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim: a registrar response carrying one valid advertisement, sent with three different types. Run:\n  export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_3\nOutput:\n  [OK     ] control: a response typed GET_ADS is accepted\n  test_20261123T000851_4f8e42_3.nim(71, 79): Check failed: (await lookupWithReply(Opt.some(kad_protobuf.MessageType.register))) == 0\n  [FAILED ] a response typed REGISTER is not accepted as a GET_ADS response\n  test_20261123T000851_4f8e42_3.nim(74, 70): Check failed: (await lookupWithReply(Opt.none(kad_protobuf.MessageType))) == 0\n  [FAILED ] a response without the required type is not accepted\n\nSeverity is low: the advertisements are still signature-checked, so the gap is protocol conformance rather than a trust bypass. The spec states the response field as REQUIRED but has no explicit discoverer-side 'MUST validate type' sentence; the reading here combines the field table with the Error Handling row.",
+      "fix_hint": "In dispatchGetAds, return an error unless `reply.msgType == Opt.some(MessageType.getAds)` before reading reply.getAds (the stream is already closed by send). The proof test test_20261123T000851_4f8e42_3.nim fails without this; its control case must keep passing.",
+      "found_by": "claude",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic for any non-conforming or mistyped response that still contains field 22.",
+        "scope": "Remote GET_ADS replies in lookup. Advertisement signature and service checks still apply."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            87,
+            88
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_3",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "s` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim(63, 1) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(43, 32) template/generic instantiation of `withSuiteAsyncTestTimeout` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(44, 18) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim(67, 3) template/generic instantiation of `asyncTest` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1144, 24) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1148, 26) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(87, 40) template/generic instantiation of `wait` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1635, 25) template/generic instantiation of `error` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(241, 12) Warning: No exceptions possible with this operation, `error` always returns nil [User]\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261123T000851-4f8e42/3 - GET_ADS response type is checked\n  [Test   ]           control: a response typed GET_ADS is accepted\n  [OK     ] (  0.01s) control: a response typed GET_ADS is accepted\u001b[0m\n  [Test   ]           a response typed REGISTER is not accepted as a GET_ADS response\n===============================================================\n  /w/work/20261123T000851-4f8e42/tests/test_all 'Proof 20261123T000851-4f8e42/3 - GET_ADS response type is checked::a response typed REGISTER is not accepted as a GET_ADS response'\n---------------------------------------------------------------\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim(71, 79): Check failed: (await lookupWithReply(Opt.some(kad_protobuf.MessageType.register))) == 0\n\n  [FAILED ] (  0.01s) a response typed REGISTER is not accepted as a GET_ADS response\u001b[0m\n  [Test   ]           a response without the required type is not accepted\n====================================================\n  /w/work/20261123T000851-4f8e42/tests/test_all 'Proof 20261123T000851-4f8e42/3 - GET_ADS response type is checked::a response without the required type is not accepted'\n----------------------------------------------------\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim(74, 70): Check failed: (await lookupWithReply(Opt.none(kad_protobuf.MessageType))) == 0\n\n  [FAILED ] (  0.01s) a response without the required type is not accepted\u001b[0m\n(0.02s)   Proof 20261123T000851-4f8e42/3 - GET_ADS response type is checked\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 4 tests run (0.02s): 2 OK, 2 FAILED, 0 SKIPPED\n  [FAILED ] (  0.01s) a response typed REGISTER is not accepted as a GET_ADS response\u001b[0m\n  [FAILED ] (  0.01s) a response without the required type is not accepted\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "confirmed",
+          "note": "F-38a27514. Read discoverer.nim:76–98, connection.nim:91–95 and kademlia/protobuf.nim:92–99. Message.decode can return a message with an absent type or a recognized type for another RPC. dispatchGetAds requires the getAds submessage and forwards validated ads and closer peers without checking the response type. The response table requires GET_ADS and Error Handling requires closing on missing required fields. The numeric GET_ADS enum value is defined outside the unit and is a separate issue. The independent test run accepted the GET_ADS control and failed both rejection checks for REGISTER and absent type."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T000851-4f8e42/3.patch",
+        "sha256": "6cde1aa589e2f52e21ce85ce23c3f638b5a932a7be5b70604001774765f691ea",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T000851-4f8e42/4",
+      "domain": "spec",
+      "class": "undefined-behaviour",
+      "severity": "low",
+      "confidence": "medium",
+      "summary": "Discoverer accepts more than F_return advertisements from a single registrar",
+      "claim": "The discoverer never applies F_return to a GET_ADS response: every advertisement that validates is accepted, limited only by the message size cap and F_lookup, so one registrar can supply most of a lookup's results. The spec defines the response as holding up to F_return ads, but states a discoverer-side cap only in the non-normative appendix. The behaviour is reproduced; whether it breaches the spec is not settled by the normative text.",
+      "fingerprint": "sha256:ddddd73687fb1a78de05ed08330587fe40fa3a22a4c57e278463ae888b9dcfa3",
+      "handle": "F-ddddd736",
+      "fp_version": 1,
+      "subject": "GET_ADS Response: getAds.advertisements up to F_return; System Parameters: F_return",
+      "evidence": "Scanned commit e174279123abb34670f898f0fefabfec0674a101.\n\nSpec: GET_ADS Response table: \"getAds.advertisements | REQUIRED | List of encoded advertisements (up to F_return = 10)\". System Parameters: \"F_return | 10 | max number of service-specific peers returned from a single registrar\". Appendix (illustrative): \"A queried registrar returns at most F_return advertisements. If it returns more we can just randomly keep F_return of them\" and \"A small value of F_return << F_lookup increases the diversity of the source of ads ... similar values ... increase the danger of a discoverer receiving ads uniquely from malicious nodes\".\n\nCode walk:\n1. discoverer.nim:30-49 validAds iterates over all received adverts; no count limit.\n2. discoverer.nim:93-96 passes the whole validated list on; discoConfig.fReturn is not referenced anywhere in discoverer.nim (it is only used by the registrar side).\n3. discoverer.nim:125-128 processResponse adds adverts until F_lookup is reached.\nWith minimal adverts (~150-170 bytes) about 25 fit in one 4096-byte reply, i.e. most of the default F_lookup = 30 from one registrar.\n\nProof test tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim: F_return = 3, one registrar answers with 12 valid adverts of distinct peers (message under the size cap, F_lookup = 30). Run:\n  export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_4\nOutput:\n  test_20261123T000851_4f8e42_4.nim(80, 16): Check failed: found.len <= fReturn\n  [FAILED ] a response with more than F_return ads is capped\n\nConfidence is medium, not high, because the only text that tells the discoverer to cap is the appendix; the test demonstrates the behaviour, not a breach of a MUST.\n\nSecond pass (unclear): reproduced the over-limit acceptance, but found the normative text does not say whether an over-limit response is an invalid message to discard or whether the limit binds the sender only. The finding stands as an observed behaviour with an open interpretation, not as a proven violation.",
+      "fix_hint": "In dispatchGetAds, keep at most discoConfig.fReturn advertisements per response (a random F_return-sized sample, as the appendix suggests) before or after validation. Alternatively have the specification state the discoverer-side rule normatively. The proof test test_20261123T000851_4f8e42_4.nim fails without the cap.",
+      "found_by": "claude",
+      "status": "unconfirmed",
+      "impact": {
+        "frequency": "Deterministic for any registrar that returns more than F_return adverts; honest registrars of this implementation cap at F_return.",
+        "scope": "lookup results and DiscoveryTracker records; reduces the source diversity that F_return << F_lookup is meant to give."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            95,
+            95
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_4",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "ere\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1634, 11) template/generic instantiation of `failed` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(234, 12) Warning: No exceptions possible with this operation, `failed` always returns false [User]\n/w/work/20261123T000851-4f8e42/tests/test_all.nim(21, 14) template/generic instantiation of `importTests` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim(48, 1) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(43, 32) template/generic instantiation of `withSuiteAsyncTestTimeout` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(44, 18) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim(52, 3) template/generic instantiation of `asyncTest` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1144, 24) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1148, 26) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(87, 40) template/generic instantiation of `wait` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1635, 25) template/generic instantiation of `error` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(241, 12) Warning: No exceptions possible with this operation, `error` always returns nil [User]\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261123T000851-4f8e42/4 - one registrar yields at most F_return ads\n  [Test   ]           a response with more than F_return ads is capped\n================================================\n  /w/work/20261123T000851-4f8e42/tests/test_all 'Proof 20261123T000851-4f8e42/4 - one registrar yields at most F_return ads::a response with more than F_return ads is capped'\n------------------------------------------------\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim(80, 16): Check failed: found.len <= fReturn\n\n  [FAILED ] (  0.07s) a response with more than F_return ads is capped\u001b[0m\n(0.07s)   Proof 20261123T000851-4f8e42/4 - one registrar yields at most F_return ads\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.07s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.07s) a response with more than F_return ads is capped\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "codex",
+          "verdict": "unclear",
+          "note": "F-ddddd736. Read discoverer.nim:30–49 and 87–98. The discoverer does process the entire response list. The response table says “List of encoded advertisements (up to F_return = 10)” and the registrar procedure specifies the sender limit. The appendix suggests a receiver cap. The normative text leaves it unclear whether an over-limit message counts as an invalid message format to close/discard or whether the sender alone owns the limit. A normative receiver rule would resolve the spec verdict. The independent test run reproduced the over-limit acceptance."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T000851-4f8e42/4.patch",
+        "sha256": "6cde1aa589e2f52e21ce85ce23c3f638b5a932a7be5b70604001774765f691ea",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim"
+        ]
+      }
+    },
+    {
+      "id": "20261123T000851-4f8e42/5",
+      "domain": "spec",
+      "class": "contradicts-spec",
+      "severity": "low",
+      "confidence": "medium",
+      "summary": "Discoverer drops signed ads when an unrelated service's data exceeds 33 bytes",
+      "claim": "After verifying the signature and confirming the requested service is present, validAds calls isValid, which applies the 33-byte ServiceInfo.data limit to every service in the signed record. A valid ad within the overall record size limit is dropped from lookup results and the tracker when a different service carries more than 33 bytes of data. The spec says other entries in xpr.services are opaque to registrars and discoverers and meaningful only to the receiving application; it defines no per-service data limit.",
+      "fingerprint": "sha256:bb8151eb10eee1ae881c88c4a69bdb741cae20a1dddc93274108d083ca653511",
+      "handle": "F-bb8151eb",
+      "fp_version": 1,
+      "subject": "Advertisement Signature Verification / unrelated signed ServiceInfo entries are opaque",
+      "evidence": "Base commit e174279123abb34670f898f0fefabfec0674a101.\n\nSpec (Advertisement Signature Verification, in a Note): \"Any other entries in `xpr.services` are opaque to registrars and discoverers - they are meaningful only to the application that ultimately receives the advertisement.\" The staged specification has no size limit for ServiceInfo.data.\n\nCode walk:\n1. discoverer.nim:33-42 validAds checks the whole encoded size against MaxXPRSize, decodes and authenticates the envelope, and confirms the requested service by hash.\n2. discoverer.nim:44-46 then calls ad.isValid() and skips the advert on false.\n3. extended_peer_record.nim:74-84 (outside the unit) isValid returns false if any entry of xpr.data.services has data longer than MaxServiceDataSize = 33 (line 18), whatever its id.\n4. The advert is dropped before processResponse (discoverer.nim:113-128) can add it to the found set or record it in the tracker.\n\nProof test tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim: one registrar answers GET_ADS with an ordinary signed control advert and a second signed advert for the requested service that also carries 34 bytes of data under a different service id. The test first requires that the second advert is within MaxXPRSize, decodes with a valid signature, and advertises the requested service. Run:\n  export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_5\nOutput (merge pass run):\n  test_20261123T000851_4f8e42_5.nim(76, 9): Check failed: ad in found\n  [FAILED ] lookup accepts a signed ad with unrelated service metadata\nThe `control in found` check passes, so the reply was delivered and processed; only the advert with the unrelated oversized entry is missing.\n\nLimits of the finding: the quoted sentence sits in a Note and has no MUST. The 33-byte limit is a deliberate local policy that this implementation's advertiser and record builder also enforce (extended_peer_record.nim:91-93), so adverts built by this implementation never trigger the drop; it affects adverts from other implementations or applications. No security effect is shown.",
+      "fix_hint": "Keep authentication, requested-service binding and the whole-record size check. In validAds, apply the ServiceInfo.data size policy only to the entry (or entries) whose hashed id equals the requested service id, and leave unrelated entries untouched for the application; or have the specification state a per-entry data limit normatively. The proof test test_20261123T000851_4f8e42_5.nim fails without the change; its control advert must keep being returned, and an advert whose requested-service entry is oversized may still be dropped.",
+      "found_by": "codex",
+      "status": "confirmed",
+      "impact": {
+        "frequency": "Deterministic when a registrar returns a correctly signed advertisement whose unrelated ServiceInfo exceeds 33 bytes and whose full encoding is within the record limit.",
+        "scope": "Service-specific GET_ADS lookup results and provider tracking. This can affect peers running a registrar that accepts such advertisements."
+      },
+      "location": [
+        {
+          "file": "libp2p/protocols/service_discovery/discoverer.nim",
+          "lines": [
+            44,
+            46
+          ]
+        }
+      ],
+      "repro": {
+        "kind": "test",
+        "artifact": "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim",
+        "cmd": "export PATH=/w/cache/nim-2.2.14/bin:$PATH; make test test_20261123T000851_4f8e42_5",
+        "gate": {
+          "ran": true,
+          "exit": 2,
+          "expect": "nonzero",
+          "demonstrated": null,
+          "reason": "no assertion failure in the output (exit 2); a script that proves by its exit status alone is kind exploit with expect nonzero",
+          "output": "0851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1634, 11) template/generic instantiation of `failed` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(234, 12) Warning: No exceptions possible with this operation, `failed` always returns false [User]\n/w/work/20261123T000851-4f8e42/tests/test_all.nim(21, 14) template/generic instantiation of `importTests` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim(44, 1) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(43, 32) template/generic instantiation of `withSuiteAsyncTestTimeout` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(44, 18) template/generic instantiation of `suite` from here\n/w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim(48, 3) template/generic instantiation of `asyncTest` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1144, 24) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/nimbledeps/pkgs2/unittest2-0.2.5-a14b3648dc8bbbaefd0b16d9567b567cc264b042/unittest2.nim(1148, 26) template/generic instantiation of `failingOnExceptions` from here\n/w/work/20261123T000851-4f8e42/tests/tools/unittest.nim(87, 40) template/generic instantiation of `wait` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1908, 11) template/generic instantiation of `waitImpl` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1654, 12) template/generic instantiation of `completeFuture` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/asyncfutures.nim(1635, 25) template/generic instantiation of `error` from here\n/w/work/20261123T000851-4f8e42/nimbledeps/pkgs2/chronos-4.2.2-38d45a837f3a9d51e5851615322bf48c90f7ac69/chronos/internal/raisesfutures.nim(241, 12) Warning: No exceptions possible with this operation, `error` always returns nil [User]\n./tests/test_all --output-level=VERBOSE --console --xml:tests/results_test_all.xml\n[Suite  ] Proof 20261123T000851-4f8e42/5 - unrelated service data is opaque\n  [Test   ]           lookup accepts a signed ad with unrelated service metadata\n==========================================================\n  /w/work/20261123T000851-4f8e42/tests/test_all 'Proof 20261123T000851-4f8e42/5 - unrelated service data is opaque::lookup accepts a signed ad with unrelated service metadata'\n----------------------------------------------------------\n    /w/work/20261123T000851-4f8e42/tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim(76, 9): Check failed: ad in found\n\n  [FAILED ] (  0.02s) lookup accepts a signed ad with unrelated service metadata\u001b[0m\n(0.02s)   Proof 20261123T000851-4f8e42/5 - unrelated service data is opaque\n\n[Suite  ] Final checkTrackers\n  [Test   ]           test\n  [OK     ] (  0.00s) test\u001b[0m\n(0.00s)   Final checkTrackers\n\n[Summary] 2 tests run (0.02s): 1 OK, 1 FAILED, 0 SKIPPED\n  [FAILED ] (  0.02s) lookup accepts a signed ad with unrelated service metadata\u001b[0m\nmake: *** [Makefile:98: test] Error 1\n",
+          "wrote": [
+            "nimcache/test_all/@pbearssl@scsources@ssrc@scodec@spemdec.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@srsa@srsa_default_pkcs1_sign.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@saes_ct64_cbcenc.c.o",
+            "nimcache/test_all/@pbearssl@scsources@ssrc@ssymcipher@sdes_ct_cbcdec.c.o",
+            "nimcache/test_all/@pboringssl@sssl@shandshake_server.cc.o",
+            "nimcache/test_all/@pchronicles@stextlines.nim.c",
+            "nimcache/test_all/@pheapqueue.nim.c",
+            "nimcache/test_all/@plibp2p@scrypto@ssecp.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sconnectivity@sdcutr@sserver.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@skademlia@sstore.nim.c.o",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery.nim.c",
+            "nimcache/test_all/@plibp2p@sprotocols@sservice_discovery@srouting_table_manager.nim.c",
+            "nimcache/test_all/@plibp2p@sstream@slpstream.nim.c",
+            "nimcache/test_all/@plibp2p@stransports@stransport.nim.c.o",
+            "nimcache/test_all/@plibs@slsquic@ssrc@sliblsquic@slsquic_senhist.c.o",
+            "nimcache/test_all/@psecp256k1.nim.c.o",
+            "nimcache/test_all/@psets.nim.c.o",
+            "nimcache/test_all/@pzlib@scsources@sgzwrite.c.o",
+            "tests/results_test_all.xml",
+            "tests/test_all"
+          ]
+        }
+      },
+      "reviews": [
+        {
+          "model": "claude",
+          "verdict": "confirmed",
+          "note": "Ran `make test test_20261123T000851_4f8e42_5` with Nim 2.2.14 on the proof branch: exit nonzero, `test_20261123T000851_4f8e42_5.nim(76, 9): Check failed: ad in found`, 1 FAILED; the control check `control in found` on line 75 passed. Read discoverer.nim:30-49 and extended_peer_record.nim:15-84: isValid at discoverer.nim:44 rejects when any ServiceInfo exceeds MaxServiceDataSize = 33, regardless of its id. Checked the staged spec: the 'opaque to registrars and discoverers' sentence is present (in a Note) and the spec sets no ServiceInfo.data limit. Behaviour reproduced; the clause is a Note without a MUST, so low severity and medium confidence are appropriate."
+        }
+      ],
+      "proof": {
+        "patch": "findings/20261123T000851-4f8e42/5.patch",
+        "sha256": "6cde1aa589e2f52e21ce85ce23c3f638b5a932a7be5b70604001774765f691ea",
+        "paths": [
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_5.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_1.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_2.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_3.nim",
+          "tests/libp2p/service_discovery/test_20261123T000851_4f8e42_4.nim"
+        ]
+      }
+    }
+  ],
+  "proof_sha": "c93ac6dc953eced2cf75b50660124de112a609bb",
+  "gate_on_proof": true
+}
