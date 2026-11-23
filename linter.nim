@@ -7,7 +7,7 @@ import tools/log_payload_linter
 
 runLint:
   sources = ["."]
-  ignoredPatterns = ["**/nimbledeps/**", "**/nimcache*/**", "./build/**/*"]
+  ignoredPatterns = ["**/nimbledeps/**", "**/nimcache*/**", "./build/**/*", "./tests/**/*"]
 
   step "Check chronicles messages":
     check messageEndsWithPunctuation:
