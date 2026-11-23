@@ -34,5 +34,8 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
+
+  step "Semantic checks":
+    ignoredPatterns = ["./**/*"]
     semCheck boundedLogPayloads:
       severity = error
