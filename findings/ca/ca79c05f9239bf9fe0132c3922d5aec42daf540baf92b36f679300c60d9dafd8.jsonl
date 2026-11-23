@@ -19,3 +19,4 @@
 {"kind":"link","run":"triage","at":"2026-11-23T05:00:21Z","to":"sha256:d9d70892682b354d5400ea9814d500c82374502bbda895f92945c0b8169b54b8","to_handle":"F-d9d70892","relation":"distinct","state":"applied","by":"Roman","canonical":"","evidence":"advisor confidence 0.93","via":"auto","advised":"distinct"}
 {"kind":"decision","at":"2026-11-23T05:03:25Z","by":"Roman","verdict":"accepted","note":"advisor confidence 0.55, the console agreed","via":"agreed","advised":"accepted"}
 {"kind":"link","run":"triage","at":"2026-11-23T05:03:53Z","to":"sha256:d8e973351da1304f0efb31ac35c1c3b7cdac0c26ad509ed39d8a377d4756457e","to_handle":"F-d8e97335","relation":"related","state":"applied","by":"Roman","canonical":"","evidence":"advisor confidence 0.7, the console agreed","via":"agreed","advised":"related"}
+{"kind":"filed","run":"20261123T021802-f38c5f","at":"2026-11-23T05:38:47Z","issue_url":"https://github.com/iftech/nim-libp2p/issues/3491","proof_branch":"bork/proof/F-ca79c05f"}
