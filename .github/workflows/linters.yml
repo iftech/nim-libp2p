@@ -51,7 +51,7 @@ jobs:
         with:
           config: linter.nim
           semantic: true
-          setup: nimble --noLockfile --resolver:minver -l setup -y
+          setup: nimble --noLockfile --resolver:minver -l install -y
 
       - name: Check License Header
         uses: apache/skywalking-eyes/header@v0.8.0
