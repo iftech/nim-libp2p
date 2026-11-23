@@ -791,12 +791,7 @@ suite "Waggle managed dissemination":
 
     let stream = TestBufferStream.new(write)
     stream.peerId = PeerId.random()
-    let alive = newAsyncEvent()
-    proc keepAlive() {.async: (raises: []).} =
-      await noCancel alive.wait()
-
-    let mux =
-      StalledMuxer(connection: stream, gate: newAsyncEvent(), handler: keepAlive())
+    let mux = StalledMuxer(connection: stream, gate: newAsyncEvent())
     var rejected = 0
     proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
       if event.kind == WaggleEventKind.StreamFailed:
@@ -818,8 +813,6 @@ suite "Waggle managed dissemination":
     check incoming.closed
     await p.stop()
     check not stream.closed
-    alive.fire()
-    await mux.handler
     await stream.close()
 
   asyncTest "closing a topic releases its queued connection budget":
