@@ -36,7 +36,7 @@ proc makeAdvertisementWithServices(
     services: seq[ServiceInfo],
     privateKey: PrivateKey = PrivateKey.random(rng()).get(),
     addrs: seq[MultiAddress] = @[],
-    seqNo: uint64 = nowUnixSeconds().uint64,
+    seqNo: uint64 = UnixTimestamp.now().uint64,
 ): Advertisement =
   let peerId = PeerId.init(privateKey).get()
   var addressInfos: seq[AddressInfo]

@@ -556,7 +556,7 @@ suite "KadDHT Get":
 
     let key = kads[1].rtable.selfId
     check kads[1].seedLocalValue(
-      key, @[1.byte, 2, 3], expiresAt = Opt.some(nowUnixSeconds())
+      key, @[1.byte, 2, 3], expiresAt = Opt.some(UnixTimestamp.now())
     )
 
     let record = await kads[0].getValue(key, quorumOverride = Opt.some(1))

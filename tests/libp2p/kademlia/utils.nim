@@ -152,6 +152,7 @@ proc setupMockKad*(
     config: KadDHTConfig = testKadConfig(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     getValueResponse: Opt[Message] = Opt.none(Message),
+    getProvidersResponse: Opt[Message] = Opt.none(Message),
     handleAddProviderMessage: Opt[Message] = Opt.none(Message),
     handleFindNodeDelay: Duration = ZeroDuration,
     handleFindNodeMalformedResponse: bool = false,
@@ -159,6 +160,7 @@ proc setupMockKad*(
   let switch = makeStandardSwitch(TcpAutoAddress)
   let kad = MockKadDHT.new(switch, bootstrapNodes, config, rng = rng())
   kad.getValueResponse = getValueResponse
+  kad.getProvidersResponse = getProvidersResponse
   kad.handleAddProviderMessage = handleAddProviderMessage
   kad.handleFindNodeDelay = handleFindNodeDelay
   kad.handleFindNodeMalformedResponse = handleFindNodeMalformedResponse
@@ -229,7 +231,7 @@ func mem(kad: KadDHT): MemoryKadStore =
   MemoryKadStore(kad.store)
 
 proc valueCount*(kad: KadDHT): int =
-  let now = nowUnixSeconds()
+  let now = UnixTimestamp.now()
   var n = 0
   for value in kad.mem().values.byKey.values():
     if value.expiresAt > now:
@@ -238,7 +240,7 @@ proc valueCount*(kad: KadDHT): int =
 
 proc liveProviders(kad: KadDHT, key: Key): seq[StoredProvider] =
   ## The store prunes only on a call that takes `now`, so its tables keep expired records.
-  let now = nowUnixSeconds()
+  let now = UnixTimestamp.now()
   var live: seq[StoredProvider]
   kad.mem().providers.byKey.withValue(key, stored):
     for p in stored[].values():
@@ -327,7 +329,7 @@ proc seedProvider*(
     expiresAt: UnixTimestamp = UnixTimestamp.after(1.hours),
 ) =
   let stored = StoredProvider(provider: provider, expiresAt: expiresAt)
-  let outcome = kad.store.addProvider(key, stored, nowUnixSeconds(), high(int)).valueOr:
+  let outcome = kad.store.addProvider(key, stored, UnixTimestamp.now(), high(int)).valueOr:
     raiseAssert "seedProvider: " & $error
   if outcome notin {AddProviderOutcome.added, AddProviderOutcome.refreshed}:
     raiseAssert "seedProvider: " & $outcome
@@ -348,14 +350,14 @@ proc backdateExpiry*(kad: KadDHT) =
 
 proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
   kad.mem().values.byKey.withValue(key, value):
-    if value[].expiresAt > nowUnixSeconds():
+    if value[].expiresAt > UnixTimestamp.now():
       return Opt.some(value[].record)
   Opt.none(EntryRecord)
 
 proc seedLocalValue*(
     kad: KadDHT, key: RecordKey, value: Value, expiresAt = Opt.none(UnixTimestamp)
 ): bool =
-  let now = nowUnixSeconds()
+  let now = UnixTimestamp.now()
   let stored = StoredValue(
     key: key,
     record: EntryRecord(value: value, time: Timestamp.now()),

@@ -90,7 +90,7 @@ suite "KadDHT - Add Provider":
       key = kad.rtable.selfId
       expiredId = PeerId.random()
       liveId = PeerId.random()
-    kad.seedProvider(key, Peer(id: expiredId.getBytes()), nowUnixSeconds() - 1)
+    kad.seedProvider(key, Peer(id: expiredId.getBytes()), UnixTimestamp.now() - 1)
     kad.seedProvider(key, Peer(id: liveId.getBytes()))
 
     checkUntilTimeout:

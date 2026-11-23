@@ -161,7 +161,7 @@ proc toPeerIds*(peers: seq[Peer]): seq[PeerId] =
 
   return peerIds
 
-proc nowUnixSeconds*(): UnixTimestamp {.gcsafe, raises: [].} =
+proc now*(T: typedesc[UnixTimestamp]): UnixTimestamp {.gcsafe, raises: [].} =
   getTime().toUnix()
 
 func ceilSeconds*(d: chronos.Duration): int64 =
@@ -172,7 +172,9 @@ func ceilSeconds*(d: chronos.Duration): int64 =
   else:
     whole
 
-proc after*(T: typedesc[UnixTimestamp], d: chronos.Duration): UnixTimestamp =
+proc after*(
+    T: typedesc[UnixTimestamp], d: chronos.Duration
+): UnixTimestamp {.gcsafe, raises: [].} =
   ## The first whole second at least `d` after now. Expiry has one-second
   ## resolution, so rounding now down could cut `d` to almost zero.
   let now = getTime()

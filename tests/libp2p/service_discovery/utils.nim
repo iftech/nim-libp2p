@@ -82,7 +82,7 @@ proc makeAdvertisement*(
     serviceId: string = $1,
     privateKey: PrivateKey = PrivateKey.random(rng()).get(),
     addrs: seq[MultiAddress] = @[],
-    seqNo: uint64 = nowUnixSeconds().uint64,
+    seqNo: uint64 = UnixTimestamp.now().uint64,
 ): Advertisement =
   let peerId = PeerId.init(privateKey).get()
   let extRecord = ExtendedPeerRecord(

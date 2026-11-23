@@ -321,8 +321,7 @@ proc providedKeyRegions*(kad: KadDHT): seq[seq[Key]] {.raises: [].} =
 proc stillProvided(kad: KadDHT, keys: seq[Key]): seq[Key] =
   ## A region waits for its slot, so `stopProviding` can drop a key between the
   ## grouping and the walk.
-  let liveSet = kad.listProvidedKeys().toHashSet()
-  keys.filterIt(it in liveSet)
+  keys.filterIt(kad.isProvided(it))
 
 proc republishRegion(
     kad: KadDHT, region: seq[Key]
@@ -428,7 +427,7 @@ method handleAddProvider*(
   # The caps apply also without providerRejection; then no reply goes out.
   # A re-advertisement replaces its record, so it is exempt from both caps.
   let maxPerKey = kad.config.limits.maxProvidersPerKey.get(high(int))
-  let now = nowUnixSeconds()
+  let now = UnixTimestamp.now()
   var atCap = false
   for peer in validPeers:
     let providerId = PeerId.init(peer.id.get()).valueOr:
@@ -503,15 +502,15 @@ proc getProviders*(
 
   return allProviders
 
-proc handleGetProviders*(
+method handleGetProviders*(
     kad: KadDHT, stream: Stream, msg: Message
-) {.async: (raises: [CancelledError]).} =
+) {.base, async: (raises: [CancelledError]).} =
   let msgKey = msg.key.valueOr:
     trace "Get-providers request rejected",
       reason = "missingKey", messageType = "getProviders", stream
     return
 
-  let stored = kad.store.getProviders(msgKey, nowUnixSeconds(), high(int)).valueOr:
+  let stored = kad.store.getProviders(msgKey, UnixTimestamp.now(), high(int)).valueOr:
     debug "Failed to read provider records", key = msgKey, err = error
     @[]
   var providers = stored.mapIt(it.provider).toHashSet()
