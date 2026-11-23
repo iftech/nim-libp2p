@@ -3,11 +3,33 @@
 
 {.used.}
 
+import std/[sequtils, strutils]
 import ../../../libp2p/[extended_peer_record, multiaddress, peerid, peerinfo]
-import ../../../libp2p/protocols/service_discovery/types
+import ../../../libp2p/protocols/service_discovery/[connection, types]
 import ../../tools/[unittest]
 import ../kademlia/utils
 import ./utils
+
+proc typicalAddrs(): seq[MultiAddress] =
+  (0 ..< MaxPeerAddrs).mapIt(
+    MultiAddress.init("/dns4/registrar-node-" & $it & ".example.com/tcp/443/wss").get()
+  )
+
+proc longAddrs(): seq[MultiAddress] =
+  let host = repeat('a', 63) & "." & repeat('b', 63) & "." & repeat('c', 63) & ".com"
+  (0 ..< MaxPeerAddrs).mapIt(
+    MultiAddress.init("/dns4/" & host & "/tcp/" & $(4000 + it) & "/wss").get()
+  )
+
+proc getAdsReply(count: int, addrs: seq[MultiAddress]): Message =
+  Message(
+    msgType: Opt.some(MessageType.getAds),
+    getAds: Opt.some(
+      GetAdsMessage(advertisements: newSeqWith(count, newSeq[byte](MaxXPRSize)))
+    ),
+    closerPeers:
+      (0 ..< count).mapIt(Peer(id: Opt.some(PeerId.random().getBytes()), addrs: addrs)),
+  )
 
 suite "Service Discovery types":
   test "encode: empty seq encodes to empty result":
@@ -107,3 +129,23 @@ suite "Service Discovery types":
       infos.len == 1
       infos[0].peerId == peerId
       infos[0].addrs == addrs
+
+  test "a GET_ADS reply of MaxFReturn max-size ads and closer peers fits the read limit":
+    var response = getAdsReply(MaxFReturn, typicalAddrs())
+    let closerPeers = response.closerPeers
+
+    check:
+      response.encodeWithinReadLimit().len <= ServiceDiscoveryMaxMsgSize
+      response.closerPeers == closerPeers
+
+  test "encodeWithinReadLimit drops the farthest closer peers of an oversized reply":
+    var response = getAdsReply(MaxFReturn, longAddrs())
+    let closerPeers = response.closerPeers
+    check response.encode().len > ServiceDiscoveryMaxMsgSize
+
+    let bytes = response.encodeWithinReadLimit()
+
+    check:
+      bytes.len <= ServiceDiscoveryMaxMsgSize
+      response.closerPeers.len in 1 ..< closerPeers.len
+      response.closerPeers == closerPeers[0 ..< response.closerPeers.len]

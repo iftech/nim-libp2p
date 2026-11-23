@@ -76,6 +76,8 @@ proc send*(
       return err(e, "connection writing failed")
     try:
       replyBuf = await stream.readLp(ServiceDiscoveryMaxMsgSize)
+    except MaxSizeError as e:
+      return err(e, "reply exceeds the read limit")
     except LPStreamError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
@@ -92,6 +94,20 @@ proc send*(
   disco.clearDialFailures(peerId)
   return ok(reply)
 
+proc dropCloserPeers(msg: var Message, excess: int) {.raises: [].} =
+  ## A popped peer frees at least its bytes plus a tag and a length byte.
+  var left = excess
+  while left > 0 and msg.closerPeers.len > 0:
+    left -= msg.closerPeers.pop().encode().len + 2
+
+proc encodeWithinReadLimit*(msg: var Message): seq[byte] {.raises: [].} =
+  let bytes = msg.encode()
+  if bytes.len <= ServiceDiscoveryMaxMsgSize:
+    return bytes
+
+  msg.dropCloserPeers(bytes.len - ServiceDiscoveryMaxMsgSize)
+  msg.encode()
+
 proc handleMessage*(
     disco: ServiceDiscovery, stream: Stream, msg: Message
 ) {.async: (raises: [CancelledError]).} =
@@ -99,14 +115,14 @@ proc handleMessage*(
 
   let peerId = stream.peerId
 
-  let response =
+  var response =
     if msg.msgType.get() == MessageType.register:
       # Prefer the wire address of this stream for IP-tree scoring.
       disco.registration(peerId, msg, stream.observedIps())
     else:
       disco.getAdvertisements(peerId, msg)
 
-  let bytes = response.encode()
+  let bytes = response.encodeWithinReadLimit()
 
   cd_messages_sent.inc(labelValues = [$msg.msgType])
   cd_message_bytes_sent.inc(bytes.len.float64, labelValues = [$msg.msgType])
