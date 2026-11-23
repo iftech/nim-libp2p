@@ -246,7 +246,10 @@ proc acceptAd*(
   disco.acceptAdvertisement(now, serviceId, adv, ad, advertiserIps)
 
 proc registerAd*(
-    disco: ServiceDiscovery, serviceId: ServiceId, ad: Advertisement
+    disco: ServiceDiscovery,
+    serviceId: ServiceId,
+    ad: Advertisement,
+    connectionIps: seq[IpAddress] = @[],
 ): RegisterMessage =
   let inMsg = Message(
     msgType: MessageType.register,
@@ -259,7 +262,7 @@ proc registerAd*(
       )
     ),
   )
-  disco.registration(ad.data.peerId, inMsg).register.get()
+  disco.registration(ad.data.peerId, inMsg, connectionIps).register.get()
 
 proc seedAd*(
     reg: Registrar,
