@@ -264,9 +264,10 @@ proc initTopicStreams*(
     dial: TopicStreamDial,
     receive: TopicStreamReceive,
     violation: proc() {.gcsafe, raises: [].},
+    queue: OutboundQueue,
 ) =
   state.topicStreamsExtension.initTopicStreams(
-    peerId, maxMessageSize, dial, receive, violation
+    peerId, maxMessageSize, dial, receive, violation, queue
   )
 
 proc peerHasTopicStreams*(state: ExtensionsState, peerId: PeerId): bool =
@@ -281,9 +282,13 @@ proc readTopicStream*(
   state.topicStreamsExtension.readTopicStream(peerId, stream)
 
 proc sendTopicRPC*(
-    state: ExtensionsState, peerId: PeerId, msg: PreparedTopicRPC, medium: bool
+    state: ExtensionsState,
+    peerId: PeerId,
+    msg: PreparedTopicRPC,
+    priority: MessagePriority,
+    customDial: TopicStreamDial = nil,
 ): seq[byte] =
-  state.topicStreamsExtension.sendTopicRPC(peerId, msg, medium)
+  state.topicStreamsExtension.sendTopicRPC(peerId, msg, priority, customDial)
 
 proc closeTopicStreams*(
     state: ExtensionsState, topic: string, incoming = false

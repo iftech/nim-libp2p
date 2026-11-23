@@ -29,6 +29,9 @@ import ../libp2p/protocols/connectivity/relay/client
 import ../libp2p/protocols/connectivity/autonatv2/service
 import ../libp2p/extended_peer_record
 
+logScope:
+  topics = "libp2p cbind"
+
 type StreamEntry = ref object
   ## A `ref` so an async proc keeps the same entry across an `await`.
   stream: Stream
@@ -172,6 +175,8 @@ type ExtendedPeerRecordEntry {.ffi.} = object
   seqNo: uint64
   addrs: seq[string]
   services: seq[ServiceInfoEntry]
+  signedRecord: seq[byte]
+    ## Encoded signed record as `start_advertising` takes it; empty for random walks and `decode_xpr`.
 
 type ExtendedRecordsResponse {.ffi.} = object
   records: seq[ExtendedPeerRecordEntry]
@@ -236,6 +241,34 @@ proc onIncomingStream*(event: IncomingStreamEvent) {.ffiEvent.} =
 
 proc onPubsubMessage*(event: PubsubMessageEvent) {.ffiEvent.} =
   ## Fired for every message received on a subscribed gossipsub topic.
+  ## Messages drop past 3/4 of the event queue, so inbound streams keep the rest.
+
+declareCounter libp2p_cbind_events_dropped,
+  "events dropped because the FFI event queue was full", labels = ["event"]
+
+const StreamReleaseTimeoutMs {.intdefine: "cbindStreamReleaseTimeoutMs".} = 600_000
+  ## How long an inbound custom-protocol stream waits for a release before a reset.
+
+static:
+  doAssert StreamReleaseTimeoutMs > 0, "cbindStreamReleaseTimeoutMs must be positive"
+
+const PubsubDropDepth = EventQueueCapacity * 3 div 4
+
+# One FFI thread per context, so this is per context.
+var droppingEvents {.threadvar.}: bool
+
+proc admitEvent(event: string, limit = EventQueueCapacity): bool =
+  # A full queue marks the library stuck for good; only this thread enqueues.
+  let q = ffiCurrentEventQueue
+  if not q.isNil() and q[].eventQueueLen() < limit:
+    droppingEvents = false
+    return true
+
+  libp2p_cbind_events_dropped.inc(labelValues = [event])
+  if not droppingEvents:
+    warn "FFI event queue past its limit, dropping events", event, limit
+    droppingEvents = true
+  false
 
 proc register(
     reg: StreamRegistry,
@@ -804,7 +837,8 @@ proc libp2pMountProtocol*(
     lib: LibP2P, proto: string
 ): Future[Result[bool, string]] {.ffi.} =
   ## Mounts a custom protocol; each inbound stream on it fires
-  ## `on_incoming_stream` and stays open until the host releases the handle.
+  ## `on_incoming_stream` and stays open until the host releases the handle or
+  ## `cbindStreamReleaseTimeoutMs` passes.
   if proto.len == 0:
     return err("proto is empty")
   if lib.switch.isNil():
@@ -821,6 +855,10 @@ proc libp2pMountProtocol*(
   ) {.async: (raises: [CancelledError]).} =
     if streams.closed:
       return
+    if not admitEvent("incoming_stream"):
+      await stream.reset()
+      return
+
     let releaseWaiter =
       Future[void].Raising([CancelledError]).init("cbind custom protocol release")
     let streamId = streams.register(stream, releaseWaiter)
@@ -831,7 +869,10 @@ proc libp2pMountProtocol*(
         proto: selectedProto, streamId: streamId, peerId: $stream.peerId
       )
     )
-    await releaseWaiter
+    if not await releaseWaiter.withTimeout(StreamReleaseTimeoutMs.milliseconds):
+      debug "stream not released in time, resetting",
+        streamId, peerId = shortLog(stream.peerId)
+      await stream.reset()
 
   let mountedProtocol = LPProtocol.new(codecs = @[proto], handler = handle)
   await mountedProtocol.start()
@@ -862,6 +903,8 @@ proc libp2pGossipsubSubscribe*(
     return err("gossipsub not initialized")
   if not lib.topicHandlers.hasKey(topic):
     let handler = proc(t: string, data: seq[byte]): Future[void] {.async.} =
+      if not admitEvent("pubsub_message", PubsubDropDepth):
+        return
       onPubsubMessage(PubsubMessageEvent(topic: t, data: data))
     lib.topicHandlers[topic] = handler
     gossipSub.subscribe(topic, handler)
@@ -891,6 +934,16 @@ func toExtendedRecordsResponse(
     records: seq[ExtendedPeerRecord]
 ): ExtendedRecordsResponse =
   ExtendedRecordsResponse(records: records.mapIt(toExtendedRecordEntry(it)))
+
+func toExtendedRecordsResponse(ads: seq[Advertisement]): ExtendedRecordsResponse =
+  ExtendedRecordsResponse(
+    records: ads.mapIt(
+      block:
+        var entry = toExtendedRecordEntry(it.data)
+        entry.signedRecord = it.encode()
+        entry
+    )
+  )
 
 proc libp2pKadFindNode*(
     lib: LibP2P, peerId: string
@@ -1102,7 +1155,7 @@ proc libp2pServiceDiscoLookup*(
   let res = await disco.lookup(service)
   let ads = res.valueOr:
     return err(error)
-  ok(toExtendedRecordsResponse(ads.mapIt(it.data)))
+  ok(toExtendedRecordsResponse(ads))
 
 proc libp2pServiceDiscoRandomLookup*(
     lib: LibP2P

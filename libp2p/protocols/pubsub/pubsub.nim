@@ -323,7 +323,7 @@ proc broadcast*(
           peer.extensionsState.peerHasTopicStreams(peer.peerId):
         if preparedRPC.isZero():
           preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
-        peer.sendTopicRPC(preparedRPC, priority)
+        peer.sendTopicRPC(preparedRPC, priority, useCustomStream)
       else:
         if encoded.len == 0:
           encoded = msg.encode(p.anonymize)

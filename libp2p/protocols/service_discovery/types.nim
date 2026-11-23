@@ -76,6 +76,7 @@ type
     timestampService*: Table[ServiceId, Moment]
     boundIp*: Table[string, Moment]
     timestampIp*: Table[string, Moment]
+    lastPruneSecond*: int64
 
   AdvertiseTask* = ref object
     fut*: Future[void]

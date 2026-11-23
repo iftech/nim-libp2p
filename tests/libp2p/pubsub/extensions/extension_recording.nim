@@ -2,6 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import chronos
+import ../../../../libp2p/protocols/pubsub/pubsubpeer
 import ../../../../libp2p/peerid
 import ../../../../libp2p/stream/bridgestream
 import
@@ -77,11 +78,20 @@ proc penalize*(recorder: TopicStreamsRecorder): proc() {.gcsafe, raises: [].} =
   return proc() {.gcsafe, raises: [].} =
     inc recorder.penalties
 
+proc unboundedTopicQueue*(): OutboundQueue =
+  OutboundQueue(
+    admit: proc(
+        priority: MessagePriority, size: int
+    ): QueueAction {.gcsafe, raises: [].} =
+      QueueAction(priority: priority, send: true)
+  )
+
 proc new*(
     T: typedesc[TopicStreams],
     recorder: TopicStreamsRecorder,
     config = TopicStreamsConfig(),
     maxMessageSize = 1024,
+    queue = unboundedTopicQueue(),
 ): T =
   return T.new(
     config,
@@ -90,6 +100,7 @@ proc new*(
     recorder.receive(),
     recorder.violation(),
     recorder.penalize(),
+    queue,
   )
 
 proc closeOutgoingStreams*(recorder: TopicStreamsRecorder) {.async: (raises: []).} =

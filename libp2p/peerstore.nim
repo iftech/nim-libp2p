@@ -214,10 +214,13 @@ func findWithAddress(entries: openArray[AddressEntry], ma: MultiAddress): int =
       return i
   -1
 
+const MaxAddressesPerPeer* = 64
+
 func upsert(
     entries: var seq[AddressEntry],
     incoming: AddressEntry,
     timestampPolicy: TimestampPolicy,
+    forceInsert = false,
 ) =
   let idx = entries.findWithAddress(incoming.address)
   if idx >= 0:
@@ -227,8 +230,20 @@ func upsert(
       entries[idx].lastUpdated = incoming.lastUpdated
     of KeepLatestTimestamp:
       entries[idx].lastUpdated = max(entries[idx].lastUpdated, incoming.lastUpdated)
-  else:
+  elif entries.len < MaxAddressesPerPeer:
     entries.add(incoming)
+  elif incoming.confidence >= AddressConfidence.High:
+    var replacement = -1
+    for i, entry in entries:
+      if not forceInsert and entry.confidence >= incoming.confidence:
+        continue
+      if replacement < 0 or entry.confidence < entries[replacement].confidence or (
+        entry.confidence == entries[replacement].confidence and
+        entry.lastUpdated < entries[replacement].lastUpdated
+      ):
+        replacement = i
+    if replacement >= 0:
+      entries[replacement] = incoming
 
 proc isLive(addressBook: AddressBook, peerId: PeerId, entry: AddressEntry): bool =
   peerId in addressBook.connectedPeers or not entry.isExpired(addressBook.ttls)
@@ -276,17 +291,25 @@ func replacementEntries(
     prevConf[normalized] =
       max(prevConf.getOrDefault(normalized, entry.confidence), entry.confidence)
 
-  var newEntries = newSeqOfCap[AddressEntry](addrs.len)
+  var preserved = initHashSet[MultiAddress]()
+  for entry in previous:
+    if entry.confidence >= AddressConfidence.High:
+      preserved.incl(entry.address.stripPeerId())
+
+  var newEntries = newSeqOfCap[AddressEntry](min(addrs.len, MaxAddressesPerPeer))
   for ma in addrs:
     let normalized = stripPeerId(ma)
-    newEntries.upsert(
-      AddressEntry(
-        address: normalized,
-        confidence: higherConfidence(prevConf, normalized, confidence),
-        lastUpdated: now,
-      ),
-      ReplaceTimestamp,
-    )
+    if normalized in preserved or newEntries.len + preserved.len < MaxAddressesPerPeer or
+        newEntries.findWithAddress(normalized) >= 0:
+      preserved.excl(normalized)
+      newEntries.upsert(
+        AddressEntry(
+          address: normalized,
+          confidence: higherConfidence(prevConf, normalized, confidence),
+          lastUpdated: now,
+        ),
+        ReplaceTimestamp,
+      )
 
   for entry in previous:
     let normalized = entry.address.stripPeerId()
@@ -312,7 +335,8 @@ proc set*(
   ## high-confidence entry is never downgraded by a lower-confidence update.
   ## High/Infinite entries absent from the incoming list are preserved so that
   ## a verified dial address is never evicted by a later Identify update.
-  ## Every incoming address refreshes its timestamp, including duplicates.
+  ## Preserved verified addresses take priority within the 64-address limit.
+  ## Stored incoming addresses refresh their timestamps, including duplicates.
   ## Duplicate addresses are merged using their highest confidence.
   ## Subscribers are notified when addresses, confidence or visibility change.
   if addrs.len == 0:
@@ -350,6 +374,7 @@ proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) 
   ## Called after a successful outbound connection to `ma`.
   ## Upgrades the address to High confidence and refreshes its lastUpdated.
   ## If the address is not yet in the book it is added.
+  ## At capacity, evicts the oldest entry of the lowest confidence, even Infinite.
   defer:
     addressBook.notifyChangeHandlers(peerId)
 
@@ -360,6 +385,7 @@ proc markConnected*(addressBook: AddressBook, peerId: PeerId, ma: MultiAddress) 
       address: ma.stripPeerId(), confidence: AddressConfidence.High, lastUpdated: now
     ),
     ReplaceTimestamp,
+    forceInsert = true,
   )
   addressBook.book[peerId] = entries
 
@@ -373,11 +399,13 @@ proc extend*(
   ## For addresses already present the confidence is upgraded to
   ## `max(existing, confidence)` and lastUpdated is always refreshed.
   ## New addresses are added with `confidence`.
+  ## Stores at most 64 addresses while refreshing matches throughout the input.
   ## Existing and incoming duplicates are merged using their highest confidence.
   ## Timestamp-only changes notify subscribers only when an address becomes visible.
   let now = Moment.now()
   let previous = addressBook.book.getOrDefault(key)
-  var entries = newSeqOfCap[AddressEntry](previous.len + addrs.len)
+  var entries =
+    newSeqOfCap[AddressEntry](min(previous.len + addrs.len, MaxAddressesPerPeer))
   for entry in previous:
     entries.upsert(
       AddressEntry(
