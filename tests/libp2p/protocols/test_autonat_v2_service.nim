@@ -73,7 +73,7 @@ proc newService(
 ): (AutonatV2Service, AutonatV2ClientMock) =
   let client =
     AutonatV2ClientMock.new(mockResponse(reachability), expectedDials = expectedDials)
-  (AutonatV2Service.new(rng(), client = client, config = config), client)
+  (AutonatV2Service.new(client = client, config = config), client)
 
 proc awaitReachability(
     service: AutonatV2Service, expected: NetworkReachability
@@ -301,7 +301,6 @@ suite "AutonatV2 Service":
         finished: newFuture[void](),
       )
       service = AutonatV2Service.new(
-        rng(),
         client = client,
         config = AutonatV2ServiceConfig.new(scheduleInterval = Opt.some(interval)),
       )

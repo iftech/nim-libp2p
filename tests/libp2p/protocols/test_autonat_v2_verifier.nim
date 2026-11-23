@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/algorithm
 import chronos
 import
   ../../../libp2p/[
@@ -14,7 +15,7 @@ import
     protocols/connectivity/autonatv2/types,
     protocols/connectivity/autonatv2/verifier,
   ]
-import ../../tools/[unittest, futures, crypto, switch_builder, multiaddress]
+import ../../tools/[unittest, futures, switch_builder, multiaddress]
 
 type
   VerifierClientMock = ref object of AutonatV2ClientMock
@@ -66,8 +67,7 @@ proc makePair(
     peer:
       makeStandardSwitchBuilder(ma("/memorytransport/*")).withAutonatV2Server().build(),
     client: client,
-    verifier:
-      AutonatV2Verifier.new(switch, client, rng(), negativeQuorum = negativeQuorum),
+    verifier: AutonatV2Verifier.new(switch, client, negativeQuorum = negativeQuorum),
   )
 
 proc start(self: VerifierPair) {.async.} =
@@ -157,11 +157,10 @@ suite "AutonatV2 verifier":
       pair.client.peers.setLen(0)
       pair.client.verdicts = verdicts
       check (await pair.verifier.verify(address)) == expected
-      check:
-        pair.client.peers.len == 3
-        pair.peer.peerInfo.peerId in pair.client.peers
-        second.peerInfo.peerId in pair.client.peers
-        third.peerInfo.peerId in pair.client.peers
+      check pair.client.peers.sorted(cmp) ==
+        @[pair.peer.peerInfo.peerId, second.peerInfo.peerId, third.peerInfo.peerId].sorted(
+          cmp
+        )
     check:
       pair.client.dials == 12
       pair.client.finished.finished()

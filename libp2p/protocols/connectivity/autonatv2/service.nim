@@ -9,7 +9,6 @@ import
   ../../../multiaddress,
   ../../../wire,
   ../../../services/reachabilityobservers,
-  ../../../crypto/crypto,
   ../autonat/types,
   ./client,
   ./verifier
@@ -37,7 +36,6 @@ type
     verifier: AutonatV2Verifier
     peerHandler: PeerEventHandler
     client*: AutonatV2Client
-    rng: Rng
     configured: bool
 
   StatusAndConfidenceHandler* = ReachabilityHandler
@@ -60,16 +58,10 @@ proc new*(
 
 proc new*(
     T: typedesc[AutonatV2Service],
-    rng: Rng,
     client: AutonatV2Client = AutonatV2Client.new(),
     config: AutonatV2ServiceConfig = AutonatV2ServiceConfig.new(),
 ): T =
-  T(
-    reachabilityObservers: ReachabilityObservers.new(),
-    config: config,
-    client: client,
-    rng: rng,
-  )
+  T(reachabilityObservers: ReachabilityObservers.new(), config: config, client: client)
 
 func networkReachability*(self: AutonatV2Service): NetworkReachability =
   ## The address manager's summary; `Unknown` before start.
@@ -94,7 +86,7 @@ proc addressMapper(
 proc configure(self: AutonatV2Service, switch: Switch) =
   self.addressManager = switch.addressManager
   self.verifier = AutonatV2Verifier.new(
-    switch, self.client, self.rng, negativeQuorum = self.config.negativeQuorum
+    switch, self.client, negativeQuorum = self.config.negativeQuorum
   )
 
   self.addressMapper = proc(

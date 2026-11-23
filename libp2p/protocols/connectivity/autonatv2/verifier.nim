@@ -30,23 +30,21 @@ const
 type AutonatV2Verifier* = ref object of Verifier
   switch: Switch
   client: AutonatV2Client
-  rng: Rng
   negativeQuorum: Positive
 
 proc new*(
     T: typedesc[AutonatV2Verifier],
     switch: Switch,
     client: AutonatV2Client,
-    rng: Rng,
     negativeQuorum: Positive = DefaultNegativeQuorum,
 ): T =
   ## The switch must mount `client`, which receives the dial back.
   client.setup(switch)
-  T(switch: switch, client: client, rng: rng, negativeQuorum: negativeQuorum)
+  T(switch: switch, client: client, negativeQuorum: negativeQuorum)
 
 proc selectPeer(self: AutonatV2Verifier, excluded: openArray[PeerId]): Opt[PeerId] =
   ## A peer which dialed us proves nothing. It has a path to us already.
-  self.rng.pickOne(
+  self.switch.rng.pickOne(
     self.switch.connectedPeers(Direction.Out).filterIt(
       it notin excluded and
         $AutonatV2Codec.DialRequest in self.switch.peerStore[ProtoBook][it] and
