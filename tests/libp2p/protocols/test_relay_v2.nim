@@ -621,7 +621,7 @@ suite "Circuit Relay V2":
           await stream.reset()
 
         let
-          rel2Cl = RelayClient.new(canHop = true)
+          rel2Cl = RelayClient.new(canHop = true, circuitRelayV1 = true)
           rel2 = createSwitch(rel2Cl, useYamux)
           rv2 = Relay.new()
         rv2.setup(rel)

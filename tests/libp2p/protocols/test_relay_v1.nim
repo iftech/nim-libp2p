@@ -268,6 +268,44 @@ suite "Circuit Relay":
     rcv.checkMsg(Opt.some(RelayType.Status), Opt.some(HopCantDialDst))
     await allFutures(dst2.stop())
 
+  asyncTest "RelayClient serves v1 Hop only when v1 is enabled":
+    type HopCase = object
+      canHop: bool
+      circuitRelayV1: bool
+      status: StatusV1
+
+    let cases = [
+      HopCase(canHop: true, circuitRelayV1: false, status: HopCantSpeakRelay),
+      HopCase(canHop: false, circuitRelayV1: true, status: HopCantSpeakRelay),
+      HopCase(canHop: true, circuitRelayV1: true, status: StatusV1.Success),
+    ]
+    for c in cases:
+      checkpoint "canHop = " & $c.canHop & ", circuitRelayV1 = " & $c.circuitRelayV1
+      let hop = makeStandardSwitchBuilder(TcpAutoAddress)
+        .withCircuitRelay(
+          RelayClient.new(canHop = c.canHop, circuitRelayV1 = c.circuitRelayV1)
+        )
+        .build()
+      await hop.start()
+      defer:
+        await hop.stop()
+      await src.connect(hop)
+      await hop.connect(dst)
+
+      for typ in [RelayType.CanHop, RelayType.Hop]:
+        checkpoint "type = " & $typ
+        stream = await src.dial(hop.peerInfo.peerId, RelayV1Codec)
+        msg = createMsg(
+          Opt.some(typ),
+          Opt.none(StatusV1),
+          Opt.some(RelayPeer(peerId: src.peerInfo.peerId, addrs: src.peerInfo.addrs)),
+          Opt.some(RelayPeer(peerId: dst.peerInfo.peerId, addrs: dst.peerInfo.addrs)),
+        )
+        await stream.writeLp(msg)
+        rcv = Opt.some(RelayMessage.decode(await stream.readLp(1024)).get())
+        rcv.checkMsg(Opt.some(RelayType.Status), Opt.some(c.status))
+        await stream.close()
+
   asyncTest "Dial Peer":
     let maStr =
       $srelay.peerInfo.addrs[0] & "/p2p/" & $srelay.peerInfo.peerId & "/p2p-circuit"
