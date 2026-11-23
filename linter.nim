@@ -5,6 +5,7 @@ import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
 
+
 runLint:
   sources = ["."]
   ignoredPatterns = ["**/nimbledeps/**", "**/nimcache*/**", "./build/**/*"]
