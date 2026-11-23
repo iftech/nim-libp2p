@@ -107,33 +107,39 @@ proc trackAdvertiseTask(
   )
   cd_advertiser_pending_actions.inc()
 
-func anyProvidedService(a: Advertiser): Opt[ServiceId] =
-  ## A Table has no first-element accessor, so take the first key iterated.
-  for id in a.providedAdverts.keys:
-    return Opt.some(id)
-  Opt.none(ServiceId)
+proc registerLocally(disco: ServiceDiscovery) =
+  ## Own ads carry no IPs, so they never raise the wait of a remote peer on the same subnet.
+  let selfPeer = disco.switch.peerInfo.peerId
+  let now = Moment.init(Moment.now().epochSeconds, Second)
+  for serviceId, advert in disco.advertiser.providedAdverts:
+    let ad = Advertisement.decode(advert.bytes).valueOr:
+      trace "Cannot decode own advertisement", serviceId, error
+      continue
+    disco.acceptAdvertisement(now, serviceId, selfPeer, ad, @[])
+
+proc maintainLocalRegistration(
+    disco: ServiceDiscovery
+) {.async: (raises: [CancelledError]).} =
+  ## Refreshes at half the expiry so a prune cannot drop an own ad between refreshes.
+  heartbeat "local self-registration",
+    max(1.seconds, disco.discoConfig.advertExpiry div 2), sleepFirst = true:
+    if disco.isServer:
+      disco.registerLocally()
 
 proc startLocalRegistration(disco: ServiceDiscovery) =
-  ## Starts (or restarts) the single long-lived local self-registration task.
-
   if not disco.isServer:
     trace "Not registering locally while in client mode",
       services = disco.advertiser.providedAdverts.len
     return
 
+  if disco.advertiser.providedAdverts.len == 0:
+    return
+
+  disco.registerLocally()
   if not disco.localRegistrationLoop.isNil and not disco.localRegistrationLoop.finished:
     return
 
-  let sid = disco.advertiser.anyProvidedService().valueOr:
-    return
-
-  let selfPeer = disco.switch.peerInfo.peerId
-  disco.localRegistrationLoop = disco.advertiseToRegistrar(
-    sid,
-    selfPeer,
-    Opt.none(Ticket),
-    disco.advertiser.providedAdverts.getOrDefault(sid).bytes,
-  )
+  disco.localRegistrationLoop = disco.maintainLocalRegistration()
 
 proc stopLocalRegistration(
     disco: ServiceDiscovery
@@ -148,12 +154,6 @@ proc stopLocalRegistration(
 proc stopRegistrations*(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
   await disco.advertiser.cancelRunningTasks()
   await disco.stopLocalRegistration()
-
-proc restartLocalRegistration(disco: ServiceDiscovery) =
-  if not disco.localRegistrationLoop.isNil:
-    disco.localRegistrationLoop.cancelSoon()
-    disco.localRegistrationLoop = nil
-  disco.startLocalRegistration()
 
 proc maintainRegistrations*(
     disco: ServiceDiscovery
@@ -253,9 +253,6 @@ proc maintainAdvertiser*(
     disco.config.bucketRefreshTime, sleepFirst = true:
     await disco.maintainRegistrations()
 
-proc localRegister(disco: ServiceDiscovery, msg: Message): LPResult[Message] =
-  return ok(disco.registration(disco.switch.peerInfo.peerId, msg))
-
 proc sendRegister*(
     disco: ServiceDiscovery,
     peerId: PeerId,
@@ -275,13 +272,7 @@ proc sendRegister*(
     ),
   )
 
-  let replyRes =
-    if peerId == disco.switch.peerInfo.peerId:
-      disco.localRegister(msg)
-    else:
-      await disco.send(peerId, msg)
-
-  let reply = replyRes.valueOr:
+  let reply = (await disco.send(peerId, msg)).valueOr:
     return err(error)
 
   let registerMsg = reply.register.valueOr:
@@ -312,10 +303,9 @@ proc advertiseToRegistrar*(
 
   cd_advertiser_actions_executed.inc()
 
-  let isSelf = registrar == disco.switch.peerInfo.peerId
   var currentTicket = ticket
 
-  trace "Registering advert", serviceId, registrar, isSelf
+  trace "Registering advert", serviceId, registrar
 
   # `changeMode` can flip the mode at any point, so every iteration re-reads it
   while true:
@@ -336,22 +326,9 @@ proc advertiseToRegistrar*(
     of kademlia_protobuf.RegistrationStatus.Confirmed:
       trace "Advert accepted", serviceId, registrar
 
-      # Drop any ticket used for this Confirm.
-      # Self-registration reuses this loop after advertExpiry.
-      currentTicket = Opt.none(Ticket)
-
+      # The maintenance loop rotates this slot to another peer in the bucket.
       await sleepAsync(disco.discoConfig.advertExpiry)
-
-      if isSelf:
-        # Local registration task (the single long-lived one stored in
-        # localRegistrationLoop). Keep refreshing so our advert stays
-        # current in the local registrar.
-        continue
-      else:
-        # For remote registrars: terminate the task after one lifetime.
-        # The maintenance loop will then rotate this slot to another peer
-        # in the same bucket.
-        return
+      return
     of kademlia_protobuf.RegistrationStatus.Wait:
       let newTicket = response.ticket.valueOr:
         trace "No ticket to retry with", serviceId, registrar
@@ -567,10 +544,7 @@ proc addProvidedService*(
   disco.rtManager.getTable(serviceId).ifValue(table):
     disco.scheduleRegistrations(serviceId, table, advertBytes, superseded)
 
-  if replacing:
-    disco.restartLocalRegistration()
-  else:
-    disco.startLocalRegistration()
+  disco.startLocalRegistration()
   disco.restartXprPublishing()
 
   ok()
@@ -587,9 +561,9 @@ proc removeProvidedService*(
   disco.rtManager.removeService(sid, Provided)
   discard disco.dropOwnService(serviceId)
 
-  # The local loop may still register the removed advert, so move it to a remaining one.
-  await disco.stopLocalRegistration()
-  disco.startLocalRegistration()
+  disco.registrar.removeAdvertisement(sid, disco.switch.peerInfo.peerId)
+  if disco.advertiser.providedAdverts.len == 0:
+    await disco.stopLocalRegistration()
   disco.restartXprPublishing()
 
   debug "Removed provided service", service = serviceId, serviceId = sid

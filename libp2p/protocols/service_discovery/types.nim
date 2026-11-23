@@ -40,6 +40,7 @@ const
   Default_DialBackoffBase* = 30.secs
   Default_DialBackoffMax* = 30.minutes
   Default_MaxDialFailures* = 5
+  Default_DiscountedServicesPerPeer* = 8
 
 type
   ServiceId* = Key
@@ -110,6 +111,8 @@ type
     dialBackoffMax*: Duration ## Cap of the exponential dial backoff.
     maxDialFailures*: int
       ## Consecutive failed dials before the peer leaves every service table.
+    discountedServicesPerPeer*: int
+      ## Services a peer holds in the cache before its own IPs raise its wait; 0 disables.
 
   DiscoverySource* = enum
     FromLookup
@@ -167,10 +170,12 @@ proc new*(
     dialBackoffBase = Default_DialBackoffBase,
     dialBackoffMax = Default_DialBackoffMax,
     maxDialFailures = Default_MaxDialFailures,
+    discountedServicesPerPeer = Default_DiscountedServicesPerPeer,
 ): T {.raises: [].} =
   doAssert advertCacheCap > 0, "advertCacheCap must be > 0"
   doAssert ipSimCoefficient >= 0.0, "ipSimCoefficient must be >= 0"
   doAssert maxDialFailures > 0, "maxDialFailures must be > 0"
+  doAssert discountedServicesPerPeer >= 0, "discountedServicesPerPeer must be >= 0"
   doAssert dialBackoffBase > 0.nanoseconds, "dialBackoffBase must be > 0"
   doAssert dialBackoffMax > 0.nanoseconds, "dialBackoffMax must be > 0"
   ServiceDiscoveryConfig(
@@ -188,6 +193,7 @@ proc new*(
     dialBackoffBase: dialBackoffBase,
     dialBackoffMax: dialBackoffMax,
     maxDialFailures: maxDialFailures,
+    discountedServicesPerPeer: discountedServicesPerPeer,
   )
 
 proc hash*(t: AdvertiseTask): Hash =

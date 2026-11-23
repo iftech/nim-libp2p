@@ -431,6 +431,90 @@ suite "Service Discovery Registrar - waitingTime":
 
     check w >= ZeroDuration
 
+  test "a peer's own IPs count only past its discounted services":
+    type Case = object
+      name: string
+      discount: int
+      ownServices: int
+      otherPeerOnIp: bool
+      sendsPeerId: bool
+      ipv6: bool
+      queriesHeldService: bool
+      waits: bool
+
+    const cases = [
+      Case(name: "second service", discount: 8, ownServices: 1, sendsPeerId: true),
+      Case(
+        name: "discount disabled",
+        discount: 0,
+        ownServices: 1,
+        sendsPeerId: true,
+        waits: true,
+      ),
+      Case(
+        name: "peer at the cap",
+        discount: 2,
+        ownServices: 2,
+        sendsPeerId: true,
+        waits: true,
+      ),
+      Case(
+        name: "other peer on the IP",
+        discount: 8,
+        ownServices: 1,
+        otherPeerOnIp: true,
+        sendsPeerId: true,
+        waits: true,
+      ),
+      Case(name: "unknown sender", discount: 8, ownServices: 1, waits: true),
+      Case(name: "one below the cap", discount: 2, ownServices: 1, sendsPeerId: true),
+      Case(
+        name: "re-registering a held service",
+        discount: 1,
+        ownServices: 1,
+        sendsPeerId: true,
+        queriesHeldService: true,
+      ),
+      Case(
+        name: "IPv6 own IP", discount: 8, ownServices: 1, sendsPeerId: true, ipv6: true
+      ),
+    ]
+
+    let ip4 = IpAddress(family: IpAddressFamily.IPv4, address_v4: [10'u8, 0, 0, 1])
+    let ip6 = IpAddress(
+      family: IpAddressFamily.IPv6,
+      address_v6: [0x20'u8, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    )
+    let now = Moment.now()
+    for c in cases:
+      checkpoint c.name
+      let ip = if c.ipv6: ip6 else: ip4
+      let registrar = Registrar.new()
+      let discoConfig =
+        ServiceDiscoveryConfig.new(discountedServicesPerPeer = c.discount)
+      let peer = PeerId.random()
+
+      for i in 0 ..< c.ownServices:
+        let sid = makeServiceId(byte(i + 1))
+        registrar.seedAd(sid, makeAdvertisement($sid), now, peer, @[ip])
+      if c.otherPeerOnIp:
+        let sid = makeServiceId(100)
+        registrar.seedAd(sid, makeAdvertisement($sid), now, PeerId.random(), @[ip])
+
+      let sender =
+        if c.sendsPeerId:
+          Opt.some(peer)
+        else:
+          Opt.none(PeerId)
+      let queried =
+        if c.queriesHeldService:
+          makeServiceId(1)
+        else:
+          makeServiceId(200)
+      let w = registrar.waitingTime(discoConfig, queried, @[ip], now, sender)
+
+      check (w >= discoConfig.advertExpiry) == c.waits
+
 suite "Service Discovery Registrar - request handlers":
   test "registration caps the offered tWaitFor at advertExpiry":
     let advertExpiry = 100.secs
@@ -1804,15 +1888,6 @@ suite "Service Discovery Registrar - connection IPs":
     let peerId = PeerId.random()
     disco.switch.peerStore[AddressBook][peerId] = @[makeMultiAddress("10.0.0.1")]
     check disco.advertiserIps(peerId) == @[parseIpAddress("10.0.0.1")]
-
-  test "advertiserIps falls back to self listen addrs for local registration":
-    let disco = setupServiceDiscoveryNode()
-    let selfId = disco.switch.peerInfo.peerId
-    let listenAddr = makeMultiAddress("127.0.0.1")
-    disco.switch.peerInfo.addrs = @[listenAddr]
-    # Clear peerstore entry so self listen path is used.
-    disco.switch.peerStore[AddressBook][selfId] = @[]
-    check disco.advertiserIps(selfId) == @[parseIpAddress("127.0.0.1")]
 
   test "registration caches connectionIps not peerstore or ad payload IPs":
     let disco = setupServiceDiscoveryNode(
