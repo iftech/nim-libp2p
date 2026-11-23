@@ -19,12 +19,16 @@
 ##   await the same cleanup, and the event loop stays responsive.
 ## - Workers spawn on the first `submit`. `start` reopens a stopped pool, or
 ##   reopens it when an in-flight `stop` finishes.
+## - Await `stop` before you drop the last reference to a started pool. Else the
+##   threads block forever and the shared heap leaks.
 
 {.push raises: [].}
 
 import std/[atomics, locks, tables, typetraits]
 import chronos, chronos/threadsync
 import ../results
+
+const WorkerPollInterval = 100.milliseconds
 
 type
   WorkProc*[T] = proc(payload: var T): bool {.nimcall, gcsafe, raises: [].}
@@ -53,6 +57,7 @@ type
     queueHead, queueTail: ptr Job[T]
     completedHead: ptr Job[T] # singly-linked via `next`
     running: Atomic[bool]
+    failed: Atomic[bool]
     workersRunning: Atomic[int]
     requestSignal, responseSignal: ThreadSignalPtr
     work: WorkProc[T]
@@ -84,10 +89,37 @@ proc destroy[T](shared: ptr SharedState[T]) =
   deinitLock(shared[].lock)
   deallocShared(shared)
 
+proc unqueue[T](shared: ptr SharedState[T], job: ptr Job[T]): bool =
+  ## Unlink `job` from the queue. False when a worker already took it.
+  var found = false
+  withLock shared[].lock:
+    var prev: ptr Job[T]
+    var cur = shared[].queueHead
+    while not cur.isNil and cur != job:
+      prev = cur
+      cur = cur.next
+    if not cur.isNil:
+      found = true
+      if prev.isNil:
+        shared[].queueHead = job.next
+      else:
+        prev.next = job.next
+      if shared[].queueTail == job:
+        shared[].queueTail = prev
+  found
+
+proc markFailed[T](shared: ptr SharedState[T]) =
+  shared[].failed.store(true)
+  withLock shared[].lock:
+    shared[].running.store(false)
+
 proc workerLoop[T](shared: ptr SharedState[T]) {.thread.} =
   {.cast(gcsafe).}:
     while shared[].running.load():
-      discard shared[].requestSignal.waitSync()
+      # The timeout makes a lost wake-up delay a worker instead of strand it.
+      if shared[].requestSignal.waitSync(WorkerPollInterval).isErr():
+        shared.markFailed()
+        break
       while true:
         var job: ptr Job[T]
         withLock shared[].lock:
@@ -142,13 +174,30 @@ proc drainCompleted[T](p: BlockingPool[T]) =
     shared[].completedHead = nil
   p.finishRequests(head)
 
+proc discardQueuedIfFailed[T](p: BlockingPool[T]) =
+  let shared = p.shared
+  if not shared[].failed.load():
+    return
+
+  var head: ptr Job[T]
+  withLock shared[].lock:
+    head = shared[].queueHead
+    shared[].queueHead = nil
+    shared[].queueTail = nil
+  p.finishRequests(head)
+
 proc dispatchLoop[T](p: BlockingPool[T]) {.async: (raises: []).} =
   while not p.stopped:
     try:
       await p.shared[].responseSignal.wait()
-    except AsyncError, CancelledError:
-      continue
+    except CancelledError:
+      break
+    except AsyncError:
+      p.shared.markFailed()
+      p.discardQueuedIfFailed()
+      break
     p.drainCompleted()
+    p.discardQueuedIfFailed()
 
 func startFailed(detail: string): PoolError =
   PoolError(kind: PoolErrorKind.StartFailed, detail: detail)
@@ -197,8 +246,8 @@ proc startWorkers[T](p: BlockingPool[T]): Result[void, PoolError] =
 
 proc new*[T](_: type BlockingPool[T], work: WorkProc[T], workers = 2): BlockingPool[T] =
   ## Create a pool which starts `workers` threads running `work` on first use.
-  static:
-    doAssert supportsCopyMem(T), "BlockingPool payload must be plain data"
+  when not supportsCopyMem(T):
+    {.error: "BlockingPool payload must be plain data".}
   BlockingPool[T](work: work, workerCount: workers)
 
 func isStopped*[T](p: BlockingPool[T]): bool =
@@ -212,6 +261,8 @@ proc submit*[T](
     return err(PoolError(kind: PoolErrorKind.Discarded))
 
   ?p.startWorkers()
+  if p.shared[].failed.load():
+    return err(PoolError(kind: PoolErrorKind.Discarded, detail: "Pool workers failed"))
 
   let
     shared = p.shared
@@ -232,14 +283,35 @@ proc submit*[T](
     else:
       shared[].queueTail.next = job
     shared[].queueTail = job
-  discard shared[].requestSignal.fireSync()
+  shared[].requestSignal.fireSync().isOkOr:
+    if shared.unqueue(job):
+      job.settle(JobState.Discarded)
+      p.finishRequest(job)
+      return err(
+        PoolError(
+          kind: PoolErrorKind.Discarded, detail: "Failed to wake pool worker: " & error
+        )
+      )
 
   return await fut
+
+proc reopenAfterStop[T](p: BlockingPool[T]) =
+  if not p.reopen:
+    return
+
+  p.reopen = false
+  p.stopped = false
+  p.stopFut = nil
 
 proc start*[T](p: BlockingPool[T]) =
   ## Reopen a stopped pool. Workers spawn on the next `submit`.
   if not p.stopFut.isNil and not p.stopFut.finished():
-    p.reopen = true
+    if not p.reopen:
+      p.reopen = true
+      p.stopFut.addCallback(
+        proc(_: pointer) {.gcsafe, raises: [].} =
+          p.reopenAfterStop()
+      )
   elif p.shared.isNil:
     p.stopped = false
     p.stopFut = nil
@@ -263,10 +335,13 @@ proc stopWorkers[T](p: BlockingPool[T]) {.async: (raises: []).} =
 
   # Each worker fires responseSignal after the decrement, so the wait yields.
   while shared[].workersRunning.load() > 0:
+    let waiter = shared[].responseSignal.wait()
     try:
-      await shared[].responseSignal.wait()
-    except AsyncError, CancelledError:
+      discard await withTimeout(waiter, WorkerPollInterval)
+    except CancelledError:
       continue
+    if waiter.failed():
+      break
     p.drainCompleted()
 
   # All workers have exited, so joining only releases their thread handles.
@@ -278,11 +353,6 @@ proc stopWorkers[T](p: BlockingPool[T]) {.async: (raises: []).} =
   shared.destroy()
   p.shared = nil
   p.workers = @[]
-
-  if p.reopen:
-    p.reopen = false
-    p.stopped = false
-    p.stopFut = nil
 
 proc stop*[T](p: BlockingPool[T]) {.async: (raises: []).} =
   ## Wait for in-flight jobs, discard queued jobs, and release workers.
