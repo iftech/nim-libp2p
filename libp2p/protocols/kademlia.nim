@@ -469,6 +469,13 @@ proc resetServerStreams(kad: KadDHT) {.async: (raises: []).} =
   await noCancel allFutures(streams.mapIt(it.reset()))
   trace "Reset inbound Kad DHT streams", streams = streams.len
 
+proc setMode(kad: KadDHT, isServer: bool, now: Moment) {.async: (raises: []).} =
+  kad.autoModePolicy.applied(isServer, now)
+  kad.isServer = isServer
+  if not isServer:
+    await kad.resetServerStreams()
+  info "Kad DHT changed mode", isServer
+
 proc changeMode*(kad: KadDHT, isServer: bool): Future[bool] {.async: (raises: []).} =
   ## Start or stop serving inbound queries, and report whether the mode changed.
   ## Stopping resets the in-flight inbound streams; the codec stays mounted (no
@@ -476,22 +483,61 @@ proc changeMode*(kad: KadDHT, isServer: bool): Future[bool] {.async: (raises: []
   if isServer == kad.isServer:
     return false
 
-  kad.isServer = isServer
-  if not isServer:
-    await kad.resetServerStreams()
-  info "Kad DHT changed mode", previousIsServer = not isServer, isServer
+  await kad.setMode(isServer, Moment.now())
   true
 
+proc runModeTimer(kad: KadDHT, deadline: Moment) {.async: (raises: [CancelledError]).} =
+  if not kad.started or kad.stopping:
+    return
+
+  await sleepAsync(deadline - Moment.now())
+  if not kad.started or kad.stopping:
+    return
+
+  let now = Moment.now()
+  if kad.autoModePolicy.due(now):
+    await kad.setMode(not kad.isServer, now)
+
+proc dropModeTimer(kad: KadDHT) =
+  if kad.modeTimer.isNil():
+    return
+
+  kad.modeTimer.cancelSoon()
+  kad.modeTimer = nil
+
+proc armModeTimer(kad: KadDHT, deadline: Moment) =
+  let timer = kad.runModeTimer(deadline)
+  kad.modeTimer = timer
+  timer.addCallback(
+    proc(udata: pointer) {.gcsafe, raises: [].} =
+      if kad.modeTimer == timer:
+        kad.modeTimer = nil
+  )
+
+proc observeReachability(
+    kad: KadDHT, reachability: NetworkReachability
+) {.async: (raises: []).} =
+  kad.dropModeTimer()
+  let now = Moment.now()
+  let deadline = kad.autoModePolicy.observe(reachability, now).valueOr:
+    return
+
+  if deadline <= now:
+    await kad.setMode(not kad.isServer, now)
+    return
+
+  kad.armModeTimer(deadline)
+
 proc enableAutoMode*(
-    kad: KadDHT, current: CurrentReachability
+    kad: KadDHT, current: CurrentReachability, config = AutoModeConfig.init()
 ): ReachabilityHandler {.raises: [].} =
-  ## Serves while reachable and returns the handler to subscribe. A second call
-  ## returns the same handler. Each ``start`` reads ``current``, because a
-  ## verdict that arrives while stopped is not sent again.
+  ## Serves once Reachable holds for the window of ``config``. A second call returns
+  ## the same handler. ``start`` reads ``current``, as a stopped node misses verdicts.
   kad.autoModeHandler.ifValue(handler):
     return handler
 
   kad.currentReachability = current
+  kad.autoModePolicy = AutoModePolicy.init(config, kad.isServer)
   let handler: ReachabilityHandler = proc(
       reachability: NetworkReachability,
       confidence: Opt[float],
@@ -500,13 +546,7 @@ proc enableAutoMode*(
     if not kad.started or kad.stopping:
       return
 
-    case reachability
-    of NetworkReachability.Reachable:
-      discard await kad.changeMode(isServer = true)
-    of NetworkReachability.NotReachable:
-      discard await kad.changeMode(isServer = false)
-    of NetworkReachability.Unknown:
-      discard
+    await kad.observeReachability(reachability)
 
   kad.autoModeHandler = Opt.some(handler)
   handler
@@ -519,7 +559,9 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   kad.started = true
   kad.stopping = false
   if kad.autoModeHandler.isSome():
-    kad.isServer = kad.currentReachability() == NetworkReachability.Reachable
+    kad.isServer = false
+    kad.autoModePolicy = kad.autoModePolicy.restarted(isServer = kad.isServer)
+    await kad.observeReachability(kad.currentReachability())
   kad.msgSender.start()
 
   if not kad.config.disableBootstrapping:
@@ -546,6 +588,10 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
   # drain loop below can then finish for good rather than chasing new arrivals.
   kad.stopping = true
   kad.started = false
+  if not kad.modeTimer.isNil():
+    let timer = kad.modeTimer
+    kad.modeTimer = nil
+    await noCancel timer.cancelAndWait()
 
   if not kad.bootstrapFut.isNil():
     await noCancel kad.bootstrapFut.cancelAndWait()

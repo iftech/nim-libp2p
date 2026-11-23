@@ -39,20 +39,60 @@ proc dialFindNode(
 type FakeReachability = ref object
   value: NetworkReachability
 
+const
+  TestWindow = 50.milliseconds
+  ImmediateAutoMode = AutoModeConfig.init(
+    promotionWindow = ZeroDuration,
+    demotionWindow = ZeroDuration,
+    cooldown = ZeroDuration,
+  )
+  WindowedAutoMode = AutoModeConfig.init(
+    promotionWindow = TestWindow, demotionWindow = TestWindow, cooldown = ZeroDuration
+  )
+  DemotionWindowedAutoMode = AutoModeConfig.init(
+    promotionWindow = ZeroDuration, demotionWindow = TestWindow, cooldown = ZeroDuration
+  )
+  CooldownAutoMode = AutoModeConfig.init(
+    promotionWindow = ZeroDuration,
+    demotionWindow = ZeroDuration,
+    cooldown = TestWindow * 2,
+  )
+  UnknownDemotionAutoMode = AutoModeConfig.init(
+    promotionWindow = ZeroDuration,
+    demotionWindow = ZeroDuration,
+    cooldown = ZeroDuration,
+    unknownDemotion = Opt.some(TestWindow),
+  )
+
 proc setupAutoKad(
-    source = FakeReachability(value: NetworkReachability.Unknown)
+    source = FakeReachability(value: NetworkReachability.Unknown),
+    config = ImmediateAutoMode,
 ): KadDHT =
   let kad = setupKad(isServer = false)
-  discard kad.enableAutoMode(
+  let handler = kad.enableAutoMode(
     proc(): NetworkReachability {.gcsafe, raises: [].} =
-      source.value
+      source.value,
+    config,
   )
+  check handler == kad.autoModeHandler.get()
   kad
 
 proc verdict(
     kad: KadDHT, reachability: NetworkReachability
 ) {.async: (raises: [CancelledError]).} =
   await kad.autoModeHandler.get()(reachability, Opt.none(float), Opt.none(MultiAddress))
+
+template checkModeAfter(kad: KadDHT, expected: bool, since: Moment, window: Duration) =
+  let timer = kad.modeTimer
+  check not timer.isNil()
+  await timer
+  check:
+    kad.isServer == expected
+    Moment.now() - since >= window
+
+template checkCancelled(timer: Future[void]) =
+  await allFutures(timer)
+  check timer.cancelled()
 
 suite "KadDHT dynamic mode":
   teardown:
@@ -247,5 +287,156 @@ suite "KadDHT dynamic mode":
       await kad.start()
       await kad.stop()
       await kad.start()
+      check kad.isServer == isServer
+      await kad.stop()
+
+  asyncTest "auto mode stop cancels a pending promotion":
+    let kad = setupAutoKad(config = WindowedAutoMode)
+    await kad.start()
+    await kad.verdict(NetworkReachability.Reachable)
+    let timer = kad.modeTimer
+    check:
+      not kad.isServer
+      not timer.isNil()
+
+    await kad.stop()
+    check kad.modeTimer.isNil()
+    timer.checkCancelled()
+    check not kad.isServer
+
+  asyncTest "auto mode restart counts the window from the new verdict":
+    let kad = setupAutoKad(config = WindowedAutoMode)
+    await kad.start()
+    await kad.verdict(NetworkReachability.Reachable)
+    let staleTimer = kad.modeTimer
+    await kad.stop()
+
+    await kad.start()
+    defer:
+      await kad.stop()
+    staleTimer.checkCancelled()
+    check:
+      kad.modeTimer.isNil()
+      not kad.isServer
+
+    let verdictAt = Moment.now()
+    await kad.verdict(NetworkReachability.Reachable)
+    kad.checkModeAfter(expected = true, verdictAt, TestWindow)
+
+  asyncTest "auto mode start waits the window on a current Reachable":
+    let source = FakeReachability(value: NetworkReachability.Reachable)
+    let kad = setupAutoKad(source, WindowedAutoMode)
+    let startAt = Moment.now()
+    await kad.start()
+    defer:
+      await kad.stop()
+    check not kad.isServer
+
+    kad.checkModeAfter(expected = true, startAt, TestWindow)
+    check kad.modeTimer.isNil()
+
+  asyncTest "auto mode drops the timer when the verdict reverts":
+    let kad = setupAutoKad(config = WindowedAutoMode)
+    await kad.start()
+    defer:
+      await kad.stop()
+    await kad.verdict(NetworkReachability.Reachable)
+    let timer = kad.modeTimer
+    check not timer.isNil()
+
+    await kad.verdict(NetworkReachability.NotReachable)
+    check kad.modeTimer.isNil()
+    timer.checkCancelled()
+    check not kad.isServer
+
+  asyncTest "a fixed mode creates no timer":
+    for isServer in [true, false]:
+      let kad = setupKad(isServer = isServer)
+      await kad.start()
+      check (await kad.changeMode(not isServer))
+      check kad.modeTimer.isNil()
+      await kad.stop()
+
+  asyncTest "auto mode demotes a server only after the window and resets queries":
+    let querier = setupKad()
+    let kad = setupAutoKad(config = DemotionWindowedAutoMode)
+    startAndDeferStop(@[querier, kad])
+    await kad.verdict(NetworkReachability.Reachable)
+    check kad.isServer
+    check (await querier.dialFindNode(kad)).isSome()
+
+    let verdictAt = Moment.now()
+    await kad.verdict(NetworkReachability.NotReachable)
+    check:
+      kad.isServer
+      not kad.modeTimer.isNil()
+
+    kad.checkModeAfter(expected = false, verdictAt, TestWindow)
+    check (await querier.dialFindNode(kad)).isNone()
+
+  asyncTest "auto mode cooldown delays a second change past the window":
+    let kad = setupAutoKad(config = CooldownAutoMode)
+    await kad.start()
+    defer:
+      await kad.stop()
+
+    let promotedAt = Moment.now()
+    await kad.verdict(NetworkReachability.Reachable)
+    check kad.isServer
+
+    await kad.verdict(NetworkReachability.NotReachable)
+    check:
+      kad.isServer
+      not kad.modeTimer.isNil()
+
+    kad.checkModeAfter(expected = false, promotedAt, TestWindow * 2)
+
+  asyncTest "auto mode demotes a server after Unknown holds for the window":
+    let kad = setupAutoKad(config = UnknownDemotionAutoMode)
+    await kad.start()
+    defer:
+      await kad.stop()
+    await kad.verdict(NetworkReachability.Reachable)
+    check kad.isServer
+
+    let verdictAt = Moment.now()
+    await kad.verdict(NetworkReachability.Unknown)
+    check:
+      kad.isServer
+      not kad.modeTimer.isNil()
+
+    kad.checkModeAfter(expected = false, verdictAt, TestWindow)
+
+  asyncTest "auto mode applies verdicts in arrival order":
+    let kad = setupAutoKad(config = WindowedAutoMode)
+    await kad.start()
+    defer:
+      await kad.stop()
+    await kad.verdict(NetworkReachability.Reachable)
+    let timer = kad.modeTimer
+    check not timer.isNil()
+
+    # Both verdicts run in order, so the newer NotReachable wins.
+    let older = kad.verdict(NetworkReachability.Reachable)
+    let newer = kad.verdict(NetworkReachability.NotReachable)
+    await allFutures(older, newer)
+    check kad.modeTimer.isNil()
+    timer.checkCancelled()
+    check not kad.isServer
+
+  asyncTest "auto mode keeps a manual change made during a pending change":
+    for isServer in [true, false]:
+      let kad = setupAutoKad(config = WindowedAutoMode)
+      await kad.start()
+      if not isServer:
+        check (await kad.changeMode(isServer = true))
+      let verdict =
+        if isServer: NetworkReachability.Reachable else: NetworkReachability.NotReachable
+      await kad.verdict(verdict)
+      let timer = kad.modeTimer
+      check not timer.isNil()
+
+      check (await kad.changeMode(isServer))
+      await timer
       check kad.isServer == isServer
       await kad.stop()

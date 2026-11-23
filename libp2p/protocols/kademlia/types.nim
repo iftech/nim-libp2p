@@ -8,9 +8,9 @@ import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multia
 import ../../utils/opt
 import ../protocol
 import ../../services/reachabilityobservers
-import ./[key_value, protobuf, message_sender]
+import ./[automode, key_value, protobuf, message_sender]
 
-export tables, sets, heapqueue, key_value, message_sender
+export tables, sets, heapqueue, automode, key_value, message_sender
 
 logScope:
   topics = "libp2p kademlia"
@@ -733,6 +733,8 @@ type KadDHT* = ref object of LPProtocol
   autoModeHandler*: Opt[ReachabilityHandler]
     ## Set in auto mode: reachability verdicts drive ``isServer``.
   currentReachability*: CurrentReachability ## Set in auto mode; read on ``start``.
+  autoModePolicy*: AutoModePolicy ## Decides when auto mode changes ``isServer``.
+  modeTimer*: Future[void] ## Applies the pending auto mode change at its deadline.
   serverStreams*: HashSet[Stream]
     ## Open inbound server streams, reset when the node stops serving.
 
