@@ -23,25 +23,31 @@ import
 logScope:
   topics = "libp2p autonat"
 
-const AskTimeout = 2 * DefaultDialTimeout ## Twice the time a server has to dial back.
+const
+  AskTimeout = 2 * DefaultDialTimeout ## Twice the time a server has to dial back.
+  DefaultNegativeQuorum* = 3
 
 type AutonatV2Verifier* = ref object of Verifier
   switch: Switch
   client: AutonatV2Client
-  rng: Rng
+  negativeQuorum: Positive
 
 proc new*(
-    T: typedesc[AutonatV2Verifier], switch: Switch, client: AutonatV2Client, rng: Rng
+    T: typedesc[AutonatV2Verifier],
+    switch: Switch,
+    client: AutonatV2Client,
+    negativeQuorum: Positive = DefaultNegativeQuorum,
 ): T =
   ## The switch must mount `client`, which receives the dial back.
   client.setup(switch)
-  T(switch: switch, client: client, rng: rng)
+  T(switch: switch, client: client, negativeQuorum: negativeQuorum)
 
-proc selectPeer(self: AutonatV2Verifier): Opt[PeerId] =
+proc selectPeer(self: AutonatV2Verifier, excluded: openArray[PeerId]): Opt[PeerId] =
   ## A peer which dialed us proves nothing. It has a path to us already.
-  self.rng.pickOne(
+  self.switch.rng.pickOne(
     self.switch.connectedPeers(Direction.Out).filterIt(
-      $AutonatV2Codec.DialRequest in self.switch.peerStore[ProtoBook][it] and
+      it notin excluded and
+        $AutonatV2Codec.DialRequest in self.switch.peerStore[ProtoBook][it] and
         not self.switch.hasIncomingConn(it)
     )
   )
@@ -72,13 +78,25 @@ proc askPeer(
 method verify*(
     self: AutonatV2Verifier, address: MultiAddress
 ): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
-  ## One request carrying that one address, to a random peer.
-  if not self.switch.hasEnoughIncomingSlots():
-    trace "No incoming slots left, skipping verification", address
-    return Opt.none(AddrState)
+  ## Confirm on a successful dial-back; require `negativeQuorum` distinct negative replies
+  ## to mark the address unreachable. Insufficient or inconclusive replies leave
+  ## its state unchanged.
+  var asked: seq[PeerId]
+  var failures = 0
+  for i in 0 ..< self.negativeQuorum:
+    if not self.switch.hasEnoughIncomingSlots():
+      trace "No incoming slots left, skipping verification", address
+      return Opt.none(AddrState)
 
-  let peerId = self.selectPeer().valueOr:
-    trace "No peer to ask", address
-    return Opt.none(AddrState)
-
-  await self.askPeer(peerId, address)
+    let peerId = self.selectPeer(asked).valueOr:
+      trace "No peer to ask", address
+      return Opt.none(AddrState)
+    asked.add(peerId)
+    let verdict = await self.askPeer(peerId, address)
+    if verdict == Opt.some(AddrState.Confirmed):
+      return verdict
+    if verdict == Opt.some(AddrState.Unreachable):
+      inc failures
+  if failures == self.negativeQuorum:
+    return Opt.some(AddrState.Unreachable)
+  Opt.none(AddrState)

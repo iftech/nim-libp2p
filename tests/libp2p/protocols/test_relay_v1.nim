@@ -22,6 +22,15 @@ import
   ]
 import ../../tools/[unittest, switch_builder, multiaddress]
 
+converter toOptRelayType(t: RelayType): Opt[RelayType] =
+  Opt.some(t)
+
+converter toOptStatusV1(s: StatusV1): Opt[StatusV1] =
+  Opt.some(s)
+
+converter toOptRelayPeer(p: RelayPeer): Opt[RelayPeer] =
+  Opt.some(p)
+
 suite "Circuit Relay":
   asyncTeardown:
     await allFutures(src.stop(), dst.stop(), srelay.stop())
@@ -296,14 +305,13 @@ suite "Circuit Relay":
         checkpoint "type = " & $typ
         stream = await src.dial(hop.peerInfo.peerId, RelayV1Codec)
         msg = createMsg(
-          Opt.some(typ),
-          Opt.none(StatusV1),
-          Opt.some(RelayPeer(peerId: src.peerInfo.peerId, addrs: src.peerInfo.addrs)),
-          Opt.some(RelayPeer(peerId: dst.peerInfo.peerId, addrs: dst.peerInfo.addrs)),
+          msgType = typ,
+          src = RelayPeer(peerId: src.peerInfo.peerId, addrs: src.peerInfo.addrs),
+          dst = RelayPeer(peerId: dst.peerInfo.peerId, addrs: dst.peerInfo.addrs),
         )
         await stream.writeLp(msg)
         rcv = Opt.some(RelayMessage.decode(await stream.readLp(1024)).get())
-        rcv.checkMsg(Opt.some(RelayType.Status), Opt.some(c.status))
+        rcv.checkMsg(RelayType.Status, c.status)
         await stream.close()
 
   asyncTest "Dial Peer":
