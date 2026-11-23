@@ -19,8 +19,10 @@ import
     wire,
   ]
 import
-  ../../tools/
-    [unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder, futures]
+  ../../tools/[
+    unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder,
+    futures,
+  ]
 import ../../stubs/[acme_api_stub, peer_id_auth_client_stub]
 
 suite "AutoTLS certificate issuance and renewal":

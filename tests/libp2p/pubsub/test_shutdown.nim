@@ -7,7 +7,8 @@ import chronos
 import ./utils
 import ../../../libp2p/connmanager
 import ../../../libp2p/protocols/pubsub/[pubsub, pubsubpeer, floodsub, gossipsub]
-import ../../tools/[unittest, switch_builder, bufferstream, multiaddress, lifecycle, futures]
+import
+  ../../tools/[unittest, switch_builder, bufferstream, multiaddress, lifecycle, futures]
 
 suite "PubSub shutdown":
   teardown:
