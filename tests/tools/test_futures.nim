@@ -16,6 +16,8 @@ suite "Test future helpers":
         cleanedUp = true
 
     let pending = wait()
+    # Let the event loop run so helper that completes asynchronously
+    # would be detected by the pending check below.
     await sleepAsync(1.milliseconds)
     check not pending.finished()
     await pending.cancelAndWait()
