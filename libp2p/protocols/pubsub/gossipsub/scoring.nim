@@ -154,7 +154,7 @@ proc updateScores*(g: GossipSub) = # avoid async
 
   for peerId, stats in g.peerStats.mpairs:
     let peer = g.peers.getOrDefault(peerId)
-    if isNil(peer) or not (peer.connected):
+    if isNil(peer):
       if now > stats.expire:
         evicting.add(peerId)
         trace "evicted peer from memory", peerId = peerId

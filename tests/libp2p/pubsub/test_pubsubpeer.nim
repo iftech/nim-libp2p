@@ -52,6 +52,8 @@ proc newPeer(
   )
 
 suite "PubSubPeer send stream":
+  const topic = "foobar"
+
   teardown:
     checkTrackers()
 
@@ -255,7 +257,12 @@ suite "PubSubPeer send stream":
     peer.observers = new(seq[PubSubObserver])
     peer.observers[].add(PubSubObserver(onSend: onSend))
     peer.extensionsState.initTopicStreams(
-      peer.peerId, 1024, recorder.dial(), recorder.receive(), recorder.violation()
+      peer.peerId,
+      1024,
+      recorder.dial(),
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
     )
     defer:
       await peer.extensionsState.stopTopicStreams(peer.peerId)
@@ -272,6 +279,97 @@ suite "PubSubPeer send stream":
       TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
         TopicRPC(publish: Opt.some(TopicScopedMessage(data: @[2.byte])))
       msg == RPCMsg.withMessages(Message(topic: "original", data: @[1.byte]))
+      recorder.violations == 0
+
+  asyncTest "topic stream routing carries a message a send observer adds to a subscription":
+    let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
+    peer.extensionsState =
+      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+    let recorder = TopicStreamsRecorder.new()
+    let added = Message(topic: topic, data: @[1.byte])
+
+    # the send observer adds a message to every RPC the peer sends
+    proc onSend(p: PubSubPeer, msg: var RPCMsg) {.gcsafe, raises: [].} =
+      msg.messages.add(added)
+
+    peer.observers = new(seq[PubSubObserver])
+    peer.observers[].add(PubSubObserver(onSend: onSend))
+    peer.extensionsState.initTopicStreams(
+      peer.peerId,
+      1024,
+      recorder.dial(),
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
+    )
+    defer:
+      await peer.stopTasks()
+      await recorder.closeOutgoingStreams()
+    # topic streams negotiated, so messages to this peer must go on a topic stream
+    check peer.extensionsState.negotiateTopicStreams(
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
+    # an RPC without messages, only a subscription
+    peer.sendResponse(
+      RPCMsg.withSubscriptions(
+        @[SubOpts(topic: Opt.some(topic), subscribe: Opt.some(true))]
+      ),
+      false,
+      MessagePriority.High,
+    )
+    # the message the observer added goes out on a topic stream
+    check:
+      TopicRPCHeader.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        TopicRPCHeader(topic: Opt.some(topic))
+      TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        added.topicRPC()
+      recorder.violations == 0
+
+  asyncTest "topic stream writes a Medium priority message before an earlier Low priority one":
+    let peer = newPeer(nil, 1.milliseconds, 4.milliseconds)
+    peer.extensionsState =
+      ExtensionsState.new(rng(), topicStreamsConfig = Opt.some(TopicStreamsConfig()))
+    let recorder = TopicStreamsRecorder.new()
+    let allowDial = Future[void].Raising([CancelledError]).init("allowDial")
+
+    # the topic stream opens only after the test completes allowDial
+    proc heldDial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+      let stream = await recorder.dial()()
+      # the writer takes no message until the stream opens, so both messages queue first
+      await allowDial
+      return stream
+
+    peer.extensionsState.initTopicStreams(
+      peer.peerId,
+      1024,
+      heldDial,
+      recorder.receive(),
+      recorder.violation(),
+      peer.outboundQueue,
+    )
+    defer:
+      await peer.stopTasks()
+      await recorder.closeOutgoingStreams()
+    # topic streams negotiated, so messages to this peer go on a topic stream
+    check peer.extensionsState.negotiateTopicStreams(
+      peer.peerId, makeRPC(ControlExtensions(topicStreams: Opt.some(true)))
+    )
+    let relayed = Message(topic: topic, data: @[1.byte])
+    let published = Message(topic: topic, data: @[2.byte])
+    # A pending control write prevents empty-queue promotion of the first topic frame.
+    await peer.sendEncoded(@[0.byte], MessagePriority.High)
+    # the Low priority message is queued first, the Medium one second
+    peer.sendResponse(RPCMsg.withMessages(relayed), false, MessagePriority.Low)
+    peer.send(RPCMsg.withMessages(published), false, MessagePriority.Medium)
+    allowDial.complete() # the stream opens and the writer starts taking messages
+    # after the header, the Medium priority message is written before the Low one
+    check:
+      TopicRPCHeader.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        TopicRPCHeader(topic: Opt.some(topic))
+      TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        published.topicRPC()
+      TopicRPC.decode(await recorder.outgoingStreams[0].readLp(1024)).get() ==
+        relayed.topicRPC()
       recorder.violations == 0
 
 suite "PubSubPeer receive streams":

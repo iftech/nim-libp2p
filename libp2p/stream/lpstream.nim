@@ -301,7 +301,8 @@ method close*(s: LPStream): Future[void] {.async: (raises: [], raw: true), base.
 
 proc resetStream(s: LPStream): Future[void] {.async: (raises: [], raw: true).} =
   ## Abort the stream and best-effort notify the remote peer, if supported.
-  if s.isClosed:
+  ## A stream that is only closed for writing (still open for reading) is aborted too.
+  if s.isResetLocally or s.closeEvent.isSet():
     trace "Already closed", stream = s
     return newFutureCompleted[void]()
 

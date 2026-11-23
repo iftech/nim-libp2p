@@ -4,7 +4,7 @@
 ## Routing-table admission policy: bound how many peers of one IP group a table
 ## and a single bucket accept, so one network cannot own the peers a key maps to.
 
-import std/[sequtils, net]
+import std/[sequtils, net, sets]
 import results
 import ../../[peerid, peerstore, multiaddress, wire]
 import ./[types, routing_table]
@@ -59,6 +59,8 @@ func within(c: GroupCount, cap: DiversityCap): bool =
 func uniquePublicIps(addrs: openArray[MultiAddress]): PeerIps =
   # Only a literal public IP has a prefix to count; a relay or DNS address has none.
   var peerIps: PeerIps
+  var ipv4s: HashSet[Ipv4Address]
+  var ipv6s: HashSet[Ipv6Address]
   for ma in addrs:
     if not ma.isPublicMA():
       continue
@@ -66,10 +68,10 @@ func uniquePublicIps(addrs: openArray[MultiAddress]): PeerIps =
       continue
     case ip.family
     of IpAddressFamily.IPv4:
-      if ip.address_v4 notin peerIps.ipv4s:
+      if not ipv4s.containsOrIncl(ip.address_v4):
         peerIps.ipv4s.add(ip.address_v4)
     of IpAddressFamily.IPv6:
-      if ip.address_v6 notin peerIps.ipv6s:
+      if not ipv6s.containsOrIncl(ip.address_v6):
         peerIps.ipv6s.add(ip.address_v6)
   return peerIps
 

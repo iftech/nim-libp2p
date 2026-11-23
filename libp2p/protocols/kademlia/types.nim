@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[tables, sequtils, sets, heapqueue, hashes]
+import std/[tables, sequtils, sets, heapqueue, hashes, algorithm]
 from std/times import format, getTime, parse, toTime, toUnix, utc
 import chronos, chronicles, results, stew/arrayOps, nimcrypto/sha2
 import ../../[peerid, switch, multihash, cid, multicodec, peeraddrpolicy, multiaddress]
-import ../../utils/[opt, shortlog]
+import ../../utils/opt
 import ../protocol
 import ../../services/reachabilityobservers
 import ./[key_value, protobuf, message_sender]
@@ -56,7 +56,9 @@ const
   DefaultProviderExpirationInterval* = 48.hours
   DefaultRecordExpirationInterval* = 24.hours
     # KV entries older than this are considered stale and will be evicted
-  DefaultCleanupDataEntriesInterval* = 1.hours # how often to scan for stale KV entries
+
+  MaxCloserPeers* = 2 * DefaultReplication
+  MaxPeerAddrs* = 16
 
   MaxMsgSize* = 1 shl 22 # 4 MiB
 
@@ -103,12 +105,6 @@ proc toCid*(k: Key): Cid =
       )
       .get()
 
-template toKey*(mh: MultiHash): Key =
-  Key.fromBytes(mh.data.buffer)
-
-proc toKey*(c: Cid): Key =
-  c.mhash().get().toKey()
-
 proc toKey*(p: PeerId): Key =
   MultiHash.init(p.data).get().toKey()
 
@@ -119,7 +115,14 @@ proc toPeerId*(k: Key): LPResult[PeerId] =
 
 proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
   let peer = ?k.toPeerId()
-  let addrs = switch.peerStore[AddressBook][peer]
+  let book = switch.peerStore[AddressBook]
+  let live = book[peer]
+  let addrs = book
+    .entries(peer)
+    .filterIt(it.address in live)
+    .sortedByIt(-ord(it.confidence))
+    .mapIt(it.address)
+    .take(MaxPeerAddrs)
   if addrs.len == 0:
     return err("Could not find peer addresses in address book")
 
@@ -134,7 +137,7 @@ proc toPeer*(k: Key, switch: Switch): LPResult[Peer] =
 proc toPeer*(peerInfo: PeerInfo): Peer =
   Peer(
     id: Opt.some(peerInfo.peerId.getBytes()),
-    addrs: peerInfo.addrs,
+    addrs: peerInfo.addrs[0 ..< min(peerInfo.addrs.len, MaxPeerAddrs)],
     connection: Opt.none(ConnectionStatus),
   )
 
@@ -162,7 +165,7 @@ proc toPeerIds*(peers: seq[Peer]): seq[PeerId] =
 proc nowUnixSeconds*(): UnixTimestamp {.gcsafe, raises: [].} =
   getTime().toUnix()
 
-func ceilSeconds(d: chronos.Duration): int64 =
+func ceilSeconds*(d: chronos.Duration): int64 =
   ## Rounds up, so a sub-second interval does not truncate to zero.
   let whole = d.seconds()
   if d > whole.seconds():
@@ -398,21 +401,16 @@ proc init*(
 type
   ReceivedTable* = TableRef[PeerId, Opt[EntryRecord]]
   CandidatePeers* = ref HashSet[PeerId]
-  LocalTable* = Table[RecordKey, EntryRecord]
 
-proc insert*(
-    self: var LocalTable, key: RecordKey, value: sink Value, time: Timestamp
-) {.raises: [].} =
-  trace "Local Kademlia record stored", key, value
-  self[key] = EntryRecord(value: value, time: time)
+type
+  KadStoreLimits* = object ## The caps of a ``KadStore``. ``none`` means no limit.
+    maxValues*: Opt[int]
+    maxProviders*: Opt[int]
+    maxProvided*: Opt[int]
+    maxProviderRecordsPerPeer*: Opt[int]
 
-proc get*(self: LocalTable, key: RecordKey): Opt[EntryRecord] {.raises: [].} =
-  if not self.hasKey(key):
-    return Opt.none(EntryRecord)
-  try:
-    return Opt.some(self[key])
-  except KeyError:
-    raiseAssert "checked with hasKey"
+  KadStore* = ref object of RootObj
+    ## The storage backend of Kademlia. See ``store.nim`` for the contract.
 
 type EntryValidator* = ref object of RootObj
 method isValid*(
@@ -465,9 +463,6 @@ type KadDHTLimits* = object
     ## Maximum number of distinct providers stored per key.
     ## ``Opt.none`` means unlimited; when limits are derived by the
     ## ``KadDHTConfig`` constructor this defaults to ``replication``.
-  maxProviderRecordsPerPeer*: Opt[int]
-    ## Maximum number of provider records stored for one sender, so that one
-    ## peer cannot evict the records of all others. ``Opt.none`` means unlimited.
   maxShortlistSize*: int
     ## Maximum number of peers retained in an iterative-lookup shortlist.
     ## When exceeded, farther peers are dropped so the shortlist stays bounded.
@@ -477,10 +472,6 @@ type KadDHTLimits* = object
   maxValueSize*: int
     ## Maximum size (bytes) of an individual record value. Enforced on
     ## ``putValue`` and on incoming PUT_VALUE / GET_VALUE records.
-  maxLocalRecords*: Opt[int]
-    ## Maximum number of records retained in the local value store.
-    ## ``Opt.none`` means unlimited; when limits are derived by the
-    ## ``KadDHTConfig`` constructor this defaults to ``DefaultMaxLocalRecords``.
   maxConcurrentRpcs*: int
     ## Maximum number of in-flight outbound RPCs (find/get/put/provider)
     ## across the whole node. Excess calls wait on a shared semaphore.
@@ -530,24 +521,29 @@ func diversityCaps*(limits: KadDHTLimits): DiversityCaps =
 func defaultMaxProviderRecordsPerPeer*(providerRecordCapacity: int): int =
   max(1, providerRecordCapacity div ProviderRecordsPerPeerDivisor)
 
-proc new*(
-    T: typedesc[KadDHTLimits],
-    replication: int,
-    quorum: int,
-    providerRecordCapacity: int = DefaultProviderRecordCapacity,
-): T {.raises: [].} =
-  ## Builds a limits object whose shortlist/received caps and provider caps are
-  ## sized off the actual ``replication``, ``quorum`` and ``providerRecordCapacity``
-  ## so the configuration stays internally consistent (e.g.
-  ## ``maxShortlistSize >= replication``, ``maxReceivedSize >= quorum``).
+func new*(
+    T: typedesc[KadStoreLimits],
+    maxValues = Opt.some(DefaultMaxLocalRecords),
+    maxProviders = Opt.some(DefaultProviderRecordCapacity),
+    maxProvided = Opt.some(DefaultProvidedKeyCapacity),
+): T =
+  ## The per-peer cap follows ``maxProviders``, so one peer cannot evict the records of all others.
+  T(
+    maxValues: maxValues,
+    maxProviders: maxProviders,
+    maxProvided: maxProvided,
+    maxProviderRecordsPerPeer: maxProviders.map(defaultMaxProviderRecordsPerPeer),
+  )
+
+proc new*(T: typedesc[KadDHTLimits], replication: int, quorum: int): T {.raises: [].} =
+  ## Builds a limits object whose shortlist/received caps are sized off the
+  ## actual ``replication`` and ``quorum`` so the configuration stays internally
+  ## consistent (e.g. ``maxShortlistSize >= replication``, ``maxReceivedSize >= quorum``).
   T(
     maxProvidersPerKey: Opt.some(replication),
-    maxProviderRecordsPerPeer:
-      Opt.some(defaultMaxProviderRecordsPerPeer(providerRecordCapacity)),
     maxShortlistSize: replication * 2,
     maxReceivedSize: max(replication, quorum),
     maxValueSize: DefaultMaxValueSize,
-    maxLocalRecords: Opt.some(DefaultMaxLocalRecords),
     maxConcurrentRpcs: DefaultMaxConcurrentRpcs,
     maxConcurrentProbes: DefaultMaxConcurrentProbes,
     maxConcurrentLivenessProbes: DefaultMaxConcurrentLivenessProbes,
@@ -583,13 +579,14 @@ type KadDHTConfig* = object
     ## Must be in ``1 .. replication``.
   ttl*: chronos.Duration
   quorum*: int
-  providerRecordCapacity*: int
-  providedKeyCapacity*: int
+  storeLimits*: KadStoreLimits
+    ## The caps of the default ``MemoryKadStore``, and of ``ProviderManager``.
+  store*: Opt[KadStore]
+    ## The storage backend. ``none`` gives each node a ``MemoryKadStore`` with ``storeLimits``.
   republishProvidedKeysInterval*: chronos.Duration
   cleanupProvidersInterval*: chronos.Duration
   providerExpirationInterval*: chronos.Duration
   recordExpirationInterval*: chronos.Duration
-  cleanupDataEntriesInterval*: chronos.Duration
   addressPolicy*: PeerAddressPolicy
   hideConnectionStatus*: bool
   disableBootstrapping*: bool
@@ -629,13 +626,11 @@ proc new*(
     alpha: int = DefaultAlpha,
     beta: int = DefaultBeta,
     quorum: int = DefaultQuorum,
-    providerRecordCapacity = DefaultProviderRecordCapacity,
-    providedKeyCapacity = DefaultProvidedKeyCapacity,
+    storeLimits: KadStoreLimits = KadStoreLimits.new(),
     republishProvidedKeysInterval: chronos.Duration = DefaultRepublishInterval,
     cleanupProvidersInterval: chronos.Duration = DefaultCleanupProvidersInterval,
     providerExpirationInterval: chronos.Duration = DefaultProviderExpirationInterval,
     recordExpirationInterval: chronos.Duration = DefaultRecordExpirationInterval,
-    cleanupDataEntriesInterval: chronos.Duration = DefaultCleanupDataEntriesInterval,
     addressPolicy: PeerAddressPolicy = defaultAddressPolicy,
     hideConnectionStatus: bool = true,
     disableBootstrapping: bool = false,
@@ -644,17 +639,18 @@ proc new*(
     optimisticProvide: bool = true,
     limits: Opt[KadDHTLimits] = Opt.none(KadDHTLimits),
     bootstrapTimeout: chronos.Duration = bucketRefreshTime,
+    store: Opt[KadStore] = Opt.none(KadStore),
 ): K {.raises: [].} =
   let actualLimits = limits.valueOr:
-    KadDHTLimits.new(replication, quorum, providerRecordCapacity)
+    KadDHTLimits.new(replication, quorum)
   doAssert republishRegionBits.isNone or republishRegionBits.get() in 0 .. MaxRegionBits,
     "republishRegionBits must be in 0 .. " & $MaxRegionBits &
       "; use Opt.none(int) to derive it from the routing table"
   doAssert actualLimits.maxProvidersPerKey.isNone or
     actualLimits.maxProvidersPerKey.get() > 0,
     "maxProvidersPerKey must be > 0; use Opt.none(int) for unlimited"
-  doAssert actualLimits.maxProviderRecordsPerPeer.isNone or
-    actualLimits.maxProviderRecordsPerPeer.get() > 0,
+  doAssert storeLimits.maxProviderRecordsPerPeer.isNone or
+    storeLimits.maxProviderRecordsPerPeer.get() > 0,
     "maxProviderRecordsPerPeer must be > 0; use Opt.none(int) for unlimited"
   doAssert beta > 0, "beta must be > 0"
   doAssert beta <= replication,
@@ -662,8 +658,14 @@ proc new*(
   doAssert actualLimits.maxShortlistSize > 0, "maxShortlistSize must be > 0"
   doAssert actualLimits.maxReceivedSize > 0, "maxReceivedSize must be > 0"
   doAssert actualLimits.maxValueSize > 0, "maxValueSize must be > 0"
-  doAssert actualLimits.maxLocalRecords.isNone or actualLimits.maxLocalRecords.get() > 0,
-    "maxLocalRecords must be > 0; use Opt.none(int) for unlimited"
+  doAssert storeLimits.maxValues.isNone or storeLimits.maxValues.get() > 0,
+    "maxValues must be > 0; use Opt.none(int) for unlimited"
+  doAssert storeLimits.maxProviders.isNone or storeLimits.maxProviders.get() > 0,
+    "maxProviders must be > 0; use Opt.none(int) for unlimited"
+  doAssert storeLimits.maxProvided.isNone or storeLimits.maxProvided.get() > 0,
+    "maxProvided must be > 0; use Opt.none(int) for unlimited"
+  doAssert recordExpirationInterval > ZeroDuration,
+    "recordExpirationInterval must be > 0"
   doAssert actualLimits.maxConcurrentRpcs > 0, "maxConcurrentRpcs must be > 0"
   doAssert actualLimits.maxConcurrentProbes > 0, "maxConcurrentProbes must be > 0"
   doAssert actualLimits.maxConcurrentLivenessProbes > 0,
@@ -695,13 +697,12 @@ proc new*(
     alpha: alpha,
     beta: beta,
     quorum: quorum,
-    providerRecordCapacity: providerRecordCapacity,
-    providedKeyCapacity: providedKeyCapacity,
+    storeLimits: storeLimits,
+    store: store,
     republishProvidedKeysInterval: republishProvidedKeysInterval,
     cleanupProvidersInterval: cleanupProvidersInterval,
     providerExpirationInterval: providerExpirationInterval,
     recordExpirationInterval: recordExpirationInterval,
-    cleanupDataEntriesInterval: cleanupDataEntriesInterval,
     addressPolicy: addressPolicy,
     hideConnectionStatus: hideConnectionStatus,
     disableBootstrapping: disableBootstrapping,
@@ -730,8 +731,7 @@ type KadDHT* = ref object of LPProtocol
   fixLowPeersLoop*: Future[void]
   republishLoop*: Future[void]
   expiredLoop*: Future[void]
-  recordExpirationLoop*: Future[void]
-  dataTable*: LocalTable
+  store*: KadStore
   providerManager*: ProviderManager
   nsEstimator*: NetworkSizeEstimator
     ## Drives the optimistic-provide distance thresholds.

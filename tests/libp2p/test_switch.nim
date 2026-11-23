@@ -3,7 +3,7 @@
 
 {.used.}
 
-import results, sequtils, chronos, stew/byteutils
+import results, sequtils, chronos, stew/byteutils, std/importutils
 import
   ../../libp2p/[
     errors,
@@ -30,7 +30,8 @@ import
     transports/quictransport,
   ]
 import
-  ../tools/[unittest, trackers, futures, crypto, sync, switch_builder, multiaddress]
+  ../tools/
+    [unittest, trackers, futures, crypto, sync, switch_builder, multiaddress, lifecycle]
 
 const TestCodec = "/test/proto/1.0.0"
 
@@ -770,6 +771,25 @@ suite "Switch":
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
+  asyncTest "an opt-in outbound reserve leaves room for repair dials":
+    privateAccess(Switch)
+    let server = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withMaxConnections(3, outboundReserve = 1)
+      .build()
+    let peers = (0 ..< 3).mapIt(makeStandardSwitch(TcpAutoAddress))
+    startAndDeferStop(@[server] & peers)
+    for peer in peers[0 .. 1]:
+      await peer.connect(server)
+      checkUntilTimeout:
+        server.pendingUpgrades == 0
+    expect DialFailedError:
+      await peers[2].connect(server)
+    await server.connect(peers[2])
+    check:
+      server.isConnected(peers[2])
+      server.connManager.availableSlots(Direction.In) == 0
+      server.connManager.availableSlots(Direction.Out) == 0
+
   asyncTest "e2e total connection limits on outgoing connections":
     var switches: seq[Switch]
     for i in 0 ..< 3:
@@ -1240,10 +1260,9 @@ suite "Switch":
       switch.transports[0].upgrader.secureManagers.len == 1
       switch.transports[0].upgrader.secureManagers[0] of Noise
 
-  asyncTest "accept loop not blocked by upgrade semaphore":
-    # Regression: old code held the upgrade semaphore in the accept loop, blocking
-    # it when ConcurrentUpgrades (4) were in flight; manifested as 80+ kad nodes
-    # getting stuck on bootstrap.
+  asyncTest "accept loop handles more peers than the pending upgrade budget":
+    privateAccess(Switch)
+    const BatchSize = PendingUpgradesPerSourceForTesting
     const NumPeers = 85
     let server = makeStandardSwitchBuilder(TcpAutoAddress)
       .withConnectionLimits(ConnectionLimits.maxTotal(NumPeers))
@@ -1255,7 +1274,12 @@ suite "Switch":
       clients.add(makeStandardSwitch(TcpAutoAddress))
     await allFuturesRaising(clients.mapIt(it.start()))
 
-    await allFuturesRaising(clients.mapIt(it.connect(server)))
+    for i in countup(0, clients.high, BatchSize):
+      await allFuturesRaising(
+        clients[i .. min(i + BatchSize - 1, clients.high)].mapIt(it.connect(server))
+      )
+      checkUntilTimeout:
+        server.pendingUpgrades == 0
 
     await allFuturesRaising(clients.mapIt(it.stop()) & @[server.stop()])
 

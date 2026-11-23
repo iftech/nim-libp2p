@@ -3,63 +3,25 @@
 
 {.used.}
 
-import chronos, std/[sequtils, strutils], stew/byteutils
+import chronos, std/sequtils, stew/byteutils
 import
-  ../../../../libp2p/protocols/pubsub/[gossipsub, pubsubpeer, peertable, rpc/messages]
-import ../../../tools/[lifecycle, topology, unittest]
+  ../../../../libp2p/protocols/pubsub/
+    [gossipsub, pubsubpeer, peertable, rpc/message, rpc/messages, rpc/protobuf]
+import ../../../tools/[lifecycle, stall_stream, topology, unittest]
 import ../utils
-
-type MockSendStream* = ref object of Connection
-  ## Records every write in order. The first `stallCount` writes stay pending.
-  ## Later writes complete at once. Closing fails any pending write.
-  writes*: seq[seq[byte]] # messages written, in order
-  pendingWrites: seq[Future[void].Raising([CancelledError, LPStreamError])]
-  stallCount: int
-
-method writeLp*(
-    s: MockSendStream, msg: openArray[byte]
-): Future[void] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
-  s.writes.add(@msg)
-  let fut =
-    Future[void].Raising([CancelledError, LPStreamError]).init("MockSendStream.writeLp")
-  if s.pendingWrites.len >= s.stallCount:
-    fut.complete()
-  else:
-    s.pendingWrites.add(fut)
-  fut
-
-method getWrapped*(s: MockSendStream): Connection =
-  s
-
-method closeImpl*(s: MockSendStream) {.async: (raises: []).} =
-  for fut in s.pendingWrites:
-    if not fut.finished:
-      fut.fail(newLPStreamClosedError())
-  await procCall Connection(s).closeImpl()
-
-proc releasePendingWrites*(s: MockSendStream) {.raises: [].} =
-  for fut in s.pendingWrites:
-    if not fut.finished:
-      fut.complete()
-
-proc stallSendStream*(
-    node: GossipSub, topic: string, peerId: PeerId, stallCount: int = int.high
-): MockSendStream =
-  ## Point `node`'s send stream for `peerId` at a stall stream so its outbound queues fill up.
-  ## The replaced stream is left open on purpose: if it closed, the peer would
-  ## dial a new stream and overwrite the stall stream. It is closed at teardown.
-  let mock =
-    MockSendStream(dir: Direction.Out, timeout: 0.milliseconds, stallCount: stallCount)
-  mock.initStream()
-  node.getPeerByPeerId(topic, peerId).sendStream = mock
-  mock
 
 proc message(n: byte): seq[byte] =
   @[n, n, n]
 
-func carries(writes: seq[seq[byte]], data: seq[byte]): bool =
-  let needle = string.fromBytes(data)
-  writes.anyIt(string.fromBytes(it).contains(needle))
+proc messageSize(node: GossipSub, topic: string, data: seq[byte]): int =
+  ## Encoded size of the RPC that `node.publish` sends for `data`.
+  RPCMsg
+    .withMessages(
+      Message.init(
+        Opt.some(node.peerInfo), data, topic, Opt.some(node.msgSeqno), node.sign
+      )
+    )
+    .encodedSize()
 
 suite "GossipSub Component - Priority Queues":
   const topic = "foobar"
@@ -78,10 +40,10 @@ suite "GossipSub Component - Priority Queues":
     waitSubscribeStar(nodes, topic)
 
     let peerId = nodes[1].peerInfo.peerId
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
     let penaltyBefore = peer.slowPeerPenalty
 
     let msg = message(1)
@@ -119,10 +81,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
     let penaltyBefore = peer.slowPeerPenalty
 
     # A pending high message keeps the high-priority queue non-empty, so the
@@ -154,10 +116,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
     let penaltyBefore = peer.slowPeerPenalty
 
     # A pending high message keeps the high-priority queue non-empty, so the
@@ -191,10 +153,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId, stallCount = 1)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream(stallCount = 1)
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     let highMsgs = @[message(0), message(1)]
     let mediumMsgs = @[message(10), message(11)]
@@ -249,10 +211,10 @@ suite "GossipSub Component - Priority Queues":
       nodes[0].mesh.hasPeerId(topic, peerId)
       nodes[2].mesh.hasPeerId(topic, nodes[0].peerInfo.peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId, stallCount = 1)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream(stallCount = 1)
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the queue non-empty, so the relay is queued.
     check peer.sendEncoded(message(9), MessagePriority.High).finished
@@ -303,10 +265,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the high-priority queue non-empty,
     # so the medium messages are queued rather than sent at once.
@@ -339,10 +301,10 @@ suite "GossipSub Component - Priority Queues":
 
     let peerId = nodes[1].peerInfo.peerId
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the high-priority queue non-empty,
     # so the medium messages are queued rather than sent at once.
@@ -379,10 +341,10 @@ suite "GossipSub Component - Priority Queues":
     checkUntilTimeout:
       nodes[0].mesh.hasPeerId(topic, peerId)
 
-    let mock = stallSendStream(nodes[0], topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    let mock = peer.stallSendStream()
     defer:
       await mock.close()
-    let peer = nodes[0].getPeerByPeerId(topic, peerId)
 
     # A pending high message keeps the high-priority queue non-empty,
     # so the medium messages are queued rather than sent at once.
@@ -456,7 +418,7 @@ suite "GossipSub Component - Priority Queues":
       let peer = nodes[0].getOrCreatePeer(peerId, @[GossipSubCodec_12])
       check peer.maxOutboundQueueBytes ==
         (if priority == MessagePriority.High: 6 else: 9)
-      let mock = stallSendStream(nodes[0], topic, peerId)
+      let mock = peer.stallSendStream()
       defer:
         await mock.close()
       if priority != MessagePriority.High:
@@ -481,3 +443,143 @@ suite "GossipSub Component - Priority Queues":
 
     for priority in [MessagePriority.High, MessagePriority.Medium, MessagePriority.Low]:
       await checkPriority(priority)
+
+  asyncTest "Publishing through GossipSub over a byte budget drops the excess and keeps the peer connected":
+    let nodes = generateNodes(2, gossip = true).toGossipSub()
+    let messages = toSeq(1 .. 5).mapIt(message(byte(it)))
+    # every message has the same length, so every publish encodes to the same size
+    let size = nodes[0].messageSize(topic, messages[0])
+    nodes[0].parameters.maxOutboundQueueBytes = 3 * size
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+    subscribeAllNodes(nodes, topic, voidTopicHandler)
+    waitSubscribeStar(nodes, topic)
+
+    let peerId = nodes[1].peerInfo.peerId
+    await nodes[0].waitForNextHeartbeat()
+    check nodes[0].mesh.hasPeerId(topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    # wait for the subscription and GRAFT writes to end, so the first publish finds nothing retained
+    checkUntilTimeout:
+      peer.queuedBytes() == 0
+
+    let mock = peer.stallSendStream()
+    defer:
+      await mock.close()
+
+    # publish counts nodes[1] whether its copy is kept or dropped
+    for data in messages:
+      check (await nodes[0].publish(topic, data)) == 1
+
+    check:
+      # the first publish found nothing retained, so it was written at once and charged to High
+      peer.queuedBytes(MessagePriority.High) == size
+      # the next two wait behind its pending write
+      peer.queuedBytes(MessagePriority.Medium) == 2 * size
+      # the last two do not fit the budget, and each drop adds a penalty
+      peer.slowPeerPenalty == 2.0
+      # a dropped publish does not disconnect the peer
+      nodes[0].switch.isConnected(peerId)
+
+  asyncTest "Subscribing through GossipSub over a byte budget evicts the oldest queued publish":
+    const otherTopic = "othertopic"
+    let nodes = generateNodes(2, gossip = true).toGossipSub()
+    let messages = toSeq(1 .. 3).mapIt(("message " & $it).toBytes())
+    # every message has the same length, so every publish encodes to the same size
+    let size = nodes[0].messageSize(topic, messages[0])
+    nodes[0].parameters.maxOutboundQueueBytes = 3 * size
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+    subscribeAllNodes(nodes, topic, voidTopicHandler)
+    waitSubscribeStar(nodes, topic)
+
+    let peerId = nodes[1].peerInfo.peerId
+    await nodes[0].waitForNextHeartbeat()
+    check nodes[0].mesh.hasPeerId(topic, peerId)
+    let peer = nodes[0].getPeerByPeerId(topic, peerId)
+    # wait for the subscription and GRAFT writes to end, so the first publish finds nothing retained
+    checkUntilTimeout:
+      peer.queuedBytes() == 0
+
+    let mock = peer.stallSendStream(stallCount = 1)
+    defer:
+      await mock.close()
+
+    # the first publish is written at once, and the next two wait behind its pending write and fill the budget
+    for data in messages:
+      discard await nodes[0].publish(topic, data)
+
+    nodes[0].subscribe(otherTopic, voidTopicHandler)
+
+    check:
+      # the subscription is sent at High, so it is written at once
+      mock.writes.carries(otherTopic.toBytes())
+      # the subscription made room by evicting the oldest queued publish
+      peer.queuedBytes(MessagePriority.Medium) == size
+      # an eviction adds no penalty
+      peer.slowPeerPenalty == 0.0
+      # the subscription found room, so the peer stays connected
+      nodes[0].switch.isConnected(peerId)
+
+    # the queue drains past the evicted publish
+    mock.releasePendingWrites()
+    await mock.waitForWrite(messages[2])
+    check not mock.writes.carries(messages[1])
+
+  asyncTest "Publishing through GossipSub over a byte budget evicts the oldest queued relay":
+    let nodes = generateNodes(3, gossip = true).toGossipSub()
+    let messages = toSeq(1 .. 4).mapIt(("message " & $it).toBytes())
+    # every node has an Ed25519 key and every message has the same length,
+    # so the relays of nodes[0]'s messages and nodes[1]'s publish encode to the same size
+    let size = nodes[1].messageSize(topic, messages[0])
+    nodes[1].parameters.maxOutboundQueueBytes = 3 * size
+
+    let received = newAsyncQueue[seq[byte]]()
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      await received.put(data)
+
+    startAndDeferStop(nodes)
+    await connectChain(nodes)
+    nodes[0].subscribe(topic, voidTopicHandler)
+    nodes[1].subscribe(topic, handler)
+    nodes[2].subscribe(topic, voidTopicHandler)
+    waitSubscribeChain(nodes, topic)
+
+    let peerId = nodes[2].peerInfo.peerId
+    await nodes[1].waitForNextHeartbeat()
+    check nodes[1].mesh.hasPeerId(topic, peerId)
+    let peer = nodes[1].getPeerByPeerId(topic, peerId)
+    # wait for the subscription and GRAFT writes to end, so the first relay finds nothing retained
+    checkUntilTimeout:
+      peer.queuedBytes() == 0
+
+    # only the first write stalls, so the queue drains at once after the release
+    let mock = peer.stallSendStream(stallCount = 1)
+    defer:
+      await mock.close()
+
+    # nodes[1] relays the first three messages to nodes[2]
+    for data in messages[0 .. 2]:
+      discard await nodes[0].publish(topic, data)
+    # wait for nodes[1]'s handler, which runs only after nodes[1] queues the relay
+    for data in messages[0 .. 2]:
+      check (await received.popFirst()) == data
+    # the first relay is written at once, and the next two wait behind its pending write and fill the budget
+    check peer.queuedBytes(MessagePriority.Low) == 2 * size
+
+    discard await nodes[1].publish(topic, messages[3])
+
+    check:
+      # nodes[1]'s own publish is sent at Medium, so it made room by evicting the oldest queued relay
+      peer.queuedBytes(MessagePriority.Low) == size
+      # the publish waits behind the first relay's pending write
+      peer.queuedBytes(MessagePriority.Medium) == size
+      # an eviction adds no penalty
+      peer.slowPeerPenalty == 0.0
+
+    # the queue drains past the evicted relay
+    mock.releasePendingWrites()
+    await mock.waitForWrite(messages[2])
+    check not mock.writes.carries(messages[1])

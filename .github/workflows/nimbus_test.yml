@@ -10,10 +10,13 @@ on:
       commit:
         description: "nim-libp2p commit, branch, or tag to test"
         required: true
+      nimbus_commit:
+        description: "Nimbus commit, branch, or tag to test (defaults to unstable)"
+        required: false
 
 # An event for another label gets its own group, so it cannot cancel a running test.
 concurrency:
-  group: nimbus-test-${{ github.event.pull_request.number || inputs.commit || github.ref }}${{ github.event.label.name && github.event.label.name != 'test-nimbus' && github.event.label.name != 'run-daily-ci' && format('-{0}', github.run_id) || '' }}
+  group: nimbus-test-${{ github.event.pull_request.number || inputs.commit || github.ref }}-${{ inputs.nimbus_commit || 'unstable' }}${{ github.event.label.name && github.event.label.name != 'test-nimbus' && github.event.label.name != 'run-daily-ci' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -46,15 +49,16 @@ jobs:
         id: pin
         env:
           GH_TOKEN: ${{ github.token }}
+          NIMBUS_REF: ${{ inputs.nimbus_commit || env.NIMBUS_BASE }}
           LIBP2P_REF: ${{ inputs.commit || github.event.pull_request.head.sha || github.sha }}
         run: |
-          nimbus_sha=$(gh api "repos/$NIMBUS_REPO/commits/heads/$NIMBUS_BASE" --jq .sha)
+          nimbus_sha=$(gh api "repos/$NIMBUS_REPO/commits/$NIMBUS_REF" --jq .sha)
           libp2p_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$LIBP2P_REF" --jq .sha)
           {
             echo "nimbus_sha=$nimbus_sha"
             echo "libp2p_sha=$libp2p_sha"
           } >> "$GITHUB_OUTPUT"
-          echo "nimbus-eth2 $NIMBUS_BASE $nimbus_sha, nim-libp2p $libp2p_sha" >> "$GITHUB_STEP_SUMMARY"
+          echo "nimbus-eth2 $NIMBUS_REF $nimbus_sha, nim-libp2p $libp2p_sha" >> "$GITHUB_STEP_SUMMARY"
           printf '{"nimbus_sha":"%s","libp2p_sha":"%s"}\n' "$nimbus_sha" "$libp2p_sha" > nimbus-pins.json
 
       # nimbus_fleet.yml reads the pins; it validates them because this workflow runs PR code.

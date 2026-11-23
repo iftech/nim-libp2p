@@ -45,15 +45,28 @@ type GossipsubConfig {.ffi.} = object
   disconnectPeerAboveRateLimit: bool
     ## False leaves the budget as a metric; nothing enforces it.
 
+type ServiceDiscoveryConfig {.ffi.} = object
+  ## Zero in any tunable uses the core default; a negative value is an error.
+  mount: bool ## Mount random-find based service discovery in place of Kad.
+  mode: ServiceDiscoveryMode
+    ## A client queries the DHT but serves no requests and registers no adverts.
+  disableXprPublishing: bool ## Keep this node's own signed peer record out of the DHT.
+  kRegister: int ## Registrars per bucket that get each advert.
+  kLookup: int ## Peers per bucket that a lookup asks.
+  fLookup: int ## Providers after which a lookup stops.
+  fReturn: int ## Peers or adverts that a registrar returns per reply; at most 4096.
+  bucketsCount: int ## Buckets in each service routing table.
+  advertExpiryMs: int64 ## Lifetime of an accepted advert.
+  registrationWindowMs: int64
+    ## Window in which a registrar takes a ticket retry; whole seconds.
+  advertCacheCap: int ## Adverts that a registrar keeps.
+
 type Libp2pConfig {.ffi.} = object
   logLevel: int ## Chronicles runtime log level to apply before node construction.
   gossipsub: GossipsubConfig ## Mounting and ingress limits for GossipSub.
   mountKad: bool ## Mount the Kademlia DHT service.
-  mountServiceDiscovery: bool ## Mount random-find based service discovery.
-  serviceDiscoveryMode: ServiceDiscoveryMode
-    ## A client queries the DHT but serves no requests and registers no adverts.
-  serviceDiscoveryDisableXprPublishing: bool
-    ## Keep this node's own signed peer record out of the DHT.
+  serviceDiscovery: ServiceDiscoveryConfig
+    ## Mount flag and tunables for service discovery.
   dnsResolver: string ## DNS server address; empty uses the core defaults.
   addrs: seq[string] ## Listen multiaddresses for the switch.
   muxer: MuxerType ## Type of muxer used for TCP transports.
@@ -98,6 +111,12 @@ type ParsedGossipsub = object
   overheadRateLimit: Opt[RateLimit]
   disconnectPeerAboveRateLimit: bool
 
+type ParsedServiceDiscovery = object
+  mount: bool
+  client: bool
+  xprPublishing: bool
+  config: types.ServiceDiscoveryConfig
+
 type ParsedTransport = object
   ## The transport to build, plus the muxer it needs. A muxer is only used with
   ## TCP, so the variant makes "no muxer for QUIC" unrepresentable rather than
@@ -127,9 +146,7 @@ type ParsedConfig = object
   autonatV2Server: bool
   gossipsub: ParsedGossipsub
   mountKad: bool
-  mountServiceDiscovery: bool
-  serviceDiscoveryMode: ServiceDiscoveryMode
-  serviceDiscoveryDisableXprPublishing: bool
+  serviceDiscovery: ParsedServiceDiscovery
 
 proc parseMultiaddrs(raw: openArray[string]): Result[seq[MultiAddress], string] =
   var addrs: seq[MultiAddress]
@@ -166,10 +183,11 @@ proc parsePrivateKey(raw: seq[byte]): Result[Opt[PrivateKey], string] =
   ok(Opt.some(key))
 
 const
+  MaxDurationMs = high(int64) div 1_000_000
+    ## `chronos.milliseconds` scales to the nanoseconds a `Duration` holds.
   MaxGossipsubMessageSize {.ffiConst.} = 64 * 1024 * 1024
     ## A peer can make us preallocate this much before a byte is validated.
-  MaxOverheadRateLimitIntervalMs {.ffiConst.} = high(int64) div 1_000_000
-    ## `chronos.milliseconds` scales to the nanoseconds a `Duration` holds.
+  MaxOverheadRateLimitIntervalMs {.ffiConst.} = MaxDurationMs
 
 func requireMount(cfg: GossipsubConfig): Result[void, string] =
   if cfg.mount:
@@ -388,16 +406,66 @@ proc parseNATConfig(config: Libp2pConfig): Result[Opt[NATConfig], string] =
   else:
     ok(Opt.some(nat))
 
-func requireServiceDiscoveryMount(config: Libp2pConfig): Result[void, string] =
-  if config.mountServiceDiscovery:
+func requireMount(cfg: ServiceDiscoveryConfig): Result[void, string] =
+  if cfg.mount or cfg == default(ServiceDiscoveryConfig):
     return ok()
-  if config.serviceDiscoveryMode != ServiceDiscoveryMode.Server or
-      config.serviceDiscoveryDisableXprPublishing:
-    return err("service discovery settings require mountServiceDiscovery")
-  ok()
+  err("service discovery settings require serviceDiscovery.mount")
+
+func countOrDefault(
+    value: int, field: string, default: int, limit = high(int)
+): Result[int, string] =
+  if value < 0:
+    return err($value, field & " must be 0 or greater")
+  if value > limit:
+    return err($value, field & " exceeds the limit of " & $limit)
+  if value == 0:
+    return ok(default)
+  ok(value)
+
+func durationOrDefault(
+    ms: int64, field: string, default: Duration
+): Result[Duration, string] =
+  if ms < 0:
+    return err($ms, field & " must be 0 or greater")
+  if ms > MaxDurationMs:
+    return err($ms, field & " exceeds the limit of " & $MaxDurationMs)
+  if ms == 0:
+    return ok(default)
+  ok(chronos.milliseconds(ms))
+
+func parseServiceDiscovery(
+    cfg: ServiceDiscoveryConfig
+): Result[ParsedServiceDiscovery, string] =
+  ?requireMount(cfg)
+  let registrationWindow =
+    ?durationOrDefault(cfg.registrationWindowMs, "registrationWindowMs", Default_Delta)
+  if cfg.registrationWindowMs mod 1000 != 0:
+    return err($cfg.registrationWindowMs, "registrationWindowMs must be whole seconds")
+  ok(
+    ParsedServiceDiscovery(
+      mount: cfg.mount,
+      client: cfg.mode == ServiceDiscoveryMode.Client,
+      xprPublishing: not cfg.disableXprPublishing,
+      config: types.ServiceDiscoveryConfig.new(
+        kRegister = ?countOrDefault(cfg.kRegister, "kRegister", Default_K_register),
+        kLookup = ?countOrDefault(cfg.kLookup, "kLookup", Default_K_lookup),
+        fLookup = ?countOrDefault(cfg.fLookup, "fLookup", Default_F_lookup),
+        fReturn = ?countOrDefault(
+          cfg.fReturn, "fReturn", Default_F_return, ServiceDiscoveryMaxMsgSize
+        ),
+        bucketsCount = ?countOrDefault(
+          cfg.bucketsCount, "bucketsCount", Default_M_buckets, MaxBucketsLimit
+        ),
+        advertExpiry =
+          ?durationOrDefault(cfg.advertExpiryMs, "advertExpiryMs", Default_E),
+        registrationWindow = registrationWindow,
+        advertCacheCap =
+          uint64(?countOrDefault(cfg.advertCacheCap, "advertCacheCap", int(Default_C))),
+      ),
+    )
+  )
 
 proc parse(config: Libp2pConfig): Result[ParsedConfig, string] =
-  ?requireServiceDiscoveryMount(config)
   ok(
     ParsedConfig(
       dnsServers: ?resolveDnsServers(config.dnsResolver),
@@ -416,8 +484,6 @@ proc parse(config: Libp2pConfig): Result[ParsedConfig, string] =
       autonatV2Server: config.autonatV2Server,
       gossipsub: ?parseGossipsub(config.gossipsub),
       mountKad: config.mountKad,
-      mountServiceDiscovery: config.mountServiceDiscovery,
-      serviceDiscoveryMode: config.serviceDiscoveryMode,
-      serviceDiscoveryDisableXprPublishing: config.serviceDiscoveryDisableXprPublishing,
+      serviceDiscovery: ?parseServiceDiscovery(config.serviceDiscovery),
     )
   )
