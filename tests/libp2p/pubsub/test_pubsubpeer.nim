@@ -108,6 +108,7 @@ suite "PubSubPeer send stream":
     ) {.async: (raises: [CancelledError]).} =
       inc joined
       check peerId notin gossip.peers
+
     sw.addPeerEventHandler(onJoined, PeerEventKind.Joined)
     remote.peerInfo.protocols = @[]
     await sw.connect(remoteId, remote.peerInfo.addrs)
