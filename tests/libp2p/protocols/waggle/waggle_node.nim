@@ -2,8 +2,8 @@
 # Copyright (c) Status Research & Development GmbH
 
 import chronos
-import ../../libp2p/[switch, protocols/waggle]
-import ./[crypto, switch_builder]
+import ../../../../libp2p/[switch, protocols/waggle]
+import ../../../tools/[crypto, switch_builder]
 
 type WaggleNode* = ref object ## A switch over QUIC with a mounted Waggle.
   switch*: Switch
@@ -29,11 +29,11 @@ proc setupWaggleNodes*(count: int): seq[WaggleNode] =
     nodes.add(setupWaggleNode())
   return nodes
 
-proc popEvents*(node: WaggleNode, count: int): Future[seq[WaggleEvent]] {.async.} =
-  var events: seq[WaggleEvent]
+proc waitForSubscribers*(node: WaggleNode, count = 1) {.async.} =
+  ## Awaits the next `count` events, each a peer's subscription to `node`.
   for _ in 0 ..< count:
-    events.add(await node.events.popFirst())
-  return events
+    let event = await node.events.popFirst()
+    doAssert event.kind == WaggleEventKind.Subscribed, $event.kind
 
 proc connect*(dialer, target: WaggleNode) {.async.} =
   await dialer.switch.connect(target.switch)
