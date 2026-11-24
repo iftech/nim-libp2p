@@ -478,6 +478,14 @@ proc setMode(kad: KadDHT, isServer: bool, now: Moment) {.async: (raises: []).} =
   kad.autoModePolicy.applied(isServer, now)
   kad.isServer = isServer
   kad.advertiseMode()
+  if kad.started:
+    if isServer:
+      kad_server_mode.inc()
+    else:
+      kad_server_mode.dec()
+  kad_mode_transitions_total.inc(
+    labelValues = [if isServer: "to_server" else: "to_client"]
+  )
   if not isServer:
     await kad.resetServerStreams()
   info "Kad DHT changed mode", isServer
@@ -525,13 +533,19 @@ proc observeReachability(
 ) {.async: (raises: []).} =
   kad.dropModeTimer()
   let now = Moment.now()
+  let hadPending = kad.autoModePolicy.deadline().isSome()
   let deadline = kad.autoModePolicy.observe(reachability, now).valueOr:
+    if hadPending:
+      kad_mode_transitions_suppressed_total.inc(labelValues = ["opposite"])
     return
 
   if deadline <= now:
     await kad.setMode(not kad.isServer, now)
     return
 
+  if not hadPending:
+    kad.autoModePolicy.holdReason().ifValue(reason):
+      kad_mode_transitions_suppressed_total.inc(labelValues = [$reason])
   kad.armModeTimer(deadline)
 
 proc enableAutoMode*(
@@ -565,9 +579,13 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   kad.started = true
   kad.stopping = false
   if kad.autoModeHandler.isSome():
+    if kad.isServer:
+      kad_mode_transitions_total.inc(labelValues = ["to_client"])
     kad.isServer = false
     kad.autoModePolicy = kad.autoModePolicy.restarted(isServer = kad.isServer)
     await kad.observeReachability(kad.currentReachability())
+  elif kad.isServer:
+    kad_server_mode.inc()
   kad.advertiseMode()
   kad.msgSender.start()
 
@@ -595,6 +613,8 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
   # drain loop below can then finish for good rather than chasing new arrivals.
   kad.stopping = true
   kad.started = false
+  if kad.isServer:
+    kad_server_mode.dec()
   if not kad.modeTimer.isNil():
     let timer = kad.modeTimer
     kad.modeTimer = nil
