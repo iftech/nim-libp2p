@@ -92,6 +92,7 @@ const
   DefaultSendStreamRetryBaseDelay* = 1.seconds
   DefaultSendStreamRetryMaxDelay* = 16.seconds
   SendStreamRetryJitter = 0.2
+  MaxUnknownSendStreamFailures = 5
   DefaultMaxOutboundQueueBytes* = 16 * 1024 * 1024
   HighPriorityQueueReserveDivisor = 16
 
@@ -221,6 +222,9 @@ type
     sendStreamRetryBaseDelay*: Duration
     sendStreamRetryMaxDelay*: Duration
       ## Caps retry backoff and sets the stream lifetime required to reset it.
+    protocolSupported*: bool
+      ## Evidence from advertised protocols or inbound negotiation, not an optimistic open.
+    unknownSendStreamFailures: int # Persists across connect() calls.
     sendStreamWarnings: LogRateLimit
     rng: Rng
     validationSlots*: AsyncSemaphore
@@ -582,6 +586,11 @@ proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
             peer = p, lifetime, delay
       except GetStreamDialError as e:
         libp2p_pubsub_send_stream_opens.inc(labelValues = ["failed"])
+        if not p.protocolSupported:
+          inc p.unknownSendStreamFailures
+          if p.unknownSendStreamFailures >= MaxUnknownSendStreamFailures:
+            debug "Pubsub support unknown, send stream attempts exhausted", peer = p
+            return
         if p.sendStreamWarnings.allowLog():
           debug "Could not establish send stream, retrying",
             peer = p, err = e.msg, delay
@@ -594,6 +603,9 @@ proc connectImpl(p: PubSubPeer) {.async: (raises: []).} =
 proc connect*(p: PubSubPeer) =
   if p.stopped or p.connected:
     return
+  if not p.protocolSupported and
+      p.unknownSendStreamFailures >= MaxUnknownSendStreamFailures:
+    return
   if not p.connectFut.isNil() and not p.connectFut.finished():
     return
 
@@ -602,6 +614,9 @@ proc connect*(p: PubSubPeer) =
 proc trackSend*(p: PubSubPeer, fut: Future[void]) =
   ## Take ownership of an in-flight send future on this peer.
   p.sendFuts.trackFut(fut)
+
+proc hasRecvStream*(p: PubSubPeer): bool =
+  p.recvStreams.len > 0
 
 proc hasSendStream*(p: PubSubPeer): bool =
   p.sendStream != nil
@@ -1257,6 +1272,7 @@ proc new*(
     getStream: getStream,
     onEvent: onEvent,
     codec: codec,
+    protocolSupported: codec != "",
     peerId: peerId,
     connectedFut: newFuture[void](),
     maxMessageSize: maxMessageSize,

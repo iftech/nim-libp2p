@@ -21,6 +21,7 @@ import
   ../../stream/connection,
   ../../peerid,
   ../../peerinfo,
+  ../../peerstore,
   ../../errors,
   ../../utils/opt,
   ../../utils/future
@@ -410,9 +411,13 @@ method onPubSubPeerEvent*(
 method getOrCreatePeer*(
     p: PubSub, peerId: PeerId, protosToDial: seq[string], protoNegotiated: string = ""
 ): PubSubPeer {.base, gcsafe.} =
+  let supported =
+    protoNegotiated != "" or
+    p.switch.peerStore[ProtoBook][peerId].anyIt(it in protosToDial)
   p.peers.withValue(peerId, peer):
     if peer[].codec == "":
       peer[].codec = protoNegotiated
+    peer[].protocolSupported = peer[].protocolSupported or supported
     return peer[]
 
   let protos =
@@ -454,6 +459,7 @@ method getOrCreatePeer*(
     handler = peerHandler,
     rng = p.rng,
   )
+  pubSubPeer.protocolSupported = supported
   trace "created new pubsub peer", peerId
 
   p.peers[peerId] = pubSubPeer
@@ -588,12 +594,23 @@ method handleConn*(
   finally:
     await stream.closeWithEOF()
 
+proc canSubscribePeer(p: PubSub, peerId: PeerId): bool =
+  # An inbound stream is stronger evidence than a stale Identify snapshot.
+  p.peers.withValue(peerId, peer):
+    if peer[].hasRecvStream():
+      return true
+  let protocols = p.switch.peerStore[ProtoBook]
+  peerId notin protocols or protocols[peerId].anyIt(it in p.codecs)
+
 method subscribePeer*(p: PubSub, peer: PeerId) {.base, gcsafe.} =
   ## subscribe to remote peer to receive/send pubsub
   ## messages
   ##
 
   if p.stopping or p.switch.isStopping:
+    return
+
+  if not p.canSubscribePeer(peer):
     return
 
   let pubSubPeer = p.getOrCreatePeer(peer, p.codecs)
@@ -848,16 +865,23 @@ proc init*[PubParams: object | bool](
       peerId: PeerId, event: PeerEvent
   ) {.async: (raises: [CancelledError]).} =
     case event.kind
-    of PeerEventKind.Joined:
+    of PeerEventKind.Identified:
       pubsub.subscribePeer(peerId)
     of PeerEventKind.Left:
       pubsub.unsubscribePeer(peerId)
-    of PeerEventKind.Identified:
-      # Identified events are handled by IdentifyPusher service
+    of PeerEventKind.Joined:
       discard
 
-  switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Joined)
+  switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Identified)
   switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Left)
+
+  switch.peerStore[ProtoBook].addHandler proc(peerId: PeerId) {.gcsafe.} =
+    if pubsub.stopping or switch.isStopping or not switch.isConnected(peerId):
+      return
+    if not pubsub.canSubscribePeer(peerId):
+      pubsub.unsubscribePeer(peerId)
+    elif peerId in switch.peerStore[ProtoBook]:
+      pubsub.subscribePeer(peerId)
 
   pubsub.knownTopics = KnownLibP2PTopicsSeq.toHashSet()
   pubsub.initPubSub()
