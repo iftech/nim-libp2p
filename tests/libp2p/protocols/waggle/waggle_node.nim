@@ -10,7 +10,7 @@ type WaggleNode* = ref object ## A switch over QUIC with a mounted Waggle.
   waggle*: Waggle
   events*: AsyncQueue[WaggleEvent] # every event Waggle emits, in order
 
-proc setupWaggleNode*(): WaggleNode =
+proc setupWaggleNode*(config = WaggleConfig()): WaggleNode =
   let events = newAsyncQueue[WaggleEvent]()
   proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
     try:
@@ -19,7 +19,8 @@ proc setupWaggleNode*(): WaggleNode =
       raiseAssert "an unbounded queue is never full"
 
   let switch = makeStandardSwitch()
-  let waggle = Waggle.new(onEvent = onEvent, rng = rng(), switch = switch)
+  let waggle =
+    Waggle.new(config = config, onEvent = onEvent, rng = rng(), switch = switch)
   switch.mount(waggle)
   return WaggleNode(switch: switch, waggle: waggle, events: events)
 

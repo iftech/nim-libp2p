@@ -134,3 +134,82 @@ suite "Waggle switch integration":
     check:
       received.kind == WaggleEventKind.Received
       received.message.objectId == laterId
+
+  asyncTest "a topic the node only publishes to keeps its state, so the topic-state limit refuses a topic subscribed later":
+    # TODO: iftech/nim-libp2p#3515
+    const
+      publishedTopic = @[byte 2]
+      objectId = @[byte 1]
+      piece = 0b001
+      topicStateLimitReached = "Waggle topic state limit reached"
+    # the published topic fills nodes[0]'s topic-state limit
+    let nodes = @[setupWaggleNode(WaggleConfig(maxTopics: 1)), setupWaggleNode()]
+    startAndDeferStop(nodes)
+    await connect(nodes[0], nodes[1])
+    # nodes[1] subscribes to both topics, so nodes[0] has someone to publish to
+    for t in [publishedTopic, topic]:
+      discard nodes[1].waggle.subscribe(t).get()
+    await nodes[0].waitForSubscribers(2)
+    let snapshot = BitShard(id: objectId, have: piece)
+    check nodes[0].waggle.publish(publishedTopic, snapshot).get() == 1
+    # wait for the delivery, so nodes[1]'s next event is nodes[0]'s subscription
+    check (await nodes[1].events.popFirst()).kind == WaggleEventKind.Received
+    check:
+      # unsubscribe returns false for a topic nodes[0] only publishes to
+      not (await nodes[0].waggle.unsubscribe(publishedTopic))
+      # the topic's only object is gone, its state is not
+      nodes[0].waggle.removeObject(publishedTopic, objectId)
+
+    # nodes[0] subscribes to a new topic, and nodes[1] publishes on it
+    check nodes[0].waggle.subscribe(topic).get().added
+    await nodes[1].waitForSubscribers()
+    check nodes[1].waggle.publish(topic, snapshot).get() == 1
+    let refused = await nodes[0].events.popFirst()
+    check:
+      # the message is blamed on nodes[1] instead of reaching nodes[0]'s application
+      refused.kind == WaggleEventKind.InvalidData
+      refused.peerId == nodes[1].switch.peerInfo.peerId
+      refused.topicId == topic
+      refused.message.objectId == objectId
+      refused.reason == topicStateLimitReached
+      nodes[0].events.len == 0
+      # nodes[0] cannot publish on the new topic either
+      nodes[0].waggle.publish(topic, snapshot).error == topicStateLimitReached
+
+  asyncTest "every publish of an object reports invalid data for a peer whose metadata the shard rejects":
+    const
+      objectId = @[byte 1]
+      firstPiece = 0b001
+      # BitShard tracks three pieces, so it rejects metadata naming a fourth
+      fourthPiece = 0b1000
+    let nodes = setupWaggleNodes(2)
+    startAndDeferStop(nodes)
+    await connect(nodes[0], nodes[1])
+    # each node subscribes, so each has the other to publish to
+    for node in nodes:
+      discard node.waggle.subscribe(topic).get()
+    for node in nodes:
+      await node.waitForSubscribers()
+    # nodes[1]'s snapshot holds the fourth piece, so its metadata names it
+    check nodes[1].waggle.publish(topic, BitShard(id: objectId, have: fourthPiece)).get() ==
+      1
+    # nodes[0] holds no snapshot of the object, so it keeps the metadata unchecked
+    let received = await nodes[0].events.popFirst()
+    check received.kind == WaggleEventKind.Received
+
+    let snapshot = BitShard(id: objectId, have: firstPiece)
+    # a first publish, then an unchanged republish, which retries rejected transmissions
+    for _ in 0 ..< 2:
+      check:
+        nodes[0].waggle.publish(topic, snapshot).error ==
+          "Message not sent on any connection"
+        # publish emits its events before it returns
+        nodes[0].events.len == 1
+      let rejected = nodes[0].events.popFirstNoWait()
+      check:
+        rejected.kind == WaggleEventKind.InvalidData
+        rejected.peerId == nodes[1].switch.peerInfo.peerId
+        rejected.connectionId == received.connectionId
+        rejected.topicId == topic
+        rejected.message == ObjectPieces(objectId: objectId)
+        rejected.reason == "invalid bit metadata"
