@@ -113,7 +113,8 @@ proc handleReserve(
     await sendHopStatus(stream, PermissionDenied)
     return
 
-  if r.peerCount[stream.peerId] + r.rsvp.len() >= r.maxCircuit:
+  if stream.peerId notin r.rsvp and
+      r.peerCount[stream.peerId] + r.rsvp.len() >= r.maxCircuit:
     libp2p_relay_reservation_attempts.inc(labelValues = ["limit"])
     trace "Too many reservations", pid = stream.peerId
     await sendHopStatus(stream, ReservationRefused)
