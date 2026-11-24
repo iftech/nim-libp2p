@@ -131,7 +131,7 @@ suite "Service Discovery types":
 
   test "a GET_ADS reply of MaxFReturn max-size ads and closer peers fits the read limit":
     var response = getAdsReply(MaxFReturn, typicalAddrs())
-    let closerPeers = response.closerPeers
+    let closerPeers = response.closerPeers.mapIt(it)
 
     check:
       response.encodeWithinReadLimit().len <= ServiceDiscoveryMaxMsgSize
@@ -139,7 +139,7 @@ suite "Service Discovery types":
 
   test "encodeWithinReadLimit drops the farthest closer peers of an oversized reply":
     var response = getAdsReply(MaxFReturn, longAddrs())
-    let closerPeers = response.closerPeers
+    let closerPeers = response.closerPeers.mapIt(it)
     check response.encode().len > ServiceDiscoveryMaxMsgSize
 
     let bytes = response.encodeWithinReadLimit()

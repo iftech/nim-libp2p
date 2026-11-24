@@ -12,6 +12,7 @@ type MockKadDHT* = ref object of KadDHT
   findNodeCalls*: seq[Key]
   findNodeTables*: seq[RoutingTable]
   getValueResponse*: Opt[Message]
+  getProvidersResponse*: Opt[Message]
   handleAddProviderMessage*: Opt[Message]
   handleAddProviderDelay*: Duration
   handleAddProviderCalls*: int
@@ -64,6 +65,18 @@ method handleGetValue*(
     await stream.writeLp(response.encode())
   except LPStreamError as e:
     raiseAssert "Failed to send malicious get-value response: " & e.msg
+
+method handleGetProviders*(
+    kad: MockKadDHT, stream: Stream, msg: Message
+) {.async: (raises: [CancelledError]).} =
+  let response = kad.getProvidersResponse.valueOr:
+    await procCall handleGetProviders(KadDHT(kad), stream, msg)
+    return
+
+  try:
+    await stream.writeLp(response.encode())
+  except LPStreamError as e:
+    raiseAssert "Failed to send malicious get-providers response: " & e.msg
 
 method handleAddProvider*(
     kad: MockKadDHT, stream: Stream, msg: Message

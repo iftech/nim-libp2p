@@ -252,12 +252,12 @@ suite "KadDHT Put":
     await connect(kads[0], kads[1])
 
     let key = kads[0].rtable.selfId
-    let before = nowUnixSeconds()
+    let before = UnixTimestamp.now()
     check (await kads[1].putValue(key, @[1.byte, 2, 3])).isOk()
-    let after = nowUnixSeconds()
+    let after = UnixTimestamp.now()
 
     for kad in kads:
-      let stored = kad.store.getValue(key, nowUnixSeconds()).get()
+      let stored = kad.store.getValue(key, UnixTimestamp.now()).get()
       check:
         stored.isSome()
         stored.get().expiresAt in

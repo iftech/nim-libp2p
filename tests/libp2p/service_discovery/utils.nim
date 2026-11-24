@@ -82,7 +82,7 @@ proc makeAdvertisement*(
     serviceId: string = $1,
     privateKey: PrivateKey = PrivateKey.random(rng()).get(),
     addrs: seq[MultiAddress] = @[],
-    seqNo: uint64 = nowUnixSeconds().uint64,
+    seqNo: uint64 = UnixTimestamp.now().uint64,
 ): Advertisement =
   let peerId = PeerId.init(privateKey).get()
   let extRecord = ExtendedPeerRecord(
@@ -116,7 +116,6 @@ proc testKadDHTConfig(): KadDHTConfig =
     ExtEntryValidator(),
     ExtEntrySelector(),
     timeout = 3.secs,
-    cleanupProvidersInterval = 100.millis,
     providerExpirationInterval = 1.secs,
     republishProvidedKeysInterval = 50.millis,
     disableBootstrapping = true, # component tests wire up their own topology explicitly
@@ -246,7 +245,10 @@ proc acceptAd*(
   disco.acceptAdvertisement(now, serviceId, adv, ad, advertiserIps)
 
 proc registerAd*(
-    disco: ServiceDiscovery, serviceId: ServiceId, ad: Advertisement
+    disco: ServiceDiscovery,
+    serviceId: ServiceId,
+    ad: Advertisement,
+    connectionIps: seq[IpAddress] = @[],
 ): RegisterMessage =
   let inMsg = Message(
     msgType: MessageType.register,
@@ -259,7 +261,7 @@ proc registerAd*(
       )
     ),
   )
-  disco.registration(ad.data.peerId, inMsg).register.get()
+  disco.registration(ad.data.peerId, inMsg, connectionIps).register.get()
 
 proc seedAd*(
     reg: Registrar,

@@ -98,9 +98,9 @@ proc encodeWithinReadLimit*(msg: var Message): seq[byte] {.raises: [].} =
   var bytes = msg.encode()
   while bytes.len > ServiceDiscoveryMaxMsgSize:
     if msg.closerPeers.len > 0:
-      discard msg.closerPeers.pop()
+      msg.closerPeers.setLen(msg.closerPeers.len - 1)
     elif msg.getAds.isSome() and msg.getAds.get().advertisements.len > 0:
-      discard msg.getAds.get().advertisements.pop()
+      msg.getAds.get().advertisements.setLen(msg.getAds.get().advertisements.len - 1)
     else:
       break
 

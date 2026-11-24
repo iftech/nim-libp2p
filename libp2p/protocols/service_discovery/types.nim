@@ -241,7 +241,7 @@ proc new*(T: typedesc[Registrar], advertCacheCap: uint64 = Default_C): T =
 proc new*(T: typedesc[Advertiser]): T =
   T(
     running: initHashSet[AdvertiseTask](),
-    seqNo: nowUnixSeconds().uint64,
+    seqNo: UnixTimestamp.now().uint64,
     providedAdverts: initTable[ServiceId, ProvidedAdvert](),
   )
 
@@ -251,7 +251,7 @@ proc toKey*(service: ServiceInfo): Key =
 proc init*(
     T: typedesc[ExtendedPeerRecord],
     peerInfo: PeerInfo,
-    seqNo: uint64 = nowUnixSeconds().uint64,
+    seqNo: uint64 = UnixTimestamp.now().uint64,
     services: seq[ServiceInfo] = @[],
 ): T =
   T(
@@ -316,7 +316,7 @@ proc record*(disco: ServiceDiscovery): LPResult[SignedExtendedPeerRecord] =
   let peerRecord = ExtendedPeerRecord.init(
     peerId = peerInfo.peerId,
     addresses = filteredAddresses,
-    seqNo = nowUnixSeconds().uint64,
+    seqNo = UnixTimestamp.now().uint64,
     services = disco.services.toSeq(),
   )
 
