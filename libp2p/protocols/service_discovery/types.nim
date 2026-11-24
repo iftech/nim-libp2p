@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[sequtils, sets, tables, hashes, net]
+import std/[math, sequtils, sets, tables, hashes, net]
 import chronicles, chronos, results, stew/byteutils
 import nimcrypto/sha2
 import
@@ -21,7 +21,6 @@ const
   DefaultSelfSPRRereshTime* = 10.minutes
 
   ExtendedServiceDiscoveryCodec* = "/logos/service-discovery/1.0.0"
-  ServiceDiscoveryMaxMsgSize* = 4096
 
   Default_K_register* = 3
   Default_K_lookup* = 5
@@ -40,6 +39,14 @@ const
   Default_DialBackoffBase* = 30.secs
   Default_DialBackoffMax* = 30.minutes
   Default_MaxDialFailures* = 5
+
+  AdFramingSize = 8 ## field tag plus length varint around one ad
+  CloserPeerBudget = 1024 ## peer id plus MaxPeerAddrs typical addresses
+  ReturnSlotSize = MaxXPRSize + AdFramingSize + CloserPeerBudget
+    ## one returned ad plus one closer peer
+  ServiceDiscoveryMaxMsgSize* = nextPowerOfTwo(Default_F_return * ReturnSlotSize)
+    ## a GET_ADS reply of Default_F_return ads and closer peers must fit
+  MaxFReturn* = ServiceDiscoveryMaxMsgSize div ReturnSlotSize
 
 type
   ServiceId* = Key
