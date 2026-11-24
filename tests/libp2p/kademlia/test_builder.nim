@@ -43,12 +43,6 @@ method verify(
 ): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
   Opt.some(self.state)
 
-proc mountedKad(switch: Switch): Opt[KadDHT] =
-  for handler in switch.ms.handlers:
-    if KadCodec in handler.protos:
-      return Opt.some(KadDHT(handler.protocol))
-  Opt.none(KadDHT)
-
 const reachabilitySteps = [
   (AddrState.Confirmed, NetworkReachability.Reachable),
   (AddrState.Unverified, NetworkReachability.Unknown),
