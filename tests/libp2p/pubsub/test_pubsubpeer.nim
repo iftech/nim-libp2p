@@ -20,6 +20,8 @@ type
     attempts: int
     failures: int
     stream: Stream
+    notifyAt: int
+    attemptReached: AsyncEvent
 
   ResetGateStream = ref object of TestBufferStream
     resetStarted: bool
@@ -35,6 +37,8 @@ proc getStream(d: FlakyDialer): GetStream =
       async: (raises: [CancelledError, GetStreamDialError])
   .} =
     inc d.attempts
+    if d.attempts == d.notifyAt:
+      d.attemptReached.fire()
     if d.attempts <= d.failures:
       raise (ref GetStreamDialError)(msg: "unreachable")
     return d.stream
@@ -52,6 +56,33 @@ proc newPeer(
     sendStreamRetryBaseDelay = baseDelay,
     sendStreamRetryMaxDelay = maxDelay,
   )
+
+proc waitForSendStream(peer: PubSubPeer) {.async: (raises: [CancelledError]).} =
+  if peer.connected:
+    return
+  let opened = newAsyncEvent()
+  let onEvent = peer.onEvent
+  peer.onEvent = proc(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].} =
+    if onEvent != nil:
+      onEvent(peer, event)
+    if event.kind == PubSubPeerEventKind.StreamOpened:
+      opened.fire()
+  try:
+    await opened.wait()
+  finally:
+    peer.onEvent = onEvent
+
+proc notifyRecvStream(p: PubSub): AsyncEvent =
+  let opened = newAsyncEvent()
+  let handler = p.handler
+  p.handler = proc(
+      stream: Stream, proto: string
+  ) {.async: (raises: [CancelledError]).} =
+    p.handler = handler
+    let handling = handler(stream, proto)
+    opened.fire()
+    await handling
+  opened
 
 suite "PubSubPeer send stream":
   const topic = "foobar"
@@ -73,7 +104,7 @@ suite "PubSubPeer send stream":
       await remote.stop()
     remote.peerInfo.protocols = @[]
     await sw.connect(remoteId, remote.peerInfo.addrs)
-    checkUntilTimeout:
+    check:
       remoteId in sw.peerStore[ProtoBook]
       remoteId notin gossip.peers
     check sw.peerStore[ProtoBook][remoteId].len == 0
@@ -84,20 +115,19 @@ suite "PubSubPeer send stream":
     sw.peerStore[ProtoBook][remoteId] = gossip.codecs
     check remoteId notin gossip.peers
     await sw.connect(remoteId, remote.peerInfo.addrs)
-    checkUntilTimeout:
-      remoteId notin gossip.peers
+    check remoteId notin gossip.peers
 
     let remoteGossip = GossipSub.init(remote, rng = rng())
     await remoteGossip.start()
     remote.mount(remoteGossip)
+    let received = gossip.notifyRecvStream()
     sw.peerStore.updatePeerInfo(
       IdentifyInfo(peerId: remoteId, protos: remoteGossip.codecs)
     )
-    checkUntilTimeout:
-      remoteId in gossip.peers and gossip.peers[remoteId].connected
-
-    checkUntilTimeout:
-      gossip.peers[remoteId].hasRecvStream()
+    require remoteId in gossip.peers
+    await gossip.peers[remoteId].waitForSendStream()
+    await received.wait()
+    check gossip.peers[remoteId].hasRecvStream()
     # A stale snapshot must not override a negotiated inbound stream.
     sw.peerStore[ProtoBook][remoteId] = @["/other/1"]
     check gossip.peers[remoteId].connected
@@ -121,13 +151,14 @@ suite "PubSubPeer send stream":
     sw.mount(gossip)
     discard sw.peerStore[ProtoBook].del(remoteId)
     let peer = gossip.getOrCreatePeer(remoteId, gossip.codecs)
-    let dialer = FlakyDialer(failures: int.high)
+    let dialer =
+      FlakyDialer(failures: int.high, notifyAt: 3, attemptReached: newAsyncEvent())
     peer.getStream = dialer.getStream()
     peer.sendStreamRetryBaseDelay = 1.milliseconds
     peer.sendStreamRetryMaxDelay = 2.milliseconds
     gossip.subscribePeer(remoteId)
-    checkUntilTimeout:
-      dialer.attempts >= 3
+    await dialer.attemptReached.wait()
+    check dialer.attempts == 3
     let attempts = dialer.attempts
     sw.peerStore.updatePeerInfo(IdentifyInfo(peerId: remoteId, protos: @["/other/1"]))
     await sleepAsync(10.milliseconds)
@@ -149,14 +180,15 @@ suite "PubSubPeer send stream":
       await sw.stop()
       await remote.stop()
     await sw.connect(remoteId, remote.peerInfo.addrs)
-    checkUntilTimeout:
-      remoteId notin gossip.peers
+    check remoteId notin gossip.peers
     let remoteGossip = GossipSub.init(remote, rng = rng())
     await remoteGossip.start()
     remote.mount(remoteGossip)
+    let received = gossip.notifyRecvStream()
     remoteGossip.subscribePeer(sw.peerInfo.peerId)
-    checkUntilTimeout:
-      remoteId in gossip.peers and gossip.peers[remoteId].connected
+    await received.wait()
+    require remoteId in gossip.peers
+    await gossip.peers[remoteId].waitForSendStream()
     check remoteGossip.codecs.allIt(it notin sw.peerStore[ProtoBook][remoteId])
 
   asyncTest "unknown peers get five attempts per connection until support is established":
@@ -184,9 +216,10 @@ suite "PubSubPeer send stream":
         peer.getStream = dialer.getStream()
         peer.sendStreamRetryBaseDelay = 1.milliseconds
         peer.sendStreamRetryMaxDelay = 2.milliseconds
+        dialer.notifyAt = connection * 5
+        dialer.attemptReached = newAsyncEvent()
         gossip.subscribePeer(remoteId)
-        checkUntilTimeout:
-          dialer.attempts >= connection * 5
+        await dialer.attemptReached.wait()
         await sleepAsync(10.milliseconds)
         for _ in 0 ..< 3:
           peer.connect()
@@ -203,25 +236,26 @@ suite "PubSubPeer send stream":
           await remoteGossip.start()
           remote.mount(remoteGossip)
           remoteGossip.subscribePeer(sw.peerInfo.peerId)
-          checkUntilTimeout:
-            peer.connected
+          await peer.waitForSendStream()
           check cast[pointer](gossip.peers[remoteId]) == cast[pointer](peer)
         else:
           dialer.failures = dialer.attempts + 2
           dialer.stream = TestBufferStream.new(noop)
           sw.peerStore[ProtoBook][remoteId] = gossip.codecs
-          checkUntilTimeout:
-            peer.connected
+          await peer.waitForSendStream()
           check:
             dialer.attempts == 13
             cast[pointer](gossip.peers[remoteId]) == cast[pointer](peer)
 
   asyncTest "successful unknown stream opens do not consume the failure allowance":
     var attempts = 0
+    let sixthAttempt = newAsyncEvent()
     proc dial(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
       inc attempts
+      if attempts == 6:
+        sixthAttempt.fire()
       if attempts == 4:
         let stream = TestBufferStream.new(noop)
         await stream.close()
@@ -241,8 +275,7 @@ suite "PubSubPeer send stream":
     defer:
       await peer.stopTasks()
     peer.connect()
-    checkUntilTimeout:
-      attempts >= 6
+    await sixthAttempt.wait()
     await sleepAsync(10.milliseconds)
     peer.connect()
     await sleepAsync(10.milliseconds)
