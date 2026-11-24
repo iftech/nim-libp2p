@@ -6,7 +6,6 @@
 import std/sequtils
 import chronos
 import ./utils
-import ../../../../libp2p/switch
 import ../../../tools/[unittest, lifecycle, topology, waggle_node]
 
 const topic = @[byte 1]

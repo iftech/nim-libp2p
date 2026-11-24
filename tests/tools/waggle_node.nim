@@ -3,7 +3,7 @@
 
 import chronos
 import ../../libp2p/[switch, protocols/waggle]
-import ./switch_builder
+import ./[crypto, switch_builder]
 
 type WaggleNode* = ref object ## A switch over QUIC with a mounted Waggle.
   switch*: Switch
@@ -19,7 +19,7 @@ proc setupWaggleNode*(): WaggleNode =
       raiseAssert "an unbounded queue is never full"
 
   let switch = makeStandardSwitch()
-  let waggle = Waggle.new(onEvent = onEvent, switch = switch)
+  let waggle = Waggle.new(onEvent = onEvent, rng = rng(), switch = switch)
   switch.mount(waggle)
   return WaggleNode(switch: switch, waggle: waggle, events: events)
 
