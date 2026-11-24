@@ -86,12 +86,15 @@ suite "KadDHT Switch Builder":
   teardown:
     checkTrackers()
 
-  test "Configured mode sets the initial serving flag":
-    check:
-      buildKadSwitch(KadMode.Server).mountedKad().get().isServer
-      not buildKadSwitch(KadMode.Client).mountedKad().get().isServer
-      # Auto serves nothing until autonat proves the node reachable.
-      not buildKadSwitch(KadMode.Auto).mountedKad().get().isServer
+  test "Configured mode sets the initial serving flag and advertisement":
+    # Auto serves nothing until autonat proves the node reachable.
+    for mode in [KadMode.Server, KadMode.Client, KadMode.Auto]:
+      checkpoint $mode
+      let switch = buildKadSwitch(mode)
+      let wantServer = mode == KadMode.Server
+      check:
+        switch.mountedKad().get().isServer == wantServer
+        (KadCodec in switch.peerInfo.protocols) == wantServer
 
   test "withKademlia passes the auto mode windows to the policy":
     let windows = AutoModeConfig.init(

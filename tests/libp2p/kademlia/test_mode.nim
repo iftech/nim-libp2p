@@ -4,9 +4,11 @@
 {.used.}
 
 import chronos
-import ../../../libp2p/[protocols/kademlia, stream/connection, switch]
+import
+  ../../../libp2p/
+    [protocols/kademlia, stream/connection, switch, peerstore, utils/future]
 import ../../../libp2p/services/reachabilityobservers
-import ../../tools/[lifecycle, unittest]
+import ../../tools/[lifecycle, unittest, switch_builder, multiaddress]
 import ./utils
 
 proc dialFindNode(
@@ -137,6 +139,57 @@ suite "KadDHT dynamic mode":
 
     check (await server.changeMode(isServer = true))
     check (await querier.dialFindNode(server)).isSome()
+
+  asyncTest "client mode stops advertising the codec to connected peers":
+    let peer = setupKad(identifyPush = true)
+    let server = setupKad(isServer = true, identifyPush = true)
+    startAndDeferStop(@[peer, server])
+
+    # The pusher tracks the peer only after the server identifies it.
+    let identified = Future[void].Raising([CancelledError]).init("test_mode.identified")
+    let peerId = peer.switch.peerInfo.peerId
+    proc onIdentified(
+        id: PeerId, event: PeerEvent
+    ) {.async: (raises: [CancelledError]).} =
+      if id == peerId:
+        identified.completeOnce()
+
+    server.switch.addPeerEventHandler(onIdentified, PeerEventKind.Identified)
+    defer:
+      server.switch.removePeerEventHandler(onIdentified, PeerEventKind.Identified)
+    await peer.switch.connect(server.switch)
+    await identified
+
+    let serverId = server.switch.peerInfo.peerId
+    template advertised(): bool =
+      server.codec in peer.switch.peerStore[ProtoBook][serverId]
+
+    check advertised()
+
+    check (await server.changeMode(isServer = false))
+    check server.codec notin server.switch.peerInfo.protocols
+    checkUntilTimeout:
+      not advertised()
+
+    check (await server.changeMode(isServer = true))
+    check server.codec in server.switch.peerInfo.protocols
+    checkUntilTimeout:
+      advertised()
+
+  asyncTest "client mounted before or after start is not advertised":
+    let before = setupKad(isServer = false)
+    check before.codec notin before.switch.peerInfo.protocols
+
+    let switch = makeStandardSwitch(TcpAutoAddress)
+    let after = KadDHT.new(switch, @[], testKadConfig(), rng(), isServer = false)
+    await switch.start()
+    defer:
+      await switch.stop()
+    await after.start()
+    defer:
+      await after.stop()
+    switch.mount(after)
+    check after.codec notin switch.peerInfo.protocols
 
   asyncTest "downgrade resets an in-flight inbound stream":
     let querier = setupKad()
