@@ -12,7 +12,7 @@ logScope:
   topics = "libp2p kademlia"
 
 proc getLocalRecord*(kad: KadDHT, key: RecordKey): LPResult[Opt[EntryRecord]] =
-  let stored = kad.store.getValue(key, nowUnixSeconds()).valueOr:
+  let stored = kad.store.getValue(key, UnixTimestamp.now()).valueOr:
     return err(error, "local record read failed")
   let value = stored.valueOr:
     return ok(Opt.none(EntryRecord))
@@ -25,7 +25,7 @@ proc getLocalRecord*(kad: KadDHT, key: Key): LPResult[Opt[EntryRecord]] =
 
 proc putLocalRecord(kad: KadDHT, key: RecordKey, record: EntryRecord): bool =
   ## Logs why the store refused the record, so the caller does not log it again.
-  let now = nowUnixSeconds()
+  let now = UnixTimestamp.now()
   let value = StoredValue(
     key: key,
     record: record,
