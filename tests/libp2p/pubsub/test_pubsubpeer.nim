@@ -8,7 +8,9 @@ import chronos
 import ./utils
 import ../../../libp2p/stream/bufferstream
 import ../../../libp2p/protocols/protocol
-import ../../../libp2p/protocols/pubsub/[pubsubpeer, gossipsub]
+import ../../../libp2p/protocols/pubsub/[pubsub, pubsubpeer, gossipsub]
+import ../../../libp2p/peerstore
+import ../../../libp2p/protocols/identify
 import ../../../libp2p/protocols/pubsub/rpc/messages
 import ../../tools/[unittest, bufferstream, switch_builder, multiaddress]
 import ./extensions/extension_recording
@@ -56,6 +58,106 @@ suite "PubSubPeer send stream":
 
   teardown:
     checkTrackers()
+
+  asyncTest "Identify removes a light client and protocol updates enable pubsub":
+    let
+      sw = makeStandardSwitch(TcpAutoAddress)
+      remote = makeStandardSwitch(TcpAutoAddress)
+      gossip = GossipSub.init(sw, rng = rng())
+      remoteId = remote.peerInfo.peerId
+    sw.mount(gossip)
+    await sw.start()
+    await remote.start()
+    defer:
+      await sw.stop()
+      await remote.stop()
+    remote.peerInfo.protocols = @[]
+    await sw.connect(remoteId, remote.peerInfo.addrs)
+    checkUntilTimeout:
+      remoteId in sw.peerStore[ProtoBook]
+      remoteId notin gossip.peers
+    check sw.peerStore[ProtoBook][remoteId].len == 0
+    gossip.subscribePeer(remoteId)
+    check remoteId notin gossip.peers
+    check sw.isConnected(remoteId)
+    await sw.disconnect(remoteId)
+    sw.peerStore[ProtoBook][remoteId] = gossip.codecs
+    check remoteId notin gossip.peers
+    await sw.connect(remoteId, remote.peerInfo.addrs)
+    checkUntilTimeout:
+      remoteId notin gossip.peers
+
+    let remoteGossip = GossipSub.init(remote, rng = rng())
+    await remoteGossip.start()
+    remote.mount(remoteGossip)
+    sw.peerStore.updatePeerInfo(
+      IdentifyInfo(peerId: remoteId, protos: remoteGossip.codecs)
+    )
+    checkUntilTimeout:
+      remoteId in gossip.peers and gossip.peers[remoteId].connected
+
+    checkUntilTimeout:
+      gossip.peers[remoteId].hasRecvStream()
+    # A stale snapshot must not override a negotiated inbound stream.
+    sw.peerStore[ProtoBook][remoteId] = @["/other/1"]
+    check gossip.peers[remoteId].connected
+    await gossip.stop()
+    sw.peerStore[ProtoBook][remoteId] = remoteGossip.codecs
+    check gossip.peers.len == 0
+
+  asyncTest "unknown capabilities retry until an unsupported Identify snapshot":
+    let
+      sw = makeStandardSwitch(TcpAutoAddress)
+      remote = makeStandardSwitch(TcpAutoAddress)
+      remoteId = remote.peerInfo.peerId
+    await sw.start()
+    await remote.start()
+    defer:
+      await sw.stop()
+      await remote.stop()
+    await sw.connect(remoteId, remote.peerInfo.addrs)
+    let gossip = GossipSub.init(sw, rng = rng())
+    await gossip.start()
+    sw.mount(gossip)
+    discard sw.peerStore[ProtoBook].del(remoteId)
+    let peer = gossip.getOrCreatePeer(remoteId, gossip.codecs)
+    let dialer = FlakyDialer(failures: int.high)
+    peer.getStream = dialer.getStream()
+    peer.sendStreamRetryBaseDelay = 1.milliseconds
+    peer.sendStreamRetryMaxDelay = 2.milliseconds
+    gossip.subscribePeer(remoteId)
+    checkUntilTimeout:
+      dialer.attempts >= 3
+    let attempts = dialer.attempts
+    sw.peerStore.updatePeerInfo(IdentifyInfo(peerId: remoteId, protos: @["/other/1"]))
+    await sleepAsync(10.milliseconds)
+    check:
+      remoteId notin gossip.peers
+      dialer.attempts == attempts
+      sw.isConnected(remoteId)
+
+  asyncTest "an inbound pubsub stream overrides an unsupported snapshot":
+    let
+      sw = makeStandardSwitch(TcpAutoAddress)
+      remote = makeStandardSwitch(TcpAutoAddress)
+      gossip = GossipSub.init(sw, rng = rng())
+      remoteId = remote.peerInfo.peerId
+    sw.mount(gossip)
+    await sw.start()
+    await remote.start()
+    defer:
+      await sw.stop()
+      await remote.stop()
+    await sw.connect(remoteId, remote.peerInfo.addrs)
+    checkUntilTimeout:
+      remoteId notin gossip.peers
+    let remoteGossip = GossipSub.init(remote, rng = rng())
+    await remoteGossip.start()
+    remote.mount(remoteGossip)
+    remoteGossip.subscribePeer(sw.peerInfo.peerId)
+    checkUntilTimeout:
+      remoteId in gossip.peers and gossip.peers[remoteId].connected
+    check remoteGossip.codecs.allIt(it notin sw.peerStore[ProtoBook][remoteId])
 
   asyncTest "retries failed send stream opens until one succeeds":
     let dialer = FlakyDialer(failures: 5, stream: TestBufferStream.new(noop))

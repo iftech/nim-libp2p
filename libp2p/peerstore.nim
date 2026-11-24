@@ -684,6 +684,9 @@ proc identify*(
         muxer.setShortAgent(classifyAgent(info.agentVersion))
 
       peerStore.updatePeerInfo(info, stream.observedAddr, Opt.some(dir))
+      # Full Identify is authoritative; only Identify Push may omit unchanged fields.
+      if info.protos.len == 0:
+        peerStore[ProtoBook][info.peerId] = @[]
       identifyCompleted = true
   except CancelledError as exc:
     raise exc

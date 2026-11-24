@@ -594,6 +594,9 @@ proc trackSend*(p: PubSubPeer, fut: Future[void]) =
   ## Take ownership of an in-flight send future on this peer.
   p.sendFuts.trackFut(fut)
 
+proc hasRecvStream*(p: PubSubPeer): bool =
+  p.recvStreams.len > 0
+
 proc hasSendStream*(p: PubSubPeer): bool =
   p.sendStream != nil
 
