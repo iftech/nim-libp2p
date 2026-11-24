@@ -42,6 +42,14 @@ declarePublicCounter kad_provider_republish_keys, "provided keys republished"
 declarePublicGauge kad_network_size_estimate,
   "estimated network size from lookup closest-peer distances"
 
+# Mode metrics
+declarePublicGauge kad_server_mode,
+  "number of Kad DHT instances serving inbound queries"
+declarePublicCounter kad_mode_transitions_total,
+  "mode changes applied, by direction (to_server, to_client)", ["direction"]
+declarePublicCounter kad_mode_transitions_suppressed_total,
+  "auto mode changes held back, by reason (window, cooldown, opposite)", ["reason"]
+
 # Routing table metrics
 declarePublicGauge kad_routing_table_peers, "total peers in routing table"
 declarePublicGauge kad_routing_table_buckets, "number of buckets"

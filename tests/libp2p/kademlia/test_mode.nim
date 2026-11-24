@@ -8,7 +8,7 @@ import
   ../../../libp2p/
     [protocols/kademlia, stream/connection, switch, peerstore, utils/future]
 import ../../../libp2p/services/reachabilityobservers
-import ../../tools/[lifecycle, unittest, switch_builder, multiaddress]
+import ../../tools/[lifecycle, metrics_utils, unittest, switch_builder, multiaddress]
 import ./utils
 
 proc dialFindNode(
@@ -117,6 +117,50 @@ suite "KadDHT dynamic mode":
 
     check (await kad.changeMode(isServer = false))
     check not kad.isServer
+
+  asyncTest "mode changes move the gauge and count transitions":
+    let kad = setupKad(isServer = false)
+    await kad.start()
+    defer:
+      await kad.stop()
+
+    let serving = metricValue(kad_server_mode)
+    let toServer = metricValue(kad_mode_transitions_total, ["to_server"])
+    let toClient = metricValue(kad_mode_transitions_total, ["to_client"])
+
+    check not (await kad.changeMode(isServer = false))
+    check metricValue(kad_mode_transitions_total, ["to_client"]) == toClient
+
+    check await kad.changeMode(isServer = true)
+    check:
+      metricValue(kad_server_mode) == serving + 1
+      metricValue(kad_mode_transitions_total, ["to_server"]) == toServer + 1
+
+    check await kad.changeMode(isServer = false)
+    check:
+      metricValue(kad_server_mode) == serving
+      metricValue(kad_mode_transitions_total, ["to_client"]) == toClient + 1
+
+  asyncTest "held back changes are counted by reason":
+    let window = metricValue(kad_mode_transitions_suppressed_total, ["window"])
+    let opposite = metricValue(kad_mode_transitions_suppressed_total, ["opposite"])
+    let cooldown = metricValue(kad_mode_transitions_suppressed_total, ["cooldown"])
+    let windowed = setupAutoKad(config = WindowedAutoMode)
+    let cooled = setupAutoKad(config = CooldownAutoMode)
+    startAndDeferStop(@[windowed, cooled])
+
+    await windowed.verdict(NetworkReachability.Reachable)
+    check metricValue(kad_mode_transitions_suppressed_total, ["window"]) == window + 1
+
+    await windowed.verdict(NetworkReachability.NotReachable)
+    check metricValue(kad_mode_transitions_suppressed_total, ["opposite"]) ==
+      opposite + 1
+
+    await cooled.verdict(NetworkReachability.Reachable)
+    check cooled.isServer
+    await cooled.verdict(NetworkReachability.NotReachable)
+    check metricValue(kad_mode_transitions_suppressed_total, ["cooldown"]) ==
+      cooldown + 1
 
   asyncTest "server answers queries, client resets them":
     let querier = setupKad()
