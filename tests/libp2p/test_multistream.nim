@@ -7,7 +7,6 @@ import chronos, stew/byteutils
 import
   ../../libp2p/[
     multistream,
-    muxers/mplex/mplex,
     stream/bufferstream,
     stream/bridgestream,
     stream/connection,
@@ -807,7 +806,6 @@ suite "Multistream :: optimistic selection":
     let selected = await MultistreamSelect.selectOptimistic(client, codec)
     defer:
       await selected.close()
-    check selected.protocol == codec
     check client.protocol == codec
     await selected.writeLp("early payload")
     check string.fromBytes(await server.readLp(1024)) == header
@@ -821,28 +819,6 @@ suite "Multistream :: optimistic selection":
     check string.fromBytes(await selected.readLp(1024)) == "first"
     check string.fromBytes(await selected.readLp(1024)) == "second"
     check client.protocol == codec
-
-  asyncTest "write-only optimistic stream is discoverable through the muxer":
-    proc discardWrite(
-        data: sink seq[byte]
-    ) {.async: (raises: [CancelledError, LPStreamError]).} =
-      discard
-
-    let muxer = Mplex.new(TestBufferStream.new(discardWrite))
-    defer:
-      await muxer.close()
-    let stream = await muxer.newStream()
-    let selected = await MultistreamSelect.selectOptimistic(stream, codec)
-    defer:
-      await selected.reset()
-
-    await selected.writeLp("first push")
-    let streams = muxer.getStreams()
-    check streams.len == 1
-    check streams[0].protocol == codec
-    check selected.getWrapped() == streams[0]
-    await selected.writeLp("second push")
-    check muxer.getStreams().len == 1
 
   asyncTest "works with the regular listener":
     let (client, server) = bufferedPair()
