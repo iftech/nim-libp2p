@@ -90,7 +90,7 @@ suite "PubSubPeer send stream":
   teardown:
     checkTrackers()
 
-  asyncTest "Identify removes a light client and protocol updates enable pubsub":
+  asyncTest "Identify skips a light client and protocol updates enable pubsub":
     let
       sw = makeStandardSwitch(TcpAutoAddress)
       remote = makeStandardSwitch(TcpAutoAddress)
@@ -102,6 +102,13 @@ suite "PubSubPeer send stream":
     defer:
       await sw.stop()
       await remote.stop()
+    var joined = 0
+    proc onJoined(
+        peerId: PeerId, event: PeerEvent
+    ) {.async: (raises: [CancelledError]).} =
+      inc joined
+      check peerId notin gossip.peers
+    sw.addPeerEventHandler(onJoined, PeerEventKind.Joined)
     remote.peerInfo.protocols = @[]
     await sw.connect(remoteId, remote.peerInfo.addrs)
     check:
@@ -116,6 +123,7 @@ suite "PubSubPeer send stream":
     check remoteId notin gossip.peers
     await sw.connect(remoteId, remote.peerInfo.addrs)
     check remoteId notin gossip.peers
+    check joined == 2
 
     let remoteGossip = GossipSub.init(remote, rng = rng())
     await remoteGossip.start()

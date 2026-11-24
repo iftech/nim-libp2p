@@ -865,15 +865,14 @@ proc init*[PubParams: object | bool](
       peerId: PeerId, event: PeerEvent
   ) {.async: (raises: [CancelledError]).} =
     case event.kind
-    of PeerEventKind.Joined:
+    of PeerEventKind.Identified:
       pubsub.subscribePeer(peerId)
     of PeerEventKind.Left:
       pubsub.unsubscribePeer(peerId)
-    of PeerEventKind.Identified:
-      # Identified events are handled by IdentifyPusher service
+    of PeerEventKind.Joined:
       discard
 
-  switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Joined)
+  switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Identified)
   switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Left)
 
   switch.peerStore[ProtoBook].addHandler proc(peerId: PeerId) {.gcsafe.} =
