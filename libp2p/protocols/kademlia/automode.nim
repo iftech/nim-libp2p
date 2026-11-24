@@ -53,6 +53,12 @@ func init*(
 func init*(T: type AutoModePolicy, config: AutoModeConfig, isServer: bool): T =
   T(config: config, isServer: isServer)
 
+func autoModeConfig*(p: AutoModePolicy): AutoModeConfig =
+  p.config
+
+func restarted*(p: AutoModePolicy, isServer: bool): AutoModePolicy =
+  AutoModePolicy.init(p.config, isServer)
+
 func deadline*(p: AutoModePolicy): Opt[Moment] =
   let change = p.pending.valueOr:
     return Opt.none(Moment)

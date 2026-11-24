@@ -75,6 +75,7 @@ type
     config*: KadDHTConfig
     bootstrapNodes*: seq[(PeerId, seq[MultiAddress])]
     mode*: KadMode
+    autoMode*: AutoModeConfig ## The windows of ``KadMode.Auto``.
 
   NameResolverService = ref object of Service
     resolver: NameResolver
@@ -505,8 +506,13 @@ proc withKademlia*(
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     config: KadDHTConfig = KadDHTConfig.new(),
     mode: KadMode = KadMode.Server,
+    autoMode: AutoModeConfig = AutoModeConfig.init(),
 ): SwitchBuilder =
-  b.kad = Opt.some(KadInfo(config: config, bootstrapNodes: bootstrapNodes, mode: mode))
+  b.kad = Opt.some(
+    KadInfo(
+      config: config, bootstrapNodes: bootstrapNodes, mode: mode, autoMode: autoMode
+    )
+  )
   b
 
 proc withIdentifyPusher*(b: SwitchBuilder, enabled: bool = true): SwitchBuilder =
@@ -752,7 +758,8 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
       switch.natService().ifValue(nat):
         let current = proc(): NetworkReachability {.gcsafe, raises: [].} =
           nat.networkReachability()
-        wired = nat.addReachabilityHandler(kad.enableAutoMode(current))
+        wired =
+          nat.addReachabilityHandler(kad.enableAutoMode(current, kadInfo.autoMode))
       if not wired:
         warn "Kad-DHT auto mode has no reachability service; it stays a client",
           hint = "configure withNAT reachability or hole-punching"

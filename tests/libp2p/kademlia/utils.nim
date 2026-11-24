@@ -102,7 +102,6 @@ proc makeKeys*(T: typedesc[Key], count: int): seq[Key] =
 proc testKadConfig*(
     validator: EntryValidator = PermissiveValidator(),
     selector: EntrySelector = CandSelector(),
-    cleanupProvidersInterval: Duration = chronos.milliseconds(100),
     republishProvidedKeysInterval: Duration = chronos.milliseconds(50),
     replication: int = DefaultReplication,
     alpha: int = DefaultAlpha,
@@ -124,7 +123,6 @@ proc testKadConfig*(
     selector,
     timeout = timeout,
     providerExpirationInterval = providerExpirationInterval,
-    cleanupProvidersInterval = cleanupProvidersInterval,
     republishProvidedKeysInterval = republishProvidedKeysInterval,
     replication = replication,
     alpha = alpha,
@@ -144,8 +142,10 @@ proc setupKad*(
     config: KadDHTConfig = testKadConfig(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     isServer: bool = true,
+    identifyPush: bool = false,
 ): KadDHT =
-  let switch = makeStandardSwitch(TcpAutoAddress)
+  let switch =
+    makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher(identifyPush).build()
   let kad = KadDHT.new(switch, bootstrapNodes, config, rng(), isServer)
   kad.switch.mount(kad)
   kad
@@ -154,6 +154,7 @@ proc setupMockKad*(
     config: KadDHTConfig = testKadConfig(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     getValueResponse: Opt[Message] = Opt.none(Message),
+    getProvidersResponse: Opt[Message] = Opt.none(Message),
     handleAddProviderMessage: Opt[Message] = Opt.none(Message),
     handleFindNodeDelay: Duration = ZeroDuration,
     handleFindNodeMalformedResponse: bool = false,
@@ -161,6 +162,7 @@ proc setupMockKad*(
   let switch = makeStandardSwitch(TcpAutoAddress)
   let kad = MockKadDHT.new(switch, bootstrapNodes, config, rng = rng())
   kad.getValueResponse = getValueResponse
+  kad.getProvidersResponse = getProvidersResponse
   kad.handleAddProviderMessage = handleAddProviderMessage
   kad.handleFindNodeDelay = handleFindNodeDelay
   kad.handleFindNodeMalformedResponse = handleFindNodeMalformedResponse
@@ -172,7 +174,6 @@ proc setupKadSwitches*(
     validator: EntryValidator = PermissiveValidator(),
     selector: EntrySelector = CandSelector(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
-    cleanupProvidersInterval: Duration = chronos.milliseconds(100),
     republishProvidedKeysInterval: Duration = chronos.milliseconds(50),
     replication: int = DefaultReplication,
     beta: int = DefaultBeta,
@@ -183,8 +184,7 @@ proc setupKadSwitches*(
     let config = testKadConfig(
       validator,
       selector,
-      cleanupProvidersInterval,
-      republishProvidedKeysInterval,
+      republishProvidedKeysInterval = republishProvidedKeysInterval,
       replication = replication,
       beta = beta,
       recordExpirationInterval = recordExpirationInterval,
@@ -221,62 +221,108 @@ proc countBucketEntries*(buckets: seq[Bucket], key: Key): uint32 =
         res += 1
   return res
 
-func providerCount*(kad: KadDHT): int =
-  kad.providerManager.providerRecords.len()
+privateAccess(MemoryKadStore)
+privateAccess(typeof(MemoryKadStore().values))
+privateAccess(typeof(MemoryKadStore().values.byKey.values()))
+privateAccess(typeof(MemoryKadStore().providers))
+privateAccess(typeof(MemoryKadStore().providers.expiries[0]))
+privateAccess(typeof(MemoryKadStore().provided))
 
-func providerCount*(kad: KadDHT, key: Key): int =
-  kad.providerManager.knownKeys.getOrDefault(key).len()
+func mem(kad: KadDHT): MemoryKadStore =
+  doAssert kad.store of MemoryKadStore, "the store of this kad is not a MemoryKadStore"
+  MemoryKadStore(kad.store)
 
-func providerKeyCount*(kad: KadDHT): int =
-  kad.providerManager.knownKeys.len()
+proc valueCount*(kad: KadDHT): int =
+  let now = UnixTimestamp.now()
+  var n = 0
+  for value in kad.mem().values.byKey.values():
+    if value.expiresAt > now:
+      inc n
+  n
 
-func hasProvider*(kad: KadDHT, key: Key): bool =
-  kad.providerManager.knownKeys.hasKey(key)
+proc liveProviders(kad: KadDHT, key: Key): seq[StoredProvider] =
+  ## The store prunes only on a call that takes `now`, so its tables keep expired records.
+  let now = UnixTimestamp.now()
+  var live: seq[StoredProvider]
+  kad.mem().providers.byKey.withValue(key, stored):
+    for p in stored[].values():
+      if p.expiresAt > now:
+        live.add(p)
+  live
 
-func hasProvider*(kad: KadDHT, key: Key, peerId: PeerId): bool =
+proc liveProviders(kad: KadDHT): seq[StoredProvider] =
+  var live: seq[StoredProvider]
+  for key in kad.mem().providers.byKey.keys():
+    live.add(kad.liveProviders(key))
+  live
+
+proc providerCount*(kad: KadDHT): int =
+  kad.liveProviders().len
+
+proc providerCount*(kad: KadDHT, key: Key): int =
+  kad.liveProviders(key).len
+
+proc providerKeyCount*(kad: KadDHT): int =
+  var n = 0
+  for key in kad.mem().providers.byKey.keys():
+    if kad.liveProviders(key).len > 0:
+      inc n
+  n
+
+proc hasProvider*(kad: KadDHT, key: Key): bool =
+  kad.liveProviders(key).len > 0
+
+proc findProvider(kad: KadDHT, key: Key, peerId: PeerId): Opt[StoredProvider] =
   let id = Opt.some(peerId.getBytes())
-  kad.providerManager.knownKeys.getOrDefault(key).anyIt(it.id == id)
+  for p in kad.liveProviders(key):
+    if p.provider.id == id:
+      return Opt.some(p)
+  Opt.none(StoredProvider)
 
-func findProviderRecord(kad: KadDHT, key: Key, peerId: PeerId): Opt[ProviderRecord] =
-  let
-    id = Opt.some(peerId.getBytes())
-    records = kad.providerManager.providerRecords
-  for i in 0 ..< records.len():
-    if records[i].key == key and records[i].provider.id == id:
-      return Opt.some(records[i])
-  Opt.none(ProviderRecord)
+proc hasProvider*(kad: KadDHT, key: Key, peerId: PeerId): bool =
+  kad.findProvider(key, peerId).isSome()
 
-func providerExpiry*(kad: KadDHT, key: Key, peerId: PeerId): UnixTimestamp =
+proc providerExpiry*(kad: KadDHT, key: Key, peerId: PeerId): UnixTimestamp =
   ## 0 when no record matches.
-  let record = kad.findProviderRecord(key, peerId).valueOr:
+  let p = kad.findProvider(key, peerId).valueOr:
     return 0
-  record.expiresAt
+  p.expiresAt
 
-func providerAddrs*(kad: KadDHT, key: Key, peerId: PeerId): seq[MultiAddress] =
-  let record = kad.findProviderRecord(key, peerId).valueOr:
+proc providerAddrs*(kad: KadDHT, key: Key, peerId: PeerId): seq[MultiAddress] =
+  let p = kad.findProvider(key, peerId).valueOr:
     return @[]
-  record.provider.addrs
+  p.provider.addrs
 
-func recordsPerPeer*(kad: KadDHT, peerId: PeerId): int =
-  kad.providerManager.recordsPerPeer.getOrDefault(peerId)
+proc recordsPerPeer*(kad: KadDHT, peerId: PeerId): int =
+  let id = Opt.some(peerId.getBytes())
+  kad.liveProviders().countIt(it.provider.id == id)
 
-func providerRecordsFull*(kad: KadDHT): bool =
-  let records = kad.providerManager.providerRecords
-  records.len() == records.capacity
-
-func providedKeysFull*(kad: KadDHT): bool =
-  let keys = kad.providerManager.providedKeys
-  keys.len() == keys.capacity
+proc providerRecordsFull*(kad: KadDHT): bool =
+  let cap = kad.mem().providers.cap.valueOr:
+    return false
+  kad.providerCount() >= cap
 
 func providedCount*(kad: KadDHT): int =
-  kad.providerManager.providedKeys.len()
+  kad.mem().provided.stamps.len
 
-func isProvided*(kad: KadDHT, key: Key): bool =
-  kad.providerManager.providedKeys.hasKey(key)
+func providedKeysFull*(kad: KadDHT): bool =
+  let cap = kad.mem().provided.cap.valueOr:
+    return false
+  kad.providedCount() >= cap
 
-proc markProvided*(kad: KadDHT, key: Key, at: UnixTimestamp = nowUnixSeconds()) =
-  ## Provides `key` locally without announcing it.
-  kad.providerManager.providedKeys.provided[key] = at
+proc isProvided*(kad: KadDHT, key: Key): bool =
+  let provided = ProvidedKey.fromBytes(key.toBytes()).valueOr:
+    return false
+  provided in kad.mem().provided.stamps
+
+proc markProvided*(kad: KadDHT, key: Key) =
+  ## Provides `key` locally without announcing it. A later call counts as provided later.
+  let provided = ProvidedKey.fromBytes(key.toBytes()).valueOr:
+    raiseAssert "markProvided: " & $error
+  let stored = kad.store.addProvided(provided).valueOr:
+    raiseAssert "markProvided: " & $error
+  if not stored:
+    raiseAssert "markProvided: the store refused the key"
 
 proc seedProvider*(
     kad: KadDHT,
@@ -284,51 +330,36 @@ proc seedProvider*(
     provider: Provider,
     expiresAt: UnixTimestamp = UnixTimestamp.after(1.hours),
 ) =
-  kad.providerManager.knownKeys.mgetOrPut(key, initHashSet[Provider]()).incl(provider)
-  kad.providerManager.providerRecords.push(
-    ProviderRecord(provider: provider, expiresAt: expiresAt, key: key)
-  )
-  provider.id.ifValue(id):
-    PeerId.init(id).ifValue(peerId):
-      kad.providerManager.recordsPerPeer.inc(peerId)
+  let stored = StoredProvider(provider: provider, expiresAt: expiresAt)
+  let outcome = kad.store.addProvider(key, stored, UnixTimestamp.now(), high(int)).valueOr:
+    raiseAssert "seedProvider: " & $error
+  if outcome notin {AddProviderOutcome.added, AddProviderOutcome.refreshed}:
+    raiseAssert "seedProvider: " & $outcome
 
 proc backdateExpiry*(kad: KadDHT) =
   ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
-  let records = kad.providerManager.providerRecords
-  var aged: seq[ProviderRecord]
-  while records.len() > 0:
-    var record = records.pop()
-    record.expiresAt -= 1
-    aged.add(record)
-  for record in aged:
-    records.push(record)
-
-privateAccess(MemoryKadStore)
-privateAccess(typeof(MemoryKadStore().values))
-privateAccess(typeof(MemoryKadStore().values.byKey.values()))
-
-func mem(kad: KadDHT): MemoryKadStore =
-  doAssert kad.store of MemoryKadStore, "the store of this kad is not a MemoryKadStore"
-  MemoryKadStore(kad.store)
-
-proc valueCount*(kad: KadDHT): int =
-  let now = nowUnixSeconds()
-  var n = 0
-  for value in kad.mem().values.byKey.values():
-    if value.expiresAt > now:
-      inc n
-  n
+  let providers = kad.mem().providers
+  for stored in providers.byKey.mvalues():
+    for p in stored.mvalues():
+      p.expiresAt -= 1
+  var slots: seq[typeof(providers.expiries[0])]
+  while providers.expiries.len > 0:
+    var slot = providers.expiries.pop()
+    slot.expiresAt -= 1
+    slots.add(slot)
+  for slot in slots:
+    providers.expiries.push(slot)
 
 proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
   kad.mem().values.byKey.withValue(key, value):
-    if value[].expiresAt > nowUnixSeconds():
+    if value[].expiresAt > UnixTimestamp.now():
       return Opt.some(value[].record)
   Opt.none(EntryRecord)
 
 proc seedLocalValue*(
     kad: KadDHT, key: RecordKey, value: Value, expiresAt = Opt.none(UnixTimestamp)
 ): bool =
-  let now = nowUnixSeconds()
+  let now = UnixTimestamp.now()
   let stored = StoredValue(
     key: key,
     record: EntryRecord(value: value, time: Timestamp.now()),
@@ -552,3 +583,9 @@ proc setupStubKad*(store: StubStore): KadDHT =
   var config = testKadConfig()
   config.store = Opt.some(KadStore(store))
   setupKad(config)
+
+proc mountedKad*(switch: Switch): Opt[KadDHT] {.raises: [].} =
+  for handler in switch.ms.handlers:
+    if KadCodec in handler.protos and handler.protocol of KadDHT:
+      return Opt.some(KadDHT(handler.protocol))
+  Opt.none(KadDHT)

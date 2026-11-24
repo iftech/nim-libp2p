@@ -784,7 +784,7 @@ proc removeConnection(p: Waggle, link: WaggleConnection) {.async: (raises: []).}
 proc addConnection*(p: Waggle, muxer: Muxer): Result[bool, string] =
   ## Register an upgraded muxer whose stream handler routes incoming protocols.
   ## Pass a switch to Waggle.new for automatic connection discovery on start.
-  if p.stopping or muxer == nil or muxer.handler == nil or muxer.connection.closed:
+  if p.stopping or muxer == nil or muxer.connection == nil or muxer.connection.closed:
     return err("Waggle requires a live running muxer")
   if muxer in p.registeredMuxers:
     return ok(false)
@@ -797,7 +797,7 @@ proc addConnection*(p: Waggle, muxer: Muxer): Result[bool, string] =
   for topicId in toSeq(p.topics):
     p.beginReceiverOrNotify(link, topicId)
   proc monitor() {.async: (raises: [CancelledError]).} =
-    await muxer.handler.join()
+    await muxer.connection.join()
     await p.removeConnection(link)
 
   p.tasks.trackFut(monitor())

@@ -83,6 +83,19 @@ suite "cbind config":
             ServiceDiscoveryConfig(mount: true, disableXprPublishing: true)
         ),
       ),
+      accepts(
+        "fReturn at the limit",
+        Libp2pConfig(
+          serviceDiscovery: ServiceDiscoveryConfig(mount: true, fReturn: MaxFReturn)
+        ),
+      ),
+      rejects(
+        "fReturn above the limit",
+        Libp2pConfig(
+          serviceDiscovery: ServiceDiscoveryConfig(mount: true, fReturn: MaxFReturn + 1)
+        ),
+        "fReturn exceeds the limit of " & $MaxFReturn & " (" & $(MaxFReturn + 1) & ")",
+      ),
     ]
     checkCases(cases, parse)
 

@@ -36,7 +36,7 @@ proc makeAdvertisementWithServices(
     services: seq[ServiceInfo],
     privateKey: PrivateKey = PrivateKey.random(rng()).get(),
     addrs: seq[MultiAddress] = @[],
-    seqNo: uint64 = nowUnixSeconds().uint64,
+    seqNo: uint64 = UnixTimestamp.now().uint64,
 ): Advertisement =
   let peerId = PeerId.init(privateKey).get()
   var addressInfos: seq[AddressInfo]
@@ -162,6 +162,27 @@ suite "Service Discovery Registrar - waitingTime":
     let expectedSecs =
       round(discoConfig.advertExpiry.seconds.float64 * 100.0 * discoConfig.safetyParam)
     check w.inFloatSecs >= expectedSecs - 1e-9
+
+  test "waitingTime caps the formula at MaxLowerBoundFactor * advertExpiry":
+    let registrar = Registrar.new(advertCacheCap = 10)
+    let advertExpiry = 100.secs
+    let discoConfig =
+      ServiceDiscoveryConfig.new(advertExpiry = advertExpiry, safetyParam = 8.0)
+    let serviceId = makeServiceId()
+    let ips = makeAdvertisement().ipsFromAd()
+    let now = Moment.now()
+
+    registrar.ads.seedOccupancy(10, now)
+
+    let w = registrar.waitingTime(discoConfig, serviceId, ips, now)
+    check w == MaxLowerBoundFactor * advertExpiry
+
+    registrar.updateLowerBounds(serviceId, ips, w, now)
+    registrar.ads.clear()
+
+    # Uncapped, the formula gives 80000s here.
+    let later = registrar.waitingTime(discoConfig, serviceId, ips, now + 50.secs)
+    check later == w - 50.secs
 
   test "waitingTime formula includes safety parameter":
     let registrar = Registrar.new()
@@ -505,6 +526,136 @@ suite "Service Discovery Registrar - request handlers":
 
     check reply.status == kadprotobuf.RegistrationStatus.Wait
     check reply.ticket.get().tWaitFor == advertExpiry
+
+  test "registration stores the full waiting time as the lower bound":
+    let advertExpiry = 100.secs
+    let elapsed = 50.secs
+    let conf = ServiceDiscoveryConfig.new(
+      advertExpiry = advertExpiry, safetyParam = 1.0, advertCacheCap = 10
+    )
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceName = "service"
+    let serviceId = serviceName.hashServiceId()
+
+    disco.registrar.ads.seedOccupancy(10)
+
+    let reply = disco.registerAd(serviceId, makeAdvertisement(serviceName))
+    let issuedAt = disco.registrar.timestampService[serviceId]
+    let wPrevious = disco.registrar.boundService[serviceId] - issuedAt
+
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Wait
+      reply.ticket.get().tWaitFor == advertExpiry
+      wPrevious > advertExpiry
+
+    # An empty cache gives a small base wait, so the stored wait sets w.
+    disco.registrar.ads.clear()
+    let otherIp = @[parseIpAddress("200.0.0.1")]
+    let w = disco.registrar.waitingTime(conf, serviceId, otherIp, issuedAt + elapsed)
+
+    check w >= wPrevious - elapsed
+
+  test "registration on retry stores the full waiting time, not the remaining wait":
+    let advertExpiry = 100.secs
+    let conf = ServiceDiscoveryConfig.new(
+      advertExpiry = advertExpiry,
+      safetyParam = 1.0,
+      advertCacheCap = 10,
+      registrationWindow = 10.secs,
+    )
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceName = "service"
+    let serviceId = serviceName.hashServiceId()
+    let advertiserKey = PrivateKey.random(rng()).get()
+    let advertiserId = PeerId.init(advertiserKey).get()
+    let adBytes = makeAdvertisement(serviceName, advertiserKey).encode().get()
+
+    disco.registrar.ads.seedOccupancy(10)
+
+    let firstAttemptTime = getTime().toUnix() - advertExpiry.seconds
+    var retryTicket = Ticket(
+      advertisement: adBytes,
+      tInit: firstAttemptTime,
+      tMod: firstAttemptTime,
+      tWaitFor: advertExpiry,
+      signature: Opt.none(seq[byte]),
+    )
+    check retryTicket.sign(disco.switch.peerInfo.privateKey).isOk()
+
+    let inMsg = kadprotobuf.Message(
+      msgType: kadprotobuf.MessageType.register,
+      key: serviceId,
+      register: Opt.some(
+        kadprotobuf.RegisterMessage(
+          advertisement: adBytes,
+          status: Opt.none(kadprotobuf.RegistrationStatus),
+          ticket: Opt.some(retryTicket),
+        )
+      ),
+    )
+    let reply = disco.registration(advertiserId, inMsg).register.get()
+
+    # Full wait at a full cache is advertExpiry * 100 * safetyParam, above the cap.
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Wait
+      reply.ticket.get().tWaitFor == advertExpiry
+      disco.registrar.boundService[serviceId] -
+        disco.registrar.timestampService[serviceId] == MaxLowerBoundFactor * advertExpiry
+
+  test "registration stores the full waiting time as the IP-level bound":
+    let advertExpiry = 100.secs
+    let conf = ServiceDiscoveryConfig.new(
+      advertExpiry = advertExpiry, safetyParam = 1.0, advertCacheCap = 10
+    )
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceName = "service"
+    let serviceId = serviceName.hashServiceId()
+    let connectionIps = @[parseIpAddress("198.51.100.9")]
+    let ipKey = $connectionIps[0]
+
+    disco.registrar.ads.seedOccupancy(10)
+
+    let reply =
+      disco.registerAd(serviceId, makeAdvertisement(serviceName), connectionIps)
+
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Wait
+      reply.ticket.get().tWaitFor == advertExpiry
+      disco.registrar.boundIp[ipKey] - disco.registrar.timestampIp[ipKey] ==
+        MaxLowerBoundFactor * advertExpiry
+
+    # Another service from the same IP still gets the stored IP wait.
+    disco.registrar.ads.clear()
+    let issuedAt = disco.registrar.timestampIp[ipKey]
+    let w = disco.registrar.waitingTime(
+      conf, hashServiceId("other"), connectionIps, issuedAt + 50.secs
+    )
+
+    check w >= MaxLowerBoundFactor * advertExpiry - 50.secs
+
+  test "registration stores a waiting time below the cap unchanged":
+    let advertExpiry = 100.secs
+    let conf = ServiceDiscoveryConfig.new(
+      advertExpiry = advertExpiry,
+      safetyParam = 1.0,
+      advertCacheCap = 10,
+      occupancyExp = 1.0,
+      ipSimCoefficient = 0.0,
+    )
+    let disco = setupServiceDiscoveryNode(discoConfig = conf)
+    let serviceName = "service"
+    let serviceId = serviceName.hashServiceId()
+
+    disco.registrar.ads.seedOccupancy(5)
+
+    let reply = disco.registerAd(serviceId, makeAdvertisement(serviceName))
+
+    # Half-full cache: advertExpiry * 1 / (1 - 0.5) * safetyParam = 2 * advertExpiry.
+    check:
+      reply.status == kadprotobuf.RegistrationStatus.Wait
+      reply.ticket.get().tWaitFor == advertExpiry
+      disco.registrar.boundService[serviceId] -
+        disco.registrar.timestampService[serviceId] == 2 * advertExpiry
 
   test "getAdvertisements replies empty to a message without a key":
     let disco = setupServiceDiscoveryNode()
@@ -1127,6 +1278,38 @@ suite "Service Discovery Registrar - pruneExpiredAds":
     check:
       registrar.ads.serviceLen == 0
       registrar.ads.ipTree.ipsLen == 0
+
+  test "pruneExpiredAds keeps a bound longer than advertExpiry until it passes":
+    let registrar = Registrar.new()
+    let advertExpiry = 900.secs
+    let serviceId = makeServiceId()
+    let ad = makeAdvertisement($serviceId, addrs = @[makeMultiAddress("10.0.0.1")])
+    let issuedAt = initMoment(Moment.now().epochSeconds) - advertExpiry - 1.secs
+
+    updateLowerBounds(registrar, serviceId, ad.ipsFromAd(), 2 * advertExpiry, issuedAt)
+    pruneExpiredAds(registrar, advertExpiry)
+
+    check:
+      registrar.boundService[serviceId] == issuedAt + 2 * advertExpiry
+      registrar.timestampService[serviceId] == issuedAt
+      registrar.boundIp["10.0.0.1"] == issuedAt + 2 * advertExpiry
+      registrar.timestampIp["10.0.0.1"] == issuedAt
+
+  test "pruneExpiredAds drops a bound once it has passed":
+    let registrar = Registrar.new()
+    let advertExpiry = 900.secs
+    let serviceId = makeServiceId()
+    let ad = makeAdvertisement($serviceId, addrs = @[makeMultiAddress("10.0.0.1")])
+    let issuedAt = initMoment(Moment.now().epochSeconds) - advertExpiry
+
+    updateLowerBounds(registrar, serviceId, ad.ipsFromAd(), 10.secs, issuedAt)
+    pruneExpiredAds(registrar, advertExpiry)
+
+    check:
+      serviceId notin registrar.boundService
+      serviceId notin registrar.timestampService
+      "10.0.0.1" notin registrar.boundIp
+      "10.0.0.1" notin registrar.timestampIp
 
   test "pruneExpiredAds with very old timestamp":
     let registrar = Registrar.new()

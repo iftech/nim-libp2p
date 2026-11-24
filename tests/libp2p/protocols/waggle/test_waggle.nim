@@ -592,13 +592,7 @@ suite "Waggle direct streams":
         events.add(event),
     )
     let connection = openStream()
-    let running = Future[void].Raising([]).init(
-        "waggle-test-connection", {FutureFlag.OwnCancelSchedule}
-      )
-    defer:
-      if not running.finished():
-        running.complete()
-    let muxer = Muxer(connection: connection, handler: running)
+    let muxer = Muxer(connection: connection)
     let first = openStream(connection.peerId, wrapped = connection)
     let firstHandling = handle(first)
     await handshake(first)
@@ -643,7 +637,6 @@ suite "Waggle direct streams":
       it.peerId == connection.peerId and it.connectionId == opened[0].connectionId
     )
     await connection.close()
-    running.complete()
     await acceptedHandling
     check accepted.closed
     check waggle.subscribers(topic).len == 0
@@ -661,13 +654,7 @@ suite "Waggle direct streams":
           inc failures
     )
     let connection = openStream()
-    let running = Future[void].Raising([]).init(
-        "waggle-test-failing-connection", {FutureFlag.OwnCancelSchedule}
-      )
-    defer:
-      if not running.finished():
-        running.complete()
-    let muxer = FailingMuxer(connection: connection, handler: running)
+    let muxer = FailingMuxer(connection: connection)
     check waggle.addConnection(muxer).get()
     check waggle.subscribe(topic).get().added
     check failures == 0
@@ -690,13 +677,7 @@ suite "Waggle direct streams":
           subscribed.complete(event)
     )
     let connection = openStream()
-    let running = Future[void].Raising([]).init(
-        "waggle-test-live-connection", {FutureFlag.OwnCancelSchedule}
-      )
-    defer:
-      if not running.finished():
-        running.complete()
-    let muxer = Muxer(connection: connection, handler: running)
+    let muxer = Muxer(connection: connection)
     var previousId: ConnectionId
     for cycle in 0 .. 1:
       if cycle > 0:
@@ -721,7 +702,6 @@ suite "Waggle direct streams":
         stream.wasResetLocally
         waggle.subscribers(topic).len == 0
         not connection.closed
-        not running.finished()
         events[^1].kind == WaggleEventKind.Unsubscribed
         events[^1].connectionId == opened.connectionId
         events[^1].topicId == topic

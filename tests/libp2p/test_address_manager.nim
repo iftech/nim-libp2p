@@ -519,6 +519,22 @@ suite "AddressManager verification":
     manager.update(second, AddrState.Confirmed)
     check manager.reachability() == NetworkReachability.Reachable
 
+  asyncTest "one Confirmed and one Unreachable address still summarise as Reachable":
+    let
+      manager = makeManager()
+      confirmed = ma("/ip4/1.2.3.4/tcp/1")
+      unreachable = ma("/ip4/5.6.7.8/tcp/1")
+
+    startAndDeferStop(manager)
+    manager.add(confirmed, AddrSource.Listen)
+    manager.add(unreachable, AddrSource.Upnp)
+    manager.update(confirmed, AddrState.Confirmed)
+    manager.update(unreachable, AddrState.Unreachable)
+
+    check:
+      manager.reachability() == NetworkReachability.Reachable
+      manager.confirmedAddrs() == @[confirmed]
+
   asyncTest "a verify run which changes the summary fires the handler once":
     let
       address = ma("/ip4/1.2.3.4/tcp/1")
