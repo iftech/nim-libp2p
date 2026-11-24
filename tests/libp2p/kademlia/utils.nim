@@ -583,3 +583,9 @@ proc setupStubKad*(store: StubStore): KadDHT =
   var config = testKadConfig()
   config.store = Opt.some(KadStore(store))
   setupKad(config)
+
+proc mountedKad*(switch: Switch): Opt[KadDHT] {.raises: [].} =
+  for handler in switch.ms.handlers:
+    if KadCodec in handler.protos and handler.protocol of KadDHT:
+      return Opt.some(KadDHT(handler.protocol))
+  Opt.none(KadDHT)
