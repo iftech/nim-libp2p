@@ -411,9 +411,13 @@ method onPubSubPeerEvent*(
 method getOrCreatePeer*(
     p: PubSub, peerId: PeerId, protosToDial: seq[string], protoNegotiated: string = ""
 ): PubSubPeer {.base, gcsafe.} =
+  let supported =
+    protoNegotiated != "" or
+    p.switch.peerStore[ProtoBook][peerId].anyIt(it in protosToDial)
   p.peers.withValue(peerId, peer):
     if peer[].codec == "":
       peer[].codec = protoNegotiated
+    peer[].protocolSupported = peer[].protocolSupported or supported
     return peer[]
 
   let protos =
@@ -455,6 +459,7 @@ method getOrCreatePeer*(
     handler = peerHandler,
     rng = p.rng,
   )
+  pubSubPeer.protocolSupported = supported
   trace "created new pubsub peer", peerId
 
   p.peers[peerId] = pubSubPeer

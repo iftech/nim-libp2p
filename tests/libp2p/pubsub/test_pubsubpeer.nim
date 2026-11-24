@@ -159,6 +159,95 @@ suite "PubSubPeer send stream":
       remoteId in gossip.peers and gossip.peers[remoteId].connected
     check remoteGossip.codecs.allIt(it notin sw.peerStore[ProtoBook][remoteId])
 
+  asyncTest "unknown peers get five attempts per connection until support is established":
+    for inbound in [false, true]:
+      let
+        sw = makeStandardSwitch(TcpAutoAddress)
+        remote = makeStandardSwitch(TcpAutoAddress)
+        gossip = GossipSub.init(sw, rng = rng())
+        remoteId = remote.peerInfo.peerId
+        dialer = FlakyDialer(failures: int.high)
+      sw.mount(gossip)
+      await sw.start()
+      await remote.start()
+      defer:
+        await sw.stop()
+        await remote.stop()
+
+      var previous: PubSubPeer
+      for connection in 1 .. 2:
+        await sw.connect(remoteId, remote.peerInfo.addrs)
+        discard sw.peerStore[ProtoBook].del(remoteId)
+        let peer = gossip.getOrCreatePeer(remoteId, gossip.codecs)
+        check previous.isNil or cast[pointer](peer) != cast[pointer](previous)
+        let openStream = peer.getStream
+        peer.getStream = dialer.getStream()
+        peer.sendStreamRetryBaseDelay = 1.milliseconds
+        peer.sendStreamRetryMaxDelay = 2.milliseconds
+        gossip.subscribePeer(remoteId)
+        checkUntilTimeout:
+          dialer.attempts >= connection * 5
+        await sleepAsync(10.milliseconds)
+        for _ in 0 ..< 3:
+          peer.connect()
+          gossip.subscribePeer(remoteId)
+        await sleepAsync(10.milliseconds)
+        check dialer.attempts == connection * 5
+
+        if connection == 1:
+          previous = peer
+          await sw.disconnect(remoteId)
+        elif inbound:
+          peer.getStream = openStream
+          let remoteGossip = GossipSub.init(remote, rng = rng())
+          await remoteGossip.start()
+          remote.mount(remoteGossip)
+          remoteGossip.subscribePeer(sw.peerInfo.peerId)
+          checkUntilTimeout:
+            peer.connected
+          check cast[pointer](gossip.peers[remoteId]) == cast[pointer](peer)
+        else:
+          dialer.failures = dialer.attempts + 2
+          dialer.stream = TestBufferStream.new(noop)
+          sw.peerStore[ProtoBook][remoteId] = gossip.codecs
+          checkUntilTimeout:
+            peer.connected
+          check:
+            dialer.attempts == 13
+            cast[pointer](gossip.peers[remoteId]) == cast[pointer](peer)
+
+  asyncTest "successful unknown stream opens do not consume the failure allowance":
+    var attempts = 0
+    proc dial(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      inc attempts
+      if attempts == 4:
+        let stream = TestBufferStream.new(noop)
+        await stream.close()
+        return stream
+      raise newException(GetStreamDialError, "unreachable")
+
+    let peer = PubSubPeer.new(
+      PeerId.random(),
+      dial,
+      nil,
+      "",
+      1024,
+      voidPeerHandler,
+      sendStreamRetryBaseDelay = 1.milliseconds,
+      sendStreamRetryMaxDelay = 2.milliseconds,
+    )
+    defer:
+      await peer.stopTasks()
+    peer.connect()
+    checkUntilTimeout:
+      attempts >= 6
+    await sleepAsync(10.milliseconds)
+    peer.connect()
+    await sleepAsync(10.milliseconds)
+    check attempts == 6
+
   asyncTest "retries failed send stream opens until one succeeds":
     let dialer = FlakyDialer(failures: 5, stream: TestBufferStream.new(noop))
     let peer = newPeer(dialer.getStream(), 1.milliseconds, 4.milliseconds)
