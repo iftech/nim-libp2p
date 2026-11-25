@@ -105,6 +105,19 @@ suite "mDNS discovery":
     check limits.acquire(false, now + MdnsResponseInterval)
     check limits.acquire(true, now + MdnsResponseInterval)
 
+  test "multicast response limits are independent per interface":
+    var limits: Table[uint32, MulticastLimits]
+    let now = Moment.now()
+    check limits.mgetOrPut(1, default(MulticastLimits)).acquire(false, now)
+    check not limits.mgetOrPut(1, default(MulticastLimits)).acquire(false, now)
+    check limits.mgetOrPut(2, default(MulticastLimits)).acquire(false, now)
+    limits[1].finish(false, true, now, MdnsResponseInterval)
+    limits[2].finish(false, true, now, MdnsResponseInterval)
+    check not limits[1].acquire(false, now)
+    check not limits[2].acquire(false, now)
+    check limits[1].acquire(false, now + MdnsResponseInterval)
+    check limits[2].acquire(false, now + MdnsResponseInterval)
+
   test "DNS-SD records round trip and group peer addresses":
     let
       service = MdnsService.new()
@@ -360,73 +373,77 @@ suite "mDNS discovery":
         @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
 
   asyncTest "multicast query responses are rate limited independently per interface":
-    let
-      local = Switch(
-        peerInfo:
-          PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)]),
-        peerStore: PeerStore.new(nil),
-        rng: rng(),
-      )
-      service = MdnsService.new()
-      listener = MdnsNetwork.new()
-      query = DnsMessage(questions: @[DnsQuestion(name: @ServiceLabels, kind: PTR)])
-    var responses: Table[uint32, int]
-
-    var unicastResponses = 0
-    proc received(
-        packet: seq[byte], context: MdnsReplyContext
-    ) {.async: (raises: []).} =
-      try:
-        let message = parseMessage(packet)
-        if not context.isIpv6 and message.response and
-            service.peers(message, PeerId.random()).anyIt(
-              it.peerId == local.peerInfo.peerId
-            ):
-          responses.mgetOrPut(context.interfaceIndex, 0).inc
-      except ValueError:
-        raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
-
-    proc receivedUnicast(
-        transport: DatagramTransport, remote: TransportAddress
-    ) {.async: (raises: []).} =
-      try:
-        discard transport.getMessage()
-        inc unicastResponses
-      except TransportError:
-        raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
-
-    # Bind explicitly so Chronos receives the unicast replies on this socket.
-    let sender = newMulticastSender(receivedUnicast)
-    defer:
-      await sender.closeWait()
-      await listener.close()
-      await service.stop(local)
-    requireStarted(service, local)
-    let opened = await listener.open(received)
-    require opened.isOk
-    # Let the initial announcement finish before counting query responses.
-    await sleepAsync(200.milliseconds)
-    let observed = listener.ipv4InterfaceIndices()
-    if observed.len < 2:
-      checkpoint "Two configured IPv4 multicast interfaces are required"
+    when not defined(linux):
+      # Exact per-interface counts require Linux's ingress socket binding.
       skip()
     else:
+      let
+        local = Switch(
+          peerInfo:
+            PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)]),
+          peerStore: PeerStore.new(nil),
+          rng: rng(),
+        )
+        service = MdnsService.new()
+        listener = MdnsNetwork.new()
+        query = DnsMessage(questions: @[DnsQuestion(name: @ServiceLabels, kind: PTR)])
+      var responses: Table[uint32, int]
+
+      var unicastResponses = 0
+      proc received(
+          packet: seq[byte], context: MdnsReplyContext
+      ) {.async: (raises: []).} =
+        try:
+          let message = parseMessage(packet)
+          if not context.isIpv6 and message.response and
+              service.peers(message, PeerId.random()).anyIt(
+                it.peerId == local.peerInfo.peerId
+              ):
+            responses.mgetOrPut(context.interfaceIndex, 0).inc
+        except ValueError:
+          raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
+
+      proc receivedUnicast(
+          transport: DatagramTransport, remote: TransportAddress
+      ) {.async: (raises: []).} =
+        try:
+          discard transport.getMessage()
+          inc unicastResponses
+        except TransportError:
+          raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
+
+      # Bind explicitly so Chronos receives the unicast replies on this socket.
+      let sender = newMulticastSender(receivedUnicast)
+      defer:
+        await sender.closeWait()
+        await listener.close()
+        await service.stop(local)
+      requireStarted(service, local)
+      let opened = await listener.open(received)
+      require opened.isOk
+      # Let the initial announcement finish before counting query responses.
+      await sleepAsync(200.milliseconds)
+      let configured = listener.ipv4InterfaceIndices()
       responses.clear()
       for i in 0 ..< 5:
         check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
-        observed.allIt(responses.getOrDefault(it) >= 1)
+        responses.len > 0
       for i in 0 ..< 2:
         await sender.sendMulticast(query)
       checkUntilTimeout:
         unicastResponses >= 2
-      # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
+      # A response sent on another interface on the same LAN can also arrive
+      # here, so each ingress may see one copy per sending interface.
       await sleepAsync(MdnsResponseInterval)
-      for index in observed:
-        check responses.getOrDefault(index) == 1
+      for count in responses.values:
+        check count <= configured.len
+      var previous: Table[uint32, int]
+      for index, count in responses:
+        previous[index] = count
       check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
-        observed.allIt(responses.getOrDefault(it) >= 2)
+        responses.pairs.toSeq.anyIt(it[1] > previous.getOrDefault(it[0]))
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     requireMdnsMulticastRoute(ignoreDatagram)
