@@ -56,4 +56,7 @@ proc bindToInterface*(socket: winlean.SocketHandle, index: uint32, ipv6: bool): 
       index
     else:
       toBE(index)
-  setSocketOption(socket, level, unicastIf, sendIndex)
+  # This only selects unicast egress; reception is already pinned above, and
+  # multicast egress is configured separately. Keep the interface if it fails.
+  discard setSocketOption(socket, level, unicastIf, sendIndex)
+  return 0
