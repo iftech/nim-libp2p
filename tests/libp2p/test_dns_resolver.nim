@@ -67,7 +67,7 @@ type TcpReply = enum
   Timeout
   Cancel
 
-proc checkTcpFallback(reply: TcpReply) {.async.} =
+proc checkTcpFallback(reply: TcpReply, rejectEdns = false) {.async.} =
   let tcp = createStreamServer(initTAddress("127.0.0.1:0"))
   var udpQuery: seq[byte]
   proc answerTruncated(
@@ -75,6 +75,14 @@ proc checkTcpFallback(reply: TcpReply) {.async.} =
   ) {.async: (raises: []).} =
     try:
       udpQuery = transport.getMessage()
+      if rejectEdns and udpQuery[11] == 1:
+        var response = udpQuery[0 .. 11]
+        response[2] = 0x81
+        response[3] = 1
+        response[5] = 0
+        response[11] = 0
+        await transport.sendTo(address, response)
+        return
       var response = txtResponse(udpQuery, 1)
       response[2] = response[2] or 0x02'u8
       # The TC bit must be handled even if the answer ends mid-record.
@@ -94,6 +102,8 @@ proc checkTcpFallback(reply: TcpReply) {.async.} =
     var query = newSeq[byte](fromBytesBE(uint16, length).int)
     await client.readExactly(addr query[0], query.len)
     check query == udpQuery
+    if rejectEdns:
+      check query[11] == 0
 
     var response = txtResponse(query, 10)
     check response.len > DnsUdpPayloadSize
@@ -163,8 +173,76 @@ suite "DNS large responses":
     finally:
       await server.closeWait()
 
+  asyncTest "UDP replies larger than the advertised size are received intact":
+    proc answerOversized(
+        transport: DatagramTransport, address: TransportAddress
+    ) {.async: (raises: []).} =
+      try:
+        let response = txtResponse(transport.getMessage(), 30)
+        doAssert response.len > 4096
+        await transport.sendTo(address, response)
+      except CancelledError, TransportError, ValueError:
+        raiseAssert "Unexpected DNS fixture error: " & getCurrentExceptionMsg()
+
+    let server = newDatagramTransport(answerOversized)
+    try:
+      let resolver = DnsResolver.new(@[server.localAddress], rng())
+      check (await resolver.resolveTxt("_dnsaddr.example.test")) ==
+        newSeqWith(30, repeat("a", 200))
+    finally:
+      await server.closeWait()
+
+  asyncTest "EDNS rejection retries once without OPT for IP and TXT queries":
+    var requests = 0
+    var rejectAll = false
+    proc answerLegacy(
+        transport: DatagramTransport, address: TransportAddress
+    ) {.async: (raises: []).} =
+      try:
+        let query = transport.getMessage()
+        inc requests
+        if query[11] == 1 or rejectAll:
+          var response = query[0 .. 11]
+          response[2] = 0x81
+          # FORMERR/NOTIMP replies may omit the question.
+          response[3] = if rejectAll: 4'u8 else: 1'u8
+          response[5] = 0
+          response[11] = 0
+          await transport.sendTo(address, response)
+        elif parseMessage(query).questions[0].kind == TXT:
+          await transport.sendTo(address, txtResponse(query, 1))
+        else:
+          let decoded = parseMessage(query)
+          let response = DnsMessage(
+            id: decoded.id,
+            response: true,
+            questions: decoded.questions,
+            answers: @[
+              DnsRecord(name: decoded.questions[0].name, kind: A, address: "127.0.0.1")
+            ],
+          )
+          await transport.sendTo(address, encodeMessage(response))
+      except CancelledError, TransportError, ValueError:
+        raiseAssert "Unexpected DNS fixture error: " & getCurrentExceptionMsg()
+
+    let server = newDatagramTransport(answerLegacy)
+    try:
+      let resolver = DnsResolver.new(@[server.localAddress], rng())
+      check (await resolver.resolveTxt("_dnsaddr.example.test")) == @[repeat("a", 200)]
+      check (await resolver.resolveIp("example.test", 80.Port, Domain.AF_INET)) ==
+        @[initTAddress("127.0.0.1:80")]
+      check requests == 4
+      rejectAll = true
+      check (await resolver.resolveTxt("_dnsaddr.example.test")).len == 0
+      check requests == 6
+    finally:
+      await server.closeWait()
+
   asyncTest "truncated UDP answers retry over TCP with length framing":
     await checkTcpFallback(Complete)
+
+  asyncTest "TCP fallback still works after retrying without EDNS":
+    await checkTcpFallback(Complete, rejectEdns = true)
 
   asyncTest "invalid TCP responses fail without leaking transports":
     for reply in [ShortLength, EarlyEof, WrongId, StillTruncated]:

@@ -40,14 +40,9 @@ proc getTcpDnsResponse(
   finally:
     await sock.closeWait()
 
-proc getDnsResponse(
-    rng: Rng, dnsServer: TransportAddress, address: string, kind: DnsRecordKind
-): Future[seq[DnsAnswer]] {.
-    async: (raises: [CancelledError, IOError, TransportError, ValueError])
-.} =
-  let queryId = rng.generate(uint16)
-  var sendBuf = encodeQuery(queryId, address, kind)
-
+proc getUdpDnsResponse(
+    dnsServer: TransportAddress, sendBuf: seq[byte]
+): Future[seq[byte]] {.async: (raises: [CancelledError, IOError, TransportError]).} =
   let receivedDataFuture = Future[void].Raising([CancelledError]).init()
 
   proc datagramDataReceived(
@@ -55,12 +50,12 @@ proc getDnsResponse(
   ): Future[void] {.async: (raises: []).} =
     receivedDataFuture.completeOnce()
 
-  var response: seq[byte]
+  # Receive complete datagrams even when a server ignores the advertised size.
   let sock =
     if dnsServer.family == AddressFamily.IPv6:
-      newDatagramTransport6(datagramDataReceived, bufSize = DnsUdpPayloadSize)
+      newDatagramTransport6(datagramDataReceived, bufSize = int(uint16.high))
     else:
-      newDatagramTransport(datagramDataReceived, bufSize = DnsUdpPayloadSize)
+      newDatagramTransport(datagramDataReceived, bufSize = int(uint16.high))
 
   try:
     await sock.sendTo(dnsServer, addr sendBuf[0], sendBuf.len)
@@ -70,17 +65,29 @@ proc getDnsResponse(
     except AsyncTimeoutError as e:
       raise newException(IOError, "DNS server timeout: " & e.msg, e)
 
-    response = sock.getMessage()
+    return sock.getMessage()
   finally:
     await sock.closeWait()
 
-  try:
-    return parseAnswers(response, queryId)
-  except DnsTruncatedError:
+proc getDnsResponse(
+    rng: Rng, dnsServer: TransportAddress, address: string, kind: DnsRecordKind
+): Future[seq[DnsAnswer]] {.
+    async: (raises: [CancelledError, IOError, TransportError, ValueError])
+.} =
+  let queryId = rng.generate(uint16)
+  for edns in [true, false]:
+    let query = encodeQuery(queryId, address, kind, edns)
+    let response = await getUdpDnsResponse(dnsServer, query)
     try:
-      return await getTcpDnsResponse(dnsServer, sendBuf, queryId).wait(5.seconds)
-    except AsyncTimeoutError as e:
-      raise newException(IOError, "DNS TCP server timeout: " & e.msg, e)
+      return parseAnswers(response, queryId)
+    except DnsEdnsRejectedError as e:
+      if not edns:
+        raise e
+    except DnsTruncatedError:
+      try:
+        return await getTcpDnsResponse(dnsServer, query, queryId).wait(5.seconds)
+      except AsyncTimeoutError as e:
+        raise newException(IOError, "DNS TCP server timeout: " & e.msg, e)
 
 method resolveIp*(
     self: DnsResolver, address: string, port: Port, domain: Domain = Domain.AF_UNSPEC

@@ -23,6 +23,8 @@ const
   HeaderSize = 12
   CompressionMask = 0xC0'u8
   QrMask = 0x8000'u16 # header flags: QR bit (1 = response)
+  TcMask = 0x0200'u16 # header flags: truncated response
+  RcodeMask = 0x000F'u16
   ResponseFlags = 0x8400'u16 # QR + AA
   ClassIn = 0x0001'u16
   ClassAny = 0x00FF'u16 # QCLASS ANY, which an mDNS query may carry
@@ -34,6 +36,7 @@ template raiseErr(msg: string) =
 
 type
   DnsTruncatedError* = object of ValueError
+  DnsEdnsRejectedError* = object of ValueError
 
   DnsRecordKind* = enum
     A = 1
@@ -392,9 +395,9 @@ proc writeRecord(buf: var seq[byte], rec: DnsRecord) {.raises: [ValueError].} =
   buf[lengthPos + 1] = encoded[1]
 
 proc encodeQuery*(
-    id: uint16, name: string, kind: DnsRecordKind
+    id: uint16, name: string, kind: DnsRecordKind, edns = true
 ): seq[byte] {.raises: [ValueError].} =
-  ## Builds a recursive query advertising EDNS support for larger UDP answers.
+  ## Builds a recursive query, optionally advertising EDNS for larger UDP answers.
   var query = newSeqOfCap[byte](HeaderSize + name.len + 6 + 11)
 
   query.add(toBytesBE(id)) # id
@@ -402,15 +405,16 @@ proc encodeQuery*(
   query.add([0x00'u8, 0x01'u8]) # qdcount = 1
   query.add([0x00'u8, 0x00'u8]) # ancount = 0
   query.add([0x00'u8, 0x00'u8]) # nscount = 0
-  query.add([0x00'u8, 0x01'u8]) # arcount = 1
+  query.add(toBytesBE(if edns: 1'u16 else: 0'u16)) # arcount
 
   query.writeQuestion(DnsQuestion(name: name.toDnsName(), kind: kind))
 
-  query.add(0x00'u8) # OPT owner is the root name.
-  query.add(toBytesBE(41'u16)) # OPT record type
-  query.add(toBytesBE(DnsUdpPayloadSize.uint16))
-  query.add(toBytesBE(0'u32)) # extended rcode, EDNS version and flags
-  query.add(toBytesBE(0'u16)) # no EDNS options
+  if edns:
+    query.add(0x00'u8) # OPT owner is the root name.
+    query.add(toBytesBE(41'u16)) # OPT record type
+    query.add(toBytesBE(DnsUdpPayloadSize.uint16))
+    query.add(toBytesBE(0'u32)) # extended rcode, EDNS version and flags
+    query.add(toBytesBE(0'u16)) # no EDNS options
 
   return query
 
@@ -471,6 +475,7 @@ proc parseAnswers*(
 ): seq[DnsAnswer] {.raises: [ValueError].} =
   ## Decodes the `A`/`AAAA`/`TXT` answers of a response to query `expectedId`.
   ## Raises `DnsTruncatedError` before decoding answers when TCP retry is needed.
+  ## Raises `DnsEdnsRejectedError` for FORMERR or NOTIMP, allowing a legacy retry.
   if data.len < HeaderSize:
     raiseErr("DNS response shorter than header")
   if data.len > MaxPacketSize:
@@ -483,8 +488,10 @@ proc parseAnswers*(
     raiseErr("DNS response id does not match the query")
   if not header.isResponse():
     raiseErr("DNS message is not a response")
-  if (header.flags and 0x0200'u16) != 0:
+  if (header.flags and TcMask) != 0:
     raise newException(DnsTruncatedError, "Truncated DNS response")
+  if (header.flags and RcodeMask) in {1'u16, 4'u16}:
+    raise newException(DnsEdnsRejectedError, "DNS server rejected query format")
   if header.qdcount == 0:
     raiseErr("DNS response has no question")
 

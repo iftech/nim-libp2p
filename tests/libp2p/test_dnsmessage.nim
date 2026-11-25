@@ -28,7 +28,7 @@ const statusImAAAA =
   "\x06\x47\x00\x00\x10\x00\x00\x00\x00\x00\x00\xac\x43\x0a\xa1"
 
 proc toBytes(s: string): seq[byte] =
-  cast[seq[byte]](s)
+  s.mapIt(byte(it))
 
 suite "DNS message codec":
   test "encodeQuery builds a recursive A query":
@@ -46,6 +46,26 @@ suite "DNS message codec":
       let q = encodeQuery(1, "example.test", kind)
       check q[^11 .. ^1] == @[0'u8, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]
       check parseMessage(q).questions[0].kind == kind
+
+  test "queries without EDNS omit OPT and preserve the question":
+    for kind in [A, AAAA, TXT]:
+      let edns = encodeQuery(1, "example.test", kind)
+      let legacy = encodeQuery(1, "example.test", kind, edns = false)
+      check legacy[10 .. 11] == @[0'u8, 0]
+      check legacy.len == edns.len - 11
+      check parseMessage(legacy).questions == parseMessage(edns).questions
+
+  test "query format errors are reported after validating the response header":
+    var response = @[0'u8, 1, 0x81, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+    for rcode in [1'u8, 4'u8]:
+      response[3] = rcode
+      expect DnsEdnsRejectedError:
+        discard parseAnswers(response, 1)
+      expectMsg ValueError, "DNS response id does not match the query":
+        discard parseAnswers(response, 0)
+    response[2] = 1
+    expectMsg ValueError, "DNS message is not a response":
+      discard parseAnswers(response, 1)
 
   test "truncation is reported before parsing incomplete records":
     var response = statusImA.toBytes()
