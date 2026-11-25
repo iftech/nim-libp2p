@@ -170,6 +170,29 @@ suite "Waggle switch integration":
       # nodes[0] cannot publish on the new topic either
       nodes[0].waggle.publish(topic, snapshot).error == topicStateLimitReached
 
+  asyncTest "unsubscribe removes a subscribed topic's state, so the topic-state limit has room for another topic":
+    const
+      subscribedTopic = @[byte 2]
+      objectId = @[byte 1]
+      piece = 0b001
+    # nodes[0]'s topic-state limit holds one topic
+    let nodes = @[setupWaggleNode(WaggleConfig(maxTopics: 1)), setupWaggleNode()]
+    startAndDeferStop(nodes)
+    await connect(nodes[0], nodes[1])
+    # nodes[1] subscribes to both topics, so nodes[0] has someone to publish to
+    for t in [subscribedTopic, topic]:
+      discard nodes[1].waggle.subscribe(t).get()
+    await nodes[0].waitForSubscribers(2)
+    discard nodes[0].waggle.subscribe(subscribedTopic).get()
+
+    let snapshot = BitShard(id: objectId, have: piece)
+    check:
+      # the publish gives subscribedTopic state, which fills the limit
+      nodes[0].waggle.publish(subscribedTopic, snapshot).get() == 1
+      await nodes[0].waggle.unsubscribe(subscribedTopic)
+      # the limit has room for topic only once subscribedTopic's state is gone
+      nodes[0].waggle.publish(topic, snapshot).get() == 1
+
   asyncTest "every publish of an object reports invalid data for a peer whose metadata the shard rejects":
     const
       objectId = @[byte 1]
