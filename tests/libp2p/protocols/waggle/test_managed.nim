@@ -391,6 +391,21 @@ suite "Waggle managed dissemination":
     check p.setTopicConfig(@[byte 2], config).isOk
     await p.stop()
 
+  test "subscribe refuses an oversized topic and a new topic beyond maxTopics, but accepts a repeat subscribe at the limit":
+    const otherTopic = @[byte 2]
+    let oversizedTopic = newSeq[byte](topic.len + 1)
+    # topic fits maxTopicSize and fills maxTopics
+    let p = Waggle.new(
+      config = WaggleConfig(maxTopics: 1, maxTopicSize: topic.len), rng = rng()
+    )
+    check:
+      p.subscribe(oversizedTopic).error == "Waggle topic exceeds maximum length"
+      # the refused topic is not registered, so maxTopics still has room for topic
+      p.subscribe(topic).get().added
+      p.subscribe(otherTopic).error == "Waggle topic subscription limit reached"
+      # topic is already registered, so the limit does not refuse the repeat subscribe
+      not p.subscribe(topic).get().added
+
   asyncTest "start discovers existing switch connections":
     let a = await newNode(managed = true)
     let b = await newNode(managed = true)

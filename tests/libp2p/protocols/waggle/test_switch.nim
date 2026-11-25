@@ -243,7 +243,7 @@ suite "Waggle switch integration":
       received.message.pieces == Opt.some(@[byte allPieces])
 
   asyncTest "over QUIC, after the subscriber stops and starts, its reopened subscription is refused as a duplicate":
-    # TODO: iftech/nim-libp2p#NNNN
+    # TODO: iftech/nim-libp2p#3518
     let nodes = setupWaggleNodes(2)
     startAndDeferStop(nodes)
     await connect(nodes[0], nodes[1])
@@ -258,3 +258,18 @@ suite "Waggle switch integration":
     # subscription open, so nodes[1] refuses the reopened one
     let refused = await nodes[1].waitForEvent(WaggleEventKind.InvalidData)
     check refused.reason == "Duplicate Waggle topic stream"
+
+  asyncTest "a node whose own subscription fills its per-peer stream limit reports the peer's subscription as invalid data":
+    # TODO: iftech/nim-libp2p#NNNN
+    let nodes =
+      @[setupWaggleNode(WaggleConfig(maxStreamsPerPeer: 1)), setupWaggleNode()]
+    startAndDeferStop(nodes)
+    await connect(nodes[0], nodes[1])
+    discard nodes[0].waggle.subscribe(topic).get()
+
+    # nodes[1]'s subscription is well-formed; only nodes[0]'s limit refuses it
+    discard nodes[1].waggle.subscribe(topic).get()
+    let refused = await nodes[0].waitForEvent(WaggleEventKind.InvalidData)
+    check:
+      refused.peerId == nodes[1].switch.peerInfo.peerId
+      refused.reason == "Waggle stream limit reached"
