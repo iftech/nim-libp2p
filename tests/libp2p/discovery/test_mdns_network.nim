@@ -433,9 +433,6 @@ suite "mDNS network":
     network.refreshInterfaces()
     check refreshCount == countBeforeRefresh
     release.fire()
-    while not closing.finished:
-      network.refreshInterfaces()
-      await stepsAsync(1)
     await closing
     check:
       completed

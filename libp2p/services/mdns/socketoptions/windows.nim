@@ -64,6 +64,7 @@ proc bindToInterface*(
   let listStatus = setSocketOption(socket, level, addIfList, receiveIndex)
   if listStatus != 0:
     return err(socketLastError())
+  # IPV6_UNICAST_IF takes host byte order; IP_UNICAST_IF takes network byte order.
   var sendIndex =
     if ipv6:
       index

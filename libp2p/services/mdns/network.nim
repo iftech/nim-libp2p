@@ -32,7 +32,7 @@ type
     ipv6: seq[MdnsLocalAddress]
     localAddresses: seq[MdnsLocalAddress]
 
-  MdnsInterface = ref object
+  MdnsInterface = object
     transport: DatagramTransport
     address4: array[4, byte]
     index: uint32
@@ -43,7 +43,7 @@ type
   MdnsReplyContext* = object
     ## Identifies the receiving interface, socket and sender. A context becomes
     ## invalid when its interface is removed or the network is closed.
-    iface: MdnsInterface
+    iface: ref MdnsInterface
     remote: TransportAddress
 
   MdnsPacketReceived* = proc(
@@ -55,8 +55,8 @@ type
     opened: bool
     ipv4Available: bool
     ipv6Available: bool
-    interfaces4: seq[MdnsInterface]
-    interfaces6: seq[MdnsInterface]
+    interfaces4: seq[ref MdnsInterface]
+    interfaces6: seq[ref MdnsInterface]
     retiring: seq[Future[void].Raising([])]
     localAddresses: seq[MdnsLocalAddress]
     refresher: Future[void].Raising([CancelledError])
@@ -213,13 +213,13 @@ proc configureMulticast(transport: DatagramTransport, ipv6: bool): LPResult[void
   else:
     configureMulticast(transport)
 
-proc joinMulticast(iface: MdnsInterface, ipv6: bool): LPResult[void] =
+proc joinMulticast(iface: ref MdnsInterface, ipv6: bool): LPResult[void] =
   if ipv6:
     membership6(iface.transport, iface.index)
   else:
     membership4(iface.transport, iface.address4, true)
 
-proc selectMulticastInterface(iface: MdnsInterface, ipv6: bool): bool =
+proc selectMulticastInterface(iface: ref MdnsInterface, ipv6: bool): bool =
   if ipv6:
     selectMulticastInterface6(iface.transport, iface.index)
   else:
@@ -235,29 +235,29 @@ template trackOperation(network: MdnsNetwork, body: untyped) =
     if network.activeOperations == 0:
       network.idle.fire()
 
-template acquireInterface(iface: MdnsInterface) =
+template acquireInterface(iface: ref MdnsInterface) =
   inc iface.activeOperations
   iface.idle.clear()
 
-template releaseInterface(iface: MdnsInterface) =
+template releaseInterface(iface: ref MdnsInterface) =
   dec iface.activeOperations
   if iface.activeOperations == 0:
     iface.idle.fire()
 
-proc closeInterface(iface: MdnsInterface) {.async: (raises: []).} =
+proc closeInterface(iface: ref MdnsInterface) {.async: (raises: []).} =
   await noCancel iface.transport.closeWait()
   # The transport's callback captures iface, so release it after closing.
   iface.transport = nil
 
-proc retire(iface: MdnsInterface) {.async: (raises: []).} =
+proc retire(iface: ref MdnsInterface) {.async: (raises: []).} =
   # A send or handler may still hold this socket after an interface refresh.
   while iface.activeOperations > 0:
     await noCancel iface.idle.wait()
   await iface.closeInterface()
 
 proc receivingInterface(
-    network: MdnsNetwork, iface: MdnsInterface, remote: TransportAddress
-): MdnsInterface =
+    network: MdnsNetwork, iface: ref MdnsInterface, remote: TransportAddress
+): ref MdnsInterface =
   if iface.ingressPinned:
     return iface
 
@@ -279,7 +279,7 @@ proc receivingInterface(
       return candidate
   nil
 
-proc receivedOn(network: MdnsNetwork, iface: MdnsInterface): DatagramCallback =
+proc receivedOn(network: MdnsNetwork, iface: ref MdnsInterface): DatagramCallback =
   proc received(
       transport: DatagramTransport, remote: TransportAddress
   ) {.async: (raises: []).} =
@@ -319,8 +319,8 @@ proc newInterfaceTransport(
 
 proc openInterface(
     network: MdnsNetwork, address4: array[4, byte], index: uint32, ipv6: bool
-): MdnsInterface =
-  let iface = MdnsInterface(address4: address4, index: index, idle: newAsyncEvent())
+): ref MdnsInterface =
+  let iface = (ref MdnsInterface)(address4: address4, index: index, idle: newAsyncEvent())
   try:
     let callback = network.receivedOn(iface)
     iface.transport = newInterfaceTransport(callback, ipv6)
@@ -381,12 +381,12 @@ proc wantedInterfaces(network: MdnsNetwork): MdnsWantedInterfaces =
 
 proc currentInterfaces4(
     network: MdnsNetwork, wanted4: seq[MdnsLocalAddress]
-): seq[MdnsInterface] =
-  var current: seq[MdnsInterface]
+): seq[ref MdnsInterface] =
+  var current: seq[ref MdnsInterface]
   if network.isOpen and network.ipv4Available:
     for wanted in wanted4:
       let address4 = wanted.address.host.address_v4
-      var found: MdnsInterface
+      var found: ref MdnsInterface
       for iface in network.interfaces4:
         if iface.address4 == address4 and iface.index == wanted.index:
           found = iface
@@ -399,11 +399,11 @@ proc currentInterfaces4(
 
 proc currentInterfaces6(
     network: MdnsNetwork, wanted6: seq[MdnsLocalAddress]
-): seq[MdnsInterface] =
-  var current: seq[MdnsInterface]
+): seq[ref MdnsInterface] =
+  var current: seq[ref MdnsInterface]
   if network.isOpen and network.ipv6Available:
     for wanted in wanted6:
-      var found: MdnsInterface
+      var found: ref MdnsInterface
       for iface in network.interfaces6:
         if iface.index == wanted.index:
           found = iface
@@ -415,7 +415,7 @@ proc currentInterfaces6(
   current
 
 proc retireRemovedInterfaces(
-    network: MdnsNetwork, current4, current6: seq[MdnsInterface]
+    network: MdnsNetwork, current4, current6: seq[ref MdnsInterface]
 ) =
   # Leave immediately, but drain in-flight operations before closing the socket.
   for iface in network.interfaces4:
@@ -475,7 +475,7 @@ proc sendPacket(
   return false
 
 proc multicastInterfaces(
-    interfaces: seq[MdnsInterface], packet: seq[byte], destination: TransportAddress
+    interfaces: seq[ref MdnsInterface], packet: seq[byte], destination: TransportAddress
 ): Future[bool] {.async: (raises: [CancelledError]).} =
   var sent = false
   for iface in interfaces:
