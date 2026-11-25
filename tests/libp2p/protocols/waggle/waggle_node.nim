@@ -2,15 +2,15 @@
 # Copyright (c) Status Research & Development GmbH
 
 import chronos
-import ../../libp2p/[switch, protocols/waggle]
-import ./[crypto, switch_builder]
+import ../../../../libp2p/[switch, protocols/waggle]
+import ../../../tools/[crypto, switch_builder]
 
 type WaggleNode* = ref object ## A switch over QUIC with a mounted Waggle.
   switch*: Switch
   waggle*: Waggle
   events*: AsyncQueue[WaggleEvent] # every event Waggle emits, in order
 
-proc setupWaggleNode*(): WaggleNode =
+proc setupWaggleNode*(config = WaggleConfig()): WaggleNode =
   let events = newAsyncQueue[WaggleEvent]()
   proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
     try:
@@ -19,7 +19,8 @@ proc setupWaggleNode*(): WaggleNode =
       raiseAssert "an unbounded queue is never full"
 
   let switch = makeStandardSwitch()
-  let waggle = Waggle.new(onEvent = onEvent, rng = rng(), switch = switch)
+  let waggle =
+    Waggle.new(config = config, onEvent = onEvent, rng = rng(), switch = switch)
   switch.mount(waggle)
   return WaggleNode(switch: switch, waggle: waggle, events: events)
 
@@ -29,11 +30,11 @@ proc setupWaggleNodes*(count: int): seq[WaggleNode] =
     nodes.add(setupWaggleNode())
   return nodes
 
-proc popEvents*(node: WaggleNode, count: int): Future[seq[WaggleEvent]] {.async.} =
-  var events: seq[WaggleEvent]
+proc waitForSubscribers*(node: WaggleNode, count = 1) {.async.} =
+  ## Awaits the next `count` events, each a peer's subscription to `node`.
   for _ in 0 ..< count:
-    events.add(await node.events.popFirst())
-  return events
+    let event = await node.events.popFirst()
+    doAssert event.kind == WaggleEventKind.Subscribed, $event.kind
 
 proc connect*(dialer, target: WaggleNode) {.async.} =
   await dialer.switch.connect(target.switch)
