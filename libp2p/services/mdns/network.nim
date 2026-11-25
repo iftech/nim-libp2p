@@ -320,7 +320,8 @@ proc newInterfaceTransport(
 proc openInterface(
     network: MdnsNetwork, address4: array[4, byte], index: uint32, ipv6: bool
 ): ref MdnsInterface =
-  let iface = (ref MdnsInterface)(address4: address4, index: index, idle: newAsyncEvent())
+  let iface =
+    (ref MdnsInterface)(address4: address4, index: index, idle: newAsyncEvent())
   try:
     let callback = network.receivedOn(iface)
     iface.transport = newInterfaceTransport(callback, ipv6)
