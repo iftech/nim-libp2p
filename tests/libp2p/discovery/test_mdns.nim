@@ -432,14 +432,13 @@ suite "mDNS discovery":
     requireStarted(service, local)
     let opened = await listener.open(received)
     require opened.isOk
-    if not listener.ipv4IngressPinned():
+    let configured = listener.ipv4InterfaceIndices()
+    if configured.len == 0 or not listener.ipv4IngressPinned():
       skip()
     else:
       # Allow the initial multicast announcement to arrive before clearing the
       # counters; network delivery is not bounded by an event-loop step.
       await sleepAsync(200.milliseconds)
-      let configured = listener.ipv4InterfaceIndices()
-      require configured.len > 0
       responses.clear()
       for i in 0 ..< 5:
         check await listener.multicast(encodeMessage(query))

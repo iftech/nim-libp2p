@@ -279,12 +279,12 @@ suite "mDNS network":
       interfaceQueries == 0
       network.ipv4InterfaceIndices().len == 0
       not (await network.multicast(@[1'u8]))
-      network.close() == closing
+      cast[pointer](network.close()) == cast[pointer](closing)
     await network.close()
     requireOpened(network, ignorePacket)
     check network.isOpen
     let closingAgain = network.close()
-    check closingAgain != closing
+    check cast[pointer](closingAgain) != cast[pointer](closing)
     await closingAgain
     check not network.isOpen
 
@@ -424,7 +424,7 @@ suite "mDNS network":
     check:
       not network.isOpen
       not closing.finished
-      network.close() == closing
+      cast[pointer](network.close()) == cast[pointer](closing)
       not completed
       (await network.open(ignorePacket)).isErr
       not (await network.multicast(second))
@@ -526,12 +526,11 @@ suite "mDNS network":
       requireOpened(network, received)
       defer:
         await network.close()
-      if not network.ipv4IngressPinned():
+      let configured = network.ipv4InterfaceIndices()
+      if configured.len == 0 or not network.ipv4IngressPinned():
         skip()
       else:
         check await network.multicast(query)
-        let configured = network.ipv4InterfaceIndices()
-        require configured.len > 0
         checkUntilTimeout:
           configured.allIt((it, it) in responses)
         accepting = false
