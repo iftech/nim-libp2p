@@ -97,6 +97,16 @@ suite "PeerStore":
       peerId1 notin peerStore[GenericBook[Duration]]
       peerId1 notin peerStore[GenericBook[times.Duration]]
 
+  test "partial Identify updates preserve omitted protocols":
+    let peerStore = PeerStore.new(nil)
+    check peerId1 notin peerStore[ProtoBook]
+    peerStore.updatePeerInfo(IdentifyInfo(peerId: peerId1, protos: @[testcodec1]))
+    check peerStore[ProtoBook][peerId1] == @[testcodec1]
+    peerStore.updatePeerInfo(IdentifyInfo(peerId: peerId1))
+    check:
+      peerId1 in peerStore[ProtoBook]
+      peerStore[ProtoBook][peerId1] == @[testcodec1]
+
   test "updatePeerInfo stores and updates only fresh signed peer records":
     let
       peerStore = PeerStore.new(nil)
