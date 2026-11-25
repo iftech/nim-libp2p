@@ -131,6 +131,8 @@ proc membership4(
   ok()
 
 proc configureMulticast(transport: DatagramTransport): LPResult[void] =
+  let membershipStatus = restrictMulticastReception(toSocketHandle(transport.fd))
+  checkSocketOption(membershipStatus, "IPv4 multicast receive configuration")
   var ttl = MulticastTtl(MdnsMulticastHopLimit)
   let status =
     setSocketOption(toSocketHandle(transport.fd), ipv4Protocol, ipv4MulticastTtl, ttl)

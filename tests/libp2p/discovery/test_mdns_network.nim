@@ -227,6 +227,8 @@ suite "mDNS network":
     # responder, particularly on Windows. Multicast reaches group members.
     await sender.sendTo(initTAddress("224.0.0.251", Port(MdnsPort)), packet)
     check (await receivedReply) == response
+    # Allow duplicate deliveries from other wildcard sockets to arrive too.
+    await sleepAsync(100.milliseconds)
     require contexts.len == 1
     check contexts[0].isLegacyQuery
     let other = MdnsNetwork.new()

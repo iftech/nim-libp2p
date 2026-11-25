@@ -57,6 +57,16 @@ proc setSocketOption*[T](
 proc socketLastError*(): OSErrorCode =
   osLastError()
 
+proc restrictMulticastReception*(socket: posix.SocketHandle): cint =
+  ## Restrict multicast reception to this socket's memberships where needed.
+  when defined(linux) or defined(android):
+    # Linux otherwise delivers traffic for memberships on other sockets.
+    const ipMulticastAll = 49.cint
+    var enabled = 0.cint
+    setSocketOption(socket, ipv4Protocol, ipMulticastAll, enabled)
+  else:
+    0
+
 proc bindToInterface*(socket: posix.SocketHandle, index: uint32, ipv6: bool): cint =
   ## Return zero when pinned, one when unavailable, or a negative OS failure.
   when defined(linux) or defined(android):
