@@ -163,7 +163,13 @@ suite "mDNS network":
 
   asyncTest "refresh joins and leaves interfaces after startup":
     requireMdnsMulticastRoute(ignoreDatagram)
-    let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
+    var refreshed: seq[uint32]
+    proc changed(indices: seq[uint32]) {.gcsafe, raises: [].} =
+      refreshed = indices
+
+    let network = MdnsNetwork.new(
+      interfaceProvider = changingInterfaces, onInterfacesChanged = changed
+    )
     exposeInterfaces = false
     requireOpened(network, ignorePacket)
     defer:
@@ -173,11 +179,13 @@ suite "mDNS network":
     exposeInterfaces = true
     network.refreshInterfaces()
     check (await network.multicast(@[1'u8]))
+    check refreshed.len > 0
     network.refreshInterfaces() # Repeated refreshes retain existing memberships.
     check (await network.multicast(@[1'u8]))
     exposeInterfaces = false
     network.refreshInterfaces()
     check not (await network.multicast(@[1'u8]))
+    check refreshed.len == 0
     exposeInterfaces = true
     network.refreshInterfaces()
     check (await network.multicast(@[1'u8]))

@@ -2,6 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import chronos
+import std/tables
 
 type
   MulticastLimit = object
@@ -10,6 +11,29 @@ type
 
   MulticastLimits* = object
     families: array[bool, MulticastLimit]
+
+  InterfaceLimits* = ref object
+    entries: Table[uint32, ref MulticastLimits]
+
+proc newInterfaceLimits*(): InterfaceLimits =
+  InterfaceLimits()
+
+proc get*(limits: InterfaceLimits, index: uint32): ref MulticastLimits =
+  result = limits.entries.getOrDefault(index)
+  if result.isNil:
+    result = new(MulticastLimits)
+    limits.entries[index] = result
+
+proc prune*(limits: InterfaceLimits, indices: openArray[uint32]) =
+  var removed: seq[uint32]
+  for index in limits.entries.keys:
+    if index notin indices:
+      removed.add(index)
+  for index in removed:
+    limits.entries.del(index)
+
+proc clear*(limits: InterfaceLimits) =
+  limits.entries.clear()
 
 proc acquire*(limits: var MulticastLimits, ipv6: bool, now: Moment): bool =
   if limits.families[ipv6].pending or now < limits.families[ipv6].nextResponse:

@@ -54,6 +54,7 @@ type
     interfaceProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
     addressProvider: NetworkInterfaceProvider
     onPacket: MdnsPacketReceived
+    onInterfacesChanged: proc(indices: seq[uint32]) {.gcsafe, raises: [].}
     activeOperations: int
     idle: AsyncEvent
     closing: bool
@@ -68,11 +69,13 @@ proc new*(
     interfaceProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].} =
       getInterfaces,
     refreshInterval: Duration = MdnsInterfaceRefreshInterval,
+    onInterfacesChanged: proc(indices: seq[uint32]) {.gcsafe, raises: [].} = nil,
 ): T =
   T(
     addressProvider: addressProvider,
     interfaceProvider: interfaceProvider,
     refreshInterval: refreshInterval,
+    onInterfacesChanged: onInterfacesChanged,
     idle: newAsyncEvent(),
   )
 
@@ -418,6 +421,12 @@ proc refreshInterfaces*(network: MdnsNetwork) =
   network.interfaces4 = current4
   network.interfaces6 = current6
   network.localAddresses = wanted.localAddresses
+  if not network.onInterfacesChanged.isNil:
+    var indices: seq[uint32]
+    for iface in current4 & current6:
+      if iface.index notin indices:
+        indices.add(iface.index)
+    network.onInterfacesChanged(indices)
   var pending: seq[Future[void].Raising([])]
   for closing in network.retiring:
     if not closing.finished:

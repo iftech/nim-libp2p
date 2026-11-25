@@ -118,6 +118,22 @@ suite "mDNS discovery":
     check limits[1].acquire(false, now + MdnsResponseInterval)
     check limits[2].acquire(false, now + MdnsResponseInterval)
 
+  test "removed interface limits are discarded even with a pending reply":
+    let
+      limits = newInterfaceLimits()
+      now = Moment.now()
+      old = limits.get(1)
+      retained = limits.get(2)
+    check old[].acquire(false, now)
+    check retained[].acquire(false, now)
+    limits.prune([2'u32])
+    let replacement = limits.get(1)
+    check replacement[].acquire(false, now)
+    old[].finish(false, true, now, MdnsResponseInterval)
+    replacement[].finish(false, false, now, MdnsResponseInterval)
+    check replacement[].acquire(false, now)
+    check not limits.get(2)[].acquire(false, now)
+
   test "DNS-SD records round trip and group peer addresses":
     let
       service = MdnsService.new()
