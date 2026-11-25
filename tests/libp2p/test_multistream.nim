@@ -204,7 +204,7 @@ suite "Multistream select":
     check (await ms.select(stream, @[codecs])) == codecs
     await stream.close()
 
-  asyncTest "test handle custom proto":
+  asyncTest "handle closes the stream when the protocol handler returns":
     let ms = MultistreamSelect.new()
     let stream = newTestSelectStream()
 
@@ -212,10 +212,32 @@ suite "Multistream select":
         stream: Stream, proto: string
     ): Future[void] {.async: (raises: [CancelledError]).} =
       check proto == codecs
-      await stream.close()
+      check not stream.closed
 
     ms.addHandler(LPProtocol.new(codecs, testHandler))
     await ms.handle(stream)
+    check stream.closed
+
+  asyncTest "handle closes the stream and propagates handler cancellation":
+    let ms = MultistreamSelect.new()
+    let stream = newTestSelectStream()
+    let entered = Future[void].Raising([CancelledError]).init()
+    let pending = Future[void].Raising([CancelledError]).init()
+
+    proc testHandler(
+        stream: Stream, proto: string
+    ): Future[void] {.async: (raises: [CancelledError]).} =
+      entered.complete()
+      await pending
+
+    ms.addHandler(LPProtocol.new(codecs, testHandler))
+    let handling = ms.handle(stream)
+    await entered
+    check not stream.closed
+    await handling.cancelAndWait()
+    check:
+      handling.cancelled
+      stream.closed
 
   asyncTest "test handle invokes only first matching handler":
     let ms = MultistreamSelect.new()
