@@ -12,13 +12,16 @@ const TestCodec = "/test/proto/1.0.0" # custom protocol string identifier
 type TestProto = ref object of LPProtocol # declare a custom protocol
 
 proc new(T: typedesc[TestProto]): T =
-  # Multistream closes each incoming stream when this handler returns.
+  # every incoming stream will be handled in this closure
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     try:
       echo "Got from remote - ", string.fromBytes(await stream.readLp(1024))
       await stream.writeLp("Roger p2p!")
     except LPStreamError as exc:
       echo "exception in handler", exc.msg
+    finally:
+      # We must close the stream ourselves when we're done with it
+      await stream.close()
 
   return T.new(codecs = @[TestCodec], handler = handle)
 
