@@ -58,6 +58,7 @@ proc socketLastError*(): OSErrorCode =
   osLastError()
 
 proc bindToInterface*(socket: posix.SocketHandle, index: uint32, ipv6: bool): cint =
+  ## Return zero when pinned, one when unavailable, or a negative OS failure.
   when defined(linux) or defined(android):
     # IPv6 membership checks do not distinguish the receiving interface.
     # Bind the socket so both multicast and unicast retain ingress.
@@ -65,6 +66,9 @@ proc bindToInterface*(socket: posix.SocketHandle, index: uint32, ipv6: bool): ci
     # an existing binding, the initial binding needs no privilege on Linux 5.7+.
     const soBindToIfIndex = cint(62)
     var interfaceIndex = cint(index)
-    setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
+    let status = setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
+    if status != 0 and socketLastError().int in [int(ENOPROTOOPT), int(EPERM), int(EACCES)]:
+      return 1 # Ingress pinning unavailable; the caller must filter receives.
+    status
   else:
-    0
+    1 # No portable ingress socket binding; the caller must filter receives.

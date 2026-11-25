@@ -408,18 +408,16 @@ suite "mDNS discovery":
     require opened.isOk
     # Let the initial announcement finish before counting query responses.
     await sleepAsync(200.milliseconds)
-    responses.clear()
-    for i in 0 ..< 5:
-      check await listener.multicast(encodeMessage(query))
-    # Only interfaces with working multicast delivery can exercise fan-out.
-    await sleepAsync(500.milliseconds)
-    var observed: seq[uint32]
-    for index in responses.keys:
-      observed.add(index)
+    let observed = listener.ipv4InterfaceIndices()
     if observed.len < 2:
-      checkpoint "Two responding IPv4 interfaces are required to test independent rate limits"
+      checkpoint "Two configured IPv4 multicast interfaces are required"
       skip()
     else:
+      responses.clear()
+      for i in 0 ..< 5:
+        check await listener.multicast(encodeMessage(query))
+      checkUntilTimeout:
+        observed.allIt(responses.getOrDefault(it) >= 1)
       for i in 0 ..< 2:
         await sender.sendMulticast(query)
       checkUntilTimeout:

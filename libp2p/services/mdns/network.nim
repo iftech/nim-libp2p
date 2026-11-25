@@ -27,6 +27,7 @@ type
     transport: DatagramTransport
     address4: array[4, byte]
     index: uint32
+    ingressPinned: bool
 
   MdnsReplyContext* = object
     ## Identifies the receiving interface, socket and sender. A context becomes
@@ -215,6 +216,37 @@ proc retire(network: MdnsNetwork, iface: MdnsInterface) {.async: (raises: []).} 
     await noCancel network.idle.wait()
   await iface.closeInterface()
 
+proc receivingInterface(
+    network: MdnsNetwork, iface: MdnsInterface, remote: TransportAddress
+): MdnsInterface =
+  if iface.ingressPinned:
+    return iface
+
+  # A wildcard socket does not identify ingress. Only accept sources
+  # belonging to exactly one interface; overlapping subnets are ambiguous.
+  var matched: uint32
+  for candidate in network.interfaceProvider():
+    if candidate.ifIndex <= 0:
+      continue
+    for address in candidate.addresses:
+      if address.host.family == remote.family and address.net.contains(remote):
+        let index = uint32(candidate.ifIndex)
+        if matched != 0 and matched != index:
+          return nil
+        matched = index
+  if matched == 0:
+    return nil
+
+  let interfaces =
+    if remote.family == AddressFamily.IPv6:
+      network.interfaces6
+    else:
+      network.interfaces4
+  for candidate in interfaces:
+    if candidate.index == matched:
+      return candidate
+  nil
+
 proc receivedOn(network: MdnsNetwork, iface: MdnsInterface): DatagramCallback =
   proc received(
       transport: DatagramTransport, remote: TransportAddress
@@ -225,8 +257,11 @@ proc receivedOn(network: MdnsNetwork, iface: MdnsInterface): DatagramCallback =
     try:
       # Copy before the handler yields and Chronos reuses the receive buffer.
       let packet = transport.getMessage()
+      let receiving = network.receivingInterface(iface, remote)
+      if receiving.isNil:
+        return
       trackOperation network:
-        await network.onPacket(packet, MdnsReplyContext(iface: iface, remote: remote))
+        await network.onPacket(packet, MdnsReplyContext(iface: receiving, remote: remote))
     except TransportError:
       debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
 
@@ -255,7 +290,9 @@ proc openInterface(
   try:
     let callback = network.receivedOn(iface)
     iface.transport = newInterfaceTransport(callback, ipv6)
-    if bindToInterface(toSocketHandle(iface.transport.fd), index, ipv6) != 0:
+    let binding = bindToInterface(toSocketHandle(iface.transport.fd), index, ipv6)
+    iface.ingressPinned = binding == 0
+    if binding < 0:
       warn "mDNS receive interface selection failed",
         interfaceIndex = index, err = osErrorMsg(socketLastError())
       network.retiring.add(iface.closeInterface())
@@ -433,7 +470,7 @@ proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   if network.activeOperations > 0:
     await noCancel network.idle.wait()
   for iface in network.interfaces4 & network.interfaces6:
-    await iface.closeInterface()
+    await noCancel iface.closeInterface()
   for closing in network.retiring:
     await noCancel closing
   network.retiring.setLen(0)
@@ -482,7 +519,7 @@ proc open*(
     )
     network.ipv4Available = configureMulticast(transport).isOk
     if network.ipv4Available:
-      if bindToInterface(toSocketHandle(transport.fd), 0, false) != 0:
+      if bindToInterface(toSocketHandle(transport.fd), 0, false) < 0:
         bindingFailed = true
         bindingError = osErrorMsg(socketLastError())
     await transport.closeWait()
@@ -498,7 +535,7 @@ proc open*(
     )
     network.ipv6Available = configureMulticast6(transport).isOk
     if network.ipv6Available:
-      if bindToInterface(toSocketHandle(transport.fd), 0, true) != 0:
+      if bindToInterface(toSocketHandle(transport.fd), 0, true) < 0:
         bindingFailed = true
         bindingError = osErrorMsg(socketLastError())
     await transport.closeWait()
@@ -515,3 +552,8 @@ proc open*(
   network.refreshInterfaces()
   network.refresher = network.refreshLoop()
   return ok()
+
+func ipv4InterfaceIndices*(network: MdnsNetwork): seq[uint32] =
+  ## Interfaces with successfully configured IPv4 multicast sockets.
+  for iface in network.interfaces4:
+    result.add(iface.index)
