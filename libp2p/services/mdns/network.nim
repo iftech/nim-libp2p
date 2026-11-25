@@ -6,7 +6,7 @@
 
 {.push raises: [].}
 
-import std/os
+import std/[os, sequtils]
 import chronos, chronicles
 import chronos/transports/osnet
 import ../../[address_manager, multiaddress, results]
@@ -23,6 +23,15 @@ const
   MdnsBindAddress6 = initTAddress("[::]:5353")
 
 type
+  MdnsLocalAddress = object
+    index: uint32
+    address: InterfaceAddress
+
+  MdnsWantedInterfaces = object
+    ipv4: seq[MdnsLocalAddress]
+    ipv6: seq[MdnsLocalAddress]
+    localAddresses: seq[MdnsLocalAddress]
+
   MdnsInterface = ref object
     transport: DatagramTransport
     address4: array[4, byte]
@@ -49,7 +58,7 @@ type
     interfaces4: seq[MdnsInterface]
     interfaces6: seq[MdnsInterface]
     retiring: seq[Future[void].Raising([])]
-    localAddresses: seq[tuple[index: uint32, address: InterfaceAddress]]
+    localAddresses: seq[MdnsLocalAddress]
     refresher: Future[void].Raising([CancelledError])
     refreshInterval: Duration
     interfaceProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
@@ -343,65 +352,64 @@ proc openInterface(
       interfaceIndex = index, ipv6 = ipv6, err = exc.msg
   return nil
 
-proc wantedInterfaces(
-    network: MdnsNetwork
-): tuple[
-  ipv4: seq[tuple[address: array[4, byte], index: uint32]],
-  ipv6: seq[uint32],
-  localAddresses: seq[tuple[index: uint32, address: InterfaceAddress]],
-] =
-  var wanted4: seq[tuple[address: array[4, byte], index: uint32]]
-  var wanted6: seq[uint32]
-  var localAddresses: seq[tuple[index: uint32, address: InterfaceAddress]]
+proc wantedInterfaces(network: MdnsNetwork): MdnsWantedInterfaces =
+  var wanted4: seq[MdnsLocalAddress]
+  var wanted6: seq[MdnsLocalAddress]
+  var localAddresses: seq[MdnsLocalAddress]
   for iface in network.interfaceProvider():
     if iface.ifIndex <= 0 or
         (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
       continue
     var has4 = false
     for address in iface.addresses:
-      localAddresses.add((uint32(iface.ifIndex), address))
+      localAddresses.add(
+        MdnsLocalAddress(index: uint32(iface.ifIndex), address: address)
+      )
       case address.host.family
       of AddressFamily.IPv4:
         if not has4:
-          wanted4.add((address.host.address_v4, uint32(iface.ifIndex)))
+          wanted4.add(MdnsLocalAddress(index: uint32(iface.ifIndex), address: address))
           has4 = true
       of AddressFamily.IPv6:
-        if uint32(iface.ifIndex) notin wanted6:
-          wanted6.add(uint32(iface.ifIndex))
+        if not wanted6.anyIt(it.index == uint32(iface.ifIndex)):
+          wanted6.add(MdnsLocalAddress(index: uint32(iface.ifIndex), address: address))
       else:
         discard
-  (wanted4, wanted6, localAddresses)
+
+  return
+    MdnsWantedInterfaces(ipv4: wanted4, ipv6: wanted6, localAddresses: localAddresses)
 
 proc currentInterfaces4(
-    network: MdnsNetwork, wanted4: seq[tuple[address: array[4, byte], index: uint32]]
+    network: MdnsNetwork, wanted4: seq[MdnsLocalAddress]
 ): seq[MdnsInterface] =
   var current: seq[MdnsInterface]
   if network.isOpen and network.ipv4Available:
     for wanted in wanted4:
+      let address4 = wanted.address.host.address_v4
       var found: MdnsInterface
       for iface in network.interfaces4:
-        if iface.address4 == wanted.address and iface.index == wanted.index:
+        if iface.address4 == address4 and iface.index == wanted.index:
           found = iface
           break
       if found.isNil:
-        found = network.openInterface(wanted.address, wanted.index, false)
+        found = network.openInterface(address4, wanted.index, false)
       if not found.isNil:
         current.add(found)
   current
 
 proc currentInterfaces6(
-    network: MdnsNetwork, wanted6: seq[uint32]
+    network: MdnsNetwork, wanted6: seq[MdnsLocalAddress]
 ): seq[MdnsInterface] =
   var current: seq[MdnsInterface]
   if network.isOpen and network.ipv6Available:
-    for index in wanted6:
+    for wanted in wanted6:
       var found: MdnsInterface
       for iface in network.interfaces6:
-        if iface.index == index:
+        if iface.index == wanted.index:
           found = iface
           break
       if found.isNil:
-        found = network.openInterface(default(array[4, byte]), index, true)
+        found = network.openInterface(default(array[4, byte]), wanted.index, true)
       if not found.isNil:
         current.add(found)
   current
