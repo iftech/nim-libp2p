@@ -28,6 +28,8 @@ type
     address4: array[4, byte]
     index: uint32
     ingressPinned: bool
+    activeOperations: int
+    idle: AsyncEvent
 
   MdnsReplyContext* = object
     ## Identifies the receiving interface, socket and sender. A context becomes
@@ -205,15 +207,24 @@ template trackOperation(network: MdnsNetwork, body: untyped) =
     if network.activeOperations == 0:
       network.idle.fire()
 
+template acquireInterface(iface: MdnsInterface) =
+  inc iface.activeOperations
+  iface.idle.clear()
+
+template releaseInterface(iface: MdnsInterface) =
+  dec iface.activeOperations
+  if iface.activeOperations == 0:
+    iface.idle.fire()
+
 proc closeInterface(iface: MdnsInterface) {.async: (raises: []).} =
   await noCancel iface.transport.closeWait()
   # The transport's callback captures iface, so release it after closing.
   iface.transport = nil
 
-proc retire(network: MdnsNetwork, iface: MdnsInterface) {.async: (raises: []).} =
+proc retire(iface: MdnsInterface) {.async: (raises: []).} =
   # A send or handler may still hold this socket after an interface refresh.
-  while network.activeOperations > 0:
-    await noCancel network.idle.wait()
+  while iface.activeOperations > 0:
+    await noCancel iface.idle.wait()
   await iface.closeInterface()
 
 proc receivingInterface(
@@ -285,7 +296,7 @@ proc newInterfaceTransport(
 proc openInterface(
     network: MdnsNetwork, address4: array[4, byte], index: uint32, ipv6: bool
 ): MdnsInterface =
-  let iface = MdnsInterface(address4: address4, index: index)
+  let iface = MdnsInterface(address4: address4, index: index, idle: newAsyncEvent())
   try:
     let callback = network.receivedOn(iface)
     iface.transport = newInterfaceTransport(callback, ipv6)
@@ -299,9 +310,18 @@ proc openInterface(
     let configured = configureMulticast(iface.transport, ipv6)
     if configured.isOk:
       let joined = joinMulticast(iface, ipv6)
+      if joined.isErr:
+        debug "mDNS multicast join failed",
+          interfaceIndex = index, ipv6 = ipv6, err = joined.error
       let selected = selectMulticastInterface(iface, ipv6)
+      if not selected:
+        warn "mDNS multicast interface selection failed",
+          interfaceIndex = index, ipv6 = ipv6, err = osErrorMsg(socketLastError())
       if joined.isOk and selected:
         return iface
+    else:
+      warn "mDNS multicast configuration failed",
+        interfaceIndex = index, ipv6 = ipv6, err = configured.error
     network.retiring.add(iface.closeInterface())
   except TransportError as exc:
     debug "mDNS interface unavailable",
@@ -379,11 +399,11 @@ proc retireRemovedInterfaces(
   for iface in network.interfaces4:
     if iface notin current4:
       discard membership4(iface.transport, iface.address4, false)
-      network.retiring.add(network.retire(iface))
+      network.retiring.add(iface.retire())
   for iface in network.interfaces6:
     if iface notin current6:
       discard membership6(iface.transport, iface.index, false)
-      network.retiring.add(network.retire(iface))
+      network.retiring.add(iface.retire())
 
 proc refreshInterfaces*(network: MdnsNetwork) =
   ## Each socket joins one interface, retaining the ingress interface for replies.
@@ -438,9 +458,16 @@ proc multicast*(
     # Snapshot both families before a queued send allows a refresh to run.
     let interfaces4 = network.interfaces4
     let interfaces6 = network.interfaces6
-    let sent4 = await multicastInterfaces(interfaces4, packet, MdnsDestination)
-    let sent6 = await multicastInterfaces(interfaces6, packet, MdnsDestination6)
-    return sent4 or sent6
+    # Reserve every socket in both snapshots before the first send can yield.
+    for iface in interfaces4 & interfaces6:
+      iface.acquireInterface()
+    try:
+      let sent4 = await multicastInterfaces(interfaces4, packet, MdnsDestination)
+      let sent6 = await multicastInterfaces(interfaces6, packet, MdnsDestination6)
+      return sent4 or sent6
+    finally:
+      for iface in interfaces4 & interfaces6:
+        iface.releaseInterface()
 
 proc reply*(
     network: MdnsNetwork, packet: seq[byte], context: MdnsReplyContext, unicast: bool
@@ -457,7 +484,11 @@ proc reply*(
         MdnsDestination6
       else:
         MdnsDestination
-    return await context.iface.transport.sendPacket(packet, destination)
+    context.iface.acquireInterface()
+    try:
+      return await context.iface.transport.sendPacket(packet, destination)
+    finally:
+      context.iface.releaseInterface()
 
 proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   network.closing = true
