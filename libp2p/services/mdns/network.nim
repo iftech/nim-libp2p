@@ -108,7 +108,8 @@ proc sourceInterfaceIndex*(network: MdnsNetwork, remote: TransportAddress): uint
   ## Return the unique interface matching a source, or zero if none or ambiguous.
   var matched = 0'u32
   for entry in network.localAddresses:
-    if entry.address.host.family == remote.family and entry.address.net.contains(remote):
+    if entry.address.net.mask.prefix > 0 and entry.address.host.family == remote.family and
+        entry.address.net.contains(remote):
       if matched != 0 and matched != entry.index:
         return 0
       matched = entry.index
@@ -248,6 +249,11 @@ proc receivingInterface(
     network: MdnsNetwork, iface: MdnsInterface, remote: TransportAddress
 ): MdnsInterface =
   if iface.ingressPinned:
+    return iface
+
+  # Link-local IPv6 subnets overlap on every link and cannot identify ingress.
+  # Use the receiving socket as a best-effort association in this fallback.
+  if remote.family == AddressFamily.IPv6 and remote.isLinkLocal():
     return iface
 
   # A wildcard socket does not identify ingress. Only accept sources
@@ -565,7 +571,10 @@ proc open*(
       flags = {ReuseAddr, ReusePort},
       bufSize = 9000,
     )
-    network.ipv4Available = configureMulticast(transport).isOk
+    let configured = configureMulticast(transport)
+    network.ipv4Available = configured.isOk
+    if configured.isErr:
+      warn "IPv4 mDNS multicast configuration failed", err = configured.error
     if network.ipv4Available:
       if bindToInterface(toSocketHandle(transport.fd), 0, false) < 0:
         bindingFailed = true
@@ -581,7 +590,10 @@ proc open*(
       bufSize = 9000,
       dualstack = DualStackType.Disabled,
     )
-    network.ipv6Available = configureMulticast6(transport).isOk
+    let configured = configureMulticast6(transport)
+    network.ipv6Available = configured.isOk
+    if configured.isErr:
+      warn "IPv6 mDNS multicast configuration failed", err = configured.error
     if network.ipv6Available:
       if bindToInterface(toSocketHandle(transport.fd), 0, true) < 0:
         bindingFailed = true
@@ -607,3 +619,10 @@ func ipv4InterfaceIndices*(network: MdnsNetwork): seq[uint32] =
   for iface in network.interfaces4:
     indices.add(iface.index)
   return indices
+
+func ipv4IngressPinned*(network: MdnsNetwork): bool =
+  ## Whether every configured IPv4 socket can identify its ingress interface.
+  for iface in network.interfaces4:
+    if not iface.ingressPinned:
+      return false
+  true

@@ -12,20 +12,20 @@ type
   MulticastLimits* = object
     families: array[bool, MulticastLimit]
 
-  InterfaceLimits* = ref object
+  InterfaceLimits* = object
     entries: Table[uint32, ref MulticastLimits]
 
-proc newInterfaceLimits*(): InterfaceLimits =
-  InterfaceLimits()
+proc newInterfaceLimits*(): ref InterfaceLimits =
+  new(InterfaceLimits)
 
-proc get*(limits: InterfaceLimits, index: uint32): ref MulticastLimits =
+proc get*(limits: ref InterfaceLimits, index: uint32): ref MulticastLimits =
   var entry = limits.entries.getOrDefault(index)
   if entry.isNil:
     entry = new(MulticastLimits)
     limits.entries[index] = entry
   return entry
 
-proc prune*(limits: InterfaceLimits, indices: openArray[uint32]) =
+proc prune*(limits: ref InterfaceLimits, indices: openArray[uint32]) =
   var removed: seq[uint32]
   for index in limits.entries.keys:
     if index notin indices:
@@ -33,7 +33,7 @@ proc prune*(limits: InterfaceLimits, indices: openArray[uint32]) =
   for index in removed:
     limits.entries.del(index)
 
-proc clear*(limits: InterfaceLimits) =
+proc clear*(limits: ref InterfaceLimits) =
   limits.entries.clear()
 
 proc acquire*(limits: var MulticastLimits, ipv6: bool, now: Moment): bool =

@@ -46,7 +46,7 @@ type
     owner: Switch
     advertisement: DnsMessage
     advertisementBytes: seq[byte]
-    multicastLimits: InterfaceLimits
+    multicastLimits: ref InterfaceLimits
 
 logScope:
   topics = "libp2p mdns"

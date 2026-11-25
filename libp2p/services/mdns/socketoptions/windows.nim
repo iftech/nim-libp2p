@@ -45,6 +45,8 @@ proc bindToInterface*(socket: winlean.SocketHandle, index: uint32, ipv6: bool): 
   let level = if ipv6: ipv6Protocol else: ipv4Protocol
   var enabled = 1'u32
   let filterStatus = setSocketOption(socket, level, ifList, enabled)
+  if filterStatus != 0 and socketLastError().int == 10042: # WSAENOPROTOOPT
+    return 1
   if filterStatus != 0 or index == 0:
     return filterStatus
   var receiveIndex = index

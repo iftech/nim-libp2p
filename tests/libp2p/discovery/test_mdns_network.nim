@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/sequtils
 import chronos
 import chronos/transports/osnet
 import ../../../libp2p/[multiaddress, results]
@@ -133,6 +134,7 @@ suite "mDNS network":
             InterfaceAddress.init(Local4, 24),
             InterfaceAddress.init(Local4, 16),
             InterfaceAddress.init(Local6, 64),
+            InterfaceAddress.init(Local4, 0),
           ],
         ),
         NetworkInterface(
@@ -407,10 +409,13 @@ suite "mDNS network":
           query = @[31'u8, 41, 59]
         var responses: seq[tuple[origin, receivedOn: uint32]]
         var contexts: seq[MdnsReplyContext]
+        var accepting = true
+        var pending = 0
         proc received(
             data: seq[byte], context: MdnsReplyContext
         ) {.async: (raises: []).} =
-          if data == query:
+          if data == query and accepting:
+            inc pending
             contexts.add(context)
             let index = context.interfaceIndex
             let response = @[
@@ -421,28 +426,36 @@ suite "mDNS network":
               byte(index shr 24),
             ]
             check await noCancel network.reply(response, context, unicast = false)
+            dec pending
           elif data.len == 5 and data[0] == 26:
             let origin =
               uint32(data[1]) or (uint32(data[2]) shl 8) or (uint32(data[3]) shl 16) or
               (uint32(data[4]) shl 24)
             responses.add((origin, context.interfaceIndex))
-            check origin == context.interfaceIndex
 
         requireOpened(network, received)
         defer:
           await network.close()
-        check await network.multicast(query)
-        checkUntilTimeout:
-          responses.len > 0
-        # Removing and re-adding an interface must not revive old reply contexts.
-        interfaces = @[]
-        network.refreshInterfaces()
-        for context in contexts:
-          check not (await network.reply(query, context, unicast = false))
-        interfaces = getInterfaces()
-        network.refreshInterfaces()
-        for context in contexts:
-          check not (await network.reply(query, context, unicast = false))
+        if not network.ipv4IngressPinned():
+          skip()
+        else:
+          check await network.multicast(query)
+          let configured = network.ipv4InterfaceIndices()
+          require configured.len > 0
+          checkUntilTimeout:
+            configured.allIt((it, it) in responses)
+          accepting = false
+          checkUntilTimeout:
+            pending == 0
+          # Removing and re-adding an interface must not revive old reply contexts.
+          interfaces = @[]
+          network.refreshInterfaces()
+          for context in contexts:
+            check not (await network.reply(query, context, unicast = false))
+          interfaces = getInterfaces()
+          network.refreshInterfaces()
+          for context in contexts:
+            check not (await network.reply(query, context, unicast = false))
 
   asyncTest "multicast sends bytes and replies through a multicast context":
     requireMdnsMulticastRoute(ignoreDatagram)

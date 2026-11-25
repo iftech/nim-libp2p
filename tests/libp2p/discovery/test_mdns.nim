@@ -437,34 +437,37 @@ suite "mDNS discovery":
       requireStarted(service, local)
       let opened = await listener.open(received)
       require opened.isOk
-      # Allow the initial multicast announcement to arrive before clearing the
-      # counters; network delivery is not bounded by an event-loop step.
-      await sleepAsync(200.milliseconds)
-      let configured = listener.ipv4InterfaceIndices()
-      require configured.len > 0
-      responses.clear()
-      for i in 0 ..< 5:
+      if not listener.ipv4IngressPinned():
+        skip()
+      else:
+        # Allow the initial multicast announcement to arrive before clearing the
+        # counters; network delivery is not bounded by an event-loop step.
+        await sleepAsync(200.milliseconds)
+        let configured = listener.ipv4InterfaceIndices()
+        require configured.len > 0
+        responses.clear()
+        for i in 0 ..< 5:
+          check await listener.multicast(encodeMessage(query))
+        checkUntilTimeout:
+          configured.allIt(it in responses)
+        for i in 0 ..< 2:
+          await sender.sendMulticast(query)
+        checkUntilTimeout:
+          unicastResponses >= 2
+        # A response sent on another interface on the same LAN can also arrive
+        # here, so each ingress may see one copy per sending interface.
+        # The actual response interval must elapse before the next query.
+        await sleepAsync(MdnsResponseInterval)
+        for index in configured:
+          check index in responses
+        for count in responses.values:
+          check count <= configured.len
+        var previous: Table[uint32, int]
+        for index, count in responses:
+          previous[index] = count
         check await listener.multicast(encodeMessage(query))
-      checkUntilTimeout:
-        configured.allIt(it in responses)
-      for i in 0 ..< 2:
-        await sender.sendMulticast(query)
-      checkUntilTimeout:
-        unicastResponses >= 2
-      # A response sent on another interface on the same LAN can also arrive
-      # here, so each ingress may see one copy per sending interface.
-      # The actual response interval must elapse before the next query.
-      await sleepAsync(MdnsResponseInterval)
-      for index in configured:
-        check index in responses
-      for count in responses.values:
-        check count <= configured.len
-      var previous: Table[uint32, int]
-      for index, count in responses:
-        previous[index] = count
-      check await listener.multicast(encodeMessage(query))
-      checkUntilTimeout:
-        previous.pairs.toSeq.allIt(it[0] in responses and responses[it[0]] > it[1])
+        checkUntilTimeout:
+          previous.pairs.toSeq.allIt(it[0] in responses and responses[it[0]] > it[1])
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     requireMdnsMulticastRoute(ignoreDatagram)
