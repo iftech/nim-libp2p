@@ -4,6 +4,10 @@
 {.push raises: [].}
 
 import std/[os, posix]
+import results
+import ./types
+
+export types
 
 const (
   ipv4AddMembership*, ipv4DropMembership*, ipv4MulticastTtl*, ipv4MulticastInterface*
@@ -67,8 +71,13 @@ proc restrictMulticastReception*(socket: posix.SocketHandle): cint =
   else:
     0
 
-proc bindToInterface*(socket: posix.SocketHandle, index: uint32, ipv6: bool): cint =
-  ## Return zero when pinned, one when unavailable, or a negative OS failure.
+proc bindToInterface*(
+    socket: posix.SocketHandle, index: uint32, ipv6: bool
+): InterfaceBindingResult =
+  ## Pin ingress to an interface, or report unavailable pinning or an OS error.
+  ## Index zero returns ok(false) without changing the socket.
+  if index == 0:
+    return ok(false)
   when defined(linux) or defined(android):
     # IPv6 membership checks do not distinguish the receiving interface.
     # Bind the socket so both multicast and unicast retain ingress.
@@ -78,9 +87,11 @@ proc bindToInterface*(socket: posix.SocketHandle, index: uint32, ipv6: bool): ci
     var interfaceIndex = cint(index)
     let status =
       setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
-    if status != 0 and
-        socketLastError().int in [int(ENOPROTOOPT), int(EPERM), int(EACCES)]:
-      return 1 # Ingress pinning unavailable; the caller must filter receives.
-    status
+    if status != 0:
+      let error = socketLastError()
+      if error.int in [int(ENOPROTOOPT), int(EPERM), int(EACCES)]:
+        return ok(false)
+      return err(error)
+    ok(true)
   else:
-    1 # No portable ingress socket binding; the caller must filter receives.
+    ok(false)

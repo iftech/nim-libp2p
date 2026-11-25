@@ -316,12 +316,12 @@ proc openInterface(
     let callback = network.receivedOn(iface)
     iface.transport = newInterfaceTransport(callback, ipv6)
     let binding = bindToInterface(toSocketHandle(iface.transport.fd), index, ipv6)
-    iface.ingressPinned = binding == 0
-    if binding < 0:
+    if binding.isErr:
       warn "mDNS receive interface selection failed",
-        interfaceIndex = index, err = osErrorMsg(socketLastError())
+        interfaceIndex = index, err = osErrorMsg(binding.error)
       network.retiring.add(iface.closeInterface())
       return nil
+    iface.ingressPinned = binding.get()
     let configured = configureMulticast(iface.transport, ipv6)
     if configured.isOk:
       let joined = joinMulticast(iface, ipv6)
@@ -567,12 +567,13 @@ proc open*(
 
   # Probe both families so opening with no interfaces still supports later
   # refreshes. Interface binding is handled independently on each active socket.
+  # Use ephemeral ports so probes cannot consume live mDNS traffic while closing.
   network.ipv4Available = false
   network.ipv6Available = false
   try:
     let transport = newDatagramTransport(
       ignoreDatagram,
-      local = MdnsBindAddress,
+      local = initTAddress("0.0.0.0:0"),
       flags = {ReuseAddr, ReusePort},
       bufSize = 9000,
     )
@@ -586,7 +587,7 @@ proc open*(
   try:
     let transport = newDatagramTransport6(
       ignoreDatagram,
-      local = MdnsBindAddress6,
+      local = initTAddress("[::]:0"),
       flags = {ReuseAddr, ReusePort},
       bufSize = 9000,
       dualstack = DualStackType.Disabled,

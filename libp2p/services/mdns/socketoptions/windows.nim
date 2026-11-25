@@ -5,6 +5,10 @@
 
 import std/[os, winlean]
 import stew/endians2
+import results
+import ./types
+
+export types
 
 # Winsock IP and IPv6 multicast options (ws2ipdef.h).
 const
@@ -39,20 +43,27 @@ proc restrictMulticastReception*(socket: winlean.SocketHandle): cint =
   ## Windows already restricts multicast reception to the socket's memberships.
   0
 
-proc bindToInterface*(socket: winlean.SocketHandle, index: uint32, ipv6: bool): cint =
+proc bindToInterface*(
+    socket: winlean.SocketHandle, index: uint32, ipv6: bool
+): InterfaceBindingResult =
+  ## Pin ingress to an interface, or report unavailable pinning or an OS error.
+  ## Index zero returns ok(false) without changing the socket.
+  if index == 0:
+    return ok(false)
   # IFLIST filters incoming datagrams; UNICAST_IF alone only affects sends.
   # These options have the same numbers at both protocol levels on Windows.
   let level = if ipv6: ipv6Protocol else: ipv4Protocol
   var enabled = 1'u32
   let filterStatus = setSocketOption(socket, level, ifList, enabled)
-  if filterStatus != 0 and socketLastError().int == 10042: # WSAENOPROTOOPT
-    return 1
-  if filterStatus != 0 or index == 0:
-    return filterStatus
+  if filterStatus != 0:
+    let error = socketLastError()
+    if error.int == 10042: # WSAENOPROTOOPT
+      return ok(false)
+    return err(error)
   var receiveIndex = index
   let listStatus = setSocketOption(socket, level, addIfList, receiveIndex)
   if listStatus != 0:
-    return listStatus
+    return err(socketLastError())
   var sendIndex =
     if ipv6:
       index
@@ -61,4 +72,4 @@ proc bindToInterface*(socket: winlean.SocketHandle, index: uint32, ipv6: bool): 
   # This only selects unicast egress; reception is already pinned above, and
   # multicast egress is configured separately. Keep the interface if it fails.
   discard setSocketOption(socket, level, unicastIf, sendIndex)
-  return 0
+  return ok(true)
