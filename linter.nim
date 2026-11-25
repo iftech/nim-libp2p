@@ -40,4 +40,5 @@ runLint:
     semCheck boundedLogPayloads:
       severity = error
       settings:
-        ignoredTypes = @["Duration", "MultiAddress", "IpAddress", "GroupId", "RateLimit"]
+        ignoredTypes =
+          @["Duration", "MultiAddress", "IpAddress", "GroupId", "RateLimit"]
