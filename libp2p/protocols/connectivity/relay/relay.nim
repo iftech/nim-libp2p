@@ -434,7 +434,7 @@ method start*(r: Relay): Future[void] {.async: (raises: [CancelledError], raw: t
     return fut
   r.reservationLoop = r.deletesReservation()
   r.started = true
-  info "Circuit relay service started", protocols = r.codecs
+  info "Circuit relay service started", protocols = r.codecs #nolint
   fut
 
 method stop*(r: Relay): Future[void] {.async: (raises: [], raw: true).} =

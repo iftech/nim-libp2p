@@ -770,7 +770,7 @@ method handle*(m: Yamux) {.async: (raises: []).} =
       err,
       connectionAlreadyClosed = m.connection.closed,
       openStreams = m.channels.len,
-      protocols = m.openStreamProtocols()
+      protocols = m.openStreamProtocols() #nolint
     await m.close()
   trace "Yamux handler stopped"
 
