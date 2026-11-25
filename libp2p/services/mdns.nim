@@ -46,7 +46,7 @@ type
     owner: Switch
     advertisement: DnsMessage
     advertisementBytes: seq[byte]
-    multicastLimits: MulticastLimits
+    multicastLimits: Table[uint32, MulticastLimits]
 
 logScope:
   topics = "libp2p mdns"
@@ -343,7 +343,10 @@ proc handleQuery(
     return
 
   let ipv6 = context.isIpv6
-  if not service.multicastLimits.acquire(ipv6, Moment.now()):
+  let index = context.interfaceIndex
+  if not service.multicastLimits.mgetOrPut(index, default(MulticastLimits)).acquire(
+    ipv6, Moment.now()
+  ):
     return
 
   var sent = false
@@ -352,7 +355,9 @@ proc handleQuery(
     sent =
       await noCancel service.network.reply(service.advertisementBytes, context, false)
   finally:
-    service.multicastLimits.finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
+    service.multicastLimits.mgetOrPut(index, default(MulticastLimits)).finish(
+      ipv6, sent, Moment.now(), MdnsResponseInterval
+    )
 
 proc received(
     service: MdnsService, switch: Switch, datagram: seq[byte], context: MdnsReplyContext
@@ -426,5 +431,5 @@ method stop*(
   service.owner = nil
   service.advertisement = default(DnsMessage)
   service.advertisementBytes.setLen(0)
-  service.multicastLimits = default(MulticastLimits)
+  service.multicastLimits.clear()
   info "mDNS discovery stopped"

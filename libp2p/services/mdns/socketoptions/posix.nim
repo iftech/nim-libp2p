@@ -56,3 +56,15 @@ proc setSocketOption*[T](
 
 proc socketLastError*(): OSErrorCode =
   osLastError()
+
+proc bindToInterface*(socket: posix.SocketHandle, index: uint32, ipv6: bool): cint =
+  when defined(linux) or defined(android):
+    # IPv6 membership checks do not distinguish the receiving interface.
+    # Bind the socket so both multicast and unicast retain ingress.
+    # SO_BINDTOIFINDEX pins reception as well as transmission. Unlike changing
+    # an existing binding, the initial binding needs no privilege on Linux 5.7+.
+    const soBindToIfIndex = cint(62)
+    var interfaceIndex = cint(index)
+    setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
+  else:
+    0
