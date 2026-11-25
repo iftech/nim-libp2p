@@ -405,13 +405,12 @@ suite "mDNS network":
         let
           network = MdnsNetwork.new(interfaceProvider = provider)
           query = @[31'u8, 41, 59]
-        var queries, responses: seq[uint32]
+        var responses: seq[tuple[origin, receivedOn: uint32]]
         var contexts: seq[MdnsReplyContext]
         proc received(
             data: seq[byte], context: MdnsReplyContext
         ) {.async: (raises: []).} =
           if data == query:
-            queries.add(context.interfaceIndex)
             contexts.add(context)
             let index = context.interfaceIndex
             let response = @[
@@ -426,8 +425,8 @@ suite "mDNS network":
             let origin =
               uint32(data[1]) or (uint32(data[2]) shl 8) or (uint32(data[3]) shl 16) or
               (uint32(data[4]) shl 24)
-            if context.interfaceIndex == origin:
-              responses.add(origin)
+            responses.add((origin, context.interfaceIndex))
+            check origin == context.interfaceIndex
 
         requireOpened(network, received)
         defer:
@@ -435,9 +434,6 @@ suite "mDNS network":
         check await network.multicast(query)
         checkUntilTimeout:
           responses.len > 0
-        for index in responses:
-          check index in queries
-
         # Removing and re-adding an interface must not revive old reply contexts.
         interfaces = @[]
         network.refreshInterfaces()
