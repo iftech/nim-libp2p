@@ -39,6 +39,54 @@ method actionFromMetadata(
   inc s.preparations
   procCall BitShard(s).actionFromMetadata(peer, connectionId, metadata)
 
+type
+  RequestMetadata = ref object of WaggleMetadata
+    have, want: byte
+
+  RequestShard = ref object of BitShard
+    want: byte
+
+{.push raises: [], gcsafe.}
+
+method clone(m: RequestMetadata): WaggleMetadata =
+  RequestMetadata(have: m.have, want: m.want)
+
+method bytes(m: RequestMetadata): seq[byte] =
+  @[m.have, m.want]
+
+method update(m: RequestMetadata, data: seq[byte]): Result[bool, string] =
+  if data.len != 2 or data[0] > 7 or data[1] > 7:
+    return err("invalid request metadata")
+  let changed = m.have != data[0] or m.want != data[1]
+  # Requests replace optimistic possession estimates, including rejected pieces.
+  m.have = data[0]
+  m.want = data[1]
+  ok(changed)
+
+method metadata(s: RequestShard): WaggleMetadata =
+  RequestMetadata(have: s.have, want: s.want)
+
+method actionFromMetadata(
+    s: RequestShard, peer: PeerId, connectionId: ConnectionId, metadata: Opt[seq[byte]]
+): Result[WaggleAction, string] =
+  let remote = RequestMetadata()
+  if metadata.isSome:
+    discard ?remote.update(metadata.get())
+  let missing = s.have and (not remote.have or remote.want)
+  var action = WaggleAction(need: (remote.have and not s.have) != 0)
+  if missing != 0:
+    action.send = Opt.some(
+      PieceSend(
+        pieces: @[missing],
+        peerMetadata: RequestMetadata(
+          have: remote.have or missing, want: remote.want and not missing
+        ),
+      )
+    )
+  ok(action)
+
+{.pop.}
+
 type StalledMuxer = ref object of Muxer
   gate: AsyncEvent
   opened: int
@@ -353,6 +401,51 @@ suite "Waggle managed dissemination":
         it.kind == WaggleEventKind.Received and it.message.objectId == @[byte 2] and
           it.message.pieces == Opt.some(@[byte 1]) and
           it.message.piecesMetadata == Opt.some(@[byte 1])
+      )
+
+  asyncTest "application requests retry rejected pieces on the same connection":
+    let a = await newNode()
+    let b = await newNode()
+    for node in nodes:
+      discard node.protocol.subscribe(topic).get()
+    let (am, bm) = await connect(a, b)
+    checkUntilTimeout:
+      a.protocol.subscribers(topic).len == 1 and b.protocol.subscribers(topic).len == 1
+    let shard = RequestShard(id: @[byte 1], have: 1)
+    check a.protocol.publish(topic, shard).get() == 1
+    checkUntilTimeout:
+      b.events.anyIt(it.kind == WaggleEventKind.Received and it.message.pieces.isSome)
+    let first = b.events.filterIt(
+      it.kind == WaggleEventKind.Received and it.message.pieces.isSome
+    )
+    require first.len == 1
+    check first[0].message.pieces.get() == @[byte 1]
+    # The application rejects the first payload, leaving its snapshot empty.
+    check b.have == 0
+    check a.protocol.publish(topic, shard).get() == 0
+    proc acceptRetry(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.Received and event.message.pieces.isSome:
+        doAssert event.message.pieces.get() == @[byte 1]
+        b.have = 1
+        discard b.protocol.publish(topic, RequestShard(id: shard.id, have: b.have))
+
+    b.onEvent = acceptRetry
+    check b.protocol.publish(topic, RequestShard(id: shard.id, want: 1)).get() == 1
+    checkUntilTimeout:
+      b.have == 1
+    let received = b.events.filterIt(
+      it.kind == WaggleEventKind.Received and it.message.pieces.isSome
+    )
+    check received.len == 2
+    check received[^1].connectionId == first[0].connectionId
+    check not am.connection.closed and not bm.connection.closed
+    for node in nodes:
+      check node.events.countIt(it.kind == WaggleEventKind.Subscribed) == 1
+      check node.events.allIt(
+        it.kind notin {
+          WaggleEventKind.Unsubscribed, WaggleEventKind.StreamFailed,
+          WaggleEventKind.InvalidData,
+        }
       )
 
   asyncTest "byte budget is shared across topics and released after writing":
