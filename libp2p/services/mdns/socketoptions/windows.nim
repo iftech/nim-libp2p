@@ -35,6 +35,10 @@ proc setSocketOption*[T](
 proc socketLastError*(): OSErrorCode =
   OSErrorCode(winlean.wsaGetLastError())
 
+proc restrictMulticastReception*(socket: winlean.SocketHandle): cint =
+  ## Windows already restricts multicast reception to the socket's memberships.
+  0
+
 proc bindToInterface*(socket: winlean.SocketHandle, index: uint32, ipv6: bool): cint =
   # IFLIST filters incoming datagrams; UNICAST_IF alone only affects sends.
   # These options have the same numbers at both protocol levels on Windows.
