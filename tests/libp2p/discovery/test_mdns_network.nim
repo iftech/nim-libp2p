@@ -195,6 +195,34 @@ suite "mDNS network":
     await network.close()
     check not network.isOpen
 
+  asyncTest "close during opening prevents startup and permits a later reopen":
+    requireMdnsMulticastRoute(ignoreDatagram)
+    let network = MdnsNetwork.new(interfaceProvider = countingInterfaces)
+    defer:
+      await network.close()
+    interfaceQueries = 0
+    let opening = network.open(ignorePacket)
+    require not opening.finished
+    let closing = network.close()
+    await closing
+    # A new open must not reset the close marker while the first is suspended.
+    check (await network.open(ignorePacket)).isErr
+    let opened = await opening
+    check:
+      opened.isErr
+      not network.isOpen
+      interfaceQueries == 0
+      network.ipv4InterfaceIndices().len == 0
+      not (await network.multicast(@[1'u8]))
+      network.close() == closing
+    await network.close()
+    requireOpened(network, ignorePacket)
+    check network.isOpen
+    let closingAgain = network.close()
+    check closingAgain != closing
+    await closingAgain
+    check not network.isOpen
+
   asyncTest "refresh joins and leaves interfaces after startup":
     requireMdnsMulticastRoute(ignoreDatagram)
     var refreshed: seq[uint32]

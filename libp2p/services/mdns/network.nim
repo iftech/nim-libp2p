@@ -42,6 +42,7 @@ type
   ): Future[void].Raising([]) {.gcsafe, raises: [].}
 
   MdnsNetwork* = ref object
+    opening: bool
     opened: bool
     ipv4Available: bool
     ipv6Available: bool
@@ -546,11 +547,17 @@ proc open*(
     network: MdnsNetwork, onPacket: MdnsPacketReceived
 ): Future[LPResult[void]] {.async: (raises: []).} =
   ## Open either or both IP families. Repeated opens retain the first callback.
+  ## Closing during startup aborts the open; reopen after that open completes.
   if network.closing:
     return err("mDNS network is closing")
+  if network.opening:
+    return err("mDNS network is opening")
   if network.isOpen:
     return ok()
   doAssert not onPacket.isNil, "mDNS packet callback must not be nil"
+  network.opening = true
+  defer:
+    network.opening = false
   network.closeFut = nil
   network.onPacket = onPacket
   proc ignoreDatagram(
@@ -559,11 +566,9 @@ proc open*(
     discard
 
   # Probe both families so opening with no interfaces still supports later
-  # refreshes. Active sockets are created per interface below.
+  # refreshes. Interface binding is handled independently on each active socket.
   network.ipv4Available = false
   network.ipv6Available = false
-  var bindingFailed = false
-  var bindingError = ""
   try:
     let transport = newDatagramTransport(
       ignoreDatagram,
@@ -575,10 +580,6 @@ proc open*(
     network.ipv4Available = configured.isOk
     if configured.isErr:
       warn "IPv4 mDNS multicast configuration failed", err = configured.error
-    if network.ipv4Available:
-      if bindToInterface(toSocketHandle(transport.fd), 0, false) < 0:
-        bindingFailed = true
-        bindingError = osErrorMsg(socketLastError())
     await transport.closeWait()
   except TransportError as exc:
     debug "IPv4 mDNS unavailable", err = exc.msg
@@ -594,17 +595,15 @@ proc open*(
     network.ipv6Available = configured.isOk
     if configured.isErr:
       warn "IPv6 mDNS multicast configuration failed", err = configured.error
-    if network.ipv6Available:
-      if bindToInterface(toSocketHandle(transport.fd), 0, true) < 0:
-        bindingFailed = true
-        bindingError = osErrorMsg(socketLastError())
     await transport.closeWait()
   except TransportError as exc:
     debug "IPv6 mDNS unavailable", err = exc.msg
 
-  if bindingFailed:
+  # Probe cleanup yields, so close may already have cleared the callback and
+  # completed. Do not reopen sockets or retain its finished cleanup future.
+  if not network.closeFut.isNil:
     network.onPacket = nil
-    return err("Unable to bind mDNS sockets to interfaces: " & bindingError)
+    return err("mDNS network closed while opening")
   if not network.ipv4Available and not network.ipv6Available:
     network.onPacket = nil
     return err("Unable to start mDNS on IPv4 or IPv6")
