@@ -8,7 +8,7 @@ import chronos/transports/osnet
 import ../../../libp2p/[multiaddress, results]
 import ../../../libp2p/utils/future
 import ../../../libp2p/services/mdns/network
-import ../../tools/[unittest, multiaddress]
+import ../../tools/[unittest, mdns_sender, multiaddress]
 
 proc ignorePacket(
     packet: seq[byte], context: MdnsReplyContext
@@ -185,9 +185,7 @@ suite "mDNS network":
       response = @[4'u8, 0, 5]
       receivedReply = newFuture[seq[byte]]()
     var contexts: seq[MdnsReplyContext]
-    proc received(
-        data: seq[byte], context: MdnsReplyContext
-    ) {.async: (raises: []).} =
+    proc received(data: seq[byte], context: MdnsReplyContext) {.async: (raises: []).} =
       if data == packet:
         contexts.add(context)
         check await noCancel network.reply(response, context, unicast = true)
@@ -200,8 +198,7 @@ suite "mDNS network":
       except TransportError as e:
         raiseAssert "Unexpected error: " & e.msg
 
-    let sender =
-      newDatagramTransport(senderReceived, local = initTAddress("127.0.0.1:0"))
+    let sender = newMdnsTestSender(senderReceived)
     defer:
       await sender.closeWait()
     requireOpened(network, received)
@@ -251,8 +248,7 @@ suite "mDNS network":
       elif packet == second:
         secondEntered.fire()
 
-    let sender =
-      newDatagramTransport(ignoreDatagram, local = initTAddress("127.0.0.1:0"))
+    let sender = newMdnsTestSender(ignoreDatagram)
     defer:
       await sender.closeWait()
     requireOpened(network, received)
@@ -329,9 +325,7 @@ suite "mDNS network":
       response = @[6'u8, 5, 4]
       receivedResponse = newFuture[void]()
     var legacy = true
-    proc received(
-        data: seq[byte], context: MdnsReplyContext
-    ) {.async: (raises: []).} =
+    proc received(data: seq[byte], context: MdnsReplyContext) {.async: (raises: []).} =
       if data == packet:
         legacy = context.isLegacyQuery
         check await noCancel network.reply(response, context, unicast = false)

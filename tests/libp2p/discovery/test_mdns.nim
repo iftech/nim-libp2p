@@ -12,10 +12,9 @@ import ../../../libp2p/services/mdns/ratelimit
 import ../../../libp2p/peeraddrpolicy
 import ../../../libp2p/services/mdns/network
 import ../../../libp2p/nameresolving/dnsmessage
-import ../../tools/[unittest, crypto, multiaddress, switch_builder]
+import ../../tools/[unittest, crypto, mdns_sender, multiaddress, switch_builder]
 
 const
-  LoopbackSenderAddress = "127.0.0.1:0"
   FixturePort = 12345
   FixtureAddress = "/ip4/192.168.1.2/tcp/" & $FixturePort
   FixtureInstance = "test-peer"
@@ -71,10 +70,10 @@ proc ignoreDatagram(
 ) {.async: (raises: []).} =
   discard
 
-proc newLoopbackTransport(
+proc newMulticastSender(
     callback: DatagramCallback = ignoreDatagram
 ): DatagramTransport =
-  newDatagramTransport(callback, local = initTAddress(LoopbackSenderAddress))
+  newMdnsTestSender(callback)
 
 template requireStarted(service, node: untyped) =
   block:
@@ -337,7 +336,7 @@ suite "mDNS discovery":
         raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
     # Bind explicitly so Chronos receives the unicast replies on this socket.
-    let sender = newLoopbackTransport(received)
+    let sender = newMulticastSender(received)
     defer:
       await service.stop(local)
       await sender.closeWait()
@@ -360,8 +359,7 @@ suite "mDNS discovery":
   asyncTest "multicast query responses are rate limited":
     let
       local = Switch(
-        peerInfo:
-          PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)]),
+        peerInfo: PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)]),
         peerStore: PeerStore.new(nil),
         rng: rng(),
       )
@@ -393,7 +391,7 @@ suite "mDNS discovery":
         raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
     # Bind explicitly so Chronos receives the unicast replies on this socket.
-    let sender = newLoopbackTransport(receivedUnicast)
+    let sender = newMulticastSender(receivedUnicast)
     defer:
       await sender.closeWait()
       await listener.close()
@@ -473,7 +471,7 @@ suite "mDNS discovery":
       )
     let previous = ma("/ip4/192.168.1.3/tcp/4001")
     local.peerStore[AddressBook].extend(remoteId, @[previous], AddressConfidence.High)
-    let sender = newLoopbackTransport()
+    let sender = newMulticastSender()
     defer:
       await service.stop(local)
       await sender.closeWait()
@@ -505,7 +503,7 @@ suite "mDNS discovery":
       )
       remoteId = PeerId.init(FixturePeerId).get()
       service = MdnsService.new()
-      sender = newLoopbackTransport()
+      sender = newMulticastSender()
     defer:
       await service.stop(local)
       await sender.closeWait()
@@ -522,7 +520,7 @@ suite "mDNS discovery":
         rng: rng(),
       )
       remoteId = PeerId.init(FixturePeerId).get()
-      sender = newLoopbackTransport()
+      sender = newMulticastSender()
       found = newAsyncEvent()
     var calls = 0
     var expectedAddress: MultiAddress
@@ -579,7 +577,7 @@ suite "mDNS discovery":
   asyncTest "bound pending discovery callbacks":
     const maxPendingCallbacks = 5
     let
-      sender = newLoopbackTransport()
+      sender = newMulticastSender()
       release = newAsyncEvent()
       overflowId = PeerId.random()
       overflowAddress = ma("/ip4/192.168.1.2/tcp/12345")
@@ -595,9 +593,7 @@ suite "mDNS discovery":
     let
       service = MdnsService.new()
       local = makeStandardSwitchBuilder(ma(EphemeralWildcardAddress))
-        .withMdns(
-          onPeerFound = onPeerFound, maxPendingCallbacks = maxPendingCallbacks
-        )
+        .withMdns(onPeerFound = onPeerFound, maxPendingCallbacks = maxPendingCallbacks)
         .build()
     defer:
       await local.stop()
@@ -639,7 +635,7 @@ suite "mDNS discovery":
             cancelled.completeOnce()
       )
       .build()
-    let sender = newLoopbackTransport()
+    let sender = newMulticastSender()
     await node.start()
     defer:
       await node.stop()
@@ -653,6 +649,11 @@ suite "mDNS discovery":
   asyncTest "receive an IPv6 multicast datagram":
     var interfaceIndex = 0'u32
     for iface in getInterfaces():
+      when defined(macosx):
+        # An active interface can have an IPv6 address without supporting
+        # multicast. Only consider interfaces that advertise IFF_MULTICAST.
+        if (iface.flags and uint64(MacosMulticastFlag)) == 0:
+          continue
       if iface.ifType != IfSoftwareLoopback and iface.state == StatusUp:
         for address in iface.addresses:
           if address.host.family == AddressFamily.IPv6:
@@ -683,13 +684,19 @@ suite "mDNS discovery":
 
       require sender.selectMulticastInterface6(interfaceIndex)
       requireStarted(service, local)
-      await sender.sendTo(
-        initTAddress("[ff02::fb]:5353"),
-        encodeMessage(service.announcement(remote, "ipv6-peer")),
-      )
-      check (await found) == MdnsPeer(
-        peerId: remote.peerId, addrs: remote.listenAddrs
-      )
+      try:
+        await sender.sendTo(
+          initTAddress("[ff02::fb]:5353"),
+          encodeMessage(service.announcement(remote, "ipv6-peer")),
+        )
+      except TransportOsError as exc:
+        when defined(macosx):
+          if exc.code.int == EHOSTUNREACH.int:
+            checkpoint "The runner has no IPv6 multicast route on the selected interface"
+            skip()
+            return
+        raise exc
+      check (await found) == MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
       # No condition to wait for: verify the peer is not reported a second time.
       await sleepAsync(MdnsResponseInterval)
       check foundCount == 1
