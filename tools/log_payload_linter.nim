@@ -19,6 +19,9 @@ import compiler/[ast, types]
 import lint
 
 type LogPayloadSettings* = object
+  ignoredTypes*: seq[string]
+    ## Trusted type names, e.g. "Duration" or "times.Duration". Module-qualified
+    ## names avoid exempting same-named types from other modules. Empty by default.
 
 proc symbolName(node: PNode): string =
   case node.kind
@@ -26,13 +29,44 @@ proc symbolName(node: PNode): string =
   of nkIdent: node.ident.s
   else: ""
 
-proc boundedType(typ: PType): bool =
+proc boundedType(typ: PType, settings: LogPayloadSettings): bool =
   if typ.isNil:
     return false
+  var current = typ
+  while not current.isNil:
+    let symbol =
+      if current.kind == tyGenericInst and current.len > 0 and not current[0].isNil:
+        current[0].sym
+      else:
+        current.sym
+    if not symbol.isNil:
+      if symbol.name.s in settings.ignoredTypes:
+        return true
+      let module = symbol.originatingModule
+      if not module.isNil and
+          module.name.s & "." & symbol.name.s in settings.ignoredTypes:
+        return true
+    if current.kind notin {tyAlias, tyGenericInst, tyVar, tyLent, tySink, tyRange} or
+        current.len == 0:
+      break
+    current = current[^1]
+  let wrapped = typ.skipTypes({tyAlias, tyVar, tyLent, tySink, tyRange})
+  if not wrapped.isNil and wrapped.kind == tyGenericInst and wrapped.len > 2:
+    let generic = wrapped[0]
+    if not generic.isNil and not generic.sym.isNil:
+      let module = generic.sym.originatingModule
+      if not module.isNil and module.name.s == "results":
+        if generic.sym.name.s == "Opt":
+          return boundedType(wrapped[1], settings)
+        # Opt[T] is an alias for Result[T, void]; instantiated calls may
+        # preserve the Result type rather than the Opt alias.
+        if generic.sym.name.s == "Result" and wrapped.len == 4 and
+            wrapped[2].kind == tyVoid:
+          return boundedType(wrapped[1], settings)
   let resolved = typ.skipTypes({tyAlias, tyGenericInst, tyVar, tyLent, tySink, tyRange})
   if not resolved.isNil and resolved.kind == tyTuple:
     for i in 0 ..< resolved.len:
-      if not boundedType(resolved[i]):
+      if not boundedType(resolved[i], settings):
         return false
     return true
   not resolved.isNil and
@@ -148,7 +182,7 @@ proc runBoundedLogPayloads(
       if not module.isNil and
           module.name.s in ["textlines", "textblocks", "json_records"] and
           field.kind in {nkStrLit .. nkTripleStrLit} and not value.typ.isNil and
-          value.typ.kind != tyError and not boundedType(value.typ) and
+          value.typ.kind != tyError and not boundedType(value.typ, settings) and
           not boundedCall(value) and not hasFormatter(value.typ):
         let record = recordSymbol(node[1])
         if not record.isNil and sfMainModule in record.originatingModule.flags and
@@ -164,7 +198,8 @@ proc runBoundedLogPayloads(
               if key notin reported:
                 reported.incl key
                 findings.add original.value.toFinding(
-                  "potentially unbounded log field `" & field.strVal &
+                  "potentially unbounded log field `" & field.strVal & "` of type `" &
+                    typeToString(value.typ, preferName) &
                     "` must use shortLog or len, or implement formatIt"
                 )
     for child in node:
