@@ -59,3 +59,9 @@ template newMdnsTestSender*(callback: DatagramCallback): DatagramTransport =
       skip()
       return
     sender
+
+template requireMdnsMulticastRoute*(callback: DatagramCallback) =
+  when defined(macosx):
+    block:
+      let probe = newMdnsTestSender(callback)
+      await noCancel probe.closeWait()

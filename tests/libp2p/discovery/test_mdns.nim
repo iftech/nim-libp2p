@@ -421,6 +421,7 @@ suite "mDNS discovery":
       responses >= 2
 
   asyncTest "advertise after ephemeral transport addresses are bound":
+    requireMdnsMulticastRoute(ignoreDatagram)
     const Address = initTAddress(InterfaceIp & ":0")
     proc interfaces(
         family: AddressFamily
@@ -664,51 +665,52 @@ suite "mDNS discovery":
             break
         if interfaceIndex != 0:
           break
-    if interfaceIndex != 0:
-      var foundCount = 0
-      let
-        local = Switch(
-          peerInfo: PeerInfo(peerId: PeerId.random()),
-          peerStore: PeerStore.new(nil),
-          rng: rng(),
-        )
-        remote =
-          PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateIpv6Address)])
-        found = newFuture[MdnsPeer]()
-        service = MdnsService.new(
-          proc(switch: Switch, peer: MdnsPeer) {.async: (raises: [CancelledError]).} =
-            inc foundCount
-            found.completeOnce(peer)
-        )
-      let sender = newDatagramTransport6(ignoreDatagram)
-      defer:
-        await service.stop(local)
-        await sender.closeWait()
-
-      require sender.selectMulticastInterface6(interfaceIndex)
-      requireStarted(service, local)
-      try:
-        await sender.sendTo(
-          initTAddress("[ff02::fb]:5353"),
-          encodeMessage(service.announcement(remote, "ipv6-peer")),
-        )
-      except TransportOsError as e:
-        when defined(macosx):
-          if e.code.int in
-              [posix.EHOSTUNREACH.int, posix.ENETUNREACH.int, posix.EADDRNOTAVAIL.int]:
-            checkpoint "The runner has no IPv6 multicast route on the selected interface"
-            skip()
-            return
-        raise e
-      check (await found) == MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
-      # No condition to wait for: verify the peer is not reported a second time.
-      await sleepAsync(MdnsResponseInterval)
-      check foundCount == 1
-    else:
+    if interfaceIndex == 0:
       # No active non-loopback interface has an IPv6 address.
       skip()
+      return
+
+    var foundCount = 0
+    let
+      local = Switch(
+        peerInfo: PeerInfo(peerId: PeerId.random()),
+        peerStore: PeerStore.new(nil),
+        rng: rng(),
+      )
+      remote = PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateIpv6Address)])
+      found = newFuture[MdnsPeer]()
+      service = MdnsService.new(
+        proc(switch: Switch, peer: MdnsPeer) {.async: (raises: [CancelledError]).} =
+          inc foundCount
+          found.completeOnce(peer)
+      )
+    let sender = newDatagramTransport6(ignoreDatagram)
+    defer:
+      await service.stop(local)
+      await sender.closeWait()
+
+    require sender.selectMulticastInterface6(interfaceIndex)
+    requireStarted(service, local)
+    try:
+      await sender.sendTo(
+        initTAddress("[ff02::fb]:5353"),
+        encodeMessage(service.announcement(remote, "ipv6-peer")),
+      )
+    except TransportOsError as e:
+      when defined(macosx):
+        if e.code.int in
+            [posix.EHOSTUNREACH.int, posix.ENETUNREACH.int, posix.EADDRNOTAVAIL.int]:
+          checkpoint "The runner has no IPv6 multicast route on the selected interface"
+          skip()
+          return
+      raise e
+    check (await found) == MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
+    # No condition to wait for: verify the peer is not reported a second time.
+    await sleepAsync(MdnsResponseInterval)
+    check foundCount == 1
 
   asyncTest "two services discover each other over multicast":
+    requireMdnsMulticastRoute(ignoreDatagram)
     let
       address = ma(PrivateAddress)
       first = Switch(
@@ -739,6 +741,5 @@ suite "mDNS discovery":
 
     requireStarted(firstService, first)
     requireStarted(secondService, second)
-    checkpoint "mDNS multicast discovery failed; check UDP port 5353 and multicast connectivity"
     await firstFound
     await secondFound
