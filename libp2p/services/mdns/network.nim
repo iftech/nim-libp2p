@@ -238,10 +238,7 @@ proc receivingInterface(
     return nil
 
   let interfaces =
-    if remote.family == AddressFamily.IPv6:
-      network.interfaces6
-    else:
-      network.interfaces4
+    if remote.family == AddressFamily.IPv6: network.interfaces6 else: network.interfaces4
   for candidate in interfaces:
     if candidate.index == matched:
       return candidate
@@ -261,7 +258,9 @@ proc receivedOn(network: MdnsNetwork, iface: MdnsInterface): DatagramCallback =
       if receiving.isNil:
         return
       trackOperation network:
-        await network.onPacket(packet, MdnsReplyContext(iface: receiving, remote: remote))
+        await network.onPacket(
+          packet, MdnsReplyContext(iface: receiving, remote: remote)
+        )
     except TransportError:
       debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
 

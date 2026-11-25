@@ -66,8 +66,10 @@ proc bindToInterface*(socket: posix.SocketHandle, index: uint32, ipv6: bool): ci
     # an existing binding, the initial binding needs no privilege on Linux 5.7+.
     const soBindToIfIndex = cint(62)
     var interfaceIndex = cint(index)
-    let status = setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
-    if status != 0 and socketLastError().int in [int(ENOPROTOOPT), int(EPERM), int(EACCES)]:
+    let status =
+      setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
+    if status != 0 and
+        socketLastError().int in [int(ENOPROTOOPT), int(EPERM), int(EACCES)]:
       return 1 # Ingress pinning unavailable; the caller must filter receives.
     status
   else:

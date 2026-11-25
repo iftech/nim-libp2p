@@ -369,9 +369,7 @@ suite "mDNS discovery":
       )
       service = MdnsService.new()
       listener = MdnsNetwork.new()
-      query = DnsMessage(
-        questions: @[DnsQuestion(name: @ServiceLabels, kind: PTR)]
-      )
+      query = DnsMessage(questions: @[DnsQuestion(name: @ServiceLabels, kind: PTR)])
     var responses: Table[uint32, int]
 
     var unicastResponses = 0
@@ -429,7 +427,6 @@ suite "mDNS discovery":
       check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
         observed.allIt(responses.getOrDefault(it) >= 2)
-
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     requireMdnsMulticastRoute(ignoreDatagram)
