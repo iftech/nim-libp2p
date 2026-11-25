@@ -195,6 +195,71 @@ suite "mDNS network":
     await network.close()
     check not network.isOpen
 
+  asyncTest "startup fails when all interface sockets fail and can be retried":
+    const missingAddress = initTAddress("192.0.2.1:0")
+    var expose = true
+    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      if expose:
+        return @[
+          NetworkInterface(
+            ifIndex: high(int32),
+            state: StatusUp,
+            addresses: @[InterfaceAddress.init(missingAddress, 24)],
+          )
+        ]
+      else:
+        return @[]
+
+    let network = MdnsNetwork.new(interfaceProvider = interfaces)
+    defer:
+      await network.close()
+    let opened = await network.open(ignorePacket)
+    check:
+      opened.isErr
+      not network.isOpen
+      network.ipv4InterfaceIndices().len == 0
+      not (await network.multicast(@[1'u8]))
+    expose = false
+    requireOpened(network, ignorePacket)
+    check network.isOpen
+
+  when defined(linux) or defined(android):
+    # This test relies on Linux UDP bind semantics: a socket without reuse flags
+    # prevents other sockets from sharing its port. Other platforms need their
+    # own setup to reserve the port exclusively.
+    asyncTest "startup reports an occupied port when interfaces exist":
+      requireMdnsMulticastRoute(ignoreDatagram)
+      require ipv4Interfaces().len > 0
+      var blocker: DatagramTransport
+      try:
+        blocker = newDatagramTransport(
+          ignoreDatagram, local = initTAddress("0.0.0.0:5353"), flags = {}
+        )
+      except TransportError:
+        checkpoint "Cannot exclusively reserve mDNS port for startup test"
+        skip()
+      if not blocker.isNil:
+        defer:
+          await blocker.closeWait()
+        let network = MdnsNetwork.new(interfaceProvider = ipv4Interfaces)
+        defer:
+          await network.close()
+        let opened = await network.open(ignorePacket)
+        check:
+          opened.isErr
+          not network.isOpen
+          network.ipv4InterfaceIndices().len == 0
+          not (await network.multicast(@[1'u8]))
+        # No-interface startup must still succeed while the port is occupied.
+        let empty = MdnsNetwork.new(interfaceProvider = countingInterfaces)
+        defer:
+          await empty.close()
+        requireOpened(empty, ignorePacket)
+        await empty.close()
+        await blocker.closeWait()
+        requireOpened(network, ignorePacket)
+        check network.ipv4InterfaceIndices().len > 0
+
   asyncTest "close during opening prevents startup and permits a later reopen":
     requireMdnsMulticastRoute(ignoreDatagram)
     let network = MdnsNetwork.new(interfaceProvider = countingInterfaces)

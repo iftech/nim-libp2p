@@ -419,11 +419,10 @@ proc retireRemovedInterfaces(
       discard membership6(iface.transport, iface.index, false)
       network.retiring.add(iface.retire())
 
-proc refreshInterfaces*(network: MdnsNetwork) =
-  ## Each socket joins one interface, retaining the ingress interface for replies.
-  ## Its outgoing multicast interface stays fixed for its entire lifetime.
+proc refreshInterfacesImpl(network: MdnsNetwork): bool =
+  # Return whether eligible interfaces exist, even if their sockets fail to open.
   if network.closing:
-    return
+    return false
   let wanted = network.wantedInterfaces()
   let current4 = network.currentInterfaces4(wanted.ipv4)
   let current6 = network.currentInterfaces6(wanted.ipv6)
@@ -442,6 +441,12 @@ proc refreshInterfaces*(network: MdnsNetwork) =
     if not closing.finished:
       pending.add(closing)
   network.retiring = pending
+  return wanted.ipv4.len > 0 or wanted.ipv6.len > 0
+
+proc refreshInterfaces*(network: MdnsNetwork) =
+  ## Each socket joins one interface, retaining the ingress interface for replies.
+  ## Its outgoing multicast interface stays fixed for its entire lifetime.
+  discard network.refreshInterfacesImpl()
 
 proc refreshLoop(network: MdnsNetwork) {.async: (raises: [CancelledError]).} =
   while true:
@@ -547,6 +552,8 @@ proc open*(
     network: MdnsNetwork, onPacket: MdnsPacketReceived
 ): Future[LPResult[void]] {.async: (raises: []).} =
   ## Open either or both IP families. Repeated opens retain the first callback.
+  ## With eligible interfaces, at least one socket must open successfully.
+  ## Without interfaces, startup succeeds and waits for a later refresh.
   ## Closing during startup aborts the open; reopen after that open completes.
   if network.closing:
     return err("mDNS network is closing")
@@ -609,7 +616,10 @@ proc open*(
     network.onPacket = nil
     return err("Unable to start mDNS on IPv4 or IPv6")
   network.opened = true
-  network.refreshInterfaces()
+  let hasInterfaces = network.refreshInterfacesImpl()
+  if hasInterfaces and network.interfaces4.len == 0 and network.interfaces6.len == 0:
+    await network.close()
+    return err("Unable to open mDNS sockets on any available interface")
   network.refresher = network.refreshLoop()
   return ok()
 
