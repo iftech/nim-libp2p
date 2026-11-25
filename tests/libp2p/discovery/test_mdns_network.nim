@@ -7,7 +7,7 @@ import chronos
 import chronos/transports/osnet
 import ../../../libp2p/[multiaddress, results]
 import ../../../libp2p/utils/future
-when not defined(macosx):
+when defined(linux):
   import std/sequtils
 import ../../../libp2p/services/mdns/network
 import ../../tools/[unittest, mdns_sender, multiaddress]
