@@ -239,7 +239,8 @@ proc receivingInterface(
   # belonging to exactly one interface; overlapping subnets are ambiguous.
   var matched: uint32
   for candidate in network.interfaceProvider():
-    if candidate.ifIndex <= 0:
+    if candidate.ifIndex <= 0 or
+        (candidate.state != StatusUp and candidate.ifType != IfSoftwareLoopback):
       continue
     for address in candidate.addresses:
       if address.host.family == remote.family and address.net.contains(remote):
