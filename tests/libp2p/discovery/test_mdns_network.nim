@@ -110,11 +110,43 @@ suite "mDNS network":
     check:
       network.isLocalAddress(remote)
       network.isLocalAddress(remote)
+      network.sourceInterfaceIndex(remote) == 1
+      network.sourceInterfaceIndex(remote) == 1
       interfaceQueries == 1
     network.refreshInterfaces()
     check:
       not network.isLocalAddress(remote)
+      network.sourceInterfaceIndex(remote) == 0
       interfaceQueries == 2
+
+  test "cached ingress matching rejects overlapping interfaces":
+    const
+      Local4 = initTAddress("192.168.10.1:0")
+      Other4 = initTAddress("192.168.10.2:0")
+      Local6 = initTAddress("[fd12:3456::1]:0")
+    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      @[
+        NetworkInterface(
+          ifIndex: 1,
+          state: StatusUp,
+          addresses: @[
+            InterfaceAddress.init(Local4, 24),
+            InterfaceAddress.init(Local4, 16),
+            InterfaceAddress.init(Local6, 64),
+          ],
+        ),
+        NetworkInterface(
+          ifIndex: 2, state: StatusUp, addresses: @[InterfaceAddress.init(Other4, 24)]
+        ),
+      ]
+
+    let network = MdnsNetwork.new(interfaceProvider = interfaces)
+    network.refreshInterfaces()
+    check:
+      network.sourceInterfaceIndex(initTAddress("192.168.10.42:5353")) == 0
+      network.sourceInterfaceIndex(initTAddress("192.168.11.42:5353")) == 1
+      network.sourceInterfaceIndex(initTAddress("[fd12:3456::42]:5353")) == 1
+      network.sourceInterfaceIndex(initTAddress("10.0.0.1:5353")) == 0
 
   test "wildcard expansion uses the supplied interface provider":
     const
@@ -235,7 +267,8 @@ suite "mDNS network":
     # responder, particularly on Windows. Multicast reaches group members.
     await sender.sendTo(initTAddress("224.0.0.251", Port(MdnsPort)), packet)
     check (await receivedReply) == response
-    # Allow duplicate deliveries from other wildcard sockets to arrive too.
+    # Observe a bounded window for duplicate deliveries from wildcard sockets;
+    # an event-loop step alone cannot establish that no datagram will arrive.
     await sleepAsync(100.milliseconds)
     require contexts.len == 1
     check contexts[0].isLegacyQuery
@@ -253,8 +286,13 @@ suite "mDNS network":
       not (await network.reply(response, default(MdnsReplyContext), unicast = true))
 
   asyncTest "close drains handlers and packets remain stable across receives":
+    var refreshCount = 0
+    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      inc refreshCount
+      getInterfaces()
+
     let
-      network = MdnsNetwork.new()
+      network = MdnsNetwork.new(interfaceProvider = interfaces)
       firstEntered = newAsyncEvent()
       secondEntered = newAsyncEvent()
       release = newAsyncEvent()
@@ -295,7 +333,14 @@ suite "mDNS network":
       not completed
       (await network.open(ignorePacket)).isErr
       not (await network.multicast(second))
+    let countBeforeRefresh = refreshCount
+    network.refreshInterfaces()
+    network.refreshInterfaces()
+    check refreshCount == countBeforeRefresh
     release.fire()
+    while not closing.finished:
+      network.refreshInterfaces()
+      await stepsAsync(1)
     await closing
     check:
       completed

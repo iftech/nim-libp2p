@@ -19,10 +19,11 @@ proc newInterfaceLimits*(): InterfaceLimits =
   InterfaceLimits()
 
 proc get*(limits: InterfaceLimits, index: uint32): ref MulticastLimits =
-  result = limits.entries.getOrDefault(index)
-  if result.isNil:
-    result = new(MulticastLimits)
-    limits.entries[index] = result
+  var entry = limits.entries.getOrDefault(index)
+  if entry.isNil:
+    entry = new(MulticastLimits)
+    limits.entries[index] = entry
+  return entry
 
 proc prune*(limits: InterfaceLimits, indices: openArray[uint32]) =
   var removed: seq[uint32]

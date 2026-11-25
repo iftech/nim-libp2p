@@ -437,21 +437,26 @@ suite "mDNS discovery":
       requireStarted(service, local)
       let opened = await listener.open(received)
       require opened.isOk
-      # Let the initial announcement finish before counting query responses.
+      # Allow the initial multicast announcement to arrive before clearing the
+      # counters; network delivery is not bounded by an event-loop step.
       await sleepAsync(200.milliseconds)
       let configured = listener.ipv4InterfaceIndices()
+      require configured.len > 0
       responses.clear()
       for i in 0 ..< 5:
         check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
-        responses.len > 0
+        configured.allIt(it in responses)
       for i in 0 ..< 2:
         await sender.sendMulticast(query)
       checkUntilTimeout:
         unicastResponses >= 2
       # A response sent on another interface on the same LAN can also arrive
       # here, so each ingress may see one copy per sending interface.
+      # The actual response interval must elapse before the next query.
       await sleepAsync(MdnsResponseInterval)
+      for index in configured:
+        check index in responses
       for count in responses.values:
         check count <= configured.len
       var previous: Table[uint32, int]
@@ -459,7 +464,7 @@ suite "mDNS discovery":
         previous[index] = count
       check await listener.multicast(encodeMessage(query))
       checkUntilTimeout:
-        responses.pairs.toSeq.anyIt(it[1] > previous.getOrDefault(it[0]))
+        previous.pairs.toSeq.allIt(it[0] in responses and responses[it[0]] > it[1])
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     requireMdnsMulticastRoute(ignoreDatagram)
@@ -746,7 +751,8 @@ suite "mDNS discovery":
           return
       raise e
     check (await found) == MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
-    # No condition to wait for: verify the peer is not reported a second time.
+    # Observe a full response interval for a duplicate peer notification;
+    # an event-loop step alone cannot rule out later network delivery.
     await sleepAsync(MdnsResponseInterval)
     check foundCount == 1
 

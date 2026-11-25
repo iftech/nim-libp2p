@@ -48,7 +48,7 @@ type
     interfaces4: seq[MdnsInterface]
     interfaces6: seq[MdnsInterface]
     retiring: seq[Future[void].Raising([])]
-    localAddresses: seq[InterfaceAddress]
+    localAddresses: seq[tuple[index: uint32, address: InterfaceAddress]]
     refresher: Future[void].Raising([CancelledError])
     refreshInterval: Duration
     interfaceProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
@@ -97,10 +97,22 @@ proc isLocalAddress*(network: MdnsNetwork, remote: TransportAddress): bool =
   if remote.family notin {AddressFamily.IPv4, AddressFamily.IPv6} or
       remote.isUnspecified() or remote.isMulticast():
     return false
-  for address in network.localAddresses:
-    if address.host.family == remote.family and address.net.contains(remote):
+  for entry in network.localAddresses:
+    let address = entry.address
+    if address.net.mask.prefix > 0 and address.host.family == remote.family and
+        address.net.contains(remote):
       return true
   false
+
+proc sourceInterfaceIndex*(network: MdnsNetwork, remote: TransportAddress): uint32 =
+  ## Return the unique interface matching a source, or zero if none or ambiguous.
+  var matched = 0'u32
+  for entry in network.localAddresses:
+    if entry.address.host.family == remote.family and entry.address.net.contains(remote):
+      if matched != 0 and matched != entry.index:
+        return 0
+      matched = entry.index
+  return matched
 
 proc isLocalSource*(network: MdnsNetwork, context: MdnsReplyContext): bool =
   network.isLocalAddress(context.remote)
@@ -240,17 +252,7 @@ proc receivingInterface(
 
   # A wildcard socket does not identify ingress. Only accept sources
   # belonging to exactly one interface; overlapping subnets are ambiguous.
-  var matched: uint32
-  for candidate in network.interfaceProvider():
-    if candidate.ifIndex <= 0 or
-        (candidate.state != StatusUp and candidate.ifType != IfSoftwareLoopback):
-      continue
-    for address in candidate.addresses:
-      if address.host.family == remote.family and address.net.contains(remote):
-        let index = uint32(candidate.ifIndex)
-        if matched != 0 and matched != index:
-          return nil
-        matched = index
+  let matched = network.sourceInterfaceIndex(remote)
   if matched == 0:
     return nil
 
@@ -339,19 +341,18 @@ proc wantedInterfaces(
 ): tuple[
   ipv4: seq[tuple[address: array[4, byte], index: uint32]],
   ipv6: seq[uint32],
-  localAddresses: seq[InterfaceAddress],
+  localAddresses: seq[tuple[index: uint32, address: InterfaceAddress]],
 ] =
   var wanted4: seq[tuple[address: array[4, byte], index: uint32]]
   var wanted6: seq[uint32]
-  var localAddresses: seq[InterfaceAddress]
+  var localAddresses: seq[tuple[index: uint32, address: InterfaceAddress]]
   for iface in network.interfaceProvider():
     if iface.ifIndex <= 0 or
         (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
       continue
     var has4 = false
     for address in iface.addresses:
-      if address.net.mask.prefix > 0:
-        localAddresses.add(address)
+      localAddresses.add((uint32(iface.ifIndex), address))
       case address.host.family
       of AddressFamily.IPv4:
         if not has4:
@@ -414,6 +415,8 @@ proc retireRemovedInterfaces(
 proc refreshInterfaces*(network: MdnsNetwork) =
   ## Each socket joins one interface, retaining the ingress interface for replies.
   ## Its outgoing multicast interface stays fixed for its entire lifetime.
+  if network.closing:
+    return
   let wanted = network.wantedInterfaces()
   let current4 = network.currentInterfaces4(wanted.ipv4)
   let current6 = network.currentInterfaces6(wanted.ipv6)
@@ -504,6 +507,11 @@ proc reply*(
 
 proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   network.closing = true
+  # Remove the interfaces before yielding, so refresh cannot retire a socket
+  # that shutdown is already closing. In-flight sends hold their own snapshots.
+  let closingInterfaces = network.interfaces4 & network.interfaces6
+  network.interfaces4.setLen(0)
+  network.interfaces6.setLen(0)
   if not network.refresher.isNil:
     await noCancel network.refresher.cancelAndWait()
     network.refresher = nil
@@ -511,14 +519,12 @@ proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   # closing their sockets. Chronos does not drain queued sends on close.
   if network.activeOperations > 0:
     await noCancel network.idle.wait()
-  for iface in network.interfaces4 & network.interfaces6:
+  for iface in closingInterfaces:
     await noCancel iface.closeInterface()
   for closing in network.retiring:
     await noCancel closing
   network.retiring.setLen(0)
   network.opened = false
-  network.interfaces4.setLen(0)
-  network.interfaces6.setLen(0)
   network.localAddresses.setLen(0)
   network.onPacket = nil
   network.closing = false
@@ -597,5 +603,7 @@ proc open*(
 
 func ipv4InterfaceIndices*(network: MdnsNetwork): seq[uint32] =
   ## Interfaces with successfully configured IPv4 multicast sockets.
+  var indices: seq[uint32]
   for iface in network.interfaces4:
-    result.add(iface.index)
+    indices.add(iface.index)
+  return indices
