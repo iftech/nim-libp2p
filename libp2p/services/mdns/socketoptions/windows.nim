@@ -3,7 +3,8 @@
 
 {.push raises: [].}
 
-import std/[nativesockets, os, winlean]
+import std/[os, winlean]
+import stew/endians2
 
 # Winsock IP and IPv6 multicast options (ws2ipdef.h).
 const
@@ -17,6 +18,9 @@ const
   ipv6MulticastHops* = 10.cint
   ipv6JoinGroup* = 12.cint
   ipv6LeaveGroup* = 13.cint
+  ifList = 28.cint
+  addIfList = 29.cint
+  unicastIf = 31.cint
 
 type MulticastTtl* = cint
 
@@ -34,9 +38,6 @@ proc socketLastError*(): OSErrorCode =
 proc bindToInterface*(socket: winlean.SocketHandle, index: uint32, ipv6: bool): cint =
   # IFLIST filters incoming datagrams; UNICAST_IF alone only affects sends.
   # These options have the same numbers at both protocol levels on Windows.
-  const ifList = 28.cint
-  const addIfList = 29.cint
-  const unicastIf = 31.cint
   let level = if ipv6: ipv6Protocol else: ipv4Protocol
   var enabled = 1'u32
   let filterStatus = setSocketOption(socket, level, ifList, enabled)
@@ -50,5 +51,5 @@ proc bindToInterface*(socket: winlean.SocketHandle, index: uint32, ipv6: bool): 
     if ipv6:
       index
     else:
-      htonl(index)
+      toBE(index)
   setSocketOption(socket, level, unicastIf, sendIndex)
