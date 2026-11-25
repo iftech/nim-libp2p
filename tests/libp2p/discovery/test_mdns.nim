@@ -14,6 +14,9 @@ import ../../../libp2p/services/mdns/network
 import ../../../libp2p/nameresolving/dnsmessage
 import ../../tools/[unittest, crypto, mdns_sender, multiaddress, switch_builder]
 
+when defined(macosx):
+  from std/posix import nil
+
 const
   FixturePort = 12345
   FixtureAddress = "/ip4/192.168.1.2/tcp/" & $FixturePort
@@ -70,7 +73,7 @@ proc ignoreDatagram(
 ) {.async: (raises: []).} =
   discard
 
-proc newMulticastSender(
+template newMulticastSender(
     callback: DatagramCallback = ignoreDatagram
 ): DatagramTransport =
   newMdnsTestSender(callback)
@@ -689,13 +692,14 @@ suite "mDNS discovery":
           initTAddress("[ff02::fb]:5353"),
           encodeMessage(service.announcement(remote, "ipv6-peer")),
         )
-      except TransportOsError as exc:
+      except TransportOsError as e:
         when defined(macosx):
-          if exc.code.int == EHOSTUNREACH.int:
+          if e.code.int in
+              [posix.EHOSTUNREACH.int, posix.ENETUNREACH.int, posix.EADDRNOTAVAIL.int]:
             checkpoint "The runner has no IPv6 multicast route on the selected interface"
             skip()
             return
-        raise exc
+        raise e
       check (await found) == MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
       # No condition to wait for: verify the peer is not reported a second time.
       await sleepAsync(MdnsResponseInterval)
