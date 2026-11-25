@@ -51,7 +51,7 @@ jobs:
         with:
           config: linter.nim
           semantic: true
-          setup: nimble setup --requires:"lint==1.1.0" -y
+          setup: nimble setup --requires:"lint == 1.1.0" -y
 
       - name: Check License Header
         uses: apache/skywalking-eyes/header@v0.8.0
