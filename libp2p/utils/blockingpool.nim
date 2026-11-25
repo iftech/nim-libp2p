@@ -10,15 +10,14 @@
 ##   completes with a result, or after `stop` returns when the future was
 ##   cancelled.
 ## - `work` returns true for Done and false for Discarded. Done completes the
-##   future with the payload, Discarded completes it with `PoolErrorKind.Discarded`.
+##   future with the payload, Discarded completes it with a `JobDiscarded` error.
 ## - A cancel of the future flips the job to Discarded and completes the future
 ##   at once. A worker that already took the job runs it to the end and the pool
 ##   drops the result.
 ## - `stop` waits for the in-flight jobs and discards the queued ones, then
 ##   joins the threads and frees the shared heap. Concurrent `stop` callers
 ##   await the same cleanup, and the event loop stays responsive.
-## - Workers spawn on the first `submit`. `start` reopens a stopped pool, or
-##   reopens it when an in-flight `stop` finishes.
+## - Workers spawn on the first `submit`. `start` reopens a stopped pool.
 ## - Await `stop` before you drop the last reference to a started pool. Else the
 ##   threads block forever and the shared heap leaks.
 
@@ -28,18 +27,11 @@ import std/[atomics, locks, tables, typetraits]
 import chronos, chronos/threadsync
 import ../results
 
-const WorkerPollInterval = 100.milliseconds
+const JobDiscarded* = "Pool job discarded"
+  ## Error cause when `work` returned false, the pool stopped, or the job was queued at stop.
 
 type
   WorkProc*[T] = proc(payload: var T): bool {.nimcall, gcsafe, raises: [].}
-
-  PoolErrorKind* {.pure.} = enum
-    Discarded ## work returned false, the pool stopped, or the job was queued at stop
-    StartFailed ## the pool could not create its signals or threads
-
-  PoolError* = object
-    kind*: PoolErrorKind
-    detail*: string
 
   JobState {.pure.} = enum
     Pending
@@ -57,12 +49,11 @@ type
     queueHead, queueTail: ptr Job[T]
     completedHead: ptr Job[T] # singly-linked via `next`
     running: Atomic[bool]
-    failed: Atomic[bool]
     workersRunning: Atomic[int]
     requestSignal, responseSignal: ThreadSignalPtr
     work: WorkProc[T]
 
-  JobFuture[T] = Future[Result[T, PoolError]].Raising([CancelledError])
+  JobFuture[T] = Future[LPResult[T]].Raising([CancelledError])
 
   BlockingPoolObj[T] = object
     work: WorkProc[T]
@@ -73,7 +64,6 @@ type
     dispatcherFut: Future[void].Raising([])
     stopFut: Future[void].Raising([])
     stopped: bool
-    reopen: bool
 
   BlockingPool*[T] = ref BlockingPoolObj[T]
 
@@ -89,37 +79,10 @@ proc destroy[T](shared: ptr SharedState[T]) =
   deinitLock(shared[].lock)
   deallocShared(shared)
 
-proc unqueue[T](shared: ptr SharedState[T], job: ptr Job[T]): bool =
-  ## Unlink `job` from the queue. False when a worker already took it.
-  var found = false
-  withLock shared[].lock:
-    var prev: ptr Job[T]
-    var cur = shared[].queueHead
-    while not cur.isNil and cur != job:
-      prev = cur
-      cur = cur.next
-    if not cur.isNil:
-      found = true
-      if prev.isNil:
-        shared[].queueHead = job.next
-      else:
-        prev.next = job.next
-      if shared[].queueTail == job:
-        shared[].queueTail = prev
-  found
-
-proc markFailed[T](shared: ptr SharedState[T]) =
-  shared[].failed.store(true)
-  withLock shared[].lock:
-    shared[].running.store(false)
-
 proc workerLoop[T](shared: ptr SharedState[T]) {.thread.} =
   {.cast(gcsafe).}:
     while shared[].running.load():
-      # The timeout makes a lost wake-up delay a worker instead of strand it.
-      if shared[].requestSignal.waitSync(WorkerPollInterval).isErr():
-        shared.markFailed()
-        break
+      discard shared[].requestSignal.waitSync()
       while true:
         var job: ptr Job[T]
         withLock shared[].lock:
@@ -153,9 +116,9 @@ proc finishRequest[T](p: BlockingPool[T], job: ptr Job[T]) =
     if not fut.finished():
       let res =
         if JobState(job.state.load()) == JobState.Done:
-          Result[T, PoolError].ok(job.payload)
+          LPResult[T].ok(job.payload)
         else:
-          Result[T, PoolError].err(PoolError(kind: PoolErrorKind.Discarded))
+          LPResult[T].err(LPResultError.init(JobDiscarded))
       fut.complete(res)
   deallocShared(job)
 
@@ -174,42 +137,18 @@ proc drainCompleted[T](p: BlockingPool[T]) =
     shared[].completedHead = nil
   p.finishRequests(head)
 
-proc discardQueuedIfFailed[T](p: BlockingPool[T]) =
-  let shared = p.shared
-  if not shared[].failed.load():
-    return
-
-  var head: ptr Job[T]
-  withLock shared[].lock:
-    head = shared[].queueHead
-    shared[].queueHead = nil
-    shared[].queueTail = nil
-  p.finishRequests(head)
-
 proc dispatchLoop[T](p: BlockingPool[T]) {.async: (raises: []).} =
   while not p.stopped:
     try:
       await p.shared[].responseSignal.wait()
-    except CancelledError:
-      break
-    except AsyncError:
-      p.shared.markFailed()
-      p.discardQueuedIfFailed()
-      break
+    except AsyncError, CancelledError:
+      continue
     p.drainCompleted()
-    p.discardQueuedIfFailed()
 
-func startFailed(detail: string): PoolError =
-  PoolError(kind: PoolErrorKind.StartFailed, detail: detail)
-
-proc startWorkers[T](p: BlockingPool[T]): Result[void, PoolError] =
+proc startWorkers[T](p: BlockingPool[T]): LPResult[void] =
   # Allocate workers lazily so unused pools consume no threads.
   if not p.shared.isNil:
     return ok()
-  if p.workerCount < 1:
-    return err(startFailed("Invalid worker count: " & $p.workerCount & " < 1"))
-  if p.work.isNil:
-    return err(startFailed("Work proc is nil"))
 
   let shared = cast[ptr SharedState[T]](allocShared0(sizeof(SharedState[T])))
   initLock(shared[].lock)
@@ -218,10 +157,10 @@ proc startWorkers[T](p: BlockingPool[T]): Result[void, PoolError] =
   shared[].work = p.work
   shared[].requestSignal = ThreadSignalPtr.new().valueOr:
     shared.destroy()
-    return err(startFailed("Failed to create request signal: " & error))
+    return err(error, "Failed to create request signal")
   shared[].responseSignal = ThreadSignalPtr.new().valueOr:
     shared.destroy()
-    return err(startFailed("Failed to create response signal: " & error))
+    return err(error, "Failed to create response signal")
 
   # createThread hands pthread the Thread address, so spawn into the final
   # storage and never resize it while threads run.
@@ -238,7 +177,7 @@ proc startWorkers[T](p: BlockingPool[T]): Result[void, PoolError] =
     joinThreads(p.workers.toOpenArray(0, started - 1))
     p.workers = @[]
     shared.destroy()
-    return err(startFailed("Failed to spawn pool worker: " & e.msg))
+    return err(e, "Failed to spawn pool worker")
 
   p.shared = shared
   p.dispatcherFut = p.dispatchLoop()
@@ -248,6 +187,8 @@ proc new*[T](_: type BlockingPool[T], work: WorkProc[T], workers = 2): BlockingP
   ## Create a pool which starts `workers` threads running `work` on first use.
   when not supportsCopyMem(T):
     {.error: "BlockingPool payload must be plain data".}
+  doAssert workers >= 1
+  doAssert not work.isNil
   BlockingPool[T](work: work, workerCount: workers)
 
 func isStopped*[T](p: BlockingPool[T]): bool =
@@ -255,14 +196,12 @@ func isStopped*[T](p: BlockingPool[T]): bool =
 
 proc submit*[T](
     p: BlockingPool[T], payload: T
-): Future[Result[T, PoolError]] {.async: (raises: [CancelledError]).} =
-  ## Run `work` on a copy of `payload`; a stopped pool returns Discarded.
+): Future[LPResult[T]] {.async: (raises: [CancelledError]).} =
+  ## Run `work` on a copy of `payload`; a stopped pool returns `JobDiscarded`.
   if p.stopped:
-    return err(PoolError(kind: PoolErrorKind.Discarded))
+    return err(LPResultError.init(JobDiscarded))
 
   ?p.startWorkers()
-  if p.shared[].failed.load():
-    return err(PoolError(kind: PoolErrorKind.Discarded, detail: "Pool workers failed"))
 
   let
     shared = p.shared
@@ -283,36 +222,13 @@ proc submit*[T](
     else:
       shared[].queueTail.next = job
     shared[].queueTail = job
-  shared[].requestSignal.fireSync().isOkOr:
-    if shared.unqueue(job):
-      job.settle(JobState.Discarded)
-      p.finishRequest(job)
-      return err(
-        PoolError(
-          kind: PoolErrorKind.Discarded, detail: "Failed to wake pool worker: " & error
-        )
-      )
+  discard shared[].requestSignal.fireSync()
 
   return await fut
 
-proc reopenAfterStop[T](p: BlockingPool[T]) =
-  if not p.reopen:
-    return
-
-  p.reopen = false
-  p.stopped = false
-  p.stopFut = nil
-
 proc start*[T](p: BlockingPool[T]) =
   ## Reopen a stopped pool. Workers spawn on the next `submit`.
-  if not p.stopFut.isNil and not p.stopFut.finished():
-    if not p.reopen:
-      p.reopen = true
-      p.stopFut.addCallback(
-        proc(_: pointer) {.gcsafe, raises: [].} =
-          p.reopenAfterStop()
-      )
-  elif p.shared.isNil:
+  if p.shared.isNil:
     p.stopped = false
     p.stopFut = nil
 
@@ -335,13 +251,10 @@ proc stopWorkers[T](p: BlockingPool[T]) {.async: (raises: []).} =
 
   # Each worker fires responseSignal after the decrement, so the wait yields.
   while shared[].workersRunning.load() > 0:
-    let waiter = shared[].responseSignal.wait()
     try:
-      discard await withTimeout(waiter, WorkerPollInterval)
-    except CancelledError:
+      await shared[].responseSignal.wait()
+    except AsyncError, CancelledError:
       continue
-    if waiter.failed():
-      break
     p.drainCompleted()
 
   # All workers have exited, so joining only releases their thread handles.
@@ -356,7 +269,6 @@ proc stopWorkers[T](p: BlockingPool[T]) {.async: (raises: []).} =
 
 proc stop*[T](p: BlockingPool[T]) {.async: (raises: []).} =
   ## Wait for in-flight jobs, discard queued jobs, and release workers.
-  p.reopen = false
   if p.stopFut.isNil:
     p.stopFut = p.stopWorkers()
   await noCancel p.stopFut

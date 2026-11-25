@@ -106,10 +106,11 @@ method resolveIp*(
   copyMem(addr job.host[0], address.cstring, address.len)
 
   trace "Resolving via getaddrinfo", address, port = uint16(port), domain
-  let done = (await self.pool.submit(job)).valueOr:
-    if error.kind == PoolErrorKind.StartFailed:
-      raise newException(TransportAddressError, error.detail)
+  let res = await self.pool.submit(job)
+  if res.isOfError(JobDiscarded):
     return @[]
+
+  let done = res.valueOrRaise(TransportAddressError)
   return @(done.results.toOpenArray(0, done.resultsLen - 1))
 
 method resolveTxt*(
