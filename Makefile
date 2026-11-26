@@ -178,6 +178,7 @@ clean-nim:
 	rm nimble.paths tests/nimble.paths 2>/dev/null || true
 
 lint:
-	nimble list -i 2>/dev/null | grep -qx lint || \
-		nimble install https://github.com/iftech/nim-lint@#develop
-	nim r linter.nim
+	nimble setup --requires:"lint == 1.1.1"
+	{ git diff HEAD --name-only --diff-filter=ACMR -z -- '*.nim'; \
+	  git ls-files --others --exclude-standard -z -- '*.nim'; } | \
+	  sort -zu | xargs -0 -r nim r -d:release linter.nim --semantic
