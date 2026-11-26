@@ -84,15 +84,16 @@ func isLegacyQuery*(context: MdnsReplyContext): bool =
 func isIpv6*(context: MdnsReplyContext): bool =
   context.remote.family == AddressFamily.IPv6
 
+func matchesSource(entry: MdnsLocalAddress, remote: TransportAddress): bool =
+  remote.family in {AddressFamily.IPv4, AddressFamily.IPv6} and
+    not remote.isUnspecified() and not remote.isMulticast() and
+    entry.address.net.mask.prefix > 0 and entry.address.host.family == remote.family and
+    entry.address.net.contains(remote)
+
 proc isLocalAddress*(network: MdnsNetwork, remote: TransportAddress): bool =
   ## Check whether the sender belongs to an active interface's subnet.
-  if remote.family notin {AddressFamily.IPv4, AddressFamily.IPv6} or
-      remote.isUnspecified() or remote.isMulticast():
-    return false
   for entry in network.localAddresses:
-    let address = entry.address
-    if address.net.mask.prefix > 0 and address.host.family == remote.family and
-        address.net.contains(remote):
+    if entry.matchesSource(remote):
       return true
   false
 
@@ -100,8 +101,7 @@ proc sourceInterfaceIndex*(network: MdnsNetwork, remote: TransportAddress): uint
   ## Return the unique interface matching a source, or zero if none or ambiguous.
   var matched = 0'u32
   for entry in network.localAddresses:
-    if entry.address.net.mask.prefix > 0 and entry.address.host.family == remote.family and
-        entry.address.net.contains(remote):
+    if entry.matchesSource(remote):
       if matched != 0 and matched != entry.index:
         return 0
       matched = entry.index
