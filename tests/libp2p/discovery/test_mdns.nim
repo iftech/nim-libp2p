@@ -97,6 +97,73 @@ suite "mDNS discovery":
     check limits.acquire(false, now + MdnsResponseInterval)
     check limits.acquire(true, now + MdnsResponseInterval)
 
+  test "multicast response limits are independent per interface":
+    var limits: Table[uint32, MulticastLimits]
+    let now = Moment.now()
+    check limits.mgetOrPut(1, default(MulticastLimits)).acquire(false, now)
+    check not limits.mgetOrPut(1, default(MulticastLimits)).acquire(false, now)
+    check limits.mgetOrPut(2, default(MulticastLimits)).acquire(false, now)
+    limits[1].finish(false, true, now, MdnsResponseInterval)
+    limits[2].finish(false, true, now, MdnsResponseInterval)
+    check not limits[1].acquire(false, now)
+    check not limits[2].acquire(false, now)
+    check limits[1].acquire(false, now + MdnsResponseInterval)
+    check limits[2].acquire(false, now + MdnsResponseInterval)
+
+  test "removed interface limits survive pending replies and retain the throttle":
+    for ipv6 in [false, true]:
+      let
+        limits = newInterfaceLimits()
+        now = Moment.now()
+        original = limits.get(1)
+      check original[].acquire(ipv6, now)
+      limits.prune([], now)
+      let refreshed = limits.get(1)
+      check refreshed == original
+      check not refreshed[].acquire(ipv6, now + MdnsResponseInterval)
+      original[].finish(ipv6, true, now, MdnsResponseInterval)
+      limits.prune([1'u32], now)
+      check limits.get(1) == original
+      check not limits.get(1)[].acquire(ipv6, now)
+      check limits.get(1)[].acquire(ipv6, now + MdnsResponseInterval)
+
+  test "removed interface limits are pruned once idle and cooldowns expire":
+    let
+      limits = newInterfaceLimits()
+      now = Moment.now()
+      old = limits.get(1)
+      retained = limits.get(2)
+    check old[].acquire(false, now)
+    check old[].acquire(true, now)
+    old[].finish(false, true, now, MdnsResponseInterval)
+    limits.prune([2'u32], now)
+    check limits.get(1) == old
+    old[].finish(true, false, now, MdnsResponseInterval)
+    limits.prune([2'u32], now)
+    check limits.get(1) == old
+    limits.prune([2'u32], now + MdnsResponseInterval)
+    let replacement = limits.get(1)
+    check replacement != old
+    check replacement[].acquire(false, now)
+    check limits.get(2) == retained
+
+  test "removed interface cooldowns survive refresh failures for either family":
+    for ipv6 in [false, true]:
+      let
+        limits = newInterfaceLimits()
+        now = Moment.now()
+        original = limits.get(1)
+      check original[].acquire(ipv6, now)
+      original[].finish(ipv6, true, now, MdnsResponseInterval)
+      limits.prune([], now)
+      limits.prune([], now + MdnsResponseInterval - 1.milliseconds)
+      let recovered = limits.get(1)
+      check recovered == original
+      check not recovered[].acquire(ipv6, now + MdnsResponseInterval - 1.milliseconds)
+      limits.prune([1'u32], now + MdnsResponseInterval)
+      check limits.get(1) == original
+      check recovered[].acquire(ipv6, now + MdnsResponseInterval)
+
   test "DNS-SD records round trip and group peer addresses":
     let
       service = MdnsService.new()
@@ -376,7 +443,7 @@ suite "mDNS discovery":
       service.peers(responses[0], PeerId.random()) ==
         @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
 
-  asyncTest "multicast query responses are rate limited":
+  asyncTest "multicast query responses are rate limited independently per interface":
     let
       local = Switch(
         peerInfo: PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)]),
@@ -387,6 +454,7 @@ suite "mDNS discovery":
       listener = MdnsNetwork.new()
       query = DnsMessage(questions: @[DnsQuestion(name: @ServiceLabels, kind: PTR)])
     var responses: Table[uint32, int]
+
     var unicastResponses = 0
     proc received(
         packet: seq[byte], context: MdnsReplyContext
@@ -419,21 +487,33 @@ suite "mDNS discovery":
     requireStarted(service, local)
     let opened = await listener.open(received)
     require opened.isOk
-    # Let the initial announcement finish before counting query responses.
+
+    let configured = listener.ipv4InterfaceIndices()
+    if configured.len == 0 or not listener.ipv4IngressPinned():
+      checkpoint "No IPv4 multicast interface is configured or ingress cannot be pinned"
+      skip()
+      return
+
+    # Allow the initial multicast announcement to arrive before clearing the
+    # counters; network delivery is not bounded by an event-loop step.
     await sleepAsync(200.milliseconds)
     responses.clear()
     for i in 0 ..< 5:
       check await listener.multicast(encodeMessage(query))
     checkUntilTimeout:
-      responses.len > 0
+      configured.allIt(it in responses)
     for i in 0 ..< 2:
       await sender.sendMulticast(query)
     checkUntilTimeout:
       unicastResponses >= 2
-    # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
+    # A response sent on another interface on the same LAN can also arrive
+    # here, so each ingress may see one copy per sending interface.
+    # The actual response interval must elapse before the next query.
     await sleepAsync(MdnsResponseInterval)
+    for index in configured:
+      check index in responses
     for count in responses.values:
-      check count == 1
+      check count <= configured.len
     let previousTotal = responses.values.toSeq.foldl(a + b, 0)
     check await listener.multicast(encodeMessage(query))
     checkUntilTimeout:

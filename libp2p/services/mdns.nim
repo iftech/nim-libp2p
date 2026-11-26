@@ -46,7 +46,7 @@ type
     owner: Switch
     advertisement: DnsMessage
     advertisementBytes: seq[byte]
-    multicastLimits: MulticastLimits
+    multicastLimits: ref InterfaceLimits
 
 logScope:
   topics = "libp2p mdns"
@@ -95,12 +95,18 @@ proc new*(
     except ValueError as exc:
       raiseAssert "Invalid mDNS service name: " & exc.msg
 
+  let limits = newInterfaceLimits()
+  proc interfacesChanged(indices: seq[uint32]) {.gcsafe, raises: [].} =
+    limits.prune(indices, Moment.now())
+
   return T(
     onPeerFound: onPeerFound,
     serviceName: name,
     interval: queryInterval,
     maxPendingCallbacks: maxPendingCallbacks,
-    network: MdnsNetwork.new(networkInterfaceProvider),
+    network:
+      MdnsNetwork.new(networkInterfaceProvider, onInterfacesChanged = interfacesChanged),
+    multicastLimits: limits,
   )
 
 proc suitable(address: MultiAddress): bool =
@@ -357,7 +363,9 @@ proc handleQuery(
     return
 
   let ipv6 = context.isIpv6
-  if not service.multicastLimits.acquire(ipv6, Moment.now()):
+  let index = context.interfaceIndex
+  let limits = service.multicastLimits.get(index)
+  if not limits[].acquire(ipv6, Moment.now()):
     return
 
   var sent = false
@@ -366,7 +374,7 @@ proc handleQuery(
     sent =
       await noCancel service.network.reply(service.advertisementBytes, context, false)
   finally:
-    service.multicastLimits.finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
+    limits[].finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
 
 proc received(
     service: MdnsService, switch: Switch, datagram: seq[byte], context: MdnsReplyContext
@@ -440,5 +448,5 @@ method stop*(
   service.owner = nil
   service.advertisement = default(DnsMessage)
   service.advertisementBytes.setLen(0)
-  service.multicastLimits = default(MulticastLimits)
+  service.multicastLimits.clear()
   info "mDNS discovery stopped"
