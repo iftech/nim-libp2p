@@ -347,6 +347,9 @@ proc lookupProtocol*(m: MultistreamSelect, proto: string): Opt[LPProtocol] =
 proc handle*(
     m: MultistreamSelect, stream: Stream, active: bool = false
 ) {.async: (raises: [CancelledError]).} =
+  ## Negotiates and awaits the selected protocol handler, then closes `stream`,
+  ## including on cancellation. The handler owns any protocol-specific shutdown;
+  ## this cleanup does not wait for peer EOF on half-closed streams.
   trace "Multistream handler started", stream, handshaked = active
   defer:
     trace "Multistream handler stopped", stream

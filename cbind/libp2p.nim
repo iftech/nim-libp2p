@@ -828,7 +828,12 @@ proc libp2pStreamCloseWithEof*(
 proc libp2pStreamRelease*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
-  ## Drops the stream handle, letting a custom-protocol handler finish.
+  ## Drops the stream handle and resets a dialed stream not yet closed with EOF.
+  let entry = ?lib.streams.get(streamId)
+  let stream = entry.stream
+  if entry.releaseWaiter.isNil() and not (stream.closed() and stream.atEof()):
+    await stream.reset()
+
   if not lib.streams.release(streamId):
     return err("unknown stream handle")
   ok(true)

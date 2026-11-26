@@ -546,6 +546,6 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
     peerId = s.peerInfo.peerId,
     listenAddresses = s.peerInfo.listenAddrs,
     announcedAddresses = s.peerInfo.addrs,
-    protocols = s.peerInfo.protocols,
+    protocols = s.peerInfo.protocols, #nolint
     transports = s.transports.len,
     services = s.services.len
