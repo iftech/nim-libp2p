@@ -4,13 +4,22 @@
 import lint
 import
   tools/[
-    chronicles_linter, chronos_linter, code_style_linter, libp2p_linter,
+    chronicles_linter, chronos_linter, code_style_linter, comment_linter, libp2p_linter,
     unittest2_linter,
   ]
 
 runLint:
   sources = ["."]
   ignoredPatterns = ["**/nimbledeps/**", "**/nimcache*/**", "./build/**/*"]
+
+  step "Check TODO comments":
+    check todoWithIssue:
+      severity = error
+
+  step "Check license headers":
+    ignoredPatterns = ["./examples/**/*", "./.nim_runtime/**/*"]
+    check licenseHeader:
+      severity = error
 
   step "Check chronicles messages":
     check messageEndsWithPunctuation:
