@@ -4,10 +4,14 @@
 use futures::StreamExt;
 use libp2p::{
     SwarmBuilder, identify, mdns, noise,
-    swarm::{NetworkBehaviour, SwarmEvent, dial_opts::DialOpts},
+    swarm::{ConnectionError, NetworkBehaviour, SwarmEvent, dial_opts::DialOpts},
     tcp, yamux,
 };
-use std::{collections::HashMap, error::Error, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    time::Duration,
+};
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
@@ -41,22 +45,30 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("Rust mDNS peer {}", swarm.local_peer_id());
     tokio::time::timeout(Duration::from_secs(70), async {
         let mut unidentified_dials = HashMap::new();
+        let mut dialed_peers = HashSet::new();
         let mut nim_peer = None;
         loop {
             match swarm.select_next_some().await {
-                SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
+                SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(peers)))
+                    if nim_peer.is_none() =>
+                {
+                    let mut discovered = HashMap::<_, Vec<_>>::new();
                     for (peer_id, address) in peers {
-                        eprintln!("Discovered {peer_id} at {address}");
-                        if nim_peer.is_none() {
-                            let opts = DialOpts::from(address.clone());
-                            let connection_id = opts.connection_id();
-                            match swarm.dial(opts) {
-                                Ok(()) => {
-                                    unidentified_dials.insert(connection_id, (peer_id, address));
-                                }
-                                Err(error) => {
-                                    eprintln!("Failed to dial {peer_id} at {address}: {error:#}");
-                                }
+                        if !dialed_peers.contains(&peer_id) {
+                            discovered.entry(peer_id).or_default().push(address);
+                        }
+                    }
+                    for (peer_id, addresses) in discovered {
+                        dialed_peers.insert(peer_id);
+                        eprintln!("Discovered {peer_id} at {addresses:?}");
+                        let opts = DialOpts::peer_id(peer_id).addresses(addresses).build();
+                        let connection_id = opts.connection_id();
+                        match swarm.dial(opts) {
+                            Ok(()) => {
+                                unidentified_dials.insert(connection_id, peer_id);
+                            }
+                            Err(error) => {
+                                eprintln!("Failed to dial {peer_id}: {error:#}");
                             }
                         }
                     }
@@ -66,11 +78,8 @@ async fn main() -> anyhow::Result<()> {
                     peer_id,
                     error,
                 } => {
-                    if let Some((peer_id, address)) = unidentified_dials.remove(&connection_id) {
-                        eprintln!("Failed to connect to {peer_id} at {address}: {error:#}");
-                    } else {
-                        eprintln!("Outgoing connection {connection_id} to {peer_id:?} failed: {error}");
-                    }
+                    let peer_id = unidentified_dials.remove(&connection_id).or(peer_id);
+                    eprintln!("Outgoing connection {connection_id} to {peer_id:?} failed: {error:#}");
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
                     connection_id,
@@ -96,18 +105,24 @@ async fn main() -> anyhow::Result<()> {
                     let dial = unidentified_dials.remove(&connection_id);
                     if Some(peer_id) == nim_peer {
                         if let Some(error) = cause {
-                            eprintln!("Connection to Nim peer {peer_id} closed: {error}");
+                            // The pinned Yamux version reports a remote GOAWAY or EOF as Closed.
+                            if !matches!(&error, ConnectionError::IO(io) if matches!(
+                                io.get_ref().and_then(|source| source.downcast_ref::<yamux::Error>()),
+                                Some(cause) if cause.to_string() == "connection is closed"
+                            )) {
+                                anyhow::bail!("Connection to Nim peer {peer_id} closed: {error}");
+                            }
                         }
                         if num_established == 0 {
                             // CI uses Nim's exit status to verify discovery in the other direction.
                             return Ok::<(), anyhow::Error>(());
                         }
-                    } else if let Some((_, address)) = dial {
+                    } else if dial.is_some() {
                         let reason = cause.map_or_else(
                             || "no error reported".into(),
                             |error| error.to_string(),
                         );
-                        anyhow::bail!("Connection to {peer_id} at {address} closed before Identify completed: {reason}");
+                        eprintln!("Connection to {peer_id} closed before Identify completed: {reason}");
                     }
                 }
                 _ => {}

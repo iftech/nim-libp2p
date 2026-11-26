@@ -338,6 +338,7 @@ suite "mDNS discovery":
   test "record TTL covers two query intervals":
     let peer = PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)])
     for (interval, ttl) in [
+      (10.seconds, 120'u32),
       (MdnsDefaultQueryInterval, 120'u32),
       (5.minutes, 600'u32),
       (5.minutes + 1.milliseconds, 602'u32),

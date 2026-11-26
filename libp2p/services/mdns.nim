@@ -17,7 +17,7 @@ export network.MdnsPort
 const
   MdnsServiceName* = "_p2p._udp"
   MdnsDefaultQueryInterval* = 60.seconds
-  MdnsMinQueryInterval* = 60.seconds
+  MdnsMinQueryInterval* = 10.seconds
   MdnsMaxQueryInterval* = (int64(high(uint32)) div 2).seconds
   MdnsResponseInterval* = 1.seconds
   MdnsDefaultMaxPendingCallbacks* = 10

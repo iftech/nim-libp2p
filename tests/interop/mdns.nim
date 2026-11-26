@@ -46,7 +46,7 @@ proc waitForPeers*(
     )
   return ok()
 
-proc mdnsInteropTest*(
+proc mdnsInteropTest(
     expectedPeers: int, timeout: Duration
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let
@@ -64,7 +64,7 @@ proc mdnsInteropTest*(
         .withTcpTransport()
         .withYamux()
         .withNoise()
-        .withMdns(onPeerFound = onPeerFound)
+        .withMdns(queryInterval = 10.seconds, onPeerFound = onPeerFound)
         .build()
     except LPError as exc:
       return err(exc, "could not build Nim peer")
