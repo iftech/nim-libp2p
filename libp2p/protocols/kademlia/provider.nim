@@ -434,7 +434,7 @@ method handleAddProvider*(
     let stored = StoredProvider(
       provider: peer,
       expiresAt: expiresAt,
-      addrsExpireAt: min(expiresAt, UnixTimestamp.after(kad.config.providerAddrTTL)),
+      addrsExpireAt: UnixTimestamp.after(kad.config.providerAddrTTL),
     )
     let outcome = kad.store.addProvider(msgKey, stored, now, maxPerKey).valueOr:
       debug "Failed to store provider record", key = msgKey, err = error

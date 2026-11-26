@@ -257,8 +257,10 @@ suite "KadDHT - Get Providers":
       )
     let
       bareReplier = setupMockKad(getProvidersResponse = reply(@[bare]))
-      fullReplier = setupMockKad(getProvidersResponse = reply(@[provider.toPeer()]))
+      fullReplier = setupMockKad()
     startAndDeferStop(@[querier, provider, bareReplier, fullReplier])
+    # addrs of a started node differ from those before start
+    fullReplier.getProvidersResponse = reply(@[provider.toPeer()])
     await connect(querier, bareReplier)
     await connect(querier, fullReplier)
 
