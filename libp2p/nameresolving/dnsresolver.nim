@@ -5,6 +5,7 @@
 
 import std/[sets, sequtils], chronos, chronicles, ./dnsmessage
 
+import stew/endians2
 import nameresolver, nameservers
 
 export nameservers
@@ -13,18 +14,45 @@ import ../crypto/rng, ../utils/future
 logScope:
   topics = "libp2p name-resolution"
 
+const
+  UdpBufSize = int(uint16.high)
+  DnsTimeout = 5.seconds
+
 type DnsResolver* = ref object of NameResolver
   nameServers*: seq[TransportAddress]
   rng: Rng
 
-proc getDnsResponse(
-    rng: Rng, dnsServer: TransportAddress, address: string, kind: DnsRecordKind
-): Future[seq[DnsAnswer]] {.
-    async: (raises: [CancelledError, IOError, TransportError, ValueError])
-.} =
-  let queryId = rng.generate(uint16)
-  var sendBuf = encodeQuery(queryId, address, kind)
+proc readSize(
+    sock: StreamTransport
+): Future[int] {.async: (raises: [CancelledError, TransportError, ValueError]).} =
+  var length: array[2, byte]
+  await sock.readExactly(addr length[0], length.len)
+  let size = fromBytesBE(uint16, length).int
+  if size < HeaderSize:
+    raise newException(ValueError, "DNS response shorter than header")
+  return size
 
+proc getTcpDnsResponse(
+    dnsServer: TransportAddress, query: seq[byte], queryId: uint16
+): Future[seq[DnsAnswer]] {.
+    async: (raises: [CancelledError, TransportError, ValueError])
+.} =
+  let sock = await connect(dnsServer)
+  try:
+    let frame = @(toBytesBE(query.len.uint16)) & query
+    if (await sock.write(frame)) != frame.len:
+      raise newException(TransportError, "Incomplete DNS query write")
+
+    let size = await sock.readSize()
+    var response = newSeq[byte](size)
+    await sock.readExactly(addr response[0], response.len)
+    return parseAnswers(response, queryId)
+  finally:
+    await sock.closeWait()
+
+proc getUdpDnsResponse(
+    dnsServer: TransportAddress, sendBuf: seq[byte]
+): Future[seq[byte]] {.async: (raises: [CancelledError, IOError, TransportError]).} =
   let receivedDataFuture = Future[void].Raising([CancelledError]).init()
 
   proc datagramDataReceived(
@@ -32,23 +60,45 @@ proc getDnsResponse(
   ): Future[void] {.async: (raises: []).} =
     receivedDataFuture.completeOnce()
 
+  # Receive complete datagrams even when a server ignores the advertised size.
   let sock =
     if dnsServer.family == AddressFamily.IPv6:
-      newDatagramTransport6(datagramDataReceived)
+      newDatagramTransport6(datagramDataReceived, bufSize = UdpBufSize)
     else:
-      newDatagramTransport(datagramDataReceived)
+      newDatagramTransport(datagramDataReceived, bufSize = UdpBufSize)
 
   try:
     await sock.sendTo(dnsServer, addr sendBuf[0], sendBuf.len)
 
     try:
-      await receivedDataFuture.wait(5.seconds) #unix default
+      await receivedDataFuture.wait(DnsTimeout)
     except AsyncTimeoutError as e:
       raise newException(IOError, "DNS server timeout: " & e.msg, e)
 
-    parseAnswers(sock.getMessage(), queryId)
+    sock.getMessage()
   finally:
     await sock.closeWait()
+
+proc getDnsResponse(
+    rng: Rng, dnsServer: TransportAddress, address: string, kind: DnsRecordKind
+): Future[seq[DnsAnswer]] {.
+    async: (raises: [CancelledError, IOError, TransportError, ValueError])
+.} =
+  let queryId = rng.generate(uint16)
+  for edns in [true, false]:
+    let query = encodeQuery(queryId, address, kind, edns)
+    let response = await getUdpDnsResponse(dnsServer, query)
+    try:
+      return parseAnswers(response, queryId)
+    except DnsEdnsRejectedError as e:
+      if edns:
+        continue
+      raise e
+    except DnsTruncatedError:
+      try:
+        return await getTcpDnsResponse(dnsServer, query, queryId).wait(DnsTimeout)
+      except AsyncTimeoutError as e:
+        raise newException(IOError, "DNS TCP server timeout: " & e.msg, e)
 
 method resolveIp*(
     self: DnsResolver, address: string, port: Port, domain: Domain = Domain.AF_UNSPEC

@@ -14,22 +14,16 @@ import ../../../libp2p/services/mdns/network
 import ../../../libp2p/nameresolving/dnsmessage
 import ../../tools/[unittest, crypto, mdns_sender, multiaddress, switch_builder]
 
+import ./mdns_fixtures
+
 when defined(macosx):
   from std/posix import nil
 
 const
-  FixturePort = 12345
-  FixtureAddress = "/ip4/192.168.1.2/tcp/" & $FixturePort
   FixtureInstance = "test-peer"
   PeerInstance = "peer"
   DnsAddressPrefix = "dnsaddr="
   PeerIdSuffix = "/p2p/"
-  PrivateAddress = "/ip4/192.168.1.2/tcp/4001"
-  AlternatePrivateAddress = "/ip4/10.0.0.1/tcp/4001"
-  PrivateIpv6Address = "/ip6/fd00::1/tcp/4001"
-  WildcardAddress = "/ip4/0.0.0.0/tcp/4001"
-  EphemeralWildcardAddress = "/ip4/0.0.0.0/tcp/0"
-  InterfaceIp = "10.20.30.40"
   ServiceLabels = ["_p2p", "_udp", "local"]
   FixturePeerId = "12D3KooWSCxTfVvMBJbpF75PQmnFdxdBfC1ZxAGYbFc3U9MjALXz"
   # Independently assembled DNS-SD response using compressed names, go-libp2p's
@@ -57,10 +51,8 @@ const
 proc packet(hex: string): seq[byte] =
   hex.parseHexStr().mapIt(byte(it))
 
-const MdnsMulticastAddress = "224.0.0.251"
-
 proc sendMulticast(sender: DatagramTransport, payload: seq[byte]) {.async.} =
-  await sender.sendTo(initTAddress(MdnsMulticastAddress, Port(MdnsPort)), payload)
+  await sender.sendTo(MulticastMdns4, payload)
 
 proc sendMulticast(sender: DatagramTransport, message: DnsMessage) {.async.} =
   await sender.sendMulticast(encodeMessage(message))
@@ -110,7 +102,7 @@ suite "mDNS discovery":
       service = MdnsService.new()
       id = PeerId.random()
       local = PeerId.random()
-      addresses = @[ma(FixtureAddress), ma("/ip6/fd00::1/udp/4001/quic-v1")]
+      addresses = @[ma(FixtureAddress), ma(PrivateQuic6Address)]
       peer = PeerInfo(peerId: id, listenAddrs: addresses)
       message = parseMessage(encodeMessage(service.announcement(peer, FixtureInstance)))
       found = service.peers(message, local)
@@ -215,14 +207,12 @@ suite "mDNS discovery":
       id = PeerId.random()
       local = PeerId.random()
       accepted = @[
-        AlternatePrivateAddress, "/ip4/169.254.1.2/tcp/4001", PrivateIpv6Address,
-        "/ip6/fe80::1/tcp/4001", "/ip4/8.8.8.8/tcp/4001",
-        "/ip6/2606:4700::1111/tcp/4001",
+        AlternatePrivateAddress, LinkLocal4Address, PrivateIpv6Address,
+        LinkLocal6Address, Public4Address, Public6Address,
       ]
       rejected = @[
-        "/ip4/127.0.0.1/tcp/4001", "/ip6/::1/tcp/4001",
-        "/ip6/::ffff:127.0.0.1/tcp/4001", WildcardAddress, "/ip4/224.0.0.1/tcp/4001",
-        "/dns4/example.com/tcp/4001", "/ip4/10.0.0.1/tcp/0",
+        Loopback4Address, Loopback6Address, MappedLoopback6Address, WildcardAddress,
+        Multicast4Address, Dns4Address, EphemeralPrivate4Address,
       ]
     var strings: seq[string]
     for address in accepted & rejected:
@@ -251,20 +241,19 @@ suite "mDNS discovery":
       announcement.additionals.filterIt(it.kind == A or it.kind == AAAA).len ==
         accepted.len
 
-    peer.listenAddrs = @[ma(WildcardAddress), ma("/ip6/::/tcp/4001")]
+    peer.listenAddrs = @[ma(WildcardAddress), ma(Wildcard6Address)]
     let wildcard = service.announcement(peer, PeerInstance)
     for record in wildcard.additionals:
-      check record.address notin ["127.0.0.1", "::1"]
+      check record.address notin [LoopbackIp4, LoopbackIp6]
       for text in record.strings:
-        check "/ip4/127." notin text and "/ip6/::1/" notin text
+        check Loopback4Prefix notin text and Loopback6Prefix notin text
 
   test "announcements expand wildcard addresses using the configured interfaces":
-    const Address = initTAddress(InterfaceIp & ":0")
     proc interfaces(
         family: AddressFamily
     ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
       if family == AddressFamily.IPv4:
-        @[InterfaceAddress.init(Address, 24)]
+        @[InterfaceAddress.init(AnnouncementInterface4, 24)]
       else:
         @[]
 
@@ -273,9 +262,7 @@ suite "mDNS discovery":
       peer = PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(WildcardAddress)])
       message = service.announcement(peer, PeerInstance)
     check service.peers(message, PeerId.random()) ==
-      @[
-        MdnsPeer(peerId: peer.peerId, addrs: @[ma("/ip4/" & InterfaceIp & "/tcp/4001")])
-      ]
+      @[MdnsPeer(peerId: peer.peerId, addrs: @[ma(AnnouncementAddress)])]
 
   test "custom service names and case insensitive DNS names":
     let
@@ -291,11 +278,7 @@ suite "mDNS discovery":
     let
       service = MdnsService.new()
       peer = PeerInfo(
-        peerId: PeerId.random(),
-        listenAddrs: @[
-          ma("/ip4/192.168.1.2/tcp/4001/ws"),
-          ma("/ip4/192.168.1.2/tcp/4001/p2p-circuit"),
-        ],
+        peerId: PeerId.random(), listenAddrs: @[ma(WebSocketAddress), ma(RelayAddress)]
       )
     check service.announcement(peer, PeerInstance).answers.len == 0
 
@@ -303,13 +286,13 @@ suite "mDNS discovery":
     const BoundPort = 51234
     let
       service = MdnsService.new()
-      bound = ma("/ip4/192.168.1.2/tcp/" & $BoundPort)
+      bound = ma(FixtureTcpPrefix & $BoundPort)
       peer = PeerInfo(
         peerId: PeerId.random(),
         listenAddrs: @[
           ma(EphemeralWildcardAddress),
-          ma("/ip4/192.168.1.2/tcp/0"),
-          ma("/ip6/2001:db8::1/udp/0/quic-v1"),
+          ma(UnboundPrivate4Address),
+          ma(UnboundQuic6Address),
         ],
       )
     check service.announcement(peer, PeerInstance).answers.len == 0
@@ -456,12 +439,11 @@ suite "mDNS discovery":
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     requireMdnsMulticastRoute(ignoreDatagram)
-    const Address = initTAddress(InterfaceIp & ":0")
     proc interfaces(
         family: AddressFamily
     ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
       if family == AddressFamily.IPv4:
-        @[InterfaceAddress.init(Address, 24)]
+        @[InterfaceAddress.init(AnnouncementInterface4, 24)]
       else:
         @[]
 
@@ -491,7 +473,7 @@ suite "mDNS discovery":
     await node.start()
     let peer = await found
     check peer.addrs.len > 0
-    check peer.addrs[0] != ma("/ip4/" & InterfaceIp & "/tcp/0")
+    check peer.addrs[0] != ma(UnboundAnnouncementAddress)
 
   asyncTest "start, receive a DNS-SD TXT response, stop and restart":
     let
@@ -507,7 +489,7 @@ suite "mDNS discovery":
           check peer.addrs[0] in local.peerStore[AddressBook][peer.peerId]
           found.completeOnce(peer)
       )
-    let previous = ma("/ip4/192.168.1.3/tcp/4001")
+    let previous = ma(PreviousPeerAddress)
     local.peerStore[AddressBook].extend(remoteId, @[previous], AddressConfidence.High)
     let sender = newMulticastSender()
     defer:
@@ -592,9 +574,9 @@ suite "mDNS discovery":
     let book = local.peerStore[AddressBook]
     var known: seq[MultiAddress]
     for port in 1 ..< discoveryCount:
-      known.add(ma("/ip4/192.168.1.2/tcp/" & $port))
+      known.add(ma(FixtureTcpPrefix & $port))
     book.extend(remoteId, known, AddressConfidence.High)
-    expectedAddress = ma("/ip4/192.168.1.2/tcp/" & $discoveryCount)
+    expectedAddress = ma(FixtureTcpPrefix & $discoveryCount)
     let mixed = PeerInfo(peerId: remoteId, listenAddrs: @[known[0], expectedAddress])
     await sender.sendMulticast(service.announcement(mixed, FixtureInstance))
     await processed
@@ -605,7 +587,7 @@ suite "mDNS discovery":
     )
     book.set(remoteId, @[])
     for port in 1 .. discoveryCount + 2:
-      expectedAddress = ma("/ip4/192.168.1.2/tcp/" & $port)
+      expectedAddress = ma(FixtureTcpPrefix & $port)
       processed = Future[void].Raising([CancelledError]).init("test_mdns.processed")
       let peer = PeerInfo(peerId: remoteId, listenAddrs: @[expectedAddress])
       await sender.sendMulticast(service.announcement(peer, FixtureInstance))
@@ -618,7 +600,7 @@ suite "mDNS discovery":
       sender = newMulticastSender()
       release = newAsyncEvent()
       overflowId = PeerId.random()
-      overflowAddress = ma("/ip4/192.168.1.2/tcp/12345")
+      overflowAddress = ma(FixtureAddress)
     var started = 0
     var completed = 0
     proc onPeerFound(
@@ -700,7 +682,7 @@ suite "mDNS discovery":
         if interfaceIndex != 0:
           break
     if interfaceIndex == 0:
-      # No active non-loopback interface has an IPv6 address.
+      checkpoint "No active non-loopback interface has an IPv6 address"
       skip()
       return
 
@@ -727,8 +709,7 @@ suite "mDNS discovery":
     requireStarted(service, local)
     try:
       await sender.sendTo(
-        initTAddress("[ff02::fb]:5353"),
-        encodeMessage(service.announcement(remote, "ipv6-peer")),
+        MulticastMdns6, encodeMessage(service.announcement(remote, "ipv6-peer"))
       )
     except TransportOsError as e:
       when defined(macosx):
@@ -739,7 +720,8 @@ suite "mDNS discovery":
           return
       raise e
     check (await found) == MdnsPeer(peerId: remote.peerId, addrs: remote.listenAddrs)
-    # No condition to wait for: verify the peer is not reported a second time.
+    # Observe a full response interval for a duplicate peer notification;
+    # an event-loop step alone cannot rule out later network delivery.
     await sleepAsync(MdnsResponseInterval)
     check foundCount == 1
 
