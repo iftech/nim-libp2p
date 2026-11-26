@@ -14,24 +14,35 @@
 
 import boringssl
 import results
+import nimcrypto/utils
+import ../utils/redact
 import ./mlkem768layout
 export results
 
 const
   MLKEM768PublicKeyLen* = 1184
     ## Encoded ML-KEM-768 encapsulation (public) key size, in bytes.
-  MLKEM768CiphertextLen* = 1088
-    ## ML-KEM-768 ciphertext size, in bytes.
-  MLKEM768SharedSecretLen* = 32
-    ## ML-KEM-768 shared secret size, in bytes.
+  MLKEM768CiphertextLen* = 1088 ## ML-KEM-768 ciphertext size, in bytes.
+  MLKEM768SharedSecretLen* = 32 ## ML-KEM-768 shared secret size, in bytes.
 
 type
   MLKEM768PublicKeyBytes* = array[MLKEM768PublicKeyLen, byte]
   MLKEM768CiphertextBytes* = array[MLKEM768CiphertextLen, byte]
   MLKEM768SharedSecret* = array[MLKEM768SharedSecretLen, byte]
 
-  MLKEM768ParsedPublicKey = array[mlkem768PublicKeyOpaqueLen, byte]
-  MLKEM768PrivateKeyImpl = array[mlkem768PrivateKeyOpaqueLen, byte]
+  # Opaque storage for BoringSSL's parsed key structs. Those hold `uint16_t`
+  # coefficients, so the storage needs 2-byte alignment wherever it lands: a
+  # bare byte array may sit at an odd offset inside an enclosing object. The
+  # `alignment` member is never read; it mirrors the union BoringSSL declares
+  # for the same reason. `mlkem768layout` checks size and alignment against
+  # the real structs at build time.
+  MLKEM768ParsedPublicKey {.union, bycopy.} = object
+    bytes: array[mlkem768PublicKeyOpaqueLen, byte]
+    alignment: uint16
+
+  MLKEM768PrivateKeyImpl {.union, bycopy.} = object
+    bytes: array[mlkem768PrivateKeyOpaqueLen, byte]
+    alignment: uint16
 
   MLKEM768KeyPair* = object
     publicKey*: MLKEM768PublicKeyBytes ## wire-ready encoded public key
@@ -51,6 +62,10 @@ type
   CbsView {.pure, bycopy.} = object
     data: ptr byte
     len: csize_t
+
+redactType(MLKEM768PrivateKeyImpl, exported = false)
+redactType(MLKEM768KeyPair)
+redactType(MLKEM768EncapResult)
 
 {.push cdecl.}
 proc mlkem768GenerateKeyC(
@@ -75,11 +90,11 @@ proc mlkem768DecapC(
 {.pop.} # cdecl
 
 proc generateKeyPair*(): MLKEM768KeyPair =
-  ## Generates a fresh ML-KEM-768 keypair. `result.publicKey` is the
+  ## Generates a fresh ML-KEM-768 keypair. The returned `publicKey` is the
   ## wire-format encapsulation key ready to be sent to a peer.
-  mlkem768GenerateKeyC(
-    addr result.publicKey[0], nil, addr result.privateKey[0]
-  )
+  var keyPair: MLKEM768KeyPair
+  mlkem768GenerateKeyC(addr keyPair.publicKey[0], nil, addr keyPair.privateKey.bytes[0])
+  keyPair
 
 proc encapsulate*(
     remotePublicKey: openArray[byte]
@@ -89,13 +104,18 @@ proc encapsulate*(
   if remotePublicKey.len != MLKEM768PublicKeyLen:
     return err(MLKEM768InvalidPublicKey)
 
-  var cbs = CbsView(data: unsafeAddr remotePublicKey[0], len: remotePublicKey.len.csize_t)
+  var cbs =
+    CbsView(data: unsafeAddr remotePublicKey[0], len: remotePublicKey.len.csize_t)
   var parsed: MLKEM768ParsedPublicKey
-  if mlkem768ParsePublicKeyC(addr parsed[0], addr cbs) != 1:
+  if mlkem768ParsePublicKeyC(addr parsed.bytes[0], addr cbs) != 1:
     return err(MLKEM768InvalidPublicKey)
 
   var res: MLKEM768EncapResult
-  mlkem768EncapC(addr res.ciphertext[0], addr res.sharedSecret[0], addr parsed[0])
+  defer:
+    # The caller owns (and wipes) the returned copy; do not leave a second
+    # copy of the shared secret behind in this frame.
+    burnMem(res.sharedSecret)
+  mlkem768EncapC(addr res.ciphertext[0], addr res.sharedSecret[0], addr parsed.bytes[0])
   ok(res)
 
 proc decapsulate*(
@@ -111,9 +131,13 @@ proc decapsulate*(
     return err(MLKEM768InvalidCiphertextLength)
 
   var secret: MLKEM768SharedSecret
+  defer:
+    burnMem(secret)
   if mlkem768DecapC(
-    addr secret[0], unsafeAddr ciphertext[0], ciphertext.len.csize_t,
-    unsafeAddr keyPair.privateKey[0],
+    addr secret[0],
+    unsafeAddr ciphertext[0],
+    ciphertext.len.csize_t,
+    unsafeAddr keyPair.privateKey.bytes[0],
   ) != 1:
     return err(MLKEM768InvalidCiphertextLength)
   ok(secret)
