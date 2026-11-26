@@ -55,7 +55,9 @@ proc body(node: PNode): PNode =
 
 # --- checks ---------------------------------------------------------------
 
-proc runImplicitResult(ast: PNode, s: ImplicitResultSettings): seq[Finding] =
+proc runImplicitResult(
+    source: string, ast: PNode, s: ImplicitResultSettings
+): seq[Finding] =
   ## Reports a routine that uses `result` without declaring it.
   ##
   ## Routines are visited outermost first, and a routine's body is not

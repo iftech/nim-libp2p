@@ -78,7 +78,9 @@ iterator nodes(ast: PNode): PNode =
 
 # --- checks ---------------------------------------------------------------
 
-proc runPeerIdRandom(ast: PNode, s: PeerIdRandomSettings): seq[Finding] =
+proc runPeerIdRandom(
+    source: string, ast: PNode, s: PeerIdRandomSettings
+): seq[Finding] =
   for node in nodes(ast):
     if isPeerIdRandomWithRng(node):
       result.add(
@@ -87,7 +89,9 @@ proc runPeerIdRandom(ast: PNode, s: PeerIdRandomSettings): seq[Finding] =
         )
       )
 
-proc runCheckUntilTimeout(ast: PNode, s: CheckUntilTimeoutSettings): seq[Finding] =
+proc runCheckUntilTimeout(
+    source: string, ast: PNode, s: CheckUntilTimeoutSettings
+): seq[Finding] =
   for node in nodes(ast):
     if isCheckUntilTimeout(node):
       result.add(

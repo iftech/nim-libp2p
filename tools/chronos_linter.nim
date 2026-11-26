@@ -133,7 +133,9 @@ iterator nodes(ast: PNode): PNode =
 
 # --- checks ---------------------------------------------------------------
 
-proc runForbiddenCall(ast: PNode, s: ForbiddenCallSettings): seq[Finding] =
+proc runForbiddenCall(
+    source: string, ast: PNode, s: ForbiddenCallSettings
+): seq[Finding] =
   for node in nodes(ast):
     let name = calleeName(node)
     if name.len == 0 or name notin s.names or node.len - 1 < s.minArgs:
@@ -147,7 +149,9 @@ proc runForbiddenCall(ast: PNode, s: ForbiddenCallSettings): seq[Finding] =
       )
     )
 
-proc runCompletedCancel(ast: PNode, s: CompletedCancelSettings): seq[Finding] =
+proc runCompletedCancel(
+    source: string, ast: PNode, s: CompletedCancelSettings
+): seq[Finding] =
   for node in nodes(ast):
     if isCancelGuard(node):
       result.add(

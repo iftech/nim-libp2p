@@ -48,7 +48,7 @@ iterator nodes(ast: PNode): PNode =
 
 # --- checks ---------------------------------------------------------------
 
-proc runCheckFalse(ast: PNode, s: CheckFalseSettings): seq[Finding] =
+proc runCheckFalse(source: string, ast: PNode, s: CheckFalseSettings): seq[Finding] =
   for node in nodes(ast):
     if isCheckFalse(node):
       result.add(
