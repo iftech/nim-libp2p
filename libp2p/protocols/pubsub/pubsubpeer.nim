@@ -936,6 +936,7 @@ func holdsIDontWant*(p: PubSubPeer, id: SaltedId): bool =
 
 proc cancelQueuedRelay*(p: PubSubPeer, id: SaltedId): int =
   ## Removes only queued relays matching this ID, preserving the remaining order.
+  var savedBytes = 0
   var entries: Deque[DoublyLinkedNode[QueuedMessage]]
   if not p.rpcmessagequeue.lowPriorityQueue.byId.pop(id, entries):
     return 0
@@ -946,15 +947,18 @@ proc cancelQueuedRelay*(p: PubSubPeer, id: SaltedId): int =
     dec p.rpcmessagequeue.lowPriorityQueue.count
     let messageBytes = node.value.data.len
     if not p.outboundQueue.release(Low, messageBytes, evictableBytes = messageBytes):
-      return
-    result += messageBytes
+      return savedBytes
+    savedBytes += messageBytes
     when defined(pubsubpeer_queue_metrics):
       libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
+  savedBytes
 
 proc cancelQueuedRelays*(p: PubSubPeer, ids: HashSet[SaltedId]): int =
   ## Counts encoded bytes removed for the supplied IDs.
+  var savedBytes = 0
   for id in ids:
-    result += p.cancelQueuedRelay(id)
+    savedBytes += p.cancelQueuedRelay(id)
+  savedBytes
 
 proc admitMessage(
     p: PubSubPeer, priority: MessagePriority, messageBytes: int, promoteOnEmpty = true

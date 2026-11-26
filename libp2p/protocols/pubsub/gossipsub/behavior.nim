@@ -401,14 +401,16 @@ proc handleIHave*(
 
 proc handleIDontWant*(
     g: GossipSub, peer: PubSubPeer, iDontWants: seq[ControlIWant]
-): int {.discardable.} =
+): int =
+  var savedBytes = 0
   for dontWant in iDontWants:
     for messageId in dontWant.messageIDs:
       if peer.iDontWants[0].len >= IDontWantMaxCount:
         break
       let id = g.salt(messageId)
       if not peer.iDontWants[0].containsOrIncl(id):
-        result += peer.cancelQueuedRelay(id)
+        savedBytes += peer.cancelQueuedRelay(id)
+  savedBytes
 
 proc handleIWant*(
     g: GossipSub, peer: PubSubPeer, iwants: seq[ControlIWant]
