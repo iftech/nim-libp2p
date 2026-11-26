@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import chronos, metrics, sequtils, results, stew/byteutils
 import
   ../../libp2p/[
@@ -24,6 +25,8 @@ import
     unittest, futures, switch_builder, crypto, multiaddress, resolver, stall_server,
     metrics_utils,
   ]
+
+privateAccess(PeerStore)
 
 proc replaceIdentifyHandler(sw: Switch, handler: LPProtoHandler) =
   for holder in sw.ms.handlers:

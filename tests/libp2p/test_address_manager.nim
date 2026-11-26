@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/sequtils
+import std/[importutils, sequtils]
 import chronos
 import
   ../../libp2p/
@@ -105,6 +105,8 @@ proc interfaceProvider(hosts: seq[string]): NetworkInterfaceProvider =
     res
 
 suite "AddressManager observations":
+  privateAccess(AddressManager)
+
   teardown:
     checkTrackers()
 
@@ -269,13 +271,13 @@ suite "AddressManager observations":
       observed = ma("/ip4/1.2.3.4/tcp/1")
 
     manager.stop()
-    check not manager.isStarted()
+    check not manager.started
 
     manager.start()
     manager.start()
 
     check:
-      manager.isStarted()
+      manager.started
       manager.addObservation(PeerId.random(), observed)
       manager.mostObservedProtosAndPorts() == @[observed]
 
@@ -283,7 +285,7 @@ suite "AddressManager observations":
     manager.stop()
 
     check:
-      not manager.isStarted()
+      not manager.started
       manager.mostObservedProtosAndPorts().len == 0
 
   asyncTest "a manager which never started rejects observations":
@@ -292,7 +294,7 @@ suite "AddressManager observations":
       observed = ma("/ip4/1.2.3.4/tcp/1")
 
     check:
-      not manager.isStarted()
+      not manager.started
       not manager.addObservation(PeerId.random(), observed)
       manager.mostObservedProtosAndPorts().len == 0
 
@@ -1239,6 +1241,8 @@ suite "AddressManager verify and announce":
       manager.candidates().anyIt(it.address == observed)
 
 suite "Switch-owned AddressManager":
+  privateAccess(AddressManager)
+
   teardown:
     checkTrackers()
 
@@ -1308,13 +1312,13 @@ suite "Switch-owned AddressManager":
   asyncTest "the switch starts and stops the manager":
     let switch = makeStandardSwitch(ma("/memorytransport/*"))
 
-    check not switch.addressManager.isStarted()
+    check not switch.addressManager.started
 
     await switch.start()
-    check switch.addressManager.isStarted()
+    check switch.addressManager.started
 
     await switch.stop()
-    check not switch.addressManager.isStarted()
+    check not switch.addressManager.started
 
   asyncTest "stopping the switch drops the observations":
     let

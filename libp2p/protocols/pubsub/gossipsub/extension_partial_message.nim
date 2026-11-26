@@ -104,6 +104,9 @@ proc new(T: typedesc[PeerTopicKey], peerId: PeerId, topic: string): PeerTopicKey
 proc new(T: typedesc[TopicGroupKey], topic: string, groupId: GroupId): TopicGroupKey =
   TopicGroupKey(key: TableKey.makeKey(topic, groupId), topic: topic, groupId: groupId)
 
+when defined(libp2p_testing):
+  export TopicGroupKey, new
+
 proc doAssert(config: PartialMessageExtensionConfig) =
   proc msg(arg: string): string =
     return "PartialMessageExtensionConfig." & arg & " must be set"
@@ -202,15 +205,6 @@ proc acquireGroupState(
   ext.peerGroupCount.inc(peerId)
   ext.updateGroupCountMetric()
   group
-
-proc trackedGroups(ext: PartialMessageExtension): int =
-  ext.groupState.len
-
-proc hasGroup(ext: PartialMessageExtension, topic: string, groupId: GroupId): bool =
-  ext.groupState.hasKey(TopicGroupKey.new(topic, groupId))
-
-when defined(libp2p_testing):
-  export trackedGroups, hasGroup
 
 template getPeerState(gs: GroupState, peerId: PeerId): PeerGroupState =
   gs.peerState.mgetOrPut(peerId, PeerGroupState())

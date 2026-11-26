@@ -2,9 +2,12 @@
 # Copyright (c) Status Research & Development GmbH
 {.used.}
 
+import std/importutils
 import std/net
 import ../../../libp2p/utils/iptree
 import ../../tools/unittest
+
+privateAccess(IpTree)
 
 func ip4(a, b, c, d: uint8): IpAddress =
   IpAddress(family: IpAddressFamily.IPv4, address_v4: [a, b, c, d])

@@ -26,8 +26,8 @@ type
     meshAndDirectPeersForTopic*: proc(topic: string): seq[PeerId] {.gcsafe, raises: [].}
 
   PeerState = ref object
-    heIsReceivings*: Table[MessageId, uint32]
-    heIsSendings*: Table[MessageId, Moment]
+    heIsReceivings: Table[MessageId, uint32]
+    heIsSendings: Table[MessageId, Moment]
     bandwidthTracking: BandwidthTracking
 
   PreambleExtension* = ref object of Extension
@@ -36,8 +36,8 @@ type
     supportingPeers: seq[PeerId]
     preambleBudgetUsed: Table[PeerId, int]
     peerState: Table[PeerId, PeerState]
-    ongoingReceives*: PreambleStore # list of messages we are receiving
-    ongoingIWantReceives*: PreambleStore # list of iwant replies we are receiving
+    ongoingReceives: PreambleStore # list of messages we are receiving
+    ongoingIWantReceives: PreambleStore # list of iwant replies we are receiving
 
 proc doAssert(config: PreambleExtensionConfig) =
   doAssert(

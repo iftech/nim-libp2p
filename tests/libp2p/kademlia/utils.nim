@@ -227,6 +227,7 @@ privateAccess(typeof(MemoryKadStore().values.byKey.values()))
 privateAccess(typeof(MemoryKadStore().providers))
 privateAccess(typeof(MemoryKadStore().providers.expiries[0]))
 privateAccess(typeof(MemoryKadStore().provided))
+privateAccess(LookupState)
 
 func mem(kad: KadDHT): MemoryKadStore =
   doAssert kad.store of MemoryKadStore, "the store of this kad is not a MemoryKadStore"

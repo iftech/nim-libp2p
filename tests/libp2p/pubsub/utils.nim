@@ -554,12 +554,6 @@ proc findAndUnsubscribePeers*[T: PubSub](
     if peers.anyIt(it == node.peerInfo.peerId):
       node.unsubscribe(topic, voidTopicHandler)
 
-proc clearMCache*[T: PubSub](node: T) =
-  node.mcache.msgs.clear()
-  for i in 0 ..< node.mcache.history.len:
-    node.mcache.history[i].setLen(0)
-  node.mcache.pos = 0
-
 proc `$`*(peer: PubSubPeer): string =
   shortLog(peer)
 
