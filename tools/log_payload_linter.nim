@@ -135,7 +135,7 @@ proc runBoundedLogPayloads(
   proc collectFormatters(node: PNode) =
     if node.isNil:
       return
-    if node.kind == nkImportStmt:
+    if node.kind in {nkImportStmt, nkImportExceptStmt, nkFromStmt}:
       for child in node:
         if child.kind == nkSym and child.sym.kind == skModule and
             child.sym.id notin visitedModules:
