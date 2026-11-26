@@ -9,3 +9,4 @@ anyhow = "1"
 futures = "0.3"
 libp2p = { version = "=0.56.0", features = ["identify", "macros", "mdns", "noise", "tcp", "tokio", "yamux"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+yamux-wire = { package = "yamux", version = "=0.13.10" }

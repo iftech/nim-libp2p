@@ -1621,6 +1621,7 @@ dependencies = [
  "futures",
  "libp2p",
  "tokio",
+ "yamux 0.13.10",
 ]
 
 [[package]]
