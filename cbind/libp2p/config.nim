@@ -54,7 +54,8 @@ type ServiceDiscoveryConfig {.ffi.} = object
   kRegister: int ## Registrars per bucket that get each advert.
   kLookup: int ## Peers per bucket that a lookup asks.
   fLookup: int ## Providers after which a lookup stops.
-  fReturn: int ## Peers or adverts that a registrar returns per reply; at most 4096.
+  fReturn: int
+    ## Peers or adverts that a registrar returns per reply; at most MaxFReturn.
   bucketsCount: int ## Buckets in each service routing table.
   advertExpiryMs: int64 ## Lifetime of an accepted advert.
   registrationWindowMs: int64
@@ -452,9 +453,7 @@ func parseServiceDiscovery(
         kRegister = ?countOrDefault(cfg.kRegister, "kRegister", Default_K_register),
         kLookup = ?countOrDefault(cfg.kLookup, "kLookup", Default_K_lookup),
         fLookup = ?countOrDefault(cfg.fLookup, "fLookup", Default_F_lookup),
-        fReturn = ?countOrDefault(
-          cfg.fReturn, "fReturn", Default_F_return, ServiceDiscoveryMaxMsgSize
-        ),
+        fReturn = ?countOrDefault(cfg.fReturn, "fReturn", Default_F_return, MaxFReturn),
         bucketsCount = ?countOrDefault(
           cfg.bucketsCount, "bucketsCount", Default_M_buckets, MaxBucketsLimit
         ),

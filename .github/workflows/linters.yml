@@ -47,9 +47,10 @@ jobs:
         run: python3 tools/check-nimble-lock.py
 
       - name: Run nim-lint checks
-        uses: iftech/nim-lint@1.0.0
+        uses: iftech/nim-lint@1.1.1
         with:
           config: linter.nim
+          semantic: true
 
       - name: Check License Header
         uses: apache/skywalking-eyes/header@v0.8.0

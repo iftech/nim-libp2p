@@ -20,7 +20,6 @@ suite "Service Discovery Component - Client Mode":
     checkTrackers()
 
   asyncTest "client-mode node does not serve REGISTER":
-    # The codec stays mounted, because there is no multistream unmount.
     let clientNode = setupServiceDiscoveryNode(client = true)
     let serverNode = setupServiceDiscoveryNode()
     startAndDeferStop(@[clientNode, serverNode])
@@ -28,7 +27,7 @@ suite "Service Discovery Component - Client Mode":
 
     check:
       ExtendedServiceDiscoveryCodec in serverNode.switch.peerInfo.protocols
-      ExtendedServiceDiscoveryCodec in clientNode.switch.peerInfo.protocols
+      ExtendedServiceDiscoveryCodec notin clientNode.switch.peerInfo.protocols
 
     let serviceName = "service"
     let serviceId = serviceName.hashServiceId()
@@ -78,7 +77,7 @@ suite "Service Discovery Component - Client Mode":
     startAndDeferStop(@[clientNode, discovererNode])
     await connect(discovererNode, clientNode)
 
-    check ExtendedServiceDiscoveryCodec in clientNode.switch.peerInfo.protocols
+    check ExtendedServiceDiscoveryCodec notin clientNode.switch.peerInfo.protocols
 
     let serviceName = "service"
     let serviceId = serviceName.hashServiceId()
@@ -158,5 +157,6 @@ suite "Service Discovery Component - Client Mode":
     check await advertiserNode.changeMode(isServer = false)
 
     checkUntilTimeout:
-      advertiserNode.localRegistrationLoop.finished()
+      advertiserNode.localRegistrationLoop.isNil() or
+        advertiserNode.localRegistrationLoop.finished()
       advertiserNode.advertiser.running.allIt(it.fut.finished())

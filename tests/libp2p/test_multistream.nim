@@ -806,6 +806,7 @@ suite "Multistream :: optimistic selection":
     let selected = await MultistreamSelect.selectOptimistic(client, codec)
     defer:
       await selected.close()
+    check client.protocol == codec
     await selected.writeLp("early payload")
     check string.fromBytes(await server.readLp(1024)) == header
     check string.fromBytes(await server.readLp(1024)) == codec & "\n"

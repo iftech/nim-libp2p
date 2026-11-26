@@ -19,6 +19,14 @@ const
   DefaultAutoModeCooldown* = 5.minutes
 
 type
+  HoldReason* {.pure.} = enum
+    Window = "window"
+    Cooldown = "cooldown"
+
+  Hold = object
+    until: Moment
+    reason: HoldReason
+
   AutoModeConfig* = object
     promotionWindow*: Duration ## How long Reachable must hold before client -> server.
     demotionWindow*: Duration ## How long NotReachable must hold before server -> client.
@@ -53,14 +61,33 @@ func init*(
 func init*(T: type AutoModePolicy, config: AutoModeConfig, isServer: bool): T =
   T(config: config, isServer: isServer)
 
-func deadline*(p: AutoModePolicy): Opt[Moment] =
+func autoModeConfig*(p: AutoModePolicy): AutoModeConfig =
+  p.config
+
+func restarted*(p: AutoModePolicy, isServer: bool): AutoModePolicy =
+  AutoModePolicy.init(p.config, isServer)
+
+func hold(p: AutoModePolicy): Opt[Hold] =
   let change = p.pending.valueOr:
-    return Opt.none(Moment)
+    return Opt.none(Hold)
   let settled = change.since + change.window
 
   p.lastChange.ifValue(last):
-    return Opt.some(max(settled, last + p.config.cooldown))
-  Opt.some(settled)
+    let cooled = last + p.config.cooldown
+    if cooled > settled:
+      return Opt.some(Hold(until: cooled, reason: HoldReason.Cooldown))
+  Opt.some(Hold(until: settled, reason: HoldReason.Window))
+
+func deadline*(p: AutoModePolicy): Opt[Moment] =
+  let h = p.hold().valueOr:
+    return Opt.none(Moment)
+  Opt.some(h.until)
+
+func holdReason*(p: AutoModePolicy): Opt[HoldReason] =
+  ## Why the pending change waits: the window, or the cooldown after the last change.
+  let h = p.hold().valueOr:
+    return Opt.none(HoldReason)
+  Opt.some(h.reason)
 
 func start(p: var AutoModePolicy, window: Duration, now: Moment) =
   # A repeat keeps since, so a source that notifies often cannot defer the change.

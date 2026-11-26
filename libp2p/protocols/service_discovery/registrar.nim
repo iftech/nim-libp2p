@@ -27,19 +27,13 @@ proc updateRegistrarMetrics(registrar: Registrar) {.raises: [].} =
   cd_registrar_cache_services.set(registrar.ads.serviceLen.float64)
   cd_iptree_total_ips.set(registrar.ads.ipTree.ipsLen.float64)
 
-proc isExpired(now, ts: Moment, expiry: Duration): bool =
-  now - ts > expiry
-
-proc pruneExpiredEntries[K](
-    timestamps: var Table[K, Moment],
-    bounds: var Table[K, Moment],
-    now: Moment,
-    expiry: Duration,
+proc pruneExpiredBounds[K](
+    timestamps: var Table[K, Moment], bounds: var Table[K, Moment], now: Moment
 ) =
   var toRemove: seq[K] = @[]
 
-  for k, ts in timestamps:
-    if isExpired(now, ts, expiry):
+  for k, bound in bounds:
+    if now > bound:
       toRemove.add(k)
 
   for k in toRemove:
@@ -56,13 +50,8 @@ proc pruneExpiredAds*(registrar: Registrar, advertExpiry: Duration) =
     cd_registrar_ads_expired.inc(expiredCount.float64)
     registrar.updateRegistrarMetrics()
 
-  # Expire service-level bounds
-  pruneExpiredEntries(
-    registrar.timestampService, registrar.boundService, now, advertExpiry
-  )
-
-  # Expire IP-level bounds
-  pruneExpiredEntries(registrar.timestampIp, registrar.boundIp, now, advertExpiry)
+  pruneExpiredBounds(registrar.timestampService, registrar.boundService, now)
+  pruneExpiredBounds(registrar.timestampIp, registrar.boundIp, now)
 
   debug "Pruned expired adverts", count = expiredCount
 
@@ -88,6 +77,9 @@ proc advertiserIps*(
     addrs = disco.switch.peerInfo.addrs
 
   addrs.getIPs()
+
+# Near a full cache the formula reaches uint32.high s; the cap keeps bounds prunable.
+const MaxLowerBoundFactor* = 24
 
 proc waitingTime*(
     registrar: Registrar,
@@ -116,9 +108,8 @@ proc waitingTime*(
     discoConfig.advertExpiry.seconds.float64 * occupancy *
     (serviceSim + discoConfig.ipSimCoefficient * ipSim + discoConfig.safetyParam)
 
-  # Bound & Quantize W
-  w = w.clamp(0.0, float64(uint32.high))
-  w = round(w)
+  let maxWait = (MaxLowerBoundFactor * discoConfig.advertExpiry).seconds.float64
+  w = round(w.clamp(0.0, maxWait))
 
   var waitDuration = w.int64.secs
 
@@ -371,7 +362,8 @@ proc registration*(
   disco.seatSender(serviceId, peerId)
 
   let ips = disco.advertiserIps(peerId, connectionIps)
-  var tWait = disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now)
+  let fullWait = disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now)
+  var tWait = fullWait
 
   disco.updateWaitAfterRetry(ticketOpt, unixNow, tWait)
 
@@ -388,7 +380,7 @@ proc registration*(
 
   tWait = min(disco.discoConfig.advertExpiry, tWait)
 
-  disco.registrar.updateLowerBounds(serviceId, ips, tWait, now)
+  disco.registrar.updateLowerBounds(serviceId, ips, fullWait, now)
 
   var ticket = Ticket(
     advertisement: regMsg.advertisement,

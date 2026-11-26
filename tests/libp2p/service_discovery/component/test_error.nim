@@ -8,9 +8,12 @@ import
   ../../../../libp2p/[
     extended_peer_record,
     multiaddress,
+    peerstore,
     protocols/kademlia/put,
+    protocols/protocol,
     protocols/service_discovery/advertiser,
     protocols/service_discovery/connection,
+    protocols/service_discovery/dial_backoff,
     protocols/service_discovery/types,
     stream/connection,
     switch,
@@ -211,6 +214,41 @@ suite "Service Discovery Component - Error Handling":
 
     expect LPStreamError:
       discard await clientSwitch.sendRawMessage(registrarNode, oversizedMsg)
+
+  asyncTest "reply above the read limit fails the send without a dial failure":
+    let disco = setupServiceDiscoveryNode()
+    let registrar = createSwitch()
+    let oversizedReply = newSeq[byte](ServiceDiscoveryMaxMsgSize + 1)
+
+    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      defer:
+        await stream.close()
+      try:
+        discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
+        await stream.writeLp(oversizedReply)
+      except LPStreamError:
+        # The client resets the stream once it rejects the length prefix.
+        discard
+
+    registrar.mount(LPProtocol.new(@[ExtendedServiceDiscoveryCodec], handle))
+    startAndDeferStop(@[disco])
+    await registrar.start()
+    defer:
+      await registrar.stop()
+
+    let registrarId = registrar.peerInfo.peerId
+    disco.switch.peerStore[AddressBook].set(
+      registrarId, registrar.peerInfo.addrs, AddressConfidence.Low
+    )
+
+    let reply = await disco.send(
+      registrarId, kad_protobuf.Message(msgType: kad_protobuf.MessageType.getAds)
+    )
+
+    check:
+      reply.isErr()
+      disco.dialFailures.len == 0
+      not disco.dialBackedOff(registrarId, registrar.peerInfo.addrs)
 
   asyncTest "REGISTER with non-32-byte key returns Rejected":
     # Spec calls for rejection on bad key length.

@@ -3,7 +3,7 @@
 
 {.used.}
 
-import bearssl, chronos, std/times, stew/byteutils
+import bearssl, chronos, std/[importutils, tables, times], stew/byteutils
 import
   ../../../libp2p/[
     builders,
@@ -270,6 +270,25 @@ suite "Circuit Relay V2":
       check:
         msg.msgType == HopMessageType.Status
         msg.status == StatusV2.ReservationRefused
+
+    asyncTest "Holder refreshes its reservation on a full relay":
+      privateAccess(Relay)
+      let
+        holder = src1.peerInfo.peerId
+        clockStep = 1.seconds
+        before = rv2.rsvp[holder] - clockStep
+        count = rv2.rsvp.len()
+      # The Windows clock is coarse, so a fast refresh can store the same expiry.
+      rv2.rsvp[holder] = before
+
+      let refreshed = await cl1.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
+      check:
+        refreshed.expire.int64.fromUnix.utc in range
+        rv2.rsvp[holder] > before
+        rv2.rsvp.len() == count
+
+      expect ReservationError:
+        discard await cl2.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
 
     asyncTest "tryReserve returns a refused reservation as an error":
       let res = await cl2.tryReserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
@@ -621,7 +640,7 @@ suite "Circuit Relay V2":
           await stream.reset()
 
         let
-          rel2Cl = RelayClient.new(canHop = true)
+          rel2Cl = RelayClient.new(canHop = true, circuitRelayV1 = true)
           rel2 = createSwitch(rel2Cl, useYamux)
           rv2 = Relay.new()
         rv2.setup(rel)

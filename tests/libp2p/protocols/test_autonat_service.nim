@@ -64,7 +64,7 @@ method dialMe*(
 .} =
   self.dialStarted.fire()
   try:
-    await newAsyncEvent().wait()
+    await waitForCancellation()
   except CancelledError as exc:
     self.dialCancelled.fire()
     raise exc

@@ -8,6 +8,7 @@ import ../../../../libp2p/stream/bridgestream
 import
   ../../../../libp2p/protocols/pubsub/
     [gossipsub/extensions_types, gossipsub/extension_topic_streams, rpc/messages]
+import ../../../tools/futures
 
 proc makeRPC*(extensions: ControlExtensions = ControlExtensions()): RPCMsg =
   return RPCMsg.withControl(ControlMessage.withExtensions(extensions))
@@ -60,7 +61,7 @@ proc dial*(recorder: TopicStreamsRecorder): TopicStreamDial =
 proc pendingDial*(recorder: TopicStreamsRecorder): TopicStreamDial =
   return proc(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
     try:
-      await newAsyncEvent().wait()
+      await waitForCancellation()
     except CancelledError as exc:
       inc recorder.cancelledDials
       raise exc

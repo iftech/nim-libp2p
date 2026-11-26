@@ -10,6 +10,10 @@ import ../../../libp2p/services/[natservice, reachabilityobservers]
 import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 import ./utils.nim
 
+const ImmediateAutoMode = AutoModeConfig.init(
+  promotionWindow = ZeroDuration, demotionWindow = ZeroDuration, cooldown = ZeroDuration
+)
+
 proc buildKadSwitch(mode: KadMode): Switch {.raises: [LPError].} =
   makeStandardSwitchBuilder(TcpAutoAddress).withKademlia(mode = mode).build()
 
@@ -18,7 +22,7 @@ proc buildAutoKadSwitch(): Switch {.raises: [LPError].} =
   makeStandardSwitchBuilder(TcpAutoAddress)
     .withAutonat()
     .withNAT(autonatConfig(AutonatV1, Opt.some(1.seconds)))
-    .withKademlia(mode = KadMode.Auto)
+    .withKademlia(mode = KadMode.Auto, autoMode = ImmediateAutoMode)
     .build()
 
 proc buildAutonatPeer(): Switch {.raises: [LPError].} =
@@ -28,7 +32,7 @@ proc buildAutonatPeer(): Switch {.raises: [LPError].} =
 proc buildV2KadSwitch(mode: KadMode): Switch {.raises: [LPError].} =
   makeStandardSwitchBuilder(TcpAutoAddress)
     .withNAT(autonatConfig(AutonatV2))
-    .withKademlia(mode = mode)
+    .withKademlia(mode = mode, autoMode = ImmediateAutoMode)
     .build()
 
 type FixedVerdictVerifier = ref object of Verifier
@@ -38,12 +42,6 @@ method verify(
     self: FixedVerdictVerifier, address: MultiAddress
 ): Future[Opt[AddrState]] {.async: (raises: [CancelledError]).} =
   Opt.some(self.state)
-
-proc mountedKad(switch: Switch): Opt[KadDHT] =
-  for handler in switch.ms.handlers:
-    if KadCodec in handler.protos:
-      return Opt.some(KadDHT(handler.protocol))
-  Opt.none(KadDHT)
 
 const reachabilitySteps = [
   (AddrState.Confirmed, NetworkReachability.Reachable),
@@ -82,12 +80,28 @@ suite "KadDHT Switch Builder":
   teardown:
     checkTrackers()
 
-  test "Configured mode sets the initial serving flag":
-    check:
-      buildKadSwitch(KadMode.Server).mountedKad().get().isServer
-      not buildKadSwitch(KadMode.Client).mountedKad().get().isServer
-      # Auto serves nothing until autonat proves the node reachable.
-      not buildKadSwitch(KadMode.Auto).mountedKad().get().isServer
+  test "Configured mode sets the initial serving flag and advertisement":
+    # Auto serves nothing until autonat proves the node reachable.
+    for mode in [KadMode.Server, KadMode.Client, KadMode.Auto]:
+      checkpoint $mode
+      let switch = buildKadSwitch(mode)
+      let wantServer = mode == KadMode.Server
+      check:
+        switch.mountedKad().get().isServer == wantServer
+        (KadCodec in switch.peerInfo.protocols) == wantServer
+
+  test "withKademlia passes the auto mode windows to the policy":
+    let windows = AutoModeConfig.init(
+      promotionWindow = 2.seconds,
+      demotionWindow = 3.seconds,
+      cooldown = 4.seconds,
+      unknownDemotion = Opt.some(5.seconds),
+    )
+    let node = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withNAT(autonatConfig(AutonatV2))
+      .withKademlia(mode = KadMode.Auto, autoMode = windows)
+      .build()
+    check node.mountedKad().get().autoModePolicy.autoModeConfig == windows
 
   asyncTest "Auto mode starts serving once autonat reports the node reachable":
     let node = buildAutoKadSwitch()

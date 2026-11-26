@@ -288,8 +288,9 @@ proc tryMount*[T: LPProtocol](
     return err("Protocol needs to be started when mounting to started Switch")
 
   s.ms.addHandler(proto, matcher)
-  s.peerInfo.protocols.add(proto.codec)
-  s.peerInfo.notifyObservers()
+  if not proto.unadvertised:
+    s.peerInfo.protocols.add(proto.codec)
+    s.peerInfo.notifyObservers()
   ok()
 
 proc mount*[T: LPProtocol](
@@ -307,6 +308,17 @@ proc unmount*(s: Switch, proto: LPProtocol): bool =
     s.peerInfo.protocols.keepItIf(it != proto.codec)
   s.peerInfo.notifyObservers()
   true
+
+proc setAdvertised*(s: Switch, codec: string, advertised: bool) =
+  ## Add or drop `codec` in the protocol list that identify sends.
+  if (codec in s.peerInfo.protocols) == advertised:
+    return
+
+  if advertised:
+    s.peerInfo.protocols.add(codec)
+  else:
+    s.peerInfo.protocols.keepItIf(it != codec)
+  s.peerInfo.notifyObservers()
 
 proc upgrader(
     switch: Switch, trans: Transport, conn: RawConn, observer: string
@@ -534,6 +546,6 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
     peerId = s.peerInfo.peerId,
     listenAddresses = s.peerInfo.listenAddrs,
     announcedAddresses = s.peerInfo.addrs,
-    protocols = s.peerInfo.protocols,
+    protocols = s.peerInfo.protocols, #nolint
     transports = s.transports.len,
     services = s.services.len

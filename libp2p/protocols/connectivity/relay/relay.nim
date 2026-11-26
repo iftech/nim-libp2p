@@ -113,7 +113,8 @@ proc handleReserve(
     await sendHopStatus(stream, PermissionDenied)
     return
 
-  if r.peerCount[stream.peerId] + r.rsvp.len() >= r.maxCircuit:
+  if stream.peerId notin r.rsvp and
+      r.peerCount[stream.peerId] + r.rsvp.len() >= r.maxCircuit:
     libp2p_relay_reservation_attempts.inc(labelValues = ["limit"])
     trace "Too many reservations", pid = stream.peerId
     await sendHopStatus(stream, ReservationRefused)
@@ -434,7 +435,7 @@ method start*(r: Relay): Future[void] {.async: (raises: [CancelledError], raw: t
     return fut
   r.reservationLoop = r.deletesReservation()
   r.started = true
-  info "Circuit relay service started", protocols = r.codecs
+  info "Circuit relay service started", protocols = r.codecs #nolint
   fut
 
 method stop*(r: Relay): Future[void] {.async: (raises: [], raw: true).} =
