@@ -116,14 +116,13 @@ proc runBoundedLogPayloads(
     if node.kind in {nkCall, nkCommand} and node.len > 1 and
         symbolName(node[0]) in
         ["trace", "debug", "info", "notice", "warn", "error", "fatal"]:
-      if node[1].kind notin {nkStrLit .. nkTripleStrLit}:
-        return
-      for i in 2 ..< node.len:
-        let field = node[i]
-        if field.kind == nkExprEqExpr and field.len == 2:
-          sourceFields.add (symbolName(field[0]), node[1].strVal, field[1])
-        elif field.kind == nkIdent:
-          sourceFields.add (symbolName(field), node[1].strVal, field)
+      if node[1].kind in {nkStrLit .. nkTripleStrLit}:
+        for i in 2 ..< node.len:
+          let field = node[i]
+          if field.kind == nkExprEqExpr and field.len == 2:
+            sourceFields.add (symbolName(field[0]), node[1].strVal, field[1])
+          elif field.kind == nkIdent:
+            sourceFields.add (symbolName(field), node[1].strVal, field)
     for child in node:
       collectFields(child)
 
