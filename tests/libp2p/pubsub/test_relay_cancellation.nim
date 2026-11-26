@@ -36,7 +36,7 @@ suite "GossipSub relay cancellation":
       )
       await peer.sendEncoded(@[4.byte], MessagePriority.Low)
       let empty = RPCMsg.withControl(ControlMessage(idontwant: @[ControlIWant()]))
-      for i in 0 ..< 100:
+      for _ in 0 ..< 100:
         await gossip.rpcHandler(peer, empty.encode(false))
       check peer.queuedBytes(MessagePriority.Low) == 4
       let rpc =
