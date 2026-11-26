@@ -363,15 +363,13 @@ method listProvided*(
 
 method stats*(
     store: MemoryKadStore, now: UnixTimestamp
-): LPResult[Opt[KadStoreStats]] {.gcsafe, raises: [].} =
+): LPResult[KadStoreStats] {.gcsafe, raises: [].} =
   store.values.prune(now)
   store.providers.prune(now)
   ok(
-    Opt.some(
-      KadStoreStats(
-        valueRecords: store.values.byKey.len,
-        providerRecords: store.providers.count,
-        providedKeys: store.provided.stamps.len,
-      )
+    KadStoreStats(
+      valueRecords: store.values.byKey.len,
+      providerRecords: store.providers.count,
+      providedKeys: store.provided.stamps.len,
     )
   )

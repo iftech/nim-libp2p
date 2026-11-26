@@ -13,7 +13,6 @@
 ## - ``getProviders`` returns the providers of a key in no fixed order.
 ## - ``err`` means the backend failed. The core logs it and treats the call as "not stored" or "not found".
 ## - A ``limit`` below 1 returns no entries.
-## - ``stats`` is optional. The base method returns ``Opt.none`` and ``KadDHT`` then leaves its store gauges unset.
 ## - A method is synchronous and must not block for long: ``KadDHT`` calls it on the chronos event loop.
 ## - A method is atomic: a check and its write run in one call, so no other write lands between them.
 ## - The application opens and closes the store. ``KadDHT`` does not.
@@ -106,6 +105,7 @@ method listProvided*(
   raiseAssert "[KadStore.listProvided] abstract method not implemented!"
 
 method stats*(
-    store: KadStore, now: UnixTimestamp
-): LPResult[Opt[KadStoreStats]] {.base, gcsafe, raises: [].} =
-  ok(Opt.none(KadStoreStats))
+    store: KadStore, now = UnixTimestamp.now()
+): LPResult[KadStoreStats] {.base, gcsafe, raises: [].} =
+  ## Live counts for the metrics. A store that does not override it answers ``err``, so the gauges keep their value.
+  err("stats is not supported by this store")

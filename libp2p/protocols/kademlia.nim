@@ -282,14 +282,13 @@ proc waitBootstrap*(
   join(kad.bootstrapFut)
 
 proc updateStoreGauges*(kad: KadDHT) {.raises: [].} =
-  let stats = kad.store.stats(UnixTimestamp.now()).valueOr:
+  let stats = kad.store.stats().valueOr:
     kad_store_errors.inc(labelValues = ["stats"])
     debug "Failed to read store stats", err = error
     return
-  stats.ifValue(s):
-    kad_stored_value_records.set(s.valueRecords.int64)
-    kad_stored_provider_records.set(s.providerRecords.int64)
-    kad_provided_keys.set(s.providedKeys.int64)
+  kad_stored_value_records.set(stats.valueRecords.int64)
+  kad_stored_provider_records.set(stats.providerRecords.int64)
+  kad_provided_keys.set(stats.providedKeys.int64)
 
 proc maintainBuckets(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   var timedOut = false

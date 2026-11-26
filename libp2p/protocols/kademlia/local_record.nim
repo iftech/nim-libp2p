@@ -34,7 +34,7 @@ proc putLocalRecord(kad: KadDHT, key: RecordKey, record: EntryRecord): bool =
   )
   let stored = kad.store.putValue(value, now).valueOr:
     kad_store_errors.inc(labelValues = ["putValue"])
-    warn "Local record not stored: store failed", err = error
+    debug "Local record not stored: store failed", err = error
     return false
   if not stored:
     debug "Local record not stored: store is full", key

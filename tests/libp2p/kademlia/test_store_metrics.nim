@@ -14,16 +14,14 @@ import ./utils
 const Sentinel = 42.0
 
 type
-  NoStatsStore = ref object of MemoryKadStore
-
   FailingPutStore = ref object of MemoryKadStore
 
   FailingStatsStore = ref object of MemoryKadStore
 
-method stats*(
-    store: NoStatsStore, now: UnixTimestamp
-): LPResult[Opt[KadStoreStats]] {.gcsafe, raises: [].} =
-  ok(Opt.none(KadStoreStats))
+method getValue*(
+    store: FailingPutStore, key: RecordKey, now: UnixTimestamp
+): LPResult[Opt[StoredValue]] {.gcsafe, raises: [].} =
+  ok(Opt.none(StoredValue))
 
 method putValue*(
     store: FailingPutStore, value: StoredValue, now: UnixTimestamp
@@ -32,13 +30,13 @@ method putValue*(
 
 method stats*(
     store: FailingStatsStore, now: UnixTimestamp
-): LPResult[Opt[KadStoreStats]] {.gcsafe, raises: [].} =
+): LPResult[KadStoreStats] {.gcsafe, raises: [].} =
   err("stats failed")
 
 proc testCid(): Cid =
   Cid.init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", [1'u8]).get()).get()
 
-proc kadWith(store: KadStore): KadDHT =
+proc makeKad(store: KadStore): KadDHT =
   var config = testKadConfig()
   config.store = Opt.some(store)
   setupKad(config)
@@ -57,7 +55,7 @@ proc storedProvider(): StoredProvider =
 
 suite "Kademlia store metrics":
   asyncTest "gauges read the live counts of the store":
-    let kad = kadWith(MemoryKadStore.new())
+    let kad = makeKad(MemoryKadStore.new())
 
     check kad.putBestLocalRecord(testKey(), entry())
     check kad.store
@@ -73,7 +71,7 @@ suite "Kademlia store metrics":
 
   test "gauges skip an expired record":
     let store = MemoryKadStore.new()
-    let kad = kadWith(store)
+    let kad = makeKad(store)
     let now = UnixTimestamp.now()
     check store
       .putValue(
@@ -85,28 +83,15 @@ suite "Kademlia store metrics":
 
     check metricValue(kad_stored_value_records) == 0.0
 
-  test "a store without stats leaves the gauges unset":
-    let kad = kadWith(NoStatsStore.new())
-    kad_stored_value_records.set(Sentinel)
-    kad_stored_provider_records.set(Sentinel)
-    kad_provided_keys.set(Sentinel)
-
-    kad.updateStoreGauges()
-
-    check:
-      metricValue(kad_stored_value_records) == Sentinel
-      metricValue(kad_stored_provider_records) == Sentinel
-      metricValue(kad_provided_keys) == Sentinel
-
   test "a failing store method increments kad_store_errors":
-    let kad = kadWith(FailingPutStore.new())
+    let kad = makeKad(FailingPutStore.new())
     let before = metricValue(kad_store_errors, ["putValue"])
 
     check not kad.putBestLocalRecord(testKey(), entry())
     check metricValue(kad_store_errors, ["putValue"]) == before + 1
 
   test "a failing stats call increments kad_store_errors and leaves the gauges":
-    let kad = kadWith(FailingStatsStore.new())
+    let kad = makeKad(FailingStatsStore.new())
     kad_stored_value_records.set(Sentinel)
     let before = metricValue(kad_store_errors, ["stats"])
 
@@ -115,3 +100,11 @@ suite "Kademlia store metrics":
     check:
       metricValue(kad_store_errors, ["stats"]) == before + 1
       metricValue(kad_stored_value_records) == Sentinel
+
+  test "a store without stats leaves the gauges and does not crash":
+    let kad = makeKad(KadStore())
+    kad_stored_value_records.set(Sentinel)
+
+    kad.updateStoreGauges()
+
+    check metricValue(kad_stored_value_records) == Sentinel
