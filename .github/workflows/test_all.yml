@@ -21,7 +21,7 @@ jobs:
   test:
     env:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
-    timeout-minutes: 60
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -47,11 +47,11 @@ jobs:
             cc: gcc
             log_level: INFO
         nim:
-          - ref: v2.2.4
+          - ref: v2.2.6
             memory_management: refc
-          - ref: v2.2.10
+          - ref: v2.2.14
             memory_management: refc
-          - ref: v2.2.10
+          - ref: v2.2.14
             memory_management: orc
         include:
           - platform:
@@ -189,17 +189,18 @@ jobs:
   test-asan:
     env:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
-      NIM_REF: v2.2.10
+      NIM_REF: v2.2.14
     permissions:
+      actions: write
       checks: write
       contents: read
-    timeout-minutes: 55
+    timeout-minutes: 65
 
     defaults:
       run:
         shell: bash
 
-    name: "linux-amd64 (Nim v2.2.10 / gcc / orc / asan)"
+    name: "linux-amd64 (Nim v2.2.14 / gcc / orc / asan)"
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -254,6 +255,17 @@ jobs:
         with:
           path: nimcache
           key: ${{ steps.nimcache-restore.outputs.cache-primary-key }}
+
+      - name: Prune old nimcache entries
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREFIX="nimcache-test_all_asan-linux-amd64-gcc-${{ env.NIM_REF }}-orc"
+          KEEP="${{ steps.nimcache-restore.outputs.cache-primary-key }}"
+          gh cache list --ref "${{ github.ref }}" --limit 100 --json id,key \
+            --jq ".[] | select(.key | startswith(\"$PREFIX\")) | select(.key != \"$KEEP\") | .id" \
+            | xargs -r -n1 gh cache delete
 
       - name: Run tests
         id: run-tests

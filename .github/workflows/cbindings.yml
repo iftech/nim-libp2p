@@ -44,7 +44,7 @@ jobs:
           shell: bash
           os: linux
           cpu: amd64
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Restore dependencies from cache
         uses: "./.github/actions/install_cbind_deps"
@@ -52,7 +52,7 @@ jobs:
           os: linux
           cpu: amd64
           cc: gcc
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Generate C/CDDL bindings
         run: |
@@ -66,19 +66,19 @@ jobs:
           nimble genbindings_c
           nimble genbindings_cddl
 
-      # The only linux build of the shipped refc library; `examples` builds orc.
+      - name: Run cbind tests and examples
+        env:
+          LIBP2P_SAN: ${{ matrix.san }}
+        run: |
+          cd cbind
+          nimble test
+
+      # The only linux build of the shipped refc library; `test` builds orc.
       - name: Build FFI library
         if: matrix.san == 'asan'
         run: |
           cd cbind
           nimble buildffi
-
-      - name: Build and run C bindings examples
-        env:
-          LIBP2P_SAN: ${{ matrix.san }}
-        run: |
-          cd cbind
-          nimble examples
 
   # macOS coverage for the FFI library build + C/CDDL binding generation; the
   # main c-bindings job above covers linux.
@@ -108,7 +108,7 @@ jobs:
           shell: bash
           os: macos-15
           cpu: arm64
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Restore dependencies from cache
         uses: "./.github/actions/install_cbind_deps"
@@ -116,7 +116,7 @@ jobs:
           os: macos-15
           cpu: arm64
           cc: clang
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Build FFI library and generate C/CDDL bindings
         run: |

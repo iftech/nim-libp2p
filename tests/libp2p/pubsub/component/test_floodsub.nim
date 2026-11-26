@@ -3,7 +3,7 @@
 
 {.used.}
 
-import sequtils, tables, sets, chronos, stew/byteutils
+import sequtils, tables, sets, chronos, stew/byteutils, strutils
 import chronos/ratelimit
 import
   ../utils,
@@ -23,7 +23,7 @@ import ../../../../libp2p/protocols/pubsub/errors as pubsub_errors
 import ../../../tools/[lifecycle, topology, unittest, futures]
 
 proc addRateLimitedPeer(f: FloodSub, bucket: TokenBucket): PubSubPeer =
-  let peerId = randomPeerId()
+  let peerId = PeerId.random()
   proc getStream(): Future[Stream] {.
       async: (raises: [CancelledError, GetStreamDialError])
   .} =
@@ -44,6 +44,41 @@ suite "FloodSub Component", timeout = 120.seconds:
 
   teardown:
     checkTrackers()
+
+  asyncTest "FloodSub publish - already-seen message is not delivered locally again":
+    # Given a node delivering to itself, with a peer subscribed to the topic
+    func firstByteMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
+      ok(MessageId(@[m.data[0]]))
+
+    let nodes = generateNodes(
+        2, triggerSelf = true, msgIdProvider = firstByteMsgIdProvider
+      )
+      .toFloodSub()
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    var delivered = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      inc delivered
+
+    nodes[0].subscribe(topic, handler)
+    nodes[1].subscribe(topic, voidTopicHandler)
+    waitSubscribe(nodes[0], nodes[1], topic)
+
+    # When two messages with the same id are published, then one with a new id
+    discard await nodes[0].publish(topic, @[1'u8, 1])
+    discard await nodes[0].publish(topic, @[1'u8, 2])
+
+    # Then the duplicate is dropped before reaching the local handler
+    check:
+      delivered == 1
+
+    discard await nodes[0].publish(topic, @[2'u8])
+
+    # And a message with a different id is still delivered
+    check:
+      delivered == 2
 
   asyncTest "FloodSub basic publish/subscribe A -> B":
     let (handlerFut, handler) = createCompleteHandler()
@@ -66,20 +101,6 @@ suite "FloodSub Component", timeout = 120.seconds:
       check:
         agentA == "nim-libp2p"
         agentB == "nim-libp2p"
-
-  asyncTest "FloodSub basic publish/subscribe B -> A":
-    let (handlerFut, handler) = createCompleteHandler()
-
-    let nodes = generateNodes(2).toFloodSub()
-
-    startAndDeferStop(nodes)
-    await connectStar(nodes)
-
-    nodes[0].subscribe(topic, handler)
-    waitSubscribe(nodes[1], nodes[0], topic)
-
-    check (await nodes[1].publish(topic, "Hello!".toBytes())) > 0
-    check (await handlerFut) == true
 
   asyncTest "FloodSub validation should succeed":
     let (handlerFut, handler) = createCompleteHandler()
@@ -287,6 +308,49 @@ suite "FloodSub Component", timeout = 120.seconds:
     check:
       messageReceived == 2
 
+  asyncTest "oversized message from a larger-limit peer does not break the connection":
+    # A peer with a larger maxMessageSize may send a frame we refuse. The
+    # stream is reset, the sender re-opens it, and later messages still arrive.
+    let received = newAsyncQueue[seq[byte]]()
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      await received.put(data)
+
+    let
+      bigNode = generateNodes(1).toFloodSub()[0]
+      smallNode = generateNodes(1, maxMessageSize = 1024).toFloodSub()[0]
+      nodes = @[bigNode, smallNode]
+
+    startAndDeferStop(nodes)
+    await connectStar(nodes)
+
+    subscribeAllNodes(nodes, topic, handler)
+    waitSubscribeStar(nodes, topic)
+
+    # Fires when bigNode re-opens its send stream to smallNode.
+    let smallPeer = bigNode.peers[smallNode.peerInfo.peerId]
+    let reopened = newAsyncEvent()
+    let onEvent = smallPeer.onEvent
+    smallPeer.onEvent = proc(
+        peer: PubSubPeer, event: PubSubPeerEvent
+    ) {.gcsafe, raises: [].} =
+      onEvent(peer, event)
+      if event.kind == PubSubPeerEventKind.StreamOpened:
+        reopened.fire()
+
+    let
+      oversized = newSeq[byte](2048) # over smallNode's limit
+      small1 = @[1.byte]
+      small2 = @[2.byte]
+
+    check (await bigNode.publish(topic, small1)) > 0
+    check (await received.popFirst()) == small1
+
+    check (await bigNode.publish(topic, oversized)) > 0
+    await reopened.wait()
+
+    check (await bigNode.publish(topic, small2)) > 0
+    check (await received.popFirst()) == small2
+
   asyncTest "FloodSub message size validation 2":
     var messageReceived = 0
     proc handler(topic: string, data: seq[byte]) {.async.} =
@@ -313,7 +377,7 @@ suite "FloodSub Component", timeout = 120.seconds:
     let node = generateNodes(1).toFloodSub()[0]
     node.topicsHigh = 10
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     proc getStream(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
@@ -345,10 +409,60 @@ suite "FloodSub Component", timeout = 120.seconds:
       peer.subscribedTopics == node.topicsHigh
       node.floodsub.hasKey(topic & "late")
 
+  asyncTest "FloodSub cumulative subscription topic byte budget":
+    let node = generateNodes(1).toFloodSub()[0]
+    let peerId = PeerId.random()
+    proc getStream(): Future[Stream] {.
+        async: (raises: [CancelledError, GetStreamDialError])
+    .} =
+      raise (ref GetStreamDialError)(msg: "unused")
+
+    let peer = PubSubPeer.new(
+      peerId, getStream, nil, FloodSubCodec, 1024 * 1024, voidPeerHandler
+    )
+    node.peers[peerId] = peer
+    node.maxMessageSize = 1024
+    let
+      first = repeat('a', 512)
+      second = repeat('b', 512)
+      replacement = repeat('c', 512)
+
+    for (name, subscribe) in [
+      (first, true),
+      (second, true),
+      (first, true),
+      (replacement, false),
+      (replacement, true),
+    ]:
+      await node.rpcHandler(
+        peer,
+        RPCMsg.withSubscriptions(@[SubOpts(subscribe: subscribe, topic: name)]).encode(
+          false
+        ),
+      )
+    check:
+      node.floodsub.hasPeer(first, peer)
+      node.floodsub.hasPeer(second, peer)
+      not node.floodsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
+
+    for (name, subscribe) in [(first, false), (replacement, true)]:
+      await node.rpcHandler(
+        peer,
+        RPCMsg.withSubscriptions(@[SubOpts(subscribe: subscribe, topic: name)]).encode(
+          false
+        ),
+      )
+    check:
+      not node.floodsub.hasPeer(first, peer)
+      node.floodsub.hasPeer(second, peer)
+      node.floodsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
+
   asyncTest "FloodSub unsubscribePeer clears emptied topics":
     let node = generateNodes(1).toFloodSub()[0]
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     proc getStream(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
@@ -401,7 +515,7 @@ suite "FloodSub Component", timeout = 120.seconds:
     let node = generateNodes(1).toFloodSub()[0]
     node.overheadRateLimit = Opt.some(RateLimit(bytes: 10, interval: 1.hours))
 
-    let peer = node.getOrCreatePeer(randomPeerId(), @[FloodSubCodec])
+    let peer = node.getOrCreatePeer(PeerId.random(), @[FloodSubCodec])
     check peer.overheadRateLimitOpt.isSome()
 
   asyncTest "FloodSub keeps the bucket a known peer already spent":
@@ -419,7 +533,7 @@ suite "FloodSub Component", timeout = 120.seconds:
     let node = generateNodes(1).toFloodSub()[0]
     node.overheadRateLimit = Opt.some(RateLimit(bytes: 0, interval: 1.hours))
 
-    let peer = node.getOrCreatePeer(randomPeerId(), @[FloodSubCodec])
+    let peer = node.getOrCreatePeer(PeerId.random(), @[FloodSubCodec])
     check:
       peer.overheadRateLimitOpt.isNone()
       peer.tryCharge(1024)

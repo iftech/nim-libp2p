@@ -2,39 +2,29 @@
 # Copyright (c) Status Research & Development GmbH
 
 import chronos, chronicles, results
-import ../../[peerid, switch, multihash]
+import ../../[peerid, peerinfo, switch, multihash]
 import ../protocol
-import ./[protobuf, types, kademlia_metrics]
+import ./[protobuf, types, kademlia_metrics, rpc]
 
 logScope:
   topics = "libp2p kademlia"
 
 proc ping*(
     kad: KadDHT, peerId: PeerId, addrs: seq[MultiAddress]
-): Future[bool] {.
-    async: (raises: [CancelledError, DialFailedError, ValueError, LPStreamError])
-.} =
-  let stream = await noCancel kad.switch.dial(peerId, addrs, kad.codec)
-  defer:
-    await noCancel stream.close()
-
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let request = Message(msgType: Opt.some(MessageType.ping))
-  let encoded = request.encode(kad.config.hideConnectionStatus)
+  let reply = (await kad.dispatchRpc(peerId, request, Opt.some(addrs))).valueOr:
+    return err(error, "ping failed")
 
-  kad_messages_sent.inc(labelValues = [$MessageType.ping])
-  kad_message_bytes_sent.inc(encoded.len.int64, labelValues = [$MessageType.ping])
+  if reply != request:
+    return err("ping reply differs from the request")
 
-  var replyBuf: seq[byte]
-  kad_message_duration_ms.time(labelValues = [$MessageType.ping]):
-    await stream.writeLp(encoded)
-    replyBuf = await stream.readLp(MaxMsgSize)
+  ok()
 
-  kad_message_bytes_received.inc(replyBuf.len.int64, labelValues = [$MessageType.ping])
-
-  let reply = Message.decode(replyBuf).valueOr:
-    return false
-
-  return reply == request
+proc ping*(
+    kad: KadDHT, peerInfo: PeerInfo
+): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
+  await kad.ping(peerInfo.peerId, peerInfo.addrs)
 
 proc handlePing*(
     kad: KadDHT, stream: Stream, msg: Message

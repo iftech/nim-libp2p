@@ -12,7 +12,7 @@ import
   ./timedcache,
   ./peertable,
   ./rpc/[message, messages, protobuf],
-  nimcrypto/[hash, sha2],
+  nimcrypto/sha2,
   ../../crypto/crypto,
   ../../stream/connection,
   ../../peerid,
@@ -51,6 +51,15 @@ proc addSeen*(f: FloodSub, saltedId: SaltedId): bool =
   # Return true if the message has already been seen
   f.seen.put(saltedId)
 
+proc isDuplicatePublish*(f: FloodSub, msgId: MessageId): bool =
+  ## True if the message was already seen (custom msgIdProvider / no sequence
+  ## id), in which case it must not be delivered locally nor re-published.
+  ## Non-mutating: the id is only recorded once the message is broadcast.
+  if f.hasSeen(f.salt(msgId)):
+    trace "Dropping already-seen message", msgId
+    return true
+  return false
+
 proc firstSeen*(f: FloodSub, saltedId: SaltedId): Moment =
   f.seen.addedAt(saltedId)
 
@@ -78,13 +87,21 @@ proc handleSubscribe(f: FloodSub, peer: PubSubPeer, topic: string, subscribe: bo
       trace "ignoring subscription over topicsHigh limit", limit = f.topicsHigh
       return
 
+    # Bound retained topic names across RPCs using the existing message-size budget.
+    if not f.floodsub.hasPeer(topic, peer) and
+        topic.len > f.maxMessageSize - peer.subscribedTopicBytes:
+      trace "ignoring subscription over topic byte budget", limit = f.maxMessageSize
+      return
+
     if f.floodsub.addPeer(topic, peer):
       peer.subscribedTopics.inc()
+      peer.subscribedTopicBytes += topic.len
       debug "peer subscribed to topic"
   else:
     if f.floodsub.hasPeer(topic, peer):
       f.floodsub.removePeer(topic, peer)
       peer.subscribedTopics.dec()
+      peer.subscribedTopicBytes -= topic.len
       debug "peer unsubscribed from topic"
 
 method unsubscribePeer*(f: FloodSub, peer: PeerId) =
@@ -161,7 +178,12 @@ method rpcHandler*(
     # g.anonymize needs no evaluation when receiving messages
     # as we have a "lax" policy and allow signed messages
 
-    let validation = await f.validate(msg)
+    let validation =
+      try:
+        await f.validate(msg)
+      except CancelledError as e:
+        discard f.seen.del(saltedId)
+        raise e
     case validation
     of ValidationResult.Reject:
       trace "Dropping message after validation, reason: reject", msgId, peer
@@ -185,21 +207,6 @@ method rpcHandler*(
     trace "Forwared message to peers", peers = toSendPeers.len
 
   f.updateMetrics(rpcMsg)
-
-method init*(f: FloodSub) =
-  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-    ## main protocol handler that gets triggered on every
-    ## connection for a protocol string
-    ## e.g. ``/floodsub/1.0.0``, etc...
-    ##
-    try:
-      await f.handleConn(stream, proto)
-    except CancelledError as exc:
-      trace "floodsub handler cancelled", stream
-      raise exc
-
-  f.handler = handler
-  f.codec = FloodSubCodec
 
 method publish*(
     f: FloodSub,
@@ -229,16 +236,22 @@ method publish*(
       messageSize, maxMessageSize = f.maxMessageSize
     return 0
 
+  # Check seen-cache before delivering locally: otherwise re-publishing an
+  # already-seen message (custom msgIdProvider) would re-run local handlers.
+  let msgId = f.msgIdProvider(msg).valueOr:
+    trace "Publish skipped after message ID generation failed", err = error
+    f.handleSelfPublishing(topic, data)
+    return 0
+
+  if f.isDuplicatePublish(msgId):
+    return 0
+
   f.handleSelfPublishing(topic, data)
 
   let peers = f.floodsub.getOrDefault(topic)
 
   if peers.len == 0:
     debug "No peers for topic, skipping publish", topic
-    return 0
-
-  let msgId = f.msgIdProvider(msg).valueOr:
-    trace "Publish skipped after message ID generation failed", err = error
     return 0
 
   trace "Message created",
@@ -249,8 +262,6 @@ method publish*(
     msgId
 
   if f.addSeen(f.salt(msgId)):
-    # custom msgid providers might cause this
-    trace "Dropping already-seen message", msgId, topic
     return 0
 
   # Try to send to all peers that are known to be interested
@@ -294,4 +305,12 @@ method initPubSub*(f: FloodSub) {.raises: [InitializationError].} =
   f.seen = TimedCache[SaltedId].init(2.minutes, maxSize = FloodSubSeenMaxSize)
   f.rng.generate(f.seenSalt)
 
-  f.init()
+  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    try:
+      await f.handleConn(stream, proto)
+    except CancelledError as exc:
+      trace "floodsub handler cancelled", stream
+      raise exc
+
+  f.handler = handler
+  f.codec = FloodSubCodec

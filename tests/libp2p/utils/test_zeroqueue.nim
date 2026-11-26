@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/[monotimes, times]
 import ../../../libp2p/utils/zeroqueue
 import ../../tools/[unittest]
 
@@ -118,3 +119,72 @@ suite "ZeroQueue":
     check q.consumeTo(pbytes, 2) == 1
     check toSeq(pbytes, 1) == @[3'u8]
     check q.isEmpty()
+
+  test "consumeTo after partial popChunkSeq crosses chunk boundary":
+    const
+      bufLen = 8
+      readLen = 3
+    var q: ZeroQueue
+    var buf: array[bufLen, byte]
+    q.push(@[1'u8, 2, 3])
+    q.push(@[4'u8, 5, 6])
+
+    check q.popChunkSeq(1) == @[1'u8]
+    check q.consumeTo(buf[0].addr, readLen) == readLen
+    check buf[0 ..< readLen] == @[2'u8, 3, 4]
+    check q.len() == 2
+    check q.popChunkSeq(bufLen) == @[5'u8, 6]
+    check q.isEmpty()
+
+  test "popChunkSeq after partial consumeTo returns the unread remainder":
+    const bufLen = 2
+    var q: ZeroQueue
+    var buf: array[bufLen, byte]
+    q.push(@[1'u8, 2, 3, 4])
+    q.push(@[5'u8])
+
+    check q.consumeTo(buf[0].addr, bufLen) == bufLen
+    check buf == [1'u8, 2]
+    check q.popChunkSeq(1) == @[3'u8]
+    check q.len() == 2
+    check q.popChunkSeq(bufLen) == @[4'u8]
+    check q.popChunkSeq(bufLen) == @[5'u8]
+    check q.isEmpty()
+
+  test "consumeTo with negative nbytes reads nothing":
+    var q: ZeroQueue
+    q.push(@[1'u8, 2])
+    check q.consumeTo(nil, -1) == 0
+    check q.len() == 2
+
+  test "byte-at-a-time reads of one large chunk stay linear":
+    const
+      chunkSize = 1024 * 1024
+      patternPeriod = 251
+      # a copy of the remaining chunk per read takes minutes at this size
+      timeBudget = initDuration(seconds = 5)
+
+    var data = newSeqUninit[byte](chunkSize)
+    for i in 0 ..< chunkSize:
+      data[i] = byte(i mod patternPeriod)
+
+    var q: ZeroQueue
+    q.push(data)
+
+    var got = newSeqUninit[byte](chunkSize)
+    var consumed = 0
+    let startTime = getMonoTime()
+    for i in 0 ..< chunkSize:
+      if i mod 2 == 0:
+        consumed += q.consumeTo(got[i].addr, 1)
+      else:
+        let s = q.popChunkSeq(1)
+        got[i] = s[0]
+        consumed += s.len
+    let elapsed = getMonoTime() - startTime
+
+    check consumed == chunkSize
+    check got == data
+    check q.isEmpty()
+    check q.len() == 0
+    check elapsed < timeBudget

@@ -4,7 +4,7 @@
 {.used.}
 {.push raises: [].}
 
-import chronos, chronos/apps/http/httpclient, uri, base64, times, strutils
+import chronos, chronos/apps/http/httpclient, uri, base64, times
 import
   ../../../libp2p/
     [stream/connection, upgrademngrs/upgrade, peeridauth/client, wire, crypto/crypto]
@@ -143,11 +143,10 @@ suite "PeerID Auth Client":
 
   asyncTest "bearer expiry accepts whole seconds and timezone offsets":
     let expected = dateTime(2026, mAug, 21, 12, zone = utc())
-    check (await requestWithExpires("2026-08-21T12:00:00Z")).bearer.expires.get() ==
+    check (await requestWithExpires("2026-08-21T12:00:00Z")).bearer.expires == expected
+    check (await requestWithExpires("2026-08-21T14:00:00+02:00")).bearer.expires ==
       expected
-    check (await requestWithExpires("2026-08-21T14:00:00+02:00")).bearer.expires.get() ==
-      expected
-    check (await requestWithExpires("2016-12-31T23:59:60Z")).bearer.expires.get() ==
+    check (await requestWithExpires("2016-12-31T23:59:60Z")).bearer.expires ==
       dateTime(2017, mJan, 1, zone = utc())
 
   asyncTest "malformed bearer expiry is dropped":
@@ -170,7 +169,7 @@ suite "PeerID Auth Client":
     let authentication = await client.tryRequestAuthentication(parseUri(ExampleURL))
 
     check authentication.isErr()
-    check "public-key" in authentication.error
+    check authentication.error.detail == "public-key"
 
   asyncTest "trySend reports an expired bearer without a request":
     let expired = BearerToken(token: "somebearer", expires: Opt.some(now() - 1.hours))
@@ -179,7 +178,7 @@ suite "PeerID Auth Client":
       parseUri(ExampleURL), peerInfo, "somepayload", Opt.some(expired)
     )
 
-    check sent.error == "Bearer expired"
+    check sent.isOfError(BearerExpiredCause)
     check client.requestedUris.len == 0
 
   test "tryCheckSignature reports a signature that is not base64":
@@ -187,8 +186,7 @@ suite "PeerID Auth Client":
 
     let checked = tryCheckSignature("!!!", key, "challenge", key, "example.com")
 
-    check checked.isErr()
-    check "Failed to decode server's signature" in checked.error
+    check checked.isOfError(UndecodableSignatureCause)
 
   asyncTest "authentication fields match names rather than substrings":
     client.authenticationInfo = Opt.some(

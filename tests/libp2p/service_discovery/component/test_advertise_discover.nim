@@ -315,7 +315,7 @@ suite "Service Discovery Component - Advertise Discover":
     )
 
     # A peer with no address in the peer store triggers an immediate send failure.
-    let unreachablePeer = randomPeerId()
+    let unreachablePeer = PeerId.random()
 
     # sendRegister fails and the task returns without retrying.
     await advertiserNode.advertiseToRegistrar(

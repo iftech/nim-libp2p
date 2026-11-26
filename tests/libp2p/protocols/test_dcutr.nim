@@ -79,9 +79,7 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(
-      behindNATSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-    )
+    await publicSwitch.connect(behindNATSwitch)
 
     for t in behindNATSwitch.transports:
       t.networkReachability = NetworkReachability.NotReachable
@@ -113,9 +111,7 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(
-      behindNATSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-    )
+    await publicSwitch.connect(behindNATSwitch)
     let initialConnCount =
       behindNATSwitch.connManager.connCount(publicSwitch.peerInfo.peerId)
     check initialConnCount == 1
@@ -143,9 +139,7 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(
-      behindNATSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-    )
+    await publicSwitch.connect(behindNATSwitch)
 
     for t in behindNATSwitch.transports:
       t.networkReachability = NetworkReachability.NotReachable
@@ -206,9 +200,7 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(
-      behindNATSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
-    )
+    await publicSwitch.connect(behindNATSwitch)
 
     publicSwitch.connectStub = connectStub
 

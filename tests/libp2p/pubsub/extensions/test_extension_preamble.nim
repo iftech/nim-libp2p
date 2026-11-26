@@ -69,8 +69,8 @@ proc receiveIDontWant(ext: PreambleExtension, peerId: PeerId, msgIds: seq[Messag
   ext.onHandleRPC(peerId, RPCMsg.withControl(ControlMessage.withIDontWant(msgIds)))
 
 suite "GossipSub Extensions :: Preamble Extension":
-  let peerId = PeerId.random(rng()).get()
-  let peerId2 = PeerId.random(rng()).get()
+  let peerId = PeerId.random()
+  let peerId2 = PeerId.random()
   let msgId1: MessageId = @[1'u8, 2, 3]
   let msgId2: MessageId = @[4'u8, 5, 6]
 
@@ -222,29 +222,6 @@ suite "GossipSub Extensions :: Preamble Extension":
       ext.ongoingReceives.hasKey(msgId1)
       cr.broadcasted == @[BC(RPCMsg.withIMReceiving(preamble), @[peerId])]
 
-  test "handleIMReceiving: records peer as receiving a message":
-    var cr = CallbackRecorder(meshPeers: @[peerId])
-    let ext = PreambleExtension.new(cr.makeConfig(), rng())
-    ext.onNegotiated(peerId)
-    ext.onNegotiated(peerId2)
-
-    # populate ongoingReceives so IMReceiving length check passes
-    ext.receivePreamble(
-      peerId, @[makePreamble(msgId1, messageLength = largeMsgLen.uint32)]
-    )
-
-    ext.receiveIMReceiving(
-      peerId2, @[IMReceiving(messageID: msgId1, messageLength: largeMsgLen.uint32)]
-    )
-
-    # verify heIsReceivings was recorded via preambleBroadcastIfNotReceiving:
-    # only peers with heIsReceivings tracked for msgId1 receive the broadcast
-    cr.broadcasted = @[]
-    let preambleMsg =
-      RPCMsg.withPreamble(@[makePreamble(msgId1, messageLength = largeMsgLen.uint32)])
-    ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId, peerId2])
-    check cr.broadcasted == @[BC(preambleMsg, @[peerId2])]
-
   test "handleIMReceiving: ignores mismatched message length":
     var cr = CallbackRecorder(meshPeers: @[peerId])
     let ext = PreambleExtension.new(cr.makeConfig(), rng())
@@ -262,12 +239,12 @@ suite "GossipSub Extensions :: Preamble Extension":
       @[IMReceiving(messageID: msgId1, messageLength: (largeMsgLen + 999).uint32)],
     )
 
-    # peer2 should NOT be in the broadcast since its entry was rejected
+    # peer2's entry was rejected, so it still gets the preamble
     cr.broadcasted = @[]
     let preambleMsg =
       RPCMsg.withPreamble(@[makePreamble(msgId1, messageLength = largeMsgLen.uint32)])
     ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId, peerId2])
-    check cr.broadcasted.len == 0
+    check cr.broadcasted == @[BC(preambleMsg, @[peerId, peerId2])]
 
   test "handleIMReceiving: stops accepting after maxHeIsReceiving limit":
     var cr = CallbackRecorder(meshPeers: @[peerId])
@@ -285,7 +262,19 @@ suite "GossipSub Extensions :: Preamble Extension":
           # rejected: len exceeds limit
       ],
     )
-    # no crash = limit is enforced correctly
+
+    # accepted entries make the peer skip the preamble, the rejected one does not
+    for msgId in [msgId1, msgId2]:
+      cr.broadcasted = @[]
+      ext.preambleBroadcastIfNotReceiving(
+        RPCMsg.withPreamble(@[makePreamble(msgId)]), @[peerId]
+      )
+      check cr.broadcasted.len == 0
+
+    let rejectedMsg = RPCMsg.withPreamble(@[makePreamble(@[7'u8])])
+    cr.broadcasted = @[]
+    ext.preambleBroadcastIfNotReceiving(rejectedMsg, @[peerId])
+    check cr.broadcasted == @[BC(rejectedMsg, @[peerId])]
 
   test "handleIHave: returns true when message is in ongoingReceives":
     var cr = CallbackRecorder(meshPeers: @[peerId])
@@ -320,20 +309,20 @@ suite "GossipSub Extensions :: Preamble Extension":
       peerId2, @[IMReceiving(messageID: msgId1, messageLength: largeMsgLen.uint32)]
     )
 
-    # before idontwant: peerId2 receives the broadcast
+    # before idontwant: peerId2 is receiving, so it is skipped
     cr.broadcasted = @[]
     let preambleMsg =
       RPCMsg.withPreamble(@[makePreamble(msgId1, messageLength = largeMsgLen.uint32)])
     ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId2])
-    check cr.broadcasted.len == 1
+    check cr.broadcasted.len == 0
 
     # idontwant removes msgId1 from peerId2's heIsReceivings
     ext.receiveIDontWant(peerId2, @[msgId1])
 
-    # after idontwant: peerId2 no longer in the broadcast
+    # after idontwant: peerId2 gets the preamble
     cr.broadcasted = @[]
     ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId2])
-    check cr.broadcasted.len == 0
+    check cr.broadcasted == @[BC(preambleMsg, @[peerId2])]
 
   test "preambleMsgReceived: removes message from ongoingReceives":
     var cr = CallbackRecorder(meshPeers: @[peerId])
@@ -349,7 +338,7 @@ suite "GossipSub Extensions :: Preamble Extension":
   test "preambleMsgReceived: removes message from ongoingIWantReceives":
     var cr = CallbackRecorder() # meshPeers empty → non-mesh
     let ext = PreambleExtension.new(cr.makeConfig(), rng())
-    let nonMeshPeer = PeerId.random(rng()).get()
+    let nonMeshPeer = PeerId.random()
     ext.onNegotiated(nonMeshPeer)
 
     ext.receivePreamble(nonMeshPeer, @[makePreamble(msgId1)])
@@ -397,7 +386,7 @@ suite "GossipSub Extensions :: Preamble Extension":
     ext.preambleBroadcast(emptyPreambleMsg, @[peerId])
     check cr.broadcasted.len == 0
 
-  test "preambleBroadcastIfNotReceiving: sends only to peers who reported imreceiving":
+  test "preambleBroadcastIfNotReceiving: skips peers who reported imreceiving":
     var cr = CallbackRecorder(meshPeers: @[peerId])
     let ext = PreambleExtension.new(cr.makeConfig(), rng())
     ext.onNegotiated(peerId)
@@ -417,5 +406,19 @@ suite "GossipSub Extensions :: Preamble Extension":
       RPCMsg.withPreamble(@[makePreamble(msgId1, messageLength = largeMsgLen.uint32)])
     ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId, peerId2])
 
-    # only peerId2 has heIsReceivings for msgId1
-    check cr.broadcasted == @[BC(preambleMsg, @[peerId2])]
+    # peerId2 has heIsReceivings for msgId1
+    check cr.broadcasted == @[BC(preambleMsg, @[peerId])]
+
+  test "preambleBroadcastIfNotReceiving: peer receiving a different msgId still gets preamble":
+    var cr = CallbackRecorder()
+    let ext = PreambleExtension.new(cr.makeConfig(), rng())
+    ext.onNegotiated(peerId)
+    ext.receiveIMReceiving(
+      peerId, @[IMReceiving(messageID: msgId2, messageLength: largeMsgLen.uint32)]
+    )
+
+    let preambleMsg =
+      RPCMsg.withPreamble(@[makePreamble(msgId1, messageLength = largeMsgLen.uint32)])
+    ext.preambleBroadcastIfNotReceiving(preambleMsg, @[peerId])
+
+    check cr.broadcasted == @[BC(preambleMsg, @[peerId])]

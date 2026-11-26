@@ -55,6 +55,8 @@ jobs:
         uses: libp2p/test-plans/.github/actions/run-interop-hole-punch-test@master
         with:
           test-filter: nim-libp2p-hp-head
+          # js cells are known to fail upstream; see libp2p/test-plans#864.
+          test-ignore: js-v3.x
           extra-versions: ${{ github.workspace }}/interop/hole-punching/version.json
           s3-cache-bucket: ${{ vars.S3_LIBP2P_BUILD_CACHE_BUCKET_NAME }}
           s3-access-key-id: ${{ vars.S3_LIBP2P_BUILD_CACHE_AWS_ACCESS_KEY_ID }}
@@ -81,7 +83,7 @@ jobs:
           os: linux
           cpu: amd64
           shell: bash
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Build the Go peer
         working-directory: interop/autonatv2/go-peer
@@ -119,7 +121,7 @@ jobs:
           os: linux
           cpu: amd64
           shell: bash
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Build the Rust peer
         working-directory: interop/kad/rust-peer
@@ -137,6 +139,46 @@ jobs:
           ./target/debug/rust-peer &
           cd ../nim-peer
           ./src/nim_peer
+
+  run-topic-streams-interop:
+    name: Run Topic Streams interoperability tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: interop/topic-streams/go-peer/go.sum
+
+      - name: Set up Nim
+        uses: "./.github/actions/install_nim"
+        with:
+          os: linux
+          cpu: amd64
+          shell: bash
+          nim_ref: v2.2.14
+
+      - name: Build the Go peer
+        working-directory: interop/topic-streams/go-peer
+        run: go build -o ../../../build/topic-streams-go .
+
+      - name: Build the Nim peer
+        run: |
+          NIM_VERSION=$(nim --version | sed -n 's/^Nim Compiler Version \([^ ]*\).*/\1/p')
+          nimble --noLockfile --requires:"nim == $NIM_VERSION" --resolver:minver -l setup -y
+          # Existing standalone imports trigger these diagnostics; keep them visible as warnings.
+          nim c --nimcache:build/topic-streams-nimcache -d:chronicles_log_level=TRACE \
+            --warningAsError:UseBase:off --warningAsError:UnusedImport:off \
+            --hintAsError:XCannotRaiseY:off --out:build/topic-streams-nim \
+            interop/topic-streams/nim-peer/src/peer.nim
+
+      - name: Run Go and Nim together
+        run: bash interop/topic-streams/run.sh
 
   run-partial-message-interop:
     name: Run Partial Message interoperability tests
@@ -157,7 +199,7 @@ jobs:
           os: linux
           cpu: amd64
           shell: bash
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Build the Go peer
         working-directory: interop/partial-message/go-peer
@@ -175,3 +217,39 @@ jobs:
         run: |
           ./go-peer/peer &
           ./nim-peer/src/peer
+
+  run-waggle-interop:
+    name: Run Waggle interoperability tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      NIM_VERSION: 2.2.14
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.98.1
+
+      - name: Set up Nim
+        uses: "./.github/actions/install_nim"
+        with:
+          os: linux
+          cpu: amd64
+          shell: bash
+          nim_ref: v${{ env.NIM_VERSION }}
+
+      - name: Build the Rust peer
+        working-directory: interop/waggle/rust-peer
+        run: cargo build --locked
+
+      - name: Build the Nim peer
+        run: |
+          nimble --noLockfile --requires:"nim == $NIM_VERSION" --resolver:minver -l setup -y
+          nim c --threads:on -d:chronicles_log_level=WARN interop/waggle/nim-peer/src/peer.nim
+
+      - name: Run Rust and Nim together
+        run: python3 interop/waggle/run.py

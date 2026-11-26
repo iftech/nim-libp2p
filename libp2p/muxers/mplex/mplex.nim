@@ -37,6 +37,7 @@ type
     inChannTimeout: Duration
     outChannTimeout: Duration
     isClosed: bool
+    closeFut: Future[void].Raising([])
     oid*: Oid
     maxChannCount: int
     maxBufferedBytes: int
@@ -78,6 +79,8 @@ proc cleanupChann(m: Mplex, chann: LPChannel) {.async: (raises: []).} =
   ##
   try:
     await chann.join()
+    if not chann.resetMessageFut.isNil():
+      await noCancel chann.resetMessageFut.join()
     m.channels[chann.initiator].del(chann.id)
     trace "Cleaned up channel", muxer = m, chann
 
@@ -248,10 +251,7 @@ method newStream*(
 
   return Connection(channel)
 
-method close*(m: Mplex) {.async: (raises: []).} =
-  if m.isClosed:
-    trace "Already closed", muxer = m
-    return
+proc closeImpl(m: Mplex) {.async: (raises: []).} =
   m.isClosed = true
 
   trace "Closing mplex", muxer = m
@@ -277,6 +277,13 @@ method close*(m: Mplex) {.async: (raises: []).} =
   m.channels[true].clear()
 
   trace "Closed mplex", muxer = m
+
+method close*(m: Mplex) {.async: (raises: []).} =
+  if m.closeFut.isNil():
+    m.closeFut = m.closeImpl()
+  else:
+    trace "Already closing", muxer = m
+  await noCancel m.closeFut
 
 method getStreams*(m: Mplex): seq[MuxedStream] {.gcsafe.} =
   var streams: seq[MuxedStream]

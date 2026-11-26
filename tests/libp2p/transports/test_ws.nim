@@ -101,6 +101,8 @@ suite "WebSocket transport":
 
   cancellationTransportTest(wsTransProvider, wsAddress)
   cancellationTransportTest(wsSecureTransProvider, wsSecureAddress)
+  upgradeCancellationTransportTest(wsTransProvider, wsAddress)
+  upgradeCancellationTransportTest(wsSecureTransProvider, wsSecureAddress)
 
   asyncTest "slow WebSocket headers do not block valid accepts":
     let headersTimeout = 3.seconds
@@ -179,8 +181,7 @@ suite "WebSocket transport":
     proc acceptHandler() {.async.} =
       while true:
         let conn = await transport1.accept()
-        if not isNil(conn):
-          await conn.close()
+        await conn.close()
 
     let handlerWait = acceptHandler()
     defer:
@@ -255,6 +256,30 @@ suite "WebSocket transport":
     expect TransportDialError:
       discard await transport.dial("", ma("/dns/example.com/tcp/1234/ws"))
 
+  asyncTest "dial with a control character in the hostname is a TransportDialError":
+    let server = wsTransProvider()
+    await server.start(@[ma(wsAddress)])
+    defer:
+      await server.stop()
+
+    let client = wsTransProvider()
+    defer:
+      await client.stop()
+
+    for hostname in ["a\r\nX-Injected: 1", "a\nb", "a\x00b", "a\x7Fb"]:
+      expectMsgContains TransportDialError, "control character in the hostname":
+        discard await client.dial(hostname, server.addrs[0])
+
+  asyncTest "dial with a control character in explicit SNI is a TransportDialError":
+    let client = wsTransProvider()
+    defer:
+      await client.stop()
+
+    for sni in ["a\r\nb", "a\nb", "a\x00b", "a\tb", "a\x7Fb"]:
+      let address = ma("/ip4/127.0.0.1/tcp/1/tls/sni/" & sni & "/ws")
+      expectMsgContains TransportDialError, "control character in the hostname":
+        discard await client.dial("valid.http.host", address)
+
 suite "WebSocket transport with autotls":
   teardown:
     checkTrackers()
@@ -282,7 +307,7 @@ suite "WebSocket transport with autotls":
     check wstransport.secure
 
     # autotls should be used
-    let autotlsCert = await autotls.getCertWhenReady()
+    let autotlsCert = (await autotls.getCertWhenReady()).get()
     check wstransport.tlsCertificate == autotlsCert.cert
     check wstransport.tlsPrivateKey == autotlsCert.privkey
 
@@ -403,8 +428,7 @@ suite "WebSocket transport with autotls":
       not wstransport.running
       wstransport.addrs.len == 0
 
-  asyncTest "a renewed certificate does not reach a running transport":
-    # TODO: vacp2p/nim-libp2p#2994
+  asyncTest "a renewed certificate reaches a running transport":
     let autotls = AutotlsService(
       cert: Opt.some(AutotlsCert.new(secureCert, secureKey, now())),
       certReady: newAsyncEvent(),
@@ -428,10 +452,31 @@ suite "WebSocket transport with autotls":
     check wstransport.tlsCertificate == secureCert
 
     # what issueCertificate does once a renewal completes
-    let (renewedKey, renewedCert) = tlsCertGenerator()
-    autotls.cert = Opt.some(AutotlsCert.new(renewedCert, renewedKey, now()))
-    autotls.certReady.fire()
+    let renewedKeyPair = KeyPair.random(PKScheme.RSA, rng()).get()
+    let (renewedKey, renewedCert) = tlsCertGenerator(Opt.some(renewedKeyPair))
+    autotls.installCertificate(AutotlsCert.new(renewedCert, renewedKey, now()))
+
+    checkUntilTimeout:
+      wstransport.tlsCertificate == renewedCert
+      wstransport.tlsPrivateKey == renewedKey
+      wstransport.serverTlsCredentials == @[(key: renewedKey, cert: renewedCert)]
+
+    await wstransport.stop()
+
+    # A replacement transport must load the current AutoTLS certificate rather
+    # than relying on credentials retained by a previously running instance.
+    let restartedTransport = WsTransport.new(
+      Upgrade(),
+      nil, # TLSPrivateKey
+      nil, # TLSCertificate
+      Opt.some(autotls),
+      rng(),
+    )
+    defer:
+      await restartedTransport.stop()
+    await restartedTransport.start(@[ma("/ip4/0.0.0.0/tcp/0/tls/ws")])
 
     check:
-      wstransport.tlsCertificate == secureCert
-      wstransport.tlsPrivateKey == secureKey
+      restartedTransport.tlsCertificate == renewedCert
+      restartedTransport.tlsPrivateKey == renewedKey
+      restartedTransport.serverTlsCredentials == @[(key: renewedKey, cert: renewedCert)]

@@ -3,9 +3,9 @@
 
 {.used.}
 
-import std/[sequtils, net], stew/byteutils
+import std/net, stew/byteutils, chronos
 import protobuf_serialization, protobuf_serialization/pkg/results
-import ../../../libp2p/[multicodec, multiaddress, peerid, protobuf/minprotobuf]
+import ../../../libp2p/[multicodec, multiaddress, peerid]
 import ../../tools/[unittest, multiaddress]
 
 {.push raises: [].}
@@ -56,12 +56,12 @@ const
   ]
 
   FailureVectors = [
-    "", "/", "/ip4", "/ip4/::1", "/ip4/fdpsofodsajfdoisa", "/ip6", "/ip6zone",
-    "/ip6zone/", "/ip6zone//ip6/fe80::1", "/udp", "/tcp", "/sctp", "/udp/65536",
-    "/tcp/65536", "/quic/65536", "/quic-v1/65536", "/onion/9imaq4ygg2iegci7:80",
-    "/onion/aaimaq4ygg2iegci7:80", "/onion/timaq4ygg2iegci7:0",
-    "/onion/timaq4ygg2iegci7:-1", "/onion/timaq4ygg2iegci7",
-    "/onion/timaq4ygg2iegci@:666",
+    "", "/", "/ip4", "/ip4/::1", "/ip4/fdpsofodsajfdoisa", "/ip6", "/ip6/zzzz",
+    "/ip6/1.2.3.4", "/ip6zone", "/ip6zone/", "/ip6zone//ip6/fe80::1", "/udp", "/tcp",
+    "/sctp", "/udp/65536", "/tcp/65536", "/quic/65536", "/quic-v1/65536",
+    "/onion/9imaq4ygg2iegci7:80", "/onion/aaimaq4ygg2iegci7:80",
+    "/onion/timaq4ygg2iegci7:0", "/onion/timaq4ygg2iegci7:-1",
+    "/onion/timaq4ygg2iegci7", "/onion/timaq4ygg2iegci@:666",
     "/onion3/9ww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd:80",
     "/onion3/vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd7:80",
     "/onion3/vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd:0",
@@ -363,6 +363,10 @@ suite "MultiAddress test suite":
         part.protoAddress().tryGet() == pid.getBytes()
         $ma == "/" & proto & "/" & legacyPeerId
 
+  test "p2p rejects CID text that decodes to zero bytes":
+    for text in ["M=", "c========"]:
+      check MultiAddress.init("/p2p/" & text).isErr()
+
   test "MultiAddress pattern matching test vectors":
     for item in PatternVectors:
       for gitem in item.good:
@@ -477,83 +481,6 @@ suite "MultiAddress test suite":
     check not tcp.matchPartial(ma)
     check IP4.matchPartial(ma)
 
-  test "getField returns ok(true) for valid multiaddress":
-    var pb = initProtoBuffer()
-    let ma = MultiAddress.init("/ip4/1.2.3.4/tcp/80").get()
-    pb.write(1, ma)
-    pb.finish()
-
-    var decoded: MultiAddress
-    check:
-      pb.getField(1, decoded).get() == true
-      decoded == ma
-
-  test "getField returns ok(false) for missing field":
-    var pb = initProtoBuffer()
-    pb.write(2, "placeholder")
-    pb.finish()
-
-    var decoded: MultiAddress
-    check:
-      pb.getField(1, decoded).get() == false
-      decoded == MultiAddress()
-
-  test "getField returns err for empty multiaddress":
-    var pb = initProtoBuffer()
-    pb.write(1, newSeq[byte]())
-    pb.finish()
-
-    var decoded: MultiAddress
-    let error = pb.getField(1, decoded).error()
-    check:
-      error == ProtoError.IncorrectBlob
-      decoded == MultiAddress()
-
-  test "getField returns err for invalid multiaddress":
-    var pb = initProtoBuffer()
-    pb.write(1, "invalid")
-    pb.finish()
-
-    var decoded: MultiAddress
-    let error = pb.getField(1, decoded).error()
-    check:
-      error == ProtoError.IncorrectBlob
-      decoded == MultiAddress()
-
-  test "getRepeatedField does not fail when all addresses are valid":
-    var pb = initProtoBuffer()
-    let mas = SuccessVectors.mapIt(MultiAddress.init(it).get())
-    for ma in mas:
-      pb.write(1, ma)
-    pb.finish()
-
-    var decoded = newSeq[MultiAddress]()
-    check pb.getRepeatedField(1, decoded).isOk()
-    check decoded == mas
-
-  test "getRepeatedField does not fail when some addresses are invalid":
-    var pb = initProtoBuffer()
-    var mas = @[MultiAddress.init("/ip4/1.2.3.4").get(), MultiAddress()]
-    for ma in mas:
-      pb.write(1, ma)
-    pb.finish()
-
-    var decoded = newSeq[MultiAddress]()
-    check pb.getRepeatedField(1, decoded).isOk()
-    check decoded == @[MultiAddress.init("/ip4/1.2.3.4").get()]
-
-  test "getRepeatedField fails when all addresses are invalid":
-    var pb = initProtoBuffer()
-    var mas = @[MultiAddress(), MultiAddress()]
-    for ma in mas:
-      pb.write(1, ma)
-    pb.finish()
-
-    var decoded = newSeq[MultiAddress]()
-    let error = pb.getRepeatedField(1, decoded).error()
-    check error == ProtoError.IncorrectBlob
-    check decoded.len == 0
-
   test "MultiAddress with empty path test":
     for item in ZeroPathFailureVectors:
       let res = MultiAddress.init(hexToSeqByte(item))
@@ -606,56 +533,27 @@ suite "MultiAddress test suite":
         MultiAddress.init("/ip6/::1/tcp/4040").get(),
       )
 
-suite "parseIpAddress":
-  test "valid IPv4 addresses parse to IPv4 family":
-    check parseIpAddress("1.2.3.4").family == IpAddressFamily.IPv4
-    check parseIpAddress("0.0.0.0").family == IpAddressFamily.IPv4
-    check parseIpAddress("255.255.255.255").family == IpAddressFamily.IPv4
-    check parseIpAddress("127.0.0.1").family == IpAddressFamily.IPv4
+  test "MultiAddress init with a value for a marker":
+    check MultiAddress.init(multiCodec("p2p-circuit"), @[1'u8]).error() ==
+      "multiaddress: Value must be empty for markers"
+    check $MultiAddress.init(multiCodec("p2p-circuit")).get() == "/p2p-circuit"
 
-  test "valid IPv4 address bytes are correct":
-    check parseIpAddress("1.2.3.4").address_v4 == [1'u8, 2, 3, 4]
-    check parseIpAddress("0.0.0.0").address_v4 == [0'u8, 0, 0, 0]
-    check parseIpAddress("255.255.255.255").address_v4 == [255'u8, 255, 255, 255]
-    check parseIpAddress("192.168.1.100").address_v4 == [192'u8, 168, 1, 100]
+  test "MultiAddress init from TransportAddress":
+    let ta = initTAddress("1.2.3.4:5")
+    check:
+      $MultiAddress.init(ta).get() == "/ip4/1.2.3.4/tcp/5"
+      $MultiAddress.init(ta, Protocol.IPPROTO_UDP).get() == "/ip4/1.2.3.4/udp/5"
+      MultiAddress.init(ta, Protocol.IPPROTO_ICMP).error() ==
+        "multiaddress: protocol should be either TCP or UDP"
+      $MultiAddress.init(initTAddress("[::1]:5")).get() == "/ip6/::1/tcp/5"
 
-  test "valid IPv6 addresses parse to IPv6 family":
-    check parseIpAddress("::1").family == IpAddressFamily.IPv6
-    check parseIpAddress("::").family == IpAddressFamily.IPv6
-    check parseIpAddress("2001:db8::1").family == IpAddressFamily.IPv6
-    check parseIpAddress("fe80::1").family == IpAddressFamily.IPv6
-    check parseIpAddress("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff").family ==
-      IpAddressFamily.IPv6
-
-  test "valid IPv6 address bytes are correct":
-    # ::1 → all zeros except last byte = 1
-    let loopback = parseIpAddress("::1").address_v6
-    check loopback[0 .. 14] == [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    check loopback[15] == 1
-
-    # :: → all zeros
-    check parseIpAddress("::").address_v6 ==
-      [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-  test "IPv4 string is not parsed as IPv6":
-    check parseIpAddress("1.2.3.4").family != IpAddressFamily.IPv6
-
-  test "IPv6 string is not parsed as IPv4":
-    check parseIpAddress("::1").family != IpAddressFamily.IPv4
-
-  test "invalid addresses raise ValueError":
-    expect ValueError:
-      discard parseIpAddress("")
-    expect ValueError:
-      discard parseIpAddress("not-an-ip")
-    expect ValueError:
-      discard parseIpAddress("256.0.0.1")
-    expect ValueError:
-      discard parseIpAddress("1.2.3")
-    expect ValueError:
-      discard parseIpAddress("1.2.3.4.5")
-    expect ValueError:
-      discard parseIpAddress(":::1")
+    let unix = MultiAddress.init(initTAddress("/tmp/sock")).get()
+    check:
+      unix.protoCode().get() == multiCodec("unix")
+      unix.protoArgument().get() == "/tmp/sock".toBytes()
+      unix == MultiAddress.init("/unix/tmp/sock").get()
+      MultiAddress.init(TransportAddress(family: AddressFamily.Unix)).error() ==
+        "multiaddress: Unix path must not be empty"
 
 suite "MultiAddress IP utilities":
   test "getIp":
@@ -712,3 +610,18 @@ suite "MultiAddress IP utilities":
       ma("/ip4/0.0.0.0/tcp/80").replaceIp(ip6).get == ma("/ip6/2001:db8::1/tcp/80")
       # no IP component
       ma("/unix/tmp/sock").replaceIp(ip4).isErr
+
+  test "long marker sequences preserve slice boundaries":
+    var raw: seq[byte]
+    let marker = MultiAddress.init("/ws").get().bytes()
+    for i in 0 ..< 4000:
+      raw.add(marker)
+    let address = MultiAddress.init(raw).get()
+    let middle = address[1000 ..< 3000].get()
+    check middle.bytes().len == 2000 * marker.len
+    check middle.len().get() == 2000
+    check address[0 .. ^1].get() == address
+    check address[^1 .. ^1].get().bytes() == marker
+    check address[0 .. 4000].isErr()
+    check address[-1 .. 1].isErr()
+    check address[2 .. 1].get().bytes().len == 0

@@ -200,26 +200,26 @@ proc addTransport*(
     transport: string,
     bindIp: string,
     tcpFlags: set[ServerFlags] = {},
-) =
+) {.raises: [].} =
   ## Wire up `transport` + its listen address on `builder`.
-  ## Supports `tcp`, `ws`, `quic-v1`. Raises `CatchableError` on unknown values.
+  ## Supports `tcp`, `ws`, `quic-v1`.
   case transport
   of "tcp":
     discard builder.withTcpTransport(tcpFlags).withAddress(
-        MultiAddress.init("/ip4/" & bindIp & "/tcp/0").tryGet()
+        MultiAddress.init("/ip4/" & bindIp & "/tcp/0").expect("valid bind IP")
       )
   of "ws":
     discard builder.withWsTransport(flags = tcpFlags).withAddress(
-        MultiAddress.init("/ip4/" & bindIp & "/tcp/0/ws").tryGet()
+        MultiAddress.init("/ip4/" & bindIp & "/tcp/0/ws").expect("valid bind IP")
       )
   of "quic-v1":
     discard builder.withQuicTransport().withAddress(
-        MultiAddress.init("/ip4/" & bindIp & "/udp/0/quic-v1").tryGet()
+        MultiAddress.init("/ip4/" & bindIp & "/udp/0/quic-v1").expect("valid bind IP")
       )
   else:
-    raise newException(CatchableError, "unsupported transport: " & transport)
+    raiseAssert "unsupported transport: " & transport
 
-proc addSecureChannel*(builder: SwitchBuilder, secureChannel: string) =
+proc addSecureChannel*(builder: SwitchBuilder, secureChannel: string) {.raises: [].} =
   ## Add a secure-channel upgrade. Accepts `noise`. Accepts empty string and
   ## literal `"null"` as no-ops (standalone transports like quic-v1 provide
   ## their own security).
@@ -229,9 +229,9 @@ proc addSecureChannel*(builder: SwitchBuilder, secureChannel: string) =
   of "", "null":
     discard
   else:
-    raise newException(CatchableError, "unsupported secure channel: " & secureChannel)
+    raiseAssert "unsupported secure channel: " & secureChannel
 
-proc addMuxer*(builder: SwitchBuilder, muxer: string) =
+proc addMuxer*(builder: SwitchBuilder, muxer: string) {.raises: [].} =
   ## Add a stream multiplexer. Accepts `yamux`, `mplex`. Accepts empty string
   ## and literal `"null"` as no-ops.
   case muxer
@@ -242,11 +242,11 @@ proc addMuxer*(builder: SwitchBuilder, muxer: string) =
   of "", "null":
     discard
   else:
-    raise newException(CatchableError, "unsupported muxer: " & muxer)
+    raiseAssert "unsupported muxer: " & muxer
 
 proc buildBaseSwitch*[T: BaseConfig](
     config: T, tcpFlags: set[ServerFlags] = {}
-): SwitchBuilder =
+): SwitchBuilder {.raises: [].} =
   var builder = SwitchBuilder.new().withRng(rng())
   builder.addTransport(config.transport, config.bindIp, tcpFlags = tcpFlags)
   builder.addSecureChannel(config.secureChannel)

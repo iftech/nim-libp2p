@@ -20,6 +20,7 @@ proc sendResponse*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
+    relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
 ) {.raises: [].} =
   ## Sends a protocol response `msg` (of type `RPCMsg`) to the specified remote
   ## peer. This is an internal, protocol-facing send path - messages that
@@ -29,7 +30,7 @@ proc sendResponse*(
   ## instead.
 
   trace "sending pubsub response to peer", peer, rpcMsg = msg
-  peer.sendResponse(msg, p.anonymize, priority, useCustomStream)
+  peer.sendResponse(msg, p.anonymize, priority, useCustomStream, relayedSaltedId)
 
 proc broadcastResponse*(
     p: PubSub,
@@ -37,6 +38,7 @@ proc broadcastResponse*(
     msg: RPCMsg,
     priority: MessagePriority,
     useCustomStream: bool = false,
+    relayedSaltedId: Opt[SaltedId] = Opt.none(SaltedId),
 ) {.raises: [].} =
   ## Sends a protocol response `msg` (of type `RPCMsg`) to a specified group of
   ## peers. This is an internal, protocol-facing broadcast path - messages that
@@ -49,12 +51,26 @@ proc broadcastResponse*(
 
   trace "broadcasting responses to peers", peers = sendPeers.len, rpcMsg = msg
 
-  if anyIt(sendPeers, it.hasObservers) or msg.messages.len > 1:
+  # Multiple messages need per-peer splitting on the legacy transport.
+  if msg.messages.len > 1 or anyIt(sendPeers, it.hasObservers):
     for peer in sendPeers:
-      p.sendResponse(peer, msg, priority, useCustomStream)
+      p.sendResponse(peer, msg, priority, useCustomStream, relayedSaltedId)
   else:
-    # Fast path that only encodes message once
-    let encoded = msg.encode(p.anonymize)
+    # Lazily encode each wire format and reuse it across recipients.
+    var encoded: seq[byte]
+    var preparedRPC: PreparedTopicRPC
     for peer in sendPeers:
-      var peerEncoded = encoded
-      peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
+      if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
+          peer.extensionsState.peerHasTopicStreams(peer.peerId):
+        if preparedRPC.isZero():
+          preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
+        peer.sendTopicRPC(preparedRPC, priority, useCustomStream)
+      else:
+        if encoded.len == 0:
+          encoded = msg.encode(p.anonymize)
+        var peerEncoded = encoded
+        peer.trackSend(
+          peer.sendEncoded(
+            move(peerEncoded), priority, useCustomStream, relayedSaltedId
+          )
+        )

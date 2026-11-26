@@ -4,11 +4,18 @@
 
 import algorithm, chronos, hashes, results, sequtils, sets, tables
 import
-  ../../../libp2p/[protocols/kademlia, switch, builders, multihash, stream/connection]
+  ../../../libp2p/[
+    protocols/kademlia, switch, builders, cid, multicodec, multihash, stream/connection
+  ]
+import ../../../libp2p/protocols/kademlia/memory_store
 import ../../tools/[crypto, unittest, switch_builder, multiaddress]
+import std/importutils
 import ./mock_kademlia
 
 export crypto
+
+proc makeProvidedCid*(seed: byte): Cid =
+  Cid.init(CIDv1, multiCodec("raw"), MultiHash.digest("sha2-256", @[seed]).get()).get()
 
 converter toKey*(bytes: seq[byte]): Key =
   Key.fromBytes(bytes)
@@ -18,6 +25,12 @@ converter toValue*(bytes: seq[byte]): Value =
 
 converter toOptKey*(key: Key): Opt[Key] =
   Opt.some(key)
+
+converter toRecordKey*(key: Key): RecordKey =
+  RecordKey.init(key).tryGet()
+
+converter peerIdToRecordKey*(peerId: PeerId): RecordKey =
+  RecordKey.init(peerId.toKey()).tryGet()
 
 converter toOptValue*(value: Value): Opt[Value] =
   Opt.some(value)
@@ -56,20 +69,22 @@ converter toOptMessageType*(a: MessageType): Opt[MessageType] =
   Opt.some(a)
 
 type PermissiveValidator* = ref object of EntryValidator
-method isValid*(self: PermissiveValidator, key: Key, record: EntryRecord): bool =
+method isValid*(self: PermissiveValidator, key: RecordKey, record: EntryRecord): bool =
   true
 
 type RestrictiveValidator* = ref object of EntryValidator
-method isValid(self: RestrictiveValidator, key: Key, record: EntryRecord): bool =
+method isValid(self: RestrictiveValidator, key: RecordKey, record: EntryRecord): bool =
   false
 
 type CandSelector* = ref object of EntrySelector
-method select*(self: CandSelector, key: Key, values: seq[EntryRecord]): LPResult[int] =
+method select*(
+    self: CandSelector, key: RecordKey, values: seq[EntryRecord]
+): LPResult[int] =
   return ok(0)
 
 type OthersSelector* = ref object of EntrySelector
 method select*(
-    self: OthersSelector, key: Key, values: seq[EntryRecord]
+    self: OthersSelector, key: RecordKey, values: seq[EntryRecord]
 ): LPResult[int] =
   if values.len == 0:
     return err("no values were given")
@@ -87,7 +102,6 @@ proc makeKeys*(T: typedesc[Key], count: int): seq[Key] =
 proc testKadConfig*(
     validator: EntryValidator = PermissiveValidator(),
     selector: EntrySelector = CandSelector(),
-    cleanupProvidersInterval: Duration = chronos.milliseconds(100),
     republishProvidedKeysInterval: Duration = chronos.milliseconds(50),
     replication: int = DefaultReplication,
     alpha: int = DefaultAlpha,
@@ -97,7 +111,6 @@ proc testKadConfig*(
     providerRejection: bool = false,
     providerExpirationInterval: Duration = 1.seconds,
     recordExpirationInterval: Duration = DefaultRecordExpirationInterval,
-    cleanupDataEntriesInterval: Duration = chronos.milliseconds(100),
     republishRegionBits: Opt[int] = Opt.none(int),
     livenessGracePeriod: Duration = DefaultLivenessGracePeriod,
     livenessIdleInterval: Duration = DefaultLivenessIdleInterval,
@@ -110,7 +123,6 @@ proc testKadConfig*(
     selector,
     timeout = timeout,
     providerExpirationInterval = providerExpirationInterval,
-    cleanupProvidersInterval = cleanupProvidersInterval,
     republishProvidedKeysInterval = republishProvidedKeysInterval,
     replication = replication,
     alpha = alpha,
@@ -118,7 +130,6 @@ proc testKadConfig*(
     retries = retries,
     providerRejection = providerRejection,
     recordExpirationInterval = recordExpirationInterval,
-    cleanupDataEntriesInterval = cleanupDataEntriesInterval,
     republishRegionBits = republishRegionBits,
     livenessGracePeriod = livenessGracePeriod,
     livenessIdleInterval = livenessIdleInterval,
@@ -131,8 +142,10 @@ proc setupKad*(
     config: KadDHTConfig = testKadConfig(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     isServer: bool = true,
+    identifyPush: bool = false,
 ): KadDHT =
-  let switch = makeStandardSwitch(TcpAutoAddress)
+  let switch =
+    makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher(identifyPush).build()
   let kad = KadDHT.new(switch, bootstrapNodes, config, rng(), isServer)
   kad.switch.mount(kad)
   kad
@@ -141,6 +154,7 @@ proc setupMockKad*(
     config: KadDHTConfig = testKadConfig(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     getValueResponse: Opt[Message] = Opt.none(Message),
+    getProvidersResponse: Opt[Message] = Opt.none(Message),
     handleAddProviderMessage: Opt[Message] = Opt.none(Message),
     handleFindNodeDelay: Duration = ZeroDuration,
     handleFindNodeMalformedResponse: bool = false,
@@ -148,6 +162,7 @@ proc setupMockKad*(
   let switch = makeStandardSwitch(TcpAutoAddress)
   let kad = MockKadDHT.new(switch, bootstrapNodes, config, rng = rng())
   kad.getValueResponse = getValueResponse
+  kad.getProvidersResponse = getProvidersResponse
   kad.handleAddProviderMessage = handleAddProviderMessage
   kad.handleFindNodeDelay = handleFindNodeDelay
   kad.handleFindNodeMalformedResponse = handleFindNodeMalformedResponse
@@ -159,24 +174,20 @@ proc setupKadSwitches*(
     validator: EntryValidator = PermissiveValidator(),
     selector: EntrySelector = CandSelector(),
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
-    cleanupProvidersInterval: Duration = chronos.milliseconds(100),
     republishProvidedKeysInterval: Duration = chronos.milliseconds(50),
     replication: int = DefaultReplication,
     beta: int = DefaultBeta,
     recordExpirationInterval: Duration = DefaultRecordExpirationInterval,
-    cleanupDataEntriesInterval: Duration = chronos.milliseconds(100),
 ): seq[KadDHT] =
   var kads: seq[KadDHT]
   for i in 0 ..< count:
     let config = testKadConfig(
       validator,
       selector,
-      cleanupProvidersInterval,
-      republishProvidedKeysInterval,
+      republishProvidedKeysInterval = republishProvidedKeysInterval,
       replication = replication,
       beta = beta,
       recordExpirationInterval = recordExpirationInterval,
-      cleanupDataEntriesInterval = cleanupDataEntriesInterval,
     )
     kads.add(setupKad(config, bootstrapNodes))
   kads
@@ -210,8 +221,155 @@ proc countBucketEntries*(buckets: seq[Bucket], key: Key): uint32 =
         res += 1
   return res
 
-proc containsData*(kad: KadDHT, key: Key, value: Value): bool =
-  let record = kad.dataTable.get(key).valueOr:
+privateAccess(MemoryKadStore)
+privateAccess(typeof(MemoryKadStore().values))
+privateAccess(typeof(MemoryKadStore().values.byKey.values()))
+privateAccess(typeof(MemoryKadStore().providers))
+privateAccess(typeof(MemoryKadStore().providers.expiries[0]))
+privateAccess(typeof(MemoryKadStore().provided))
+
+func mem(kad: KadDHT): MemoryKadStore =
+  doAssert kad.store of MemoryKadStore, "the store of this kad is not a MemoryKadStore"
+  MemoryKadStore(kad.store)
+
+proc valueCount*(kad: KadDHT): int =
+  let now = UnixTimestamp.now()
+  var n = 0
+  for value in kad.mem().values.byKey.values():
+    if value.expiresAt > now:
+      inc n
+  n
+
+proc liveProviders(kad: KadDHT, key: Key): seq[StoredProvider] =
+  ## The store prunes only on a call that takes `now`, so its tables keep expired records.
+  let now = UnixTimestamp.now()
+  var live: seq[StoredProvider]
+  kad.mem().providers.byKey.withValue(key, stored):
+    for p in stored[].values():
+      if p.expiresAt > now:
+        live.add(p)
+  live
+
+proc liveProviders(kad: KadDHT): seq[StoredProvider] =
+  var live: seq[StoredProvider]
+  for key in kad.mem().providers.byKey.keys():
+    live.add(kad.liveProviders(key))
+  live
+
+proc providerCount*(kad: KadDHT): int =
+  kad.liveProviders().len
+
+proc providerCount*(kad: KadDHT, key: Key): int =
+  kad.liveProviders(key).len
+
+proc providerKeyCount*(kad: KadDHT): int =
+  var n = 0
+  for key in kad.mem().providers.byKey.keys():
+    if kad.liveProviders(key).len > 0:
+      inc n
+  n
+
+proc hasProvider*(kad: KadDHT, key: Key): bool =
+  kad.liveProviders(key).len > 0
+
+proc findProvider(kad: KadDHT, key: Key, peerId: PeerId): Opt[StoredProvider] =
+  let id = Opt.some(peerId.getBytes())
+  for p in kad.liveProviders(key):
+    if p.provider.id == id:
+      return Opt.some(p)
+  Opt.none(StoredProvider)
+
+proc hasProvider*(kad: KadDHT, key: Key, peerId: PeerId): bool =
+  kad.findProvider(key, peerId).isSome()
+
+proc providerExpiry*(kad: KadDHT, key: Key, peerId: PeerId): UnixTimestamp =
+  ## 0 when no record matches.
+  let p = kad.findProvider(key, peerId).valueOr:
+    return 0
+  p.expiresAt
+
+proc providerAddrs*(kad: KadDHT, key: Key, peerId: PeerId): seq[MultiAddress] =
+  let p = kad.findProvider(key, peerId).valueOr:
+    return @[]
+  p.provider.addrs
+
+proc recordsPerPeer*(kad: KadDHT, peerId: PeerId): int =
+  let id = Opt.some(peerId.getBytes())
+  kad.liveProviders().countIt(it.provider.id == id)
+
+proc providerRecordsFull*(kad: KadDHT): bool =
+  let cap = kad.mem().providers.cap.valueOr:
+    return false
+  kad.providerCount() >= cap
+
+func providedCount*(kad: KadDHT): int =
+  kad.mem().provided.stamps.len
+
+func providedKeysFull*(kad: KadDHT): bool =
+  let cap = kad.mem().provided.cap.valueOr:
+    return false
+  kad.providedCount() >= cap
+
+proc isProvided*(kad: KadDHT, key: Key): bool =
+  let provided = ProvidedKey.fromBytes(key.toBytes()).valueOr:
+    return false
+  provided in kad.mem().provided.stamps
+
+proc markProvided*(kad: KadDHT, key: Key) =
+  ## Provides `key` locally without announcing it. A later call counts as provided later.
+  let provided = ProvidedKey.fromBytes(key.toBytes()).valueOr:
+    raiseAssert "markProvided: " & $error
+  let stored = kad.store.addProvided(provided).valueOr:
+    raiseAssert "markProvided: " & $error
+  if not stored:
+    raiseAssert "markProvided: the store refused the key"
+
+proc seedProvider*(
+    kad: KadDHT,
+    key: Key,
+    provider: Provider,
+    expiresAt: UnixTimestamp = UnixTimestamp.after(1.hours),
+) =
+  let stored = StoredProvider(provider: provider, expiresAt: expiresAt)
+  let outcome = kad.store.addProvider(key, stored, UnixTimestamp.now(), high(int)).valueOr:
+    raiseAssert "seedProvider: " & $error
+  if outcome notin {AddProviderOutcome.added, AddProviderOutcome.refreshed}:
+    raiseAssert "seedProvider: " & $outcome
+
+proc backdateExpiry*(kad: KadDHT) =
+  ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
+  let providers = kad.mem().providers
+  for stored in providers.byKey.mvalues():
+    for p in stored.mvalues():
+      p.expiresAt -= 1
+  var slots: seq[typeof(providers.expiries[0])]
+  while providers.expiries.len > 0:
+    var slot = providers.expiries.pop()
+    slot.expiresAt -= 1
+    slots.add(slot)
+  for slot in slots:
+    providers.expiries.push(slot)
+
+proc localValue*(kad: KadDHT, key: RecordKey): Opt[EntryRecord] =
+  kad.mem().values.byKey.withValue(key, value):
+    if value[].expiresAt > UnixTimestamp.now():
+      return Opt.some(value[].record)
+  Opt.none(EntryRecord)
+
+proc seedLocalValue*(
+    kad: KadDHT, key: RecordKey, value: Value, expiresAt = Opt.none(UnixTimestamp)
+): bool =
+  let now = UnixTimestamp.now()
+  let stored = StoredValue(
+    key: key,
+    record: EntryRecord(value: value, time: Timestamp.now()),
+    expiresAt: expiresAt.get(now + kad.config.recordExpirationInterval.ceilSeconds()),
+  )
+  kad.store.putValue(stored, now).valueOr:
+    raiseAssert "seedLocalValue: " & $error
+
+proc containsData*(kad: KadDHT, key: RecordKey, value: Value): bool =
+  let record = kad.localValue(key).valueOr:
     checkpoint("containsData: key not found: " & $key.shortLog())
     return false
 
@@ -224,8 +382,8 @@ proc containsData*(kad: KadDHT, key: Key, value: Value): bool =
 
   true
 
-proc containsNoData*(kad: KadDHT, key: Key): bool =
-  kad.dataTable.get(key).isNone()
+proc containsNoData*(kad: KadDHT, key: RecordKey): bool =
+  kad.localValue(key).isNone()
 
 proc pluckPeerIds*(kads: seq[KadDHT]): seq[PeerId] =
   kads.mapIt(it.switch.peerInfo.peerId)
@@ -245,7 +403,7 @@ proc randomServiceId*(): Key =
 
 proc populateRoutingTable*(kad: KadDHT, count: int) =
   for i in 0 ..< count:
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     if kad.rtable.insert(peerId):
       kad.switch.peerStore[AddressBook][peerId] = @[ma("/ip4/127.0.0.1/tcp/1")]
 
@@ -257,7 +415,7 @@ proc insertRandomPeers*(kad: KadDHT, count: int): seq[PeerId] =
   for _ in 0 ..< maxAttempts:
     if peers.len == count:
       break
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     # A bucket only holds k peers, and which bucket an id lands in is random, so
     # a full bucket rejects the insert and the id is simply redrawn.
     if not kad.rtable.insert(peerId):
@@ -274,7 +432,7 @@ proc peersWithAddrs*(count: int): seq[PeerInfo] =
   ## `count` fresh peers on distinct ports, so the IP-diversity caps admit them.
   (0 ..< count).mapIt(
     PeerInfo(
-      peerId: randomPeerId(), addrs: @[ma("/ip4/127.0.0.1/tcp/" & $(40000 + it))]
+      peerId: PeerId.random(), addrs: @[ma("/ip4/127.0.0.1/tcp/" & $(40000 + it))]
     )
   )
 
@@ -356,20 +514,17 @@ proc addRandomPeers*(
     state: LookupState, kad: KadDHT, count: int, target: Key
 ): seq[PeerId] =
   let hasher = kad.rtable.config.hasher
-  var peers: seq[PeerId]
-  for i in 0 ..< count:
-    peers.add(randomPeerId())
-    state.shortlist[peers[i]] = xorDistance(peers[i], target, hasher)
-    kad.switch.peerStore[AddressBook][peers[i]] = @[ma("/ip4/127.0.0.1/tcp/1")]
+  let peers = PeerId.random(count)
+  for peerId in peers:
+    state.shortlist[peerId] = xorDistance(peerId, target, hasher)
+    kad.switch.peerStore[AddressBook][peerId] = @[ma("/ip4/127.0.0.1/tcp/1")]
   peers.sortPeers(target, hasher)
 
 proc sendAddProviderAndGetStatus*(
     sender: KadDHT, receiver: KadDHT, key: Key
 ): Future[LPResult[AddProviderStatus]] {.async: (raises: [CancelledError]).} =
   let streamRes = catch:
-    await sender.switch.dial(
-      receiver.switch.peerInfo.peerId, receiver.switch.peerInfo.addrs, sender.codec
-    )
+    await sender.switch.dial(receiver.switch, sender.codec)
   if streamRes.isErr:
     return err(streamRes.error.msg)
   let stream = streamRes.value()
@@ -406,3 +561,31 @@ proc seedLinearMeasurements*(est: NetworkSizeEstimator, netSize: int) =
       est.measurements[i].add(
         NetSizeMeasurement(distance: base + delta, weight: 1.0, timestamp: now)
       )
+
+type StubStore* = ref object of KadStore
+  ## Wraps ``inner`` and fails its reads on ``failReads``.
+  inner*: KadStore
+  failReads*: bool
+
+method getValue*(
+    store: StubStore, key: RecordKey, now: UnixTimestamp
+): LPResult[Opt[StoredValue]] {.gcsafe, raises: [].} =
+  if store.failReads:
+    return err("stub read failed")
+  store.inner.getValue(key, now)
+
+method putValue*(
+    store: StubStore, value: StoredValue, now: UnixTimestamp
+): LPResult[bool] {.gcsafe, raises: [].} =
+  store.inner.putValue(value, now)
+
+proc setupStubKad*(store: StubStore): KadDHT =
+  var config = testKadConfig()
+  config.store = Opt.some(KadStore(store))
+  setupKad(config)
+
+proc mountedKad*(switch: Switch): Opt[KadDHT] {.raises: [].} =
+  for handler in switch.ms.handlers:
+    if KadCodec in handler.protos and handler.protocol of KadDHT:
+      return Opt.some(KadDHT(handler.protocol))
+  Opt.none(KadDHT)

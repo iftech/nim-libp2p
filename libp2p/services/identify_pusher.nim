@@ -169,9 +169,7 @@ method start*(
 
   switch.tryMount(p.identifyPush).isOkOr:
     p.clearRuntime()
-    raise newException(
-      LPError, "IdentifyPusher could not mount IdentifyPush. Reason: " & error
-    )
+    raise error.toException(LPError, "IdentifyPusher could not mount IdentifyPush")
   p.peerInfo.addObserver(p.onPeerInfoUpdated)
   p.connManager.addPeerEventHandler(p.onIdentifiedHandler, PeerEventKind.Identified)
   p.connManager.addPeerEventHandler(p.onLeftHandler, PeerEventKind.Left)

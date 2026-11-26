@@ -53,9 +53,9 @@ suite "KadDHT - Network Size Estimator":
   test "track records one measurement per closest-peer index":
     let
       est = NetworkSizeEstimator.new(4)
-      target = randomPeerId().toKey()
-      rtable = RoutingTable.new(randomPeerId().toKey())
-      peers = PeerId.random(4, rng()).get()
+      target = PeerId.random().toKey()
+      rtable = RoutingTable.new(PeerId.random().toKey())
+      peers = PeerId.random(4)
 
     check est.track(rtable, target, peers).isOk()
 
@@ -77,4 +77,4 @@ suite "KadDHT - Network Size Estimator":
           NetSizeMeasurement(distance: 0.0, weight: 1.0, timestamp: now)
         )
 
-    check est.networkSize().error() == "degenerate regression"
+    check est.networkSize().isOfError(DegenerateRegressionCause)

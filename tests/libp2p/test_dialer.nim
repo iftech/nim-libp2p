@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, metrics, sequtils, results
+import chronos, metrics, sequtils, results, stew/byteutils
 import
   ../../libp2p/[
     builders,
@@ -20,8 +20,10 @@ import
   ]
 import ../stubs/transportstub
 import
-  ../tools/
-    [unittest, futures, switch_builder, crypto, multiaddress, resolver, stall_server]
+  ../tools/[
+    unittest, futures, switch_builder, crypto, multiaddress, resolver, stall_server,
+    metrics_utils,
+  ]
 
 proc replaceIdentifyHandler(sw: Switch, handler: LPProtoHandler) =
   for holder in sw.ms.handlers:
@@ -48,7 +50,7 @@ proc stallAfterIdentify(sw: Switch) =
   sw.replaceIdentifyHandler(hold)
 
 proc relayAddr(relay: string): MultiAddress =
-  ma(relay & "/p2p/" & $randomPeerId() & "/p2p-circuit")
+  ma(relay & "/p2p/" & $PeerId.random() & "/p2p-circuit")
 
 proc rankOf(address: MultiAddress): DialRank =
   DialCandidate(address: address).dialRank()
@@ -59,20 +61,14 @@ proc makeTcpAddrs(count: int): seq[MultiAddress] =
 type RankedDialMetrics = object
   directWins, cancelled, dials, candidates: float64
 
-template orZero(read: untyped): float64 =
-  try:
-    read
-  except ValueError:
-    0.0
-
 proc rankedDialMetrics(): RankedDialMetrics =
   {.gcsafe.}:
     RankedDialMetrics(
-      directWins: orZero(libp2p_dial_winner_rank.value([$DialRank.Direct])),
-      cancelled: orZero(libp2p_dial_cancelled_attempts.value()),
-      dials: orZero(libp2p_dial_candidates.valueByName("libp2p_dial_candidates_count")),
+      directWins: metricValue(libp2p_dial_winner_rank, [$DialRank.Direct]),
+      cancelled: metricValue(libp2p_dial_cancelled_attempts),
+      dials: metricValueByName(libp2p_dial_candidates, "libp2p_dial_candidates_count"),
       candidates:
-        orZero(libp2p_dial_candidates.valueByName("libp2p_dial_candidates_sum")),
+        metricValueByName(libp2p_dial_candidates, "libp2p_dial_candidates_sum"),
     )
 
 proc makeRankedDialer(src: Switch, transports: seq[Transport]): Dialer =
@@ -96,13 +92,13 @@ suite "Dialer":
 
     await dst.start()
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs, true, false)
+    await src.connect(dst, true, false)
     check src.connManager.connCount(dst.peerInfo.peerId) == 2
 
     await allFutures(src.stop(), dst.stop())
@@ -120,14 +116,14 @@ suite "Dialer":
       let src = makeStandardSwitch()
       switches.add(src)
       await src.start()
-      await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs, true, false)
+      await src.connect(dst, true, false)
 
     let src = makeStandardSwitch()
     switches.add(src)
     await src.start()
 
     expect DialFailedError:
-      await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+      await src.connect(dst)
     check src.peerInfo.peerId notin dst.connManager.connectedPeers()
 
     await allFuturesRaising(switches.mapIt(it.stop()))
@@ -139,7 +135,7 @@ suite "Dialer":
       await src.stop()
 
     expect DialFailedError:
-      await src.connect(src.peerInfo.peerId, src.peerInfo.addrs)
+      await src.connect(src)
 
   asyncTest "Connect without addresses fails":
     let src = makeStandardSwitch()
@@ -148,7 +144,7 @@ suite "Dialer":
       await src.stop()
 
     expect DialFailedError:
-      await src.connect(randomPeerId(), @[])
+      await src.connect(PeerId.random(), @[])
 
   asyncTest "A stalling remote gives up at the dial timeout":
     let
@@ -167,7 +163,7 @@ suite "Dialer":
       src.ms,
       dialTimeout = 1.seconds,
     )
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
 
     # Twice: the second dial only gets its turn if the first freed the peer's
     # dial lock, which a dial that hangs never does.
@@ -227,7 +223,7 @@ suite "Dialer":
       addrs.add(ma("/memorytransport/addr-" & $i))
 
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), addrs)
+      await dialer.connect(PeerId.random(), addrs)
 
     check transport.dialedAddrs.len == MaxDialCandidates
 
@@ -251,7 +247,7 @@ suite "Dialer":
       addrs.add(ma("/memorytransport/addr-" & $i))
 
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), addrs)
+      await dialer.connect(PeerId.random(), addrs)
 
     check transport.dialedAddrs.len == addrs.len
 
@@ -278,7 +274,7 @@ suite "Dialer":
     addrs.add(handled)
 
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), addrs)
+      await dialer.connect(PeerId.random(), addrs)
 
     check transport.dialedAddrs == @[handled]
 
@@ -454,7 +450,7 @@ suite "Dialer":
     addrs.add(ma("/dnsaddr/stalls.example"))
 
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), addrs)
+      await dialer.connect(PeerId.random(), addrs)
 
     check resolver.cancelled
 
@@ -482,7 +478,7 @@ suite "Dialer":
 
     let name = ma("/dnsaddr/good.example")
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), @[wire, wire, name])
+      await dialer.connect(PeerId.random(), @[wire, wire, name])
 
     check transport.dialedAddrs == @[wire]
 
@@ -504,9 +500,70 @@ suite "Dialer":
 
     let wss = ma("/ip4/1.2.3.4/tcp/443/wss")
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), @[wss])
+      await dialer.connect(PeerId.random(), @[wss])
 
     check transport.dialedHosts == @["1.2.3.4"]
+
+  asyncTest "Composed names resolve and preserve hostnames in both dialing modes":
+    let src = makeStandardSwitch(TcpAutoAddress)
+    defer:
+      await src.stop()
+    let resolver = MockResolver.new()
+    resolver.ipResponses[("target.test", false)] = @["192.0.2.1"]
+    resolver.txtResponses["_dnsaddr.peers.test"] =
+      @["dnsaddr=invalid", "dnsaddr=/dns4/target.test/tcp/443/ws"]
+    let named = ma("/p2p-circuit/dnsaddr/peers.test")
+    let wire = ma("/p2p-circuit/ip4/192.0.2.1/tcp/443/ws")
+    for ranked in [false, true]:
+      let transport = FailingDialTransport.new(Upgrade(), rng(), handlesAny = true)
+      let dialer = Dialer.new(
+        src.peerInfo.peerId,
+        src.connManager,
+        src.peerStore,
+        @[Transport(transport)],
+        src.ms,
+        resolver,
+        dialRanking = ranked,
+      )
+      expect DialFailedError:
+        await dialer.connect(PeerId.random(), @[named])
+      check transport.dialedAddrs == @[wire]
+      check transport.dialedHosts == @["target.test"]
+
+  asyncTest "DNSADDR suffix matching does not require records to advertise the expected peer":
+    let src = makeStandardSwitch(TcpAutoAddress)
+    defer:
+      await src.stop()
+    let resolver = MockResolver.new()
+    let peer = PeerId.random()
+    let other = PeerId.random()
+    let wire = ma("/ip4/192.0.2.1/tcp/4001")
+    resolver.txtResponses["_dnsaddr.root.test"] = @["dnsaddr=/dnsaddr/child.test"]
+    resolver.txtResponses["_dnsaddr.child.test"] =
+      @["dnsaddr=" & $wire & "/p2p/" & $other, "dnsaddr=" & $wire]
+    resolver.txtResponses["_dnsaddr.suffix.test"] = @[
+      "dnsaddr=" & $wire & "/p2p/" & $other,
+      "dnsaddr=/ip4/192.0.2.2/tcp/4002/p2p/" & $peer,
+      "dnsaddr=" & $wire & "/p2p/" & $peer,
+    ]
+    for ranked in [false, true]:
+      let transport = FailingDialTransport.new(Upgrade(), rng(), handlesAny = true)
+      let dialer = Dialer.new(
+        src.peerInfo.peerId,
+        src.connManager,
+        src.peerStore,
+        @[Transport(transport)],
+        src.ms,
+        resolver,
+        dialRanking = ranked,
+      )
+      for address in [
+        ma("/dnsaddr/root.test"), ma("/dnsaddr/suffix.test/tcp/4001/p2p/" & $peer)
+      ]:
+        transport.dialedAddrs.setLen(0)
+        expect DialFailedError:
+          await dialer.connect(peer, @[address])
+        check transport.dialedAddrs == @[wire]
 
   test "Dial ranks put direct before relay, and QUIC before TCP within each":
     check rankOf(ma("/ip4/1.2.3.4/udp/4001/quic-v1")) == DialRank.DirectQuic
@@ -531,7 +588,7 @@ suite "Dialer":
       relayQuic = relayAddr("/ip4/5.6.7.8/udp/4001/quic-v1")
       quic = ma("/ip4/1.2.3.4/udp/4001/quic-v1")
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), @[relayTcp, tcp, ws, relayQuic, quic])
+      await dialer.connect(PeerId.random(), @[relayTcp, tcp, ws, relayQuic, quic])
 
     check transport.dialedAddrs == @[quic, tcp, ws, relayQuic, relayTcp]
 
@@ -546,7 +603,7 @@ suite "Dialer":
       quic = ma("/ip4/1.2.3.4/udp/4001/quic-v1")
       transport = ScriptedDialTransport.new(Upgrade(), rng(), handled = tcps & @[quic])
       dialer = src.makeRankedDialer(@[Transport(transport)])
-      dialing = dialer.connect(randomPeerId(), tcps & @[quic])
+      dialing = dialer.connect(PeerId.random(), tcps & @[quic])
 
     checkUntilTimeout:
       transport.dialedAddrs.len == MaxParallelDials
@@ -568,7 +625,7 @@ suite "Dialer":
         Upgrade(), rng(), handled = tcps & @[quic], failing = @[quic]
       )
       dialer = src.makeRankedDialer(@[Transport(transport)])
-      dialing = dialer.connect(randomPeerId(), tcps & @[quic])
+      dialing = dialer.connect(PeerId.random(), tcps & @[quic])
     defer:
       await dialing.cancelAndWait()
 
@@ -647,9 +704,36 @@ suite "Dialer":
       handled = ma("/memorytransport/addr-0")
 
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), @[unresolvable, handled])
+      await dialer.connect(PeerId.random(), @[unresolvable, handled])
 
     check transport.dialedAddrs == @[handled]
+
+  asyncTest "Nested dnsaddr resolution selects a matching peer":
+    let
+      src = makeStandardSwitch(TcpAutoAddress)
+      dst = makeStandardSwitch(TcpAutoAddress)
+      other = makeStandardSwitch(TcpAutoAddress)
+    await allFutures(src.start(), dst.start(), other.start())
+    defer:
+      await allFutures(src.stop(), dst.stop(), other.stop())
+
+    # The nested lookup returns records for multiple peers.
+    let resolver = MockResolver.new()
+    resolver.txtResponses["_dnsaddr.a.example"] = @["dnsaddr=/dnsaddr/b.example"]
+    resolver.txtResponses["_dnsaddr.b.example"] = @[
+      "dnsaddr=" & $other.peerInfo.addrs[0] & "/p2p/" & $other.peerInfo.peerId,
+      "dnsaddr=" & $dst.peerInfo.addrs[0] & "/p2p/" & $dst.peerInfo.peerId,
+    ]
+
+    let dialer = Dialer.new(
+      src.peerInfo.peerId, src.connManager, src.peerStore, src.transports, src.ms,
+      resolver,
+    )
+
+    await dialer.connect(dst.peerInfo.peerId, @[ma("/dnsaddr/a.example")])
+
+    check src.connManager.connCount(dst.peerInfo.peerId) == 1
+    check src.connManager.connCount(other.peerInfo.peerId) == 0
 
   asyncTest "An address that failed is skipped while it is on backoff":
     let src = makeStandardSwitch()
@@ -700,11 +784,11 @@ suite "Dialer":
 
     let addrs = @[MultiAddress.init("/memorytransport/addr-0").tryGet()]
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), addrs)
+      await dialer.connect(PeerId.random(), addrs)
     check transport.dialedAddrs.len == 1
 
     expect DialFailedError:
-      await dialer.connect(randomPeerId(), addrs)
+      await dialer.connect(PeerId.random(), addrs)
     check transport.dialedAddrs.len == 2
 
   asyncTest "A dial that every address backoff skipped does not fail the peer":
@@ -726,7 +810,7 @@ suite "Dialer":
     )
 
     let
-      peerId = randomPeerId()
+      peerId = PeerId.random()
       addrs = @[MultiAddress.init("/memorytransport/addr-0").tryGet()]
 
     # tryDial backs the address off without ever failing the peer
@@ -762,7 +846,7 @@ suite "Dialer":
     )
 
     let
-      peerId = randomPeerId()
+      peerId = PeerId.random()
       addrs = @[MultiAddress.init("/memorytransport/addr-0").tryGet()]
 
     expect DialFailedError:
@@ -787,9 +871,9 @@ suite "Dialer":
     defer:
       await allFutures(src.stop(), dst.stop())
 
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
-    await src.disconnect(dst.peerInfo.peerId)
-    await src.connect(dst.peerInfo.peerId, dst.peerInfo.addrs)
+    await src.connect(dst)
+    await src.disconnect(dst)
+    await src.connect(dst)
 
     check src.connManager.connCount(dst.peerInfo.peerId) == 1
 
@@ -802,19 +886,16 @@ suite "Dialer":
     defer:
       await allFutures(src.stop(), dst.stop())
 
-    let dialer = Dialer.new(
-      src.peerInfo.peerId, src.connManager, src.peerStore, src.transports, src.ms
-    )
-
-    const CancelSteps = 30
-      ## Longer than the transport walk: the upgrade parks on awaits of its own.
-
-    var cancelledDials = 0
-    for steps in 0 .. CancelSteps:
+    var step = 0
+    while true:
       let dialFut =
-        dialer.dialAndUpgrade(Opt.some(dst.peerInfo.peerId), dst.peerInfo.addrs)
-      for _ in 0 ..< steps:
-        await sleepAsync(0.milliseconds)
+        src.dialer.dialAndUpgrade(Opt.some(dst.peerInfo.peerId), dst.peerInfo.addrs)
+
+      if step == 0:
+        discard # step 0 is cancelling right away
+      else:
+        await stepsAsync(step)
+      step.inc()
 
       await dialFut.cancelAndWait()
 
@@ -822,10 +903,9 @@ suite "Dialer":
         let muxed = dialFut.value()
         if not muxed.isNil():
           await muxed.close()
-      elif dialFut.cancelled():
-        cancelledDials.inc()
+          break # this dial completed before cancellation, so stop probing later delays
 
-    check cancelledDials > 0
+    check step > 1 # there should be at least one cancelled dial
 
   asyncTest "A remote that never answers identify gives up at the dial timeout":
     let
@@ -858,34 +938,22 @@ suite "Dialer":
         )
 
   asyncTest "A remote that never closes the identify stream frees the dial":
+    const closeTimeout = 500.milliseconds
     let
       src = makeStandardSwitch(TcpAutoAddress)
       dst = makeStandardSwitch(TcpAutoAddress)
+    src.peerStore.identifyCloseTimeout = closeTimeout
     await src.start()
     await dst.start()
     dst.stallAfterIdentify()
     defer:
       await allFutures(src.stop(), dst.stop())
 
-    let dialer = Dialer.new(
-      src.peerInfo.peerId,
-      src.connManager,
-      src.peerStore,
-      src.transports,
-      src.ms,
-      dialTimeout = 1.seconds,
-    )
-
     # Twice: the second dial gets its turn only if the first freed the lock.
     for _ in 0 .. 1:
-      let dial = dialer.connect(
-        dst.peerInfo.peerId,
-        dst.peerInfo.addrs,
-        forceDial = true,
-        reuseConnection = false,
-      )
+      let dial = src.connect(dst, forceDial = true, reuseConnection = false)
       # `join`, not `wait`: a cancel waits out a dial parked in `noCancel`.
-      if not await dial.join().withTimeout(IdentifyCloseTimeout * 2):
+      if not await dial.join().withTimeout(closeTimeout * 2):
         fail()
         return
       await dial
@@ -916,6 +984,86 @@ suite "Dialer":
       discard await negotiation
     check stream.wasResetLocally
 
+  asyncTest "Known peer protocol uses optimistic negotiation":
+    const codec = "/test/optimistic/1.0.0"
+    let (stream, remote) = bridgedConnections()
+    var selected: Stream
+    defer:
+      if selected.isNil:
+        await stream.close()
+      else:
+        await selected.close()
+      await remote.close()
+
+    stream.readQueue = newAsyncQueue[seq[byte]](16)
+    remote.readQueue = newAsyncQueue[seq[byte]](16)
+    let peerStore = PeerStore.new(nil)
+    peerStore[ProtoBook][stream.peerId] = @[codec]
+    let dialer =
+      Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
+
+    selected = await dialer.negotiateStream(stream, @[codec])
+
+    check selected.getWrapped() == stream
+    await selected.writeLp("early payload")
+    check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
+    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await remote.readLp(1024)) == "early payload"
+
+    await remote.writeLp("/multistream/1.0.0\n")
+    await remote.writeLp(codec & "\n")
+    await remote.writeLp("response")
+    check string.fromBytes(await selected.readLp(1024)) == "response"
+
+  asyncTest "Stale peer protocol fails on first read and resets the stream":
+    const codec = "/test/stale/1.0.0"
+    let (stream, remote) = bridgedConnections()
+    var selected: Stream
+    defer:
+      if selected.isNil:
+        await stream.close()
+      else:
+        await selected.close()
+      await remote.close()
+
+    stream.readQueue = newAsyncQueue[seq[byte]](16)
+    remote.readQueue = newAsyncQueue[seq[byte]](16)
+    let peerStore = PeerStore.new(nil)
+    peerStore[ProtoBook][stream.peerId] = @[codec]
+    let dialer =
+      Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
+
+    selected = await dialer.negotiateStream(stream, @[codec])
+    check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
+    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+
+    await remote.writeLp("/multistream/1.0.0\n")
+    await remote.writeLp("na\n")
+    expectMsg LPStreamError, "Optimistic multistream protocol rejected":
+      discard await selected.readLp(1024)
+    check stream.wasResetLocally
+
+  asyncTest "Unknown peer protocol uses blocking negotiation":
+    const codec = "/test/blocking/1.0.0"
+    let (stream, remote) = bridgedConnections()
+    let peerStore = PeerStore.new(nil)
+    peerStore[ProtoBook][stream.peerId] = @["/test/other/1.0.0"]
+    let dialer =
+      Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
+
+    let negotiation = dialer.negotiateStream(stream, @[codec])
+    defer:
+      await stream.close()
+      await remote.close()
+
+    check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
+    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+    check not negotiation.finished()
+
+    await remote.writeLp("/multistream/1.0.0\n")
+    await remote.writeLp(codec & "\n")
+    check (await negotiation) == stream
+
   asyncTest "tryDial raises DialFailedError when every dial fails":
     let src = makeStandardSwitch()
     await src.start()
@@ -932,7 +1080,7 @@ suite "Dialer":
     )
 
     expect DialFailedError:
-      discard await dialer.tryDial(randomPeerId(), @[MemoryAutoAddress()])
+      discard await dialer.tryDial(PeerId.random(), @[MemoryAutoAddress()])
 
 suite "MuxedUpgrade":
   asyncTest "upgrade raises UpgradeFailedError without secure managers":

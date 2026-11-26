@@ -15,6 +15,7 @@ import
 import
   ../../../libp2p/[
     switch,
+    muxers/muxer,
     protocols/pubsub/errors,
     protocols/pubsub/pubsub,
     protocols/pubsub/pubsubpeer,
@@ -25,7 +26,9 @@ import
     protocols/pubsub/rpc/messages,
   ]
 import
-  ../../tools/[unittest, crypto, bufferstream, futures, switch_builder, multiaddress]
+  ../../tools/[
+    unittest, crypto, bufferstream, futures, switch_builder, multiaddress, metrics_utils
+  ]
 import ./converters
 
 export switch, converters, crypto
@@ -121,7 +124,7 @@ proc setupGossipSubWithPeers*(
   for i in 0 ..< numPeers:
     let conn = TestBufferStream.new(noop)
     conns &= conn
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     conn.peerId = peerId
     let peer = gossipSub.getPubSubPeer(peerId)
     peer.sendStream = conn
@@ -210,6 +213,8 @@ proc generateNodes*(
     publishThreshold = -1000.0,
     graylistThreshold = -10000.0,
     disconnectBadPeers: bool = false,
+    maxConcurrentValidations = GossipSubMaxConcurrentValidations,
+    topicStreamsConfig: Opt[TopicStreamsConfig] = Opt.none(TopicStreamsConfig),
     testExtensionConfig: Opt[TestExtensionConfig] = Opt.none(TestExtensionConfig),
     partialMessageExtensionConfig: Opt[PartialMessageExtensionConfig] =
       Opt.none(PartialMessageExtensionConfig),
@@ -252,6 +257,8 @@ proc generateNodes*(
             p.publishThreshold = publishThreshold
             p.graylistThreshold = graylistThreshold
             p.disconnectBadPeers = disconnectBadPeers
+            p.maxConcurrentValidations = maxConcurrentValidations
+            p.topicStreamsConfig = topicStreamsConfig
             p.testExtensionConfig = testExtensionConfig
             p.partialMessageExtensionConfig = partialMessageExtensionConfig
             p.pingpongExtensionConfig = pingpongExtensionConfig
@@ -313,10 +320,19 @@ proc getPeerScore*(node: GossipSub, peerId: PeerId): float64 =
 proc getPeerTopicInfo*(node: GossipSub, peerId: PeerId, topic: string): TopicInfo =
   return node.getPeerStats(peerId).topicInfos.getOrDefault(topic)
 
+# An outbound stream has no protocol until the remote confirms it.
+proc inboundTopicStreams*(node: GossipSub, peerId: PeerId): seq[MuxedStream] =
+  var streams: seq[MuxedStream]
+  for mux in node.switch.connManager.getConnections(peerId).get(@[]):
+    for stream in mux.getStreams():
+      if stream.protocol == TopicStreamsCodec and stream.dir == Direction.In:
+        streams.add(stream)
+  return streams
+
 proc connect*[T: PubSub](dialer: T, target: T) {.async.} =
   doAssert dialer.switch.peerInfo.peerId != target.switch.peerInfo.peerId,
     "Could not connect same peer"
-  await dialer.switch.connect(target.peerInfo.peerId, target.peerInfo.addrs)
+  await dialer.switch.connect(target.switch)
   await sleepAsync(connectWarmup)
 
 template waitSubscribeChain*[T: PubSub](nodes: seq[T], topic: string): untyped =
@@ -548,20 +564,16 @@ proc `$`*(peer: PubSubPeer): string =
   shortLog(peer)
 
 proc currentRateLimitHits*(label: string = "nim-libp2p"): float64 =
-  try:
-    libp2p_gossipsub_peers_rate_limit_hits.valueByName(
-      "libp2p_gossipsub_peers_rate_limit_hits_total", @[label]
-    )
-  except KeyError:
-    0
+  metricValueByName(
+    libp2p_gossipsub_peers_rate_limit_hits,
+    "libp2p_gossipsub_peers_rate_limit_hits_total",
+    @[label],
+  )
 
 proc currentGraylistedRpcs*(label: string = "nim-libp2p"): float64 =
-  try:
-    libp2p_gossipsub_graylisted_rpcs.valueByName(
-      "libp2p_gossipsub_graylisted_rpcs_total", @[label]
-    )
-  except KeyError:
-    0
+  metricValueByName(
+    libp2p_gossipsub_graylisted_rpcs, "libp2p_gossipsub_graylisted_rpcs_total", @[label]
+  )
 
 proc addDirectPeer*[T: PubSub](node: T, target: T) {.async.} =
   doAssert node.switch.peerInfo.peerId != target.switch.peerInfo.peerId,

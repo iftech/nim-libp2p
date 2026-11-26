@@ -33,7 +33,7 @@ func new(
   newException(T, msg & ": " & parent.msg, parent)
 
 func dialedAddr(msg: AutonatMsg): Result[MultiAddress, ref LPError] =
-  if msg.msgType.get(MsgType.Dial) != MsgType.DialResponse:
+  if msg.msgType != MsgType.DialResponse:
     return err(AutonatError.new("Unexpected response"))
 
   let response = msg.response.valueOr:
@@ -101,7 +101,7 @@ proc tryDialMe*(
       return err(AutonatError.new("read Dial response failed", e))
 
   let msg = AutonatMsg.decode(move(respBytes)).valueOr:
-    return err(AutonatError.new($error))
+    return err(error.toException(AutonatError))
   msg.dialedAddr()
 
 method dialMe*(

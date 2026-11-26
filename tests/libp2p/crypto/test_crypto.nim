@@ -2,12 +2,12 @@
 # Copyright (c) Status Research & Development GmbH
 {.used.}
 
-from std/strutils import toUpper
+from std/strutils import toUpper, startsWith
 import std/[sequtils, algorithm]
 import bearssl/[hash, rand], nimcrypto/utils
 import chronicles, json_serialization
 import ../../../libp2p/crypto/[crypto, chacha20poly1305, curve25519, hkdf]
-import ../../../libp2p/utils/redact
+import ../../../libp2p/utils/[redact, opt]
 import ../../tools/[unittest, crypto]
 
 ## Test vectors was made using Go implementation
@@ -650,6 +650,57 @@ suite "Key interface test suite":
     rng().shuffle(cards)
     check cards.toSeq().sorted() == original
 
+  test "shuffle leaves empty and singleton arrays and RNG state unchanged":
+    var seed = [byte 1, 2, 3, 4, 5, 6, 7, 8]
+    let ctx = (ref HmacDrbgContext)()
+    var expectedCtx: HmacDrbgContext
+    hmacDrbgInit(ctx[], addr sha256Vtable, addr seed[0], uint seed.len)
+    hmacDrbgInit(expectedCtx, addr sha256Vtable, addr seed[0], uint seed.len)
+    let random = newBearSslRng(ctx)
+    var empty: seq[int]
+    var singleton = [42]
+
+    random.shuffle(empty)
+    random.shuffle(singleton)
+    check empty.len == 0
+    check singleton == [42]
+
+    var got, expected: array[32, byte]
+    random.generate(got)
+    hmacDrbgGenerate(expectedCtx, addr expected[0], uint expected.len)
+    check got == expected
+
+  test "shuffle can produce every permutation":
+    let random = rng()
+
+    var seenPairs: seq[array[2, int]]
+    for _ in 0 ..< 200:
+      var xs = [1, 2]
+      random.shuffle(xs)
+      if xs notin seenPairs:
+        seenPairs.add(xs)
+    check seenPairs.len == 2
+
+    var seenTriples: seq[array[3, int]]
+    for _ in 0 ..< 600:
+      var xs = [1, 2, 3]
+      random.shuffle(xs)
+      if xs notin seenTriples:
+        seenTriples.add(xs)
+    check seenTriples.len == 6
+
+  test "rand rejects samples below the uniform threshold":
+    var seed = [48'u8, 0, 0, 0, 0, 0, 0, 0]
+    let ctx = (ref HmacDrbgContext)()
+    hmacDrbgInit(ctx[], addr sha256Vtable, addr seed[0], uint seed.len)
+    let random = newBearSslRng(ctx)
+
+    # The first draw (1530bb4c) is rejected in either byte order; the next is accepted.
+    when cpuEndian == littleEndian:
+      check random.rand(0, 1_500_000_000) == 279_358_677
+    else:
+      check random.rand(0, 1_500_000_000) == 604_680_296
+
   test "newBearSslRng wraps existing HMAC-DRBG context":
     var seed = [byte 1, 2, 3, 4, 5, 6, 7, 8]
     let ctx = (ref HmacDrbgContext)()
@@ -676,12 +727,7 @@ suite "Key interface test suite":
     check rng().pickOne(x).isNone()
 
   test "pickOne returns the only element of a singleton":
-    check rng().pickOne(@[42]).get() == 42
-
-  test "pickOne returns an element from the sequence":
-    let xs = @[11, 22, 33, 44, 55]
-    let picked = rng().pickOne(xs).get()
-    check picked in xs
+    check rng().pickOne(@[42]) == 42
 
   test "pick returns none for empty sequence":
     check rng().pick(newSeq[int](), 3).isNone()
@@ -703,20 +749,6 @@ suite "Key interface test suite":
     check picked.len == xs.len
     check picked.sorted() == xs.sorted()
 
-  test "pick returns some for non-empty sequence with n > 0":
-    check rng().pick(@[11, 22, 33], 2).isSome()
-
-  test "pick result contains no duplicates":
-    let xs = @[11, 22, 33, 44, 55, 66, 77, 88]
-    let picked = rng().pick(xs, 5).get()
-    check picked == picked.deduplicate()
-
-  test "pick result is a subset of the input":
-    let xs = @[11, 22, 33, 44, 55]
-    let picked = rng().pick(xs, 4).get()
-    for x in picked:
-      check x in xs
-
   test "pick n=1 returns a single element":
     let xs = @[11, 22, 33]
     let picked = rng().pick(xs, 1).get()
@@ -727,3 +759,112 @@ suite "Key interface test suite":
     let xs = @[100, 200, 300, 400, 500]
     for _ in 0 ..< 20:
       check rng().pickOne(xs).get() in xs
+
+suite "Key protobuf decoding":
+  const
+    Rsa2048Vector = 0
+    EcdsaVector = 3
+    Ed25519Vector = 4
+
+  proc vectorKeys(i: int): KeyPair =
+    KeyPair(
+      seckey:
+        PrivateKey.init(fromHex(stripSpaces(PrivateKeys[i]))).expect("private key"),
+      pubkey: PublicKey.init(fromHex(stripSpaces(PublicKeys[i]))).expect("public key"),
+    )
+
+  let
+    rsaKeys = vectorKeys(Rsa2048Vector)
+    ecdsaKeys = vectorKeys(EcdsaVector)
+    ed25519Keys = vectorKeys(Ed25519Vector)
+    secp256k1Keys = KeyPair.random(Secp256k1, rng()).expect("secp256k1 key")
+    keyError = CryptoResult[PublicKey].err(CryptoError.KeyError)
+    privKeyError = CryptoResult[PrivateKey].err(CryptoError.KeyError)
+
+  test "Unknown fields are skipped":
+    let encoded = fromHex(stripSpaces(PublicKeys[Ed25519Vector]))
+    let unknownFields = [
+      @[0x18'u8, 0x01],
+      @[0x21'u8, 1, 2, 3, 4, 5, 6, 7, 8],
+      @[0x2A'u8, 0x01, 0x00],
+      @[0x35'u8, 1, 2, 3, 4],
+    ]
+
+    for field in unknownFields:
+      check:
+        PublicKey.init(encoded & field).expect("public key") == ed25519Keys.pubkey
+        PublicKey.init(field & encoded).expect("public key") == ed25519Keys.pubkey
+
+  test "Truncated or empty input fails":
+    check:
+      PublicKey.init(@[0x08'u8]) == keyError
+      PublicKey.init(newSeq[byte]()) == keyError
+      PrivateKey.init(newSeq[byte]()) == privKeyError
+
+  test "Known scheme with garbage key bytes fails":
+    let inputs = [
+      @[0x08'u8, 0x00, 0x12, 0x01, 0x00],
+      @[0x08'u8, 0x01, 0x12, 0x01, 0x00],
+      @[0x08'u8, 0x03, 0x12, 0x01, 0x00],
+    ]
+
+    for data in inputs:
+      check:
+        PublicKey.init(data) == keyError
+        PrivateKey.init(data) == privKeyError
+
+  test "String forms of keys and signatures":
+    check:
+      ($rsaKeys.pubkey).startsWith("RSA key (2048 bits)")
+      ($ecdsaKeys.pubkey).startsWith("secp256r1 key (")
+      ($ed25519Keys.pubkey).startsWith("ed25519 key (")
+      ($secp256k1Keys.pubkey).startsWith("secp256k1 key (")
+
+    for pair in [rsaKeys, ecdsaKeys, ed25519Keys, secp256k1Keys]:
+      check shortLog(pair.pubkey).len < len($pair.pubkey)
+
+    check $Signature(data: @[0xAB'u8, 0x01]) == "AB01"
+
+  test "Empty signature does not verify":
+    let msg = @[1'u8, 2, 3]
+    for pair in [rsaKeys, ecdsaKeys, ed25519Keys, secp256k1Keys]:
+      check not Signature().verify(msg, pair.pubkey)
+
+  test "PublicKey.init from scheme keys":
+    check:
+      rsaKeys.pubkey.scheme == PKScheme.RSA
+      ecdsaKeys.pubkey.scheme == PKScheme.ECDSA
+      ed25519Keys.pubkey.scheme == PKScheme.Ed25519
+      secp256k1Keys.pubkey.scheme == PKScheme.Secp256k1
+
+      PublicKey.init(rsaKeys.pubkey.rsakey) == rsaKeys.pubkey
+      PublicKey.init(ecdsaKeys.pubkey.eckey) == ecdsaKeys.pubkey
+      PublicKey.init(ed25519Keys.pubkey.edkey) == ed25519Keys.pubkey
+      PublicKey.init(secp256k1Keys.pubkey.skkey) == secp256k1Keys.pubkey
+
+  test "Private key toBytes into a buffer":
+    let seckey = ed25519Keys.seckey
+    let encoded = seckey.getBytes().expect("private key")
+
+    var small = newSeq[byte](1)
+    check:
+      seckey.toBytes(small).expect("size") == encoded.len
+      small == @[0'u8]
+
+    var buf = newSeq[byte](encoded.len)
+    check:
+      seckey.toBytes(buf).expect("size") == encoded.len
+      buf == encoded
+
+  test "toRawBytes for RSA and ECDSA":
+    for pair in [rsaKeys, ecdsaKeys]:
+      let seckeyRaw = pair.seckey.getRawBytes().expect("raw private key")
+      let pubkeyRaw = pair.pubkey.getRawBytes().expect("raw public key")
+
+      var secBuf = newSeq[byte](seckeyRaw.len)
+      var pubBuf = newSeq[byte](pubkeyRaw.len)
+      check:
+        pair.seckey.toRawBytes(secBuf).expect("size") == seckeyRaw.len
+        pair.pubkey.toRawBytes(pubBuf).expect("size") == pubkeyRaw.len
+        secBuf == seckeyRaw
+        pubBuf == pubkeyRaw

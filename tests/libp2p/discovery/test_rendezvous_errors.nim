@@ -67,7 +67,7 @@ suite "RendezVous Errors":
     silentPeer.mount(LPProtocol.new(@[RendezVousCodec], neverRespond))
     startAndDeferStop(@[rdv.switch, silentPeer])
 
-    await rdv.switch.connect(silentPeer.peerInfo.peerId, silentPeer.peerInfo.addrs)
+    await rdv.switch.connect(silentPeer)
     await rdv.advertise("foo")
 
     check rdv.sema.availableSlots() == SemaphoreDefaultSize
@@ -157,10 +157,12 @@ suite "RendezVous Errors":
       peerNodes[0], rendezvousNode, namespace, RegistrationLimitPerPeer
     )
 
-    # Attempt one more registration which should be rejected with NotAuthorized
+    # A refresh in a known namespace passes the limit, so use a new one
     let messageBuf = encode(
       prepareRegisterMessage(
-        namespace, peerNodes[0].switch.peerInfo.signedPeerRecord.encode(), 2.hours
+        "otherNamespace",
+        peerNodes[0].switch.peerInfo.signedPeerRecord.encode(),
+        2.hours,
       )
     )
 

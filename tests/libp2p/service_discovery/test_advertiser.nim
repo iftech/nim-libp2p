@@ -9,11 +9,13 @@ import
     extended_peer_record,
     peeraddrpolicy,
     peerinfo,
+    peerstore,
     protocols/kademlia,
     protocols/service_discovery,
     protocols/service_discovery/advertiser,
+    stream/connection,
   ]
-import ../../tools/[unittest, multiaddress, lifecycle]
+import ../../tools/[fault_stream, lifecycle, multiaddress, protobuf, unittest]
 import ./utils
 
 proc holdUntil(gate: AsyncEvent) {.async: (raises: [CancelledError]).} =
@@ -288,7 +290,7 @@ suite "Advertiser - caller-supplied advertisement":
   test "rejects an advertisement padded past MaxXPRSize with unknown fields":
     let disco = setupServiceDiscoveryNode()
     let service = makeServiceInfo()
-    let advert = padAdvertisement(makeAdvertisement(service.id).encode(), MaxXPRSize)
+    let advert = pad(makeAdvertisement(service.id).encode(), MaxXPRSize)
 
     # the decoder skips the padding, so only the incoming length rejects this
     check advert.len > MaxXPRSize
@@ -446,6 +448,39 @@ suite "Advertiser - maintainRegistrations":
 
     await disco.localRegistrationLoop.cancelAndWait()
 
+  asyncTest "a registrar that left its bucket loses its stalled task":
+    let disco = setupServiceDiscoveryNode()
+    let stream = FaultStream.new(onWrite = Fault.Hang)
+    disco.switch = FaultSwitch.new(disco.switch, stream)
+    defer:
+      await disco.stopRegistrations()
+      await stream.close()
+
+    let service = makeServiceInfo()
+    let serviceId = service.id.hashServiceId()
+    disco.populateAdvertisementTable(serviceId)
+    for key in disco.rtable.allKeys():
+      disco.switch.peerStore[AddressBook][key.toPeerId().get()] =
+        @[makeMultiAddress("127.0.0.1")]
+    check disco.addProvidedService(service).isOk()
+    await stream.hung.wait()
+
+    let stalled = toSeq(disco.advertiser.running)[0]
+    let replacement = PeerId.random()
+    disco.switch.peerStore[AddressBook][replacement] = @[makeMultiAddress("127.0.0.1")]
+    let table = disco.rtManager.getTable(serviceId).get()
+    let pos = table.buckets[stalled.bucketIdx].peers.find(stalled.registrar.toKey())
+    require pos >= 0
+    table.buckets[stalled.bucketIdx].peers[pos] = replacement.toKey()
+
+    await disco.maintainRegistrations()
+
+    await stalled.fut.join()
+    check:
+      stalled notin disco.advertiser.running
+      toSeq(disco.advertiser.running).anyIt(it.registrar == replacement)
+      stalled.fut.cancelled()
+
 suite "Advertiser - removeProvidedService":
   teardown:
     checkTrackers()
@@ -489,7 +524,7 @@ suite "Advertiser - removeProvidedService":
     check sid in disco.serviceBootstrapFuts # the self-ad keeps the table alive
 
     disco.dropCachedAds()
-    await sleepAsync(0.millis) # let the pending cancellation run
+    await stepsAsync(1) # let the pending cancellation run
 
     check:
       sid notin disco.serviceBootstrapFuts

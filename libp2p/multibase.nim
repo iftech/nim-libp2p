@@ -13,6 +13,8 @@ import tables
 import ./results
 import stew/[base32, base58, base64]
 
+export results
+
 type
   MultiBaseStatus* {.pure.} = enum
     Error
@@ -510,7 +512,7 @@ proc encode*(
     var outlen = 0
     let res = mb.encr(inbytes, buffer.toOpenArray(1, buffer.high), outlen)
     if res != MultiBaseStatus.Success:
-      return err("multibase: Encoding error [" & $res & "]")
+      return err($res, "multibase: Encoding error")
     buffer.setLen(outlen + 1)
     buffer[0] = mb.code
   else:
@@ -539,7 +541,7 @@ proc decode*(
     var outlen = 0
     let res = mb.decr(inbytes.toOpenArray(1, length - 1), buffer, outlen)
     if res != MultiBaseStatus.Success:
-      err("multibase: Decoding error [" & $res & "]")
+      err($res, "multibase: Decoding error")
     else:
       buffer.setLen(outlen)
       ok(buffer)

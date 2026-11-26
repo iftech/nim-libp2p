@@ -7,16 +7,18 @@ import ../utils/[heartbeat, future]
 import ../logging
 import ../[peerid, switch, multihash]
 import ./protocol
+import ./connectivity/autonat/types
+import ../services/reachabilityobservers
 import
   ./kademlia/[
     routing_table, peer_registry, protobuf, types, find, get, put, keyspace, provider,
     ping, ip_diversity,
   ]
-import ./kademlia/[kademlia_metrics, netsize, probe_backoff, rpc]
+import ./kademlia/[kademlia_metrics, memory_store, netsize, probe_backoff, rpc, store]
 
 export
   chronicles, routing_table, peer_registry, protobuf, types, find, get, put, keyspace,
-  provider, ping, kademlia_metrics, netsize, probe_backoff, ip_diversity
+  provider, ping, kademlia_metrics, netsize, probe_backoff, ip_diversity, store
 
 logScope:
   topics = "libp2p kademlia"
@@ -378,13 +380,14 @@ proc initKadBase*(
     ),
   )
   kad.config = config
-  kad.providerManager =
-    ProviderManager.new(config.providerRecordCapacity, config.providedKeyCapacity)
+  kad.store = config.store.valueOr:
+    MemoryKadStore.new(config.storeLimits)
   kad.nsEstimator = NetworkSizeEstimator.new(config.replication)
   kad.rpcSem = newAsyncSemaphore(config.limits.maxConcurrentRpcs)
   kad.admissionSem = newAsyncSemaphore(config.limits.maxConcurrentProbes)
   kad.livenessSem = newAsyncSemaphore(config.limits.maxConcurrentLivenessProbes)
   kad.isServer = isServer
+  kad.unadvertised = not isServer
   kad.codec = codec
   kad.msgSender = MessageSender.new(switch, codec, MaxMsgSize)
   kad.bootstrapNodes = bootstrapNodes.toPeerInfos()
@@ -407,7 +410,7 @@ proc new*(
   kad.handler = proc(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
-    if not kad.isServer:
+    if kad.stopping or not kad.started or not kad.isServer:
       trace "Refusing inbound query while not serving", stream
       await stream.reset()
       return
@@ -467,18 +470,106 @@ proc resetServerStreams(kad: KadDHT) {.async: (raises: []).} =
   await noCancel allFutures(streams.mapIt(it.reset()))
   trace "Reset inbound Kad DHT streams", streams = streams.len
 
+proc advertiseMode(kad: KadDHT) =
+  kad.unadvertised = not kad.isServer
+  kad.switch.setAdvertised(kad.codec, kad.isServer)
+
+proc setMode(kad: KadDHT, isServer: bool, now: Moment) {.async: (raises: []).} =
+  kad.autoModePolicy.applied(isServer, now)
+  kad.isServer = isServer
+  kad.advertiseMode()
+  if kad.started:
+    if isServer:
+      kad_server_mode.inc()
+    else:
+      kad_server_mode.dec()
+  kad_mode_transitions_total.inc(
+    labelValues = [if isServer: "to_server" else: "to_client"]
+  )
+  if not isServer:
+    await kad.resetServerStreams()
+  info "Kad DHT changed mode", isServer
+
 proc changeMode*(kad: KadDHT, isServer: bool): Future[bool] {.async: (raises: []).} =
   ## Start or stop serving inbound queries, and report whether the mode changed.
-  ## Stopping resets the in-flight inbound streams; the codec stays mounted (no
-  ## unmount exists), so peers drop us once the handler refuses to serve.
+  ## A downgrade drops the codec from identify and resets the in-flight inbound
+  ## streams. Identify push then sends the new protocol list to peers.
   if isServer == kad.isServer:
     return false
 
-  kad.isServer = isServer
-  if not isServer:
-    await kad.resetServerStreams()
-  info "Kad DHT changed mode", previousIsServer = not isServer, isServer
+  await kad.setMode(isServer, Moment.now())
   true
+
+proc runModeTimer(kad: KadDHT, deadline: Moment) {.async: (raises: [CancelledError]).} =
+  if not kad.started or kad.stopping:
+    return
+
+  await sleepAsync(deadline - Moment.now())
+  if not kad.started or kad.stopping:
+    return
+
+  let now = Moment.now()
+  if kad.autoModePolicy.due(now):
+    await kad.setMode(not kad.isServer, now)
+
+proc dropModeTimer(kad: KadDHT) =
+  if kad.modeTimer.isNil():
+    return
+
+  kad.modeTimer.cancelSoon()
+  kad.modeTimer = nil
+
+proc armModeTimer(kad: KadDHT, deadline: Moment) =
+  let timer = kad.runModeTimer(deadline)
+  kad.modeTimer = timer
+  timer.addCallback(
+    proc(udata: pointer) {.gcsafe, raises: [].} =
+      if kad.modeTimer == timer:
+        kad.modeTimer = nil
+  )
+
+proc observeReachability(
+    kad: KadDHT, reachability: NetworkReachability
+) {.async: (raises: []).} =
+  kad.dropModeTimer()
+  let now = Moment.now()
+  let hadPending = kad.autoModePolicy.deadline().isSome()
+  let deadline = kad.autoModePolicy.observe(reachability, now).valueOr:
+    if hadPending:
+      kad_mode_transitions_suppressed_total.inc(labelValues = ["opposite"])
+    return
+
+  if deadline <= now:
+    await kad.setMode(not kad.isServer, now)
+    return
+
+  if not hadPending:
+    kad.autoModePolicy.holdReason().ifValue(reason):
+      kad_mode_transitions_suppressed_total.inc(labelValues = [$reason])
+  kad.armModeTimer(deadline)
+
+proc enableAutoMode*(
+    kad: KadDHT, current: CurrentReachability, config = AutoModeConfig.init()
+): ReachabilityHandler {.raises: [].} =
+  ## Serves once Reachable holds for the window of ``config``. A second call returns
+  ## the same handler. ``start`` reads ``current``, as a stopped node misses verdicts.
+  kad.autoModeHandler.ifValue(handler):
+    return handler
+
+  kad.currentReachability = current
+  kad.autoModePolicy = AutoModePolicy.init(config, kad.isServer)
+  let handler: ReachabilityHandler = proc(
+      reachability: NetworkReachability,
+      confidence: Opt[float],
+      dialBackAddr: Opt[MultiAddress],
+  ) {.async: (raises: [CancelledError]).} =
+    if not kad.started or kad.stopping:
+      return
+
+    await kad.observeReachability(reachability)
+
+  kad.autoModeHandler = Opt.some(handler)
+  handler
 
 method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   if kad.started:
@@ -487,6 +578,15 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
 
   kad.started = true
   kad.stopping = false
+  if kad.autoModeHandler.isSome():
+    if kad.isServer:
+      kad_mode_transitions_total.inc(labelValues = ["to_client"])
+    kad.isServer = false
+    kad.autoModePolicy = kad.autoModePolicy.restarted(isServer = kad.isServer)
+    await kad.observeReachability(kad.currentReachability())
+  elif kad.isServer:
+    kad_server_mode.inc()
+  kad.advertiseMode()
   kad.msgSender.start()
 
   if not kad.config.disableBootstrapping:
@@ -497,15 +597,11 @@ method start*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   kad.livenessLoop = kad.maintainLiveness()
   kad.fixLowPeersLoop = kad.maintainMinPeers()
   kad.republishLoop = kad.manageRepublishProvidedKeys()
-  kad.expiredLoop = kad.manageExpiredProviders()
-  kad.recordExpirationLoop = kad.manageExpiredRecords()
 
   reportBackgroundFailure(kad.maintenanceLoop, "kademlia bucket maintenance")
   reportBackgroundFailure(kad.livenessLoop, "kademlia peer liveness")
   reportBackgroundFailure(kad.fixLowPeersLoop, "kademlia minimum peer maintenance")
   reportBackgroundFailure(kad.republishLoop, "kademlia provider republishing")
-  reportBackgroundFailure(kad.expiredLoop, "kademlia provider expiration")
-  reportBackgroundFailure(kad.recordExpirationLoop, "kademlia record expiration")
 
   info "Kademlia DHT started"
 
@@ -517,6 +613,12 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
   # drain loop below can then finish for good rather than chasing new arrivals.
   kad.stopping = true
   kad.started = false
+  if kad.isServer:
+    kad_server_mode.dec()
+  if not kad.modeTimer.isNil():
+    let timer = kad.modeTimer
+    kad.modeTimer = nil
+    await noCancel timer.cancelAndWait()
 
   if not kad.bootstrapFut.isNil():
     await noCancel kad.bootstrapFut.cancelAndWait()
@@ -527,15 +629,11 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
     kad.livenessLoop.cancelAndWait(),
     kad.fixLowPeersLoop.cancelAndWait(),
     kad.republishLoop.cancelAndWait(),
-    kad.expiredLoop.cancelAndWait(),
-    kad.recordExpirationLoop.cancelAndWait(),
   )
   kad.maintenanceLoop = nil
   kad.livenessLoop = nil
   kad.fixLowPeersLoop = nil
   kad.republishLoop = nil
-  kad.expiredLoop = nil
-  kad.recordExpirationLoop = nil
 
   # loop: a handler racing shutdown can register a probe while we await a batch
   while kad.admissionProbes.len > 0 or kad.livenessProbes.len > 0:
@@ -552,3 +650,8 @@ method stop*(kad: KadDHT) {.async: (raises: []).} =
 
   # After the drain: nothing is left to reuse a stream, and `stop` refuses new ones.
   await kad.msgSender.stop()
+
+  # Do not rely on the remote peer to close its half of an RPC stream. In
+  # particular, a cancelled lookup can leave the remote handler waiting for
+  # another request while both peers are stopping concurrently.
+  await kad.resetServerStreams()

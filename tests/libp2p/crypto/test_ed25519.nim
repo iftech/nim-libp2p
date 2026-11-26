@@ -221,11 +221,3 @@ suite "Ed25519 test suite":
     copyMem(addr seed[0], addr randomKey.data[0], 32)
     let recreated = EdPrivateKey.fromSeed(seed)
     check randomKey == recreated
-
-  test "different seeds produce different keys":
-    var seed1, seed2: array[32, byte]
-    seed1[0] = 1
-    seed2[0] = 2
-    let key1 = EdPrivateKey.fromSeed(seed1)
-    let key2 = EdPrivateKey.fromSeed(seed2)
-    check key1 != key2

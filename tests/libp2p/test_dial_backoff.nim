@@ -5,7 +5,7 @@
 
 import chronos, metrics, results
 import ../../libp2p/[dial_backoff, multiaddress, multicodec, peerid]
-import ../tools/[unittest, crypto]
+import ../tools/[unittest, crypto, metrics_utils]
 
 proc memoryAddr(i: int): MultiAddress =
   MultiAddress.init("/memorytransport/addr-" & $i).tryGet()
@@ -16,7 +16,7 @@ suite "Dial backoff":
       DialBackoffConfig(tolerance: 2, base: 1.seconds, factor: 2, maxDelay: 8.seconds)
     noTolerance =
       DialBackoffConfig(tolerance: 0, base: 1.seconds, factor: 2, maxDelay: 8.seconds)
-    peerId = PeerId.random(rng()).tryGet()
+    peerId = PeerId.random()
 
   test "A failure under the tolerance blocks nothing":
     let
@@ -161,14 +161,14 @@ suite "Dial backoff":
 
   test "An address is keyed by the peer it reaches":
     let
-      relayId = PeerId.random(rng()).tryGet()
+      relayId = PeerId.random()
       relay =
         MultiAddress.init("/ip4/1.2.3.4/tcp/4001").tryGet() &
         MultiAddress.init(multiCodec("p2p"), relayId.data).tryGet() &
         MultiAddress.init("/p2p-circuit").tryGet()
       direct = memoryAddr(0)
-      first = PeerId.random(rng()).tryGet()
-      second = PeerId.random(rng()).tryGet()
+      first = PeerId.random()
+      second = PeerId.random()
 
     check:
       backoffKey(direct, Opt.none(PeerId)) == direct
@@ -192,7 +192,7 @@ suite "Dial backoff":
     let now = start + 2.seconds
     backoff.recordFailure(extra, now)
     check:
-      libp2p_dial_backoff_entries.value(["address"]) == float(MaxBackoffEntries)
+      metricValue(libp2p_dial_backoff_entries, ["address"]) == float(MaxBackoffEntries)
       backoff.blocked(extra, now)
       not backoff.blocked(memoryAddr(0), now)
       backoff.blocked(memoryAddr(1), now)
@@ -206,8 +206,8 @@ suite "Dial backoff":
       backoff.recordFailure(memoryAddr(i), start)
     backoff.recordFailure(peerId, start)
     check:
-      libp2p_dial_backoff_entries.value(["address"]) == 3
-      libp2p_dial_backoff_entries.value(["peer"]) == 1
+      metricValue(libp2p_dial_backoff_entries, ["address"]) == 3
+      metricValue(libp2p_dial_backoff_entries, ["peer"]) == 1
 
     backoff.recordSuccess(memoryAddr(0))
-    check libp2p_dial_backoff_entries.value(["address"]) == 2
+    check metricValue(libp2p_dial_backoff_entries, ["address"]) == 2

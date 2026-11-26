@@ -3,7 +3,7 @@
 
 {.used.}
 
-import bearssl, chronos, std/times, stew/byteutils
+import bearssl, chronos, std/[importutils, tables, times], stew/byteutils
 import
   ../../../libp2p/[
     builders,
@@ -12,10 +12,11 @@ import
     protocols/connectivity/relay/messages,
     protocols/connectivity/relay/utils,
     protocols/connectivity/relay/client,
+    protocols/connectivity/relay/rconn,
     signed_envelope,
     peerid,
   ]
-import ../../tools/[unittest, crypto, switch_builder, multiaddress]
+import ../../tools/[unittest, crypto, switch_builder, multiaddress, bufferstream]
 
 proc createSwitch(r: Relay = nil, useYamux: bool = false): Switch =
   var builder = makeStandardSwitchBuilder(TcpWildcardAddress).withCircuitRelay(r)
@@ -25,11 +26,145 @@ proc createSwitch(r: Relay = nil, useYamux: bool = false): Switch =
 
   return builder.build()
 
+proc createMockRelay(expire: uint64): Switch =
+  let
+    mockRelay = createSwitch()
+    hop = new LPProtocol
+  hop.codec = RelayV2HopCodec
+  hop.handler = proc(
+      stream: Stream, proto: string
+  ) {.async: (raises: [CancelledError]).} =
+    defer:
+      await stream.close()
+    try:
+      discard await stream.readLp(RelayMsgSize)
+      let reply = HopMessage(
+        msgType: Opt.some(HopMessageType.Status),
+        reservation: Opt.some(Reservation(expire: Opt.some(expire))),
+        status: Opt.some(StatusV2.Ok),
+      )
+      await stream.writeLp(encode(reply))
+    except LPStreamError:
+      raiseAssert "mock relay failed to answer RESERVE"
+  mockRelay.mount(hop)
+  mockRelay
+
+proc tryReserveOnMockRelay(
+    cl: RelayClient, expire: uint64
+): Future[LPResult[Rsvp]] {.async.} =
+  let mockRelay = createMockRelay(expire)
+  await mockRelay.start()
+  defer:
+    await mockRelay.stop()
+
+  # Copy the value out before the deferred await frees the inner future.
+  let rsvp = await cl.tryReserve(mockRelay.peerInfo.peerId, mockRelay.peerInfo.addrs)
+  rsvp
+
 suite "Circuit Relay V2":
   test "Relay v1 hop is opt-in":
     check:
       Relay.new().codecs == @[RelayV2HopCodec]
       Relay.new(circuitRelayV1 = true).codecs == @[RelayV1Codec]
+
+  test "Relay clamps the reservation TTL to MaxReservationTTL":
+    let ttl = MaxReservationTTL + initDuration(hours = 1)
+    check:
+      Relay.new(reservationTTL = ttl).reservationTTL == MaxReservationTTL
+      RelayClient.new(reservationTTL = ttl).reservationTTL == MaxReservationTTL
+
+  suite "RelayConnection":
+    asyncTeardown:
+      checkTrackers()
+
+    const limit = 10'u64
+
+    proc recordingRelayConn(
+        sent: ref seq[seq[byte]], limitData: uint64 = limit
+    ): RelayConnection =
+      let wrapped = TestBufferStream.new(
+        proc(
+            data: sink seq[byte]
+        ) {.async: (raises: [CancelledError, LPStreamError]).} =
+          sent[].add(data)
+      )
+      RelayConnection.new(wrapped, limitDuration = 0, limitData = limitData)
+
+    asyncTest "writes up to the data limit reach the wrapped stream":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+      let msgs = @[newSeq[byte](limit - 1), newSeq[byte](1)]
+
+      for msg in msgs:
+        await conn.write(msg)
+
+      check:
+        sent[] == msgs
+        not conn.closed()
+      await conn.close()
+      check not conn.stream.wasResetLocally()
+
+    asyncTest "write past the data limit raises, resets and blocks later writes":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+
+      expect LPStreamLimitError:
+        await conn.write(newSeq[byte](limit + 1))
+
+      check:
+        sent[].len == 0
+        conn.closed()
+        conn.stream.wasResetLocally()
+
+      expect LPStreamClosedError:
+        await conn.write(newSeq[byte](1))
+      check sent[].len == 0
+
+    asyncTest "writes that add up past the data limit raise":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+      await conn.write(newSeq[byte](limit))
+
+      expect LPStreamLimitError:
+        await conn.write(newSeq[byte](1))
+
+      check:
+        sent[].len == 1
+        conn.closed()
+        conn.stream.wasResetLocally()
+
+    asyncTest "write after close raises LPStreamClosedError and sends nothing":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent)
+      await conn.close()
+
+      expect LPStreamClosedError:
+        await conn.write(newSeq[byte](1))
+
+      check:
+        sent[].len == 0
+        conn.dataSent == 0
+
+    asyncTest "duration limit resets the wrapped stream":
+      const limitDuration = 1'u32
+      let conn = RelayConnection.new(
+        TestBufferStream.new(nil), limitDuration = limitDuration, limitData = 0
+      )
+
+      checkUntilTimeout:
+        conn.stream.wasResetLocally()
+      await conn.close()
+
+    asyncTest "limitData 0 means no limit":
+      let sent = new seq[seq[byte]]
+      let conn = recordingRelayConn(sent, limitData = 0)
+
+      await conn.write(newSeq[byte](limit * 100))
+
+      check:
+        sent[].len == 1
+        not conn.closed()
+      await conn.close()
 
   suite "Voucher":
     test "Reject signed vouchers with missing required fields":
@@ -75,9 +210,12 @@ suite "Circuit Relay V2":
 
       check:
         SignedVoucher.decode(valid).isOk
-        SignedVoucher.decode(missingRelay).error == EnvelopeFieldMissing
-        SignedVoucher.decode(missingPeer).error == EnvelopeFieldMissing
-        SignedVoucher.decode(missingExpiration).error == EnvelopeFieldMissing
+        SignedVoucher.decode(missingRelay).error ==
+          EnvelopeError.init(EnvelopeFieldMissing, "relayPeerId")
+        SignedVoucher.decode(missingPeer).error ==
+          EnvelopeError.init(EnvelopeFieldMissing, "reservingPeerId")
+        SignedVoucher.decode(missingExpiration).error ==
+          EnvelopeError.init(EnvelopeFieldMissing, "expiration")
 
   suite "Reservation":
     asyncTeardown:
@@ -115,8 +253,8 @@ suite "Circuit Relay V2":
       await src1.start()
       await src2.start()
       await rel.start()
-      await src1.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-      await src2.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+      await src1.connect(rel)
+      await src2.connect(rel)
       rsvp = await cl1.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
       range = now().utc + (ttl - 3).seconds .. now().utc + (ttl + 3).seconds
       check:
@@ -125,25 +263,79 @@ suite "Circuit Relay V2":
         rsvp.limitData == ldata
 
     asyncTest "Too many reservations":
-      let stream =
-        await cl2.switch.dial(rel.peerInfo.peerId, rel.peerInfo.addrs, RelayV2HopCodec)
+      let stream = await cl2.switch.dial(rel, RelayV2HopCodec)
       let pb = encode(HopMessage(msgType: Opt.some(HopMessageType.Reserve)))
       await stream.writeLp(pb)
       let msg = HopMessage.decode(await stream.readLp(RelayMsgSize)).get()
       check:
-        msg.msgType == Opt.some(HopMessageType.Status)
-        msg.status == Opt.some(StatusV2.ReservationRefused)
+        msg.msgType == HopMessageType.Status
+        msg.status == StatusV2.ReservationRefused
+
+    asyncTest "Holder refreshes its reservation on a full relay":
+      privateAccess(Relay)
+      let
+        holder = src1.peerInfo.peerId
+        clockStep = 1.seconds
+        before = rv2.rsvp[holder] - clockStep
+        count = rv2.rsvp.len()
+      # The Windows clock is coarse, so a fast refresh can store the same expiry.
+      rv2.rsvp[holder] = before
+
+      let refreshed = await cl1.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
+      check:
+        refreshed.expire.int64.fromUnix.utc in range
+        rv2.rsvp[holder] > before
+        rv2.rsvp.len() == count
+
+      expect ReservationError:
+        discard await cl2.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
 
     asyncTest "tryReserve returns a refused reservation as an error":
       let res = await cl2.tryReserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
       check:
-        res.isErr()
-        res.error == "Reservation failed"
+        res.isOfError(ReservationFailedCause)
+
+    # The margin keeps a clock tick from moving an expiry across the limit.
+    const
+      MaxTtl = MaxReservationTTL.inSeconds()
+      Margin = 60'i64
+
+    asyncTest "Reserve fails on an invalid expiry":
+      checkpoint "expiry in the past"
+      let past = await cl2.tryReserveOnMockRelay((getTime().toUnix() - Margin).uint64)
+      check:
+        past.isOfError("Bad expiration date")
+
+      checkpoint "expiry above int64.high"
+      let tooHigh = await cl2.tryReserveOnMockRelay(int64.high().uint64 + 1)
+      check:
+        tooHigh.isOfError("Bad expiration date")
+
+    asyncTest "Reserve clamps an expiry beyond MaxReservationTTL":
+      checkpoint "expiry just over MaxReservationTTL"
+      var before = getTime().toUnix()
+      let over =
+        (await cl2.tryReserveOnMockRelay((before + MaxTtl + Margin).uint64)).tryGet()
+      check:
+        over.expire in (before + MaxTtl).uint64 .. (getTime().toUnix() + MaxTtl).uint64
+
+      checkpoint "expiry of int64.high"
+      before = getTime().toUnix()
+      let high = (await cl2.tryReserveOnMockRelay(int64.high().uint64)).tryGet()
+      check:
+        high.expire in (before + MaxTtl).uint64 .. (getTime().toUnix() + MaxTtl).uint64
+
+    asyncTest "Reserve keeps an expiry just under MaxReservationTTL":
+      let
+        expire = (getTime().toUnix() + MaxTtl - Margin).uint64
+        rsvp = (await cl2.tryReserveOnMockRelay(expire)).tryGet()
+      check:
+        rsvp.expire == expire
 
     asyncTest "Too many reservations + Reconnect":
       expect ReservationError:
         discard await cl2.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
-      await rel.disconnect(src1.peerInfo.peerId)
+      await rel.disconnect(src1)
       rsvp = await cl2.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
       range = now().utc + (ttl - 3).seconds .. now().utc + (ttl + 3).seconds
       check:
@@ -251,8 +443,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
 
@@ -302,8 +494,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
@@ -366,8 +558,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
@@ -416,8 +608,8 @@ suite "Circuit Relay V2":
           )
           .get()
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+        await src.connect(rel)
+        await dst.connect(rel)
 
         rsvp = await dstCl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
@@ -427,12 +619,12 @@ suite "Circuit Relay V2":
         await stream.writeLp("test3")
         check:
           "test4" == string.fromBytes(await stream.readLp(1024))
-        await src.disconnect(rel.peerInfo.peerId)
+        await src.disconnect(rel)
         await sleepAsync(chronos.timer.seconds(ttl + 1))
 
         expect DialFailedError:
           await stream.close()
-          await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
+          await src.connect(rel)
           stream = await src.dial(dst.peerInfo.peerId, @[addrs], customProtoCodec)
         await allFutures(stream.close())
         await allFutures(src.stop(), dst.stop(), rel.stop())
@@ -445,10 +637,10 @@ suite "Circuit Relay V2":
         proto.handler = proc(
             stream: Stream, proto: string
         ) {.async: (raises: [CancelledError]).} =
-          raiseAssert "Should not receive connection"
+          await stream.reset()
 
         let
-          rel2Cl = RelayClient.new(canHop = true)
+          rel2Cl = RelayClient.new(canHop = true, circuitRelayV1 = true)
           rel2 = createSwitch(rel2Cl, useYamux)
           rv2 = Relay.new()
         rv2.setup(rel)
@@ -469,15 +661,16 @@ suite "Circuit Relay V2":
             .get()
         ]
 
-        await src.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await rel2.connect(rel.peerInfo.peerId, rel.peerInfo.addrs)
-        await dst.connect(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
+        await src.connect(rel)
+        await rel2.connect(rel)
+        await dst.connect(rel2)
 
         rsvp = await rel2Cl.reserve(rel.peerInfo.peerId, rel.peerInfo.addrs)
         discard await dstCl.reserve(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
 
-        expect DialFailedError:
-          stream = await src.dial(dst.peerInfo.peerId, addrs, customProtoCodec)
+        stream = await src.dial(dst.peerInfo.peerId, addrs, customProtoCodec)
+        expect LPStreamError:
+          discard await stream.readLp(1024)
         if not stream.isNil():
           await allFutures(stream.close())
         await allFutures(src.stop(), dst.stop(), rel.stop(), rel2.stop())
@@ -569,9 +762,9 @@ suite "Circuit Relay V2":
             )
             .get()
 
-        await switchA.connect(switchB.peerInfo.peerId, switchB.peerInfo.addrs)
-        await switchB.connect(switchC.peerInfo.peerId, switchC.peerInfo.addrs)
-        await switchC.connect(switchA.peerInfo.peerId, switchA.peerInfo.addrs)
+        await switchA.connect(switchB)
+        await switchB.connect(switchC)
+        await switchC.connect(switchA)
         discard await clientA.reserve(switchC.peerInfo.peerId, switchC.peerInfo.addrs)
         discard await clientB.reserve(switchA.peerInfo.peerId, switchA.peerInfo.addrs)
         discard await clientC.reserve(switchB.peerInfo.peerId, switchB.peerInfo.addrs)

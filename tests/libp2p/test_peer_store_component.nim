@@ -21,7 +21,7 @@ suite "PeerStore Address TTL - Component":
       dialer = makeStandardSwitch()
     startAndDeferStop(@[listener, dialer])
 
-    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
+    await dialer.connect(listener)
 
     # The listener only accepts the connection, so identify is its only source for the dialer's addresses.
     # The listener never dials the dialer, so nothing upgrades it to High.
@@ -37,7 +37,7 @@ suite "PeerStore Address TTL - Component":
       dialer = makeStandardSwitch()
     startAndDeferStop(@[listener, dialer])
 
-    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
+    await dialer.connect(listener)
 
     # A successful dial marks the dialed address High.
     checkUntilTimeout:
@@ -85,7 +85,7 @@ suite "PeerStore Address TTL - Component":
 
     listener.connManager.addPeerEventHandler(onIdentified, PeerEventKind.Identified)
 
-    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
+    await dialer.connect(listener)
 
     checkUntilTimeout:
       dialer.peerStore[AddressBook].entries(listener.peerInfo.peerId).anyIt(
@@ -121,9 +121,9 @@ suite "PeerStore Address TTL - Component":
     startAndDeferStop(@[switch])
 
     let
-      lowPeer = randomPeerId()
-      mediumPeer = randomPeerId()
-      highPeer = randomPeerId()
+      lowPeer = PeerId.random()
+      mediumPeer = PeerId.random()
+      highPeer = PeerId.random()
     switch.peerStore[AddressBook].extend(
       lowPeer, @[ma("/ip4/1.2.3.4/tcp/4001")], AddressConfidence.Low
     )
@@ -159,9 +159,9 @@ suite "PeerStore Address TTL - Component":
     startAndDeferStop(@[switch])
 
     let
-      zeroTtlPeer = randomPeerId()
-      infinitePeer = randomPeerId()
-      controlPeer = randomPeerId()
+      zeroTtlPeer = PeerId.random()
+      infinitePeer = PeerId.random()
+      controlPeer = PeerId.random()
     switch.peerStore[AddressBook].extend(
       zeroTtlPeer, @[ma("/ip4/1.2.3.4/tcp/4001")], AddressConfidence.Low
     )

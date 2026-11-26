@@ -6,7 +6,7 @@
 {.push raises: [].}
 
 import ../logging
-import std/[sequtils, oserrors]
+import std/[sequtils, strformat]
 import chronos, chronicles
 import ../results
 import
@@ -23,7 +23,9 @@ logScope:
 
 export transport, connection, upgrade
 
-const TcpTransportTrackerName* = "libp2p.tcptransport"
+const
+  TcpTransportTrackerName* = "libp2p.tcptransport"
+  AcceptRetryDelay* = 100.millis
 
 type
   AcceptFuture = typeof(default(StreamServer).accept())
@@ -40,10 +42,6 @@ type
     closeFuts: seq[Future[void]]
 
   TcpTransportError* = object of transport.TransportError
-
-  ConnAddrs = object
-    observed: MultiAddress
-    local: MultiAddress
 
 proc connHandler*(
     self: TcpTransport,
@@ -121,23 +119,15 @@ proc listen(
       try:
         createStreamServer(ta, flags = self.flags)
       except common.TransportError as e:
-        return err("TcpTransport.start failed to listen on " & $ta & ". " & e.msg)
+        return err(e, fmt"TcpTransport.start failed to listen on {ta}")
     self.servers &= server
 
     let localAddr = MultiAddress.init(server.sock.getLocalAddress()).valueOr:
-      return err("TcpTransport.start got invalid local address. " & error)
+      return err(error, "TcpTransport.start got invalid local address")
     trace "Listening on", address = localAddr
     supported.add(localAddr)
 
   ok(supported)
-
-proc connAddrs(transp: StreamTransport): LPResult[ConnAddrs] =
-  let remote = transp.remoteAddress2().valueOr:
-    return err("cannot read remote address. " & osErrorMsg(error))
-  let local = transp.localAddress2().valueOr:
-    return err("cannot read local address. " & osErrorMsg(error))
-
-  ok ConnAddrs(observed: ?MultiAddress.init(remote), local: ?MultiAddress.init(local))
 
 method start*(
     self: TcpTransport, addrs: seq[MultiAddress]
@@ -209,79 +199,79 @@ method stop*(self: TcpTransport): Future[void] {.async: (raises: []).} =
     await noCancel allFutures(self.closeFuts)
     self.closeFuts = @[]
 
-method accept*(
+proc acceptCon(
     self: TcpTransport
-): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
-  ## accept a new TCP connection, returning nil on non-fatal errors
-  ##
-  ## Raises an exception when the transport is broken and cannot be used for
-  ## accepting further connections
-  # TODO returning nil for non-fatal errors is problematic in that error
-  #      information is lost and must be logged here instead of being
-  #      available to the caller - further refactoring should propagate errors
-  #      to the caller instead
-
+): Future[StreamTransport] {.
+    async: (raises: [transport.TransportError, CancelledError])
+.} =
   if not self.running:
     raise newTransportClosedError()
 
   if self.servers.len == 0:
     raise (ref TcpTransportError)(msg: "No listeners configured")
   elif self.acceptFuts.len == 0:
-    # Holds futures representing ongoing accept calls on multiple servers.
     self.acceptFuts = self.servers.mapIt(it.accept())
 
-  let
-    finished =
-      try:
-        # Waits for any one of these futures to complete, indicating that a new connection has been accepted on one of the servers.
-        await one(self.acceptFuts)
-      except ValueError:
-        raiseAssert "Accept futures should not be empty"
-      except CancelledError as exc:
-        self.acceptFuts.cancelSoon()
-        raise exc
-    index = self.acceptFuts.find(finished)
-
-  # A new connection has been accepted. The corresponding server should immediately start accepting another connection.
-  # Thus we replace the completed future with a new one by calling accept on the same server again.
-  self.acceptFuts[index] = self.servers[index].accept()
-  let transp =
+  let finished =
     try:
-      await finished
-    except TransportTooManyError as exc:
-      if self.descriptorWarnings.allowLog():
-        warn "Connection acceptance limited by file descriptor exhaustion",
-          err = exc.msg, errType = exc.name, transport = "tcp"
-      return nil
-    except TransportAbortedError as exc:
-      debug "Transport connection aborted", err = exc.msg
-      return nil
-    except TransportUseClosedError as exc:
-      raise newTransportClosedError(exc)
-    except TransportOsError as exc:
-      raise (ref TcpTransportError)(
-        msg: "TransportOs error in accept:" & exc.msg, parent: exc
-      )
-    except common.TransportError as exc: # Needed for chronos 4.0.0 support
-      raise (ref TcpTransportError)(
-        msg: "TransportError in accept: " & exc.msg, parent: exc
-      )
-    except CancelledError as exc:
-      self.acceptFuts.cancelSoon()
-      raise exc
+      await one(self.acceptFuts)
+    except ValueError:
+      raiseAssert "Accept futures should not be empty"
 
   if not self.running: # Stopped while waiting
-    safeCloseWait(transp)
+    if finished.completed():
+      safeCloseWait(finished.value())
     raise newTransportClosedError()
 
-  let addrs = transp.connAddrs().valueOr:
-    # The connection had errors / was closed before `await` returned control
-    safeCloseWait(transp)
-    debug "Cannot read address", err = error
+  # Keep every listener accepting while this connection is processed.
+  let index = self.acceptFuts.find(finished)
+  self.acceptFuts[index] = self.servers[index].accept()
+  try:
+    return await finished
+  except TransportTooManyError as exc:
+    if self.descriptorWarnings.allowLog():
+      warn "Connection acceptance limited by file descriptor exhaustion",
+        err = exc.msg, errType = exc.name, transport = "tcp"
     return nil
-  self.connHandler(
-    transp, Opt.some(addrs.observed), Opt.some(addrs.local), Direction.In
-  )
+  except TransportAbortedError as exc:
+    debug "Transport connection aborted", err = exc.msg
+    return nil
+  except TransportUseClosedError as exc:
+    raise newTransportClosedError(exc)
+  except TransportOsError as exc:
+    raise (ref TcpTransportError)(
+      msg: "TransportOs error in accept:" & exc.msg, parent: exc
+    )
+  except common.TransportError as exc: # Needed for chronos 4.0.0 support
+    raise
+      (ref TcpTransportError)(msg: "TransportError in accept: " & exc.msg, parent: exc)
+
+method accept*(
+    self: TcpTransport
+): Future[RawConn] {.async: (raises: [transport.TransportError, CancelledError]).} =
+  ## Retry recoverable failures with backoff until a connection is accepted.
+  ## Terminal failures and cancellation propagate to the caller.
+  try:
+    while true:
+      let transp = await self.acceptCon()
+      if not self.running: # Stopped before the accepted socket was registered
+        safeCloseWait(transp)
+        raise newTransportClosedError()
+      if transp.isNil:
+        await sleepAsync(AcceptRetryDelay)
+        continue
+
+      let addrs = transp.connAddrs().valueOr:
+        # A connection can close before its addresses are read.
+        safeCloseWait(transp)
+        debug "Cannot read address", err = error
+        continue
+      return self.connHandler(
+        transp, Opt.some(addrs.observed), Opt.some(addrs.local), Direction.In
+      )
+  except CancelledError as exc:
+    self.acceptFuts.cancelSoon()
+    raise exc
 
 proc findAddressByFamily(
     addrs: openArray[MultiAddress], family: AddressFamily
@@ -305,9 +295,8 @@ method dial*(
     raise newTransportClosedError()
 
   let ta = initTAddress(address).valueOr:
-    raise (ref TcpTransportError)(
-      msg:
-        "TcpTransport.dial called with unsupported address " & $address & ". " & error
+    raise error.toException(
+      TcpTransportError, "TcpTransport.dial called with unsupported address " & $address
     )
   let local =
     if self.networkReachability == NetworkReachability.NotReachable:
@@ -342,7 +331,7 @@ method dial*(
 
   let addrs = transp.connAddrs().valueOr:
     safeCloseWait(transp)
-    raise (ref TcpTransportError)(msg: "TcpTransport.dial failed. " & error)
+    raise error.toException(TcpTransportError, "TcpTransport.dial failed")
 
   self.connHandler(
     transp, Opt.some(addrs.observed), Opt.some(addrs.local), Direction.Out

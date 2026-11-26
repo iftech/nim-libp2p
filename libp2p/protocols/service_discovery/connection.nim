@@ -38,7 +38,7 @@ proc send*(
 ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
   let addrs = disco.switch.peerStore[AddressBook][peerId]
   if addrs.len == 0:
-    return err("no address found for peer: " & $peerId)
+    return err($peerId, "no address found for peer")
 
   if disco.dialBackedOff(peerId, addrs):
     return err(makeDialBackoffError(peerId))
@@ -49,7 +49,7 @@ proc send*(
     except DialFailedError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
-      return err("dialing peer failed: " & e.msg)
+      return err(e, "dialing peer failed")
 
   var replyRead = false
   defer:
@@ -73,13 +73,15 @@ proc send*(
     except LPStreamError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
-      return err("connection writing failed: " & e.msg)
+      return err(e, "connection writing failed")
     try:
       replyBuf = await stream.readLp(ServiceDiscoveryMaxMsgSize)
+    except MaxSizeError as e:
+      return err(e, "reply exceeds the read limit")
     except LPStreamError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
-      return err("connection reading failed: " & e.msg)
+      return err(e, "connection reading failed")
   replyRead = true
 
   cd_messages_received.inc(labelValues = [$msg.msgType])
@@ -87,10 +89,24 @@ proc send*(
 
   let reply = Message.decode(replyBuf).valueOr:
     disco.recordDialFailure(peerId, addrs)
-    return err("failed to decode message response: " & $error)
+    return err(error, "failed to decode message response")
 
   disco.clearDialFailures(peerId)
   return ok(reply)
+
+proc encodeWithinReadLimit*(msg: var Message): seq[byte] {.raises: [].} =
+  var bytes = msg.encode()
+  while bytes.len > ServiceDiscoveryMaxMsgSize:
+    if msg.closerPeers.len > 0:
+      msg.closerPeers.setLen(msg.closerPeers.len - 1)
+    elif msg.getAds.isSome() and msg.getAds.get().advertisements.len > 0:
+      msg.getAds.get().advertisements.setLen(msg.getAds.get().advertisements.len - 1)
+    else:
+      break
+
+    bytes = msg.encode()
+
+  return bytes
 
 proc handleMessage*(
     disco: ServiceDiscovery, stream: Stream, msg: Message
@@ -99,14 +115,14 @@ proc handleMessage*(
 
   let peerId = stream.peerId
 
-  let response =
+  var response =
     if msg.msgType.get() == MessageType.register:
       # Prefer the wire address of this stream for IP-tree scoring.
       disco.registration(peerId, msg, stream.observedIps())
     else:
       disco.getAdvertisements(peerId, msg)
 
-  let bytes = response.encode()
+  let bytes = response.encodeWithinReadLimit()
 
   cd_messages_sent.inc(labelValues = [$msg.msgType])
   cd_message_bytes_sent.inc(bytes.len.float64, labelValues = [$msg.msgType])

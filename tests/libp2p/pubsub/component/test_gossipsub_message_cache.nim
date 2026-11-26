@@ -16,24 +16,6 @@ suite "GossipSub Component - Message Cache":
   teardown:
     checkTrackers()
 
-  asyncTest "Received messages are added to the message cache":
-    const numberOfNodes = 2
-    let nodes = generateNodes(numberOfNodes, gossip = true).toGossipSub()
-
-    startAndDeferStop(nodes)
-
-    await connectStar(nodes)
-
-    subscribeAllNodes(nodes, topic, voidTopicHandler)
-    waitSubscribeStar(nodes, topic)
-
-    # When Node0 publishes a message to the topic
-    tryPublish await nodes[0].publish(topic, "Hello!".toBytes()), 1
-
-    # Then Node1 receives the message and saves it in the cache 
-    checkUntilTimeout:
-      nodes[1].mcache.window(topic).len == 1
-
   asyncTest "Message cache history shifts on heartbeat and is cleared on shift":
     const
       numberOfNodes = 2
@@ -179,7 +161,7 @@ suite "GossipSub Component - Message Cache":
         )
         messageId in messages
 
-  asyncTest "Published and received messages are added to the seen cache":
+  asyncTest "Received messages enter mcache and both peers record them as seen":
     const numberOfNodes = 2
     let nodes = generateNodes(numberOfNodes, gossip = true).toGossipSub()
 

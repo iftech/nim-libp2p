@@ -44,9 +44,7 @@ proc setupRendezvousNodeWithPeerNodes*(count: int): (RendezVous, seq[RendezVous]
   return (rendezvousRdv, peerRdvs)
 
 proc connect*(dialer: RendezVous, target: RendezVous) {.async.} =
-  await dialer.switch.connect(
-    target.switch.peerInfo.peerId, target.switch.peerInfo.addrs
-  )
+  await dialer.switch.connect(target.switch)
 
 proc buildProtobufCookie*(offset: uint64, namespace: string): seq[byte] =
   encode(Cookie(offset: offset, ns: Opt.some(namespace)))
@@ -68,9 +66,11 @@ proc populatePeerRegistrations*(
   # - Calling advertise() sequentially is too slow for large counts.
   await peerRdv.advertise(namespace)
 
-  let record = targetRdv.registered.s[0]
+  let record = targetRdv.registered[targetRdv.registered.firstId()]
   for i in 0 ..< count - 1:
-    targetRdv.registered.s.add(record)
+    targetRdv.namespaces[namespace & targetRdv.salt].add(
+      targetRdv.registered.add(record)
+    )
   targetRdv.registeredCount[record.peerId] = count
 
 proc createCorruptedSignedPeerRecord*(peerId: PeerId): SignedPeerRecord =

@@ -2,107 +2,30 @@
 # Copyright (c) Status Research & Development GmbH
 
 ## Provider record management for the Kademlia DHT.
-## Receivers always enforce ``KadDHTConfig.limits.maxProvidersPerKey``; when
-## ``providerRejection`` is true they additionally reply accepted/rejected on
-## field 11 so senders can spill over to farther peers. Without
-## ``providerRejection`` the limit is enforced silently — over-cap
-## advertisements are dropped without a reply.
+## Receivers always enforce ``KadDHTConfig.limits.maxProvidersPerKey`` and
+## ``storeLimits.maxProviderRecordsPerPeer``; when ``providerRejection`` is true they
+## additionally reply accepted/rejected on field 11 so senders can spill over
+## to farther peers. Without ``providerRejection`` the receiver drops over-cap
+## advertisements and sends no reply.
 ## Re-advertisements are always accepted.
 
-import std/[math, sequtils, tables, sets, heapqueue]
+import std/[math, sequtils, sets]
 import chronos, chronicles, results
 import ../../[peerid, switch, multihash, cid]
-import ../../utils/[collections, heartbeat, future]
+import ../../utils/[collections, heartbeat, future, opt]
 import ../protocol
-import ./[protobuf, types, find, rpc, keyspace, netsize, kademlia_metrics]
+import
+  ./[key_value, protobuf, store, types, find, rpc, keyspace, netsize, kademlia_metrics]
 
 logScope:
   topics = "libp2p kademlia"
 
-proc `==`*(a, b: ProviderRecord): bool =
-  a.provider.id == b.provider.id and a.key == b.key
-
-# for HeapQueue
-proc `<`*(a, b: ProviderRecord): bool =
-  a.expiresAt < b.expiresAt
-
-proc `<`*(a: ProviderRecord, b: chronos.Moment): bool =
-  a.expiresAt < b
-
-proc deleteOldest(pk: ProvidedKeys) =
-  ## Delete oldest provided key from ProvidedKeys
-  var oldest: Key
-  var oldestMoment = chronos.Moment.now()
-  for key, moment in pk.provided:
-    if oldestMoment > moment:
-      oldest = key
-      oldestMoment = moment
-  pk.provided.del(oldest)
-
-proc isFull*(pk: ProvidedKeys): bool =
-  pk.provided.len() >= pk.capacity
-
-proc len*(pk: ProvidedKeys): int =
-  pk.provided.len()
-
-proc hasKey*(pk: ProvidedKeys, k: Key): bool =
-  pk.provided.hasKey(k)
-
-proc del*(pk: ProvidedKeys, k: Key) =
-  pk.provided.del(k)
-
-proc pop*(pr: ProviderRecords): ProviderRecord =
-  pr.records.pop()
-
-proc len*(pr: ProviderRecords): int =
-  pr.records.len()
-
-proc del*(pr: ProviderRecords, index: int) =
-  pr.records.del(index)
-
-proc find*(pr: ProviderRecords, record: ProviderRecord): int =
-  pr.records.find(record)
-
-proc push*(pr: ProviderRecords, record: ProviderRecord) =
-  pr.records.push(record)
-
-proc isFull*(pr: ProviderRecords): bool =
-  pr.records.len() >= pr.capacity
-
-proc `[]`*(pr: ProviderRecords, i: int): ProviderRecord =
-  pr.records[i]
-
-proc removeProviderRecord(pm: ProviderManager, record: ProviderRecord) =
-  ## Remove provider record and related keys
-
-  let recordIdx = pm.providerRecords.find(record)
-  if recordIdx != -1:
-    pm.providerRecords.del(recordIdx)
-
-  try:
-    pm.knownKeys[record.key].excl(record.provider)
-    if pm.knownKeys[record.key].len() == 0:
-      pm.knownKeys.del(record.key)
-  except KeyError:
-    return
-
-proc addProviderRecord(pm: ProviderManager, record: ProviderRecord) =
-  # remove previous providerRecord if any
-  pm.removeProviderRecord(record)
-
-  if pm.providerRecords.isFull():
-    let oldest = pm.providerRecords.pop()
-    pm.removeProviderRecord(oldest)
-
-  if not pm.knownKeys.hasKey(record.key):
-    pm.knownKeys[record.key] = initHashSet[Provider]()
-
-  try:
-    pm.knownKeys[record.key].incl(record.provider)
-
-    pm.providerRecords.push(record)
-  except KeyError:
-    raiseAssert("checked with hasKey")
+proc isProvided(kad: KadDHT, key: Key): bool =
+  let provided = ProvidedKey.fromBytes(key.toBytes()).valueOr:
+    return false
+  kad.store.hasProvided(provided).valueOr:
+    debug "Failed to read provided key", key, err = error
+    false
 
 proc dispatchAddProvider(
     kad: KadDHT, peer: PeerId, key: Key
@@ -123,7 +46,7 @@ proc dispatchAddProvider(
       await kad.msgSender.sendMessage(peer, addrs, move encoded, kad.config.timeout)
     sendRes.countSent(MessageType.addProvider, sentBytes)
     sendRes.isOkOr:
-      return err($error)
+      return err(error.msg, $error.stage)
     return ok(AddProviderStatus.accepted)
 
   let sendRes =
@@ -134,7 +57,7 @@ proc dispatchAddProvider(
   # failure to reach the peer is an error; a silent read counts as accepted.
   let replyBuf = sendRes.valueOr:
     if error.stage != readStage:
-      return err($error)
+      return err(error.msg, $error.stage)
     return ok(AddProviderStatus.accepted)
 
   let reply = Message.decode(replyBuf).valueOr:
@@ -358,21 +281,38 @@ proc addProvider*(kad: KadDHT, cid: Cid) {.async: (raises: [CancelledError]), gc
   await addProvider(kad, cid.toKey())
 
 proc startProviding*(kad: KadDHT, c: Cid) {.async: (raises: [CancelledError]).} =
-  let k = c.toKey()
-  if not kad.providerManager.providedKeys.hasKey(k) and
-      kad.providerManager.providedKeys.isFull():
-    kad.providerManager.providedKeys.deleteOldest()
+  let provided = ProvidedKey.init(c).valueOr:
+    debug "Invalid cid, skipping advertisement", cid = c, err = error
+    return
+  let stored = kad.store.addProvided(provided).valueOr:
+    debug "Failed to store provided key", cid = c, err = error
+    false
+  if not stored:
+    debug "Provided key not recorded, skipping advertisement", cid = c
+    return
 
-  kad.providerManager.providedKeys.provided[k] = chronos.Moment.now()
-  await kad.addProvider(k)
+  await kad.addProvider(provided.toKey())
 
-proc stopProviding*(kad: KadDHT, c: Cid) =
-  kad.providerManager.providedKeys.del(c.toKey())
+proc stopProviding*(kad: KadDHT, c: Cid) {.raises: [].} =
+  let provided = ProvidedKey.init(c).valueOr:
+    debug "Invalid cid, nothing to stop providing", cid = c, err = error
+    return
+  kad.store.delProvided(provided).isOkOr:
+    debug "Failed to delete provided key", cid = c, err = error
 
-proc providedKeyRegions*(kad: KadDHT): seq[seq[Key]] =
+proc listProvidedKeys(kad: KadDHT): seq[Key] =
+  let provided = kad.store.listProvided(Opt.none(ProvidedKey), high(int)).valueOr:
+    debug "Failed to list provided keys", err = error
+    return @[]
+  var keys = newSeqOfCap[Key](provided.len)
+  for key in provided:
+    keys.add(key.toKey())
+  keys
+
+proc providedKeyRegions*(kad: KadDHT): seq[seq[Key]] {.raises: [].} =
   ## Provided keys grouped into keyspace regions, one group per DHT walk. Falls
   ## back to a group per key while the routing table cannot size a region.
-  let keys = kad.providerManager.providedKeys.provided.keys().toSeq()
+  let keys = kad.listProvidedKeys()
   let bits = kad.config.republishRegionBits.valueOr:
     kad.rtable.regionBits().valueOr:
       return keys.mapIt(@[it])
@@ -381,7 +321,7 @@ proc providedKeyRegions*(kad: KadDHT): seq[seq[Key]] =
 proc stillProvided(kad: KadDHT, keys: seq[Key]): seq[Key] =
   ## A region waits for its slot, so `stopProviding` can drop a key between the
   ## grouping and the walk.
-  keys.filterIt(kad.providerManager.providedKeys.hasKey(it))
+  keys.filterIt(kad.isProvided(it))
 
 proc republishRegion(
     kad: KadDHT, region: seq[Key]
@@ -441,17 +381,7 @@ proc manageRepublishProvidedKeys*(kad: KadDHT) {.async: (raises: [CancelledError
       kad.config.republishProvidedKeysInterval
     ):
       warn "Provider republishing timed out",
-        timeout = kad.config.republishProvidedKeysInterval,
-        providedKeys = kad.providerManager.providedKeys.provided.len
-
-proc anyExpired(pr: ProviderRecords): bool =
-  pr.len() > 0 and pr.records[0] < chronos.Moment.now()
-
-proc manageExpiredProviders*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
-  heartbeat "cleanup expired provider records", kad.config.cleanupProvidersInterval:
-    while kad.providerManager.providerRecords.anyExpired():
-      let expired = kad.providerManager.providerRecords.pop()
-      kad.providerManager.removeProviderRecord(expired)
+        timeout = kad.config.republishProvidedKeysInterval
 
 proc sendAddProviderResponse(
     stream: Stream, kad: KadDHT, status: AddProviderStatus
@@ -463,6 +393,13 @@ proc sendAddProviderResponse(
     await stream.writeLp(response.encode(kad.config.hideConnectionStatus))
   except LPStreamError as exc:
     trace "Failed to send add-provider response", err = exc.msg, stream, status = status
+
+func capAddrs(peer: Peer): Peer =
+  var capped = peer
+  capped.addrs = peer.addrs.filterIt(it.bytes().len <= MaxProviderAddrLen)
+  if capped.addrs.len > MaxProviderAddrs:
+    capped.addrs.setLen(MaxProviderAddrs)
+  capped
 
 method handleAddProvider*(
     kad: KadDHT, stream: Stream, msg: Message
@@ -485,38 +422,30 @@ method handleAddProvider*(
 
   # filter out infos that do not match sender's
   let peerBytes = stream.peerId.getBytes()
-  let validPeers = msg.providerPeers.filterIt(
-    it.id.isSome and it.id.get() == peerBytes and PeerId.init(it.id.get()).isOk()
-  )
+  let validPeers = msg.providerPeers.filterIt(it.id == peerBytes).mapIt(it.capAddrs())
 
-  # Per-key cap is enforced regardless of providerRejection: when rejection is
-  # disabled the receiver still drops over-cap providers, just silently.
+  # The caps apply also without providerRejection; then no reply goes out.
+  # A re-advertisement replaces its record, so it is exempt from both caps.
+  let maxPerKey = kad.config.limits.maxProvidersPerKey.get(high(int))
+  let now = UnixTimestamp.now()
   var atCap = false
-  kad.config.limits.maxProvidersPerKey.ifValue(limit):
-    let existingProviders =
-      kad.providerManager.knownKeys.getOrDefault(msgKey, initHashSet[Provider]())
-    let senderIsKnown =
-      existingProviders.anyIt(it.id.isSome and it.id.get() == peerBytes)
-    # Re-advertisements by the same provider are exempt: addProviderRecord
-    # replaces the existing record so the set size doesn't grow.
-    let effectiveCount = existingProviders.len - (if senderIsKnown: 1 else: 0)
-    if effectiveCount >= limit:
+  for peer in validPeers:
+    let stored = StoredProvider(
+      provider: peer,
+      expiresAt: UnixTimestamp.after(kad.config.providerExpirationInterval),
+    )
+    let outcome = kad.store.addProvider(msgKey, stored, now, maxPerKey).valueOr:
+      debug "Failed to store provider record", key = msgKey, err = error
       atCap = true
-      trace "Add-provider request rejected",
-        reason = "perKeyLimit", keySize = msgKey.len, limit = limit
+      continue
 
-  if not atCap:
-    for peer in validPeers:
-      let providerId = PeerId.init(peer.id.get()).valueOr:
-        continue
-      kad.admitPeers(@[PeerInfo(peerId: providerId, addrs: peer.addrs)])
-      kad.providerManager.addProviderRecord(
-        ProviderRecord(
-          provider: peer,
-          expiresAt: chronos.Moment.now() + kad.config.providerExpirationInterval,
-          key: msgKey,
-        )
-      )
+    case outcome
+    of AddProviderOutcome.added, AddProviderOutcome.refreshed:
+      kad.admitPeers(@[PeerInfo(peerId: stream.peerId, addrs: peer.addrs)])
+    of AddProviderOutcome.keyFull, AddProviderOutcome.peerFull,
+        AddProviderOutcome.storeFull:
+      atCap = true
+      trace "Add-provider request rejected", reason = $outcome, peerId = stream.peerId
 
   if kad.config.providerRejection:
     let status =
@@ -541,15 +470,13 @@ proc dispatchGetProviders*(
 
 proc getProviders*(
     kad: KadDHT, key: Key
-): Future[HashSet[Provider]] {.
-    async: (raises: [LPStreamError, CancelledError]), gcsafe
-.} =
+): Future[HashSet[Provider]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Get providers for a given `key` from the nodes closest to that `key`.
 
   var allProviders: HashSet[Provider]
 
   # Include ourselves if we already provide the key
-  if kad.providerManager.providedKeys.provided.hasKey(key):
+  if kad.isProvided(key):
     allProviders.incl(kad.switch.peerInfo.toPeer())
 
   let onReply = proc(
@@ -573,19 +500,21 @@ proc getProviders*(
 
   return allProviders
 
-proc handleGetProviders*(
+method handleGetProviders*(
     kad: KadDHT, stream: Stream, msg: Message
-) {.async: (raises: [CancelledError]).} =
+) {.base, async: (raises: [CancelledError]).} =
   let msgKey = msg.key.valueOr:
     trace "Get-providers request rejected",
       reason = "missingKey", messageType = "getProviders", stream
     return
 
-  var providers =
-    kad.providerManager.knownKeys.getOrDefault(msgKey, initHashSet[Provider]())
+  let stored = kad.store.getProviders(msgKey, UnixTimestamp.now(), high(int)).valueOr:
+    debug "Failed to read provider records", key = msgKey, err = error
+    @[]
+  var providers = stored.mapIt(it.provider).toHashSet()
 
   # check if we are providing the key as well
-  if kad.providerManager.providedKeys.provided.hasKey(msgKey):
+  if kad.isProvided(msgKey):
     providers.incl(kad.switch.peerInfo.toPeer())
 
   let response = Message(

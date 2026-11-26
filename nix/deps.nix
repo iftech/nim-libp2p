@@ -5,8 +5,8 @@
 {
   nim = pkgs.fetchgit {
     url = "https://github.com/nim-lang/Nim.git";
-    rev = "9fe2137fa2f3f66cf5a44f357d461829ac9e20c4";
-    sha256 = "1d2d9pv3x3i7im1cbnbj3qg9rvqg34f320pzjb1xriay89d30kr7";
+    rev = "44b94bcab08cc3c61c942f91d8a7d2cd3ac222b6";
+    sha256 = "0k8591pzwsj4wni1yk51xlwayim2nazchg217vrwwkzkhnvya5jc";
     fetchSubmodules = true;
   };
 
@@ -103,8 +103,8 @@
 
   protobuf_serialization = pkgs.fetchgit {
     url = "https://github.com/status-im/nim-protobuf-serialization";
-    rev = "7861570c5182bd69f6b7c151028ffd5d0134b9ab";
-    sha256 = "07c2d5853k26rjqsrg4vq0kv0i5brzlbh0pj3v0qw0h929y5m54z";
+    rev = "a671c6d497c7028ed7390b2d5a80c7b62138c586";
+    sha256 = "1i7nid50smfmxvc0zc5cp2xd227ll11r7y261bbj769gpd9bz0ax";
     fetchSubmodules = true;
   };
 
@@ -145,15 +145,15 @@
 
   boringssl = pkgs.fetchgit {
     url = "https://github.com/vacp2p/nim-boringssl";
-    rev = "346429e4cda48e775f2d1eb3ccb8757edf4f3648";
-    sha256 = "0x46sdq75zp84qahwh472qr33xw38adrsp41fksh7xwwd6384fl3";
+    rev = "a57b97f5ba45353a1a38c81b4f5e6f537469a63e";
+    sha256 = "0xn06vk54z123fp7k6d7h97nnxz43ldswyakqg110riiwmqr4fhi";
     fetchSubmodules = true;
   };
 
   lsquic = pkgs.fetchgit {
     url = "https://github.com/vacp2p/nim-lsquic";
-    rev = "f156ed72554d16e925ed654833e7f37e8c8e7f8f";
-    sha256 = "0x5laxi1sd5z3ribzp6s8kip1hbr5c0jb2lj8vg3qgk0kjr9g7da";
+    rev = "e57027b73cbd6d9a805b93297dd7e24638db2d99";
+    sha256 = "0zpqdcilmfg7ggc55zgsv3f08kqkfwc3qk9ipaahx5l7bpd46sg6";
     fetchSubmodules = true;
   };
 

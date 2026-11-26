@@ -123,7 +123,7 @@ suite "Gossipsub Partial Message Interop Tests with Nim nodes":
       ourAddress,
       $otherPeer.switch.peerInfo.addrs[0],
       otherPeer.switch.peerInfo.peerId,
-      timeout = 10.seconds, # reduce timeout so test doesn't spend time unnecessarily
+      timeout = 2.seconds, # reduce timeout so test doesn't spend time unnecessarily
     )
 
     # other peer just subscribes without publishing anything
@@ -134,7 +134,7 @@ suite "Gossipsub Partial Message Interop Tests with Nim nodes":
 
   asyncTest "Fails when peer is unreachable":
     const unreachableAddress = "/ip4/127.0.0.1/tcp/59999"
-    let fakePeerId = PeerId.random(rng()).get()
+    let fakePeerId = PeerId.random()
 
     expect DialFailedError:
       discard

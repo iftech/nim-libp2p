@@ -82,7 +82,7 @@ proc dispatchGetAds(
       await disco.send(peerId, msg)
 
   let reply = replyRes.valueOr:
-    return err($error)
+    return err(error)
 
   let getAdsMsg = reply.getAds.valueOr:
     return err("get ads message response not found")
@@ -134,12 +134,11 @@ proc drainCompletedPeers(
     pending: seq[Future[LPResult[GetAdsResult]]],
 ) =
   for fut in pending.filterIt(it.completed()):
-    let res = fut.value()
-    if res.isOk():
+    fut.value().ifValue(reply):
       disco.admitCloserPeers(
-        serviceId, disco.atMostOnePerBucket(searchTable, res.value().closerPeers)
+        serviceId, disco.atMostOnePerBucket(searchTable, reply.closerPeers)
       )
-      disco.tracker.recordProviders(serviceId, res.value().ads, FromLookup)
+      disco.tracker.recordProviders(serviceId, reply.ads, FromLookup)
 
 proc collectBucketAds(
     disco: ServiceDiscovery,
@@ -252,7 +251,7 @@ proc lookup*(
   )
 
   let searchTable = disco.rtManager.getTable(serviceId).valueOr:
-    return err("service table not found for service id: " & $serviceId)
+    return err($serviceId, "service table not found for service id")
 
   var found = initHashSet[Advertisement]()
   let stats = LookupLog()

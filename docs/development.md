@@ -3,7 +3,7 @@
 Clone the repository and set up local dependencies:
 
 ```sh
-git clone --recurse-submodules https://github.com/vacp2p/nim-libp2p
+git clone --recurse-submodules https://github.com/iftech/nim-libp2p
 cd nim-libp2p
 make
 ```
@@ -12,7 +12,7 @@ make
 
 ```sh
 make setup                 # explicit form of the default target
-make NIM_VERSION=2.2.4 setup
+make NIM_VERSION=2.2.6 setup
 make build                 # explicit Nix build
 ```
 

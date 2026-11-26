@@ -48,20 +48,23 @@ when not defined(macosx):
 
     asyncTest "catch up on slow heartbeat":
       var i = 0
+      let fifteenthTick = newAsyncEvent()
       proc t() {.async.} =
         heartbeat "this is normal", 30.milliseconds:
           if i < 3:
             await sleepAsync(150.milliseconds)
           i.inc()
+          if i == 15:
+            fifteenthTick.fire()
 
+      let start = Moment.now()
       let hb = t()
-      await sleepAsync(900.milliseconds)
+      await fifteenthTick.wait()
+      let elapsed = Moment.now() - start
       await hb.cancelAndWait()
-      # 3x (150ms heartbeat + 30ms interval) = 540ms
-      # 360ms remaining, / 30ms = 12x
-      # total 15
-      # allow extra slack for timer jitter/scheduling delays in CI
-      check i in 13 .. 18
+
+      # 15th tick is due at 3 * (150 + 30) + 11 * 30 = 870 ms
+      check elapsed >= 840.milliseconds
 
     asyncTest "heartbeat sleep first":
       var i = 0

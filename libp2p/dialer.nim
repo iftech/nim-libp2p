@@ -180,40 +180,42 @@ proc expandDnsAddr(
 ): Future[LPResult[seq[(MultiAddress, Opt[PeerId])]]] {.
     async: (raises: [CancelledError])
 .} =
-  if not DNS.matchPartial(address):
+  if not address.containsDnsComponent():
     return ok(@[(address, peerId)])
   if isNil(self.nameResolver):
-    warn "Can't resolve DNSADDR without NameResolver", address = address
+    warn "Can't resolve DNS multiaddress without NameResolver", address
     return ok(newSeq[(MultiAddress, Opt[PeerId])]())
 
   trace "Address resolution started"
-  let toResolve =
-    if peerId.isSome:
-      ?concat(address, ?MultiAddress.init(multiCodec("p2p"), peerId.get()))
-    else:
-      address
-  # A dnsaddr record points at more dnsaddr records, and each lookup can take
-  # seconds, so the chain answers to the dial deadline like the dial itself.
+  # Prune other peers before recursion while allowing records without peer IDs.
+  # Recursive lookups share the dial deadline.
   let resolved =
     try:
-      self.nameResolver.resolveDnsAddr(toResolve).awaitWithDeadline(deadline)
+      self.nameResolver.resolveDnsAddr(address, peerId = peerId).awaitWithDeadline(
+        deadline
+      )
     except AsyncTimeoutError:
-      trace "DNSADDR resolution timed out", address = toResolve
+      trace "DNSADDR resolution timed out", address
       return ok(newSeq[(MultiAddress, Opt[PeerId])]())
     except MaError as e:
-      return err(e.msg)
+      return err(e)
     except TransportAddressError as e:
-      return err(e.msg)
+      return err(e)
 
   trace "Address resolution completed",
-    originalAddresses = toResolve, resolvedAddresses = resolved
+    originalAddresses = address, resolvedAddresses = resolved
 
   var addrs: seq[(MultiAddress, Opt[PeerId])]
   for resolvedAddress in resolved:
     let lastPart = ?resolvedAddress[^1]
-    if lastPart.protoCode == LPResult[MultiCodec].ok(multiCodec("p2p")):
+    if lastPart.protoCode.containsValue(multiCodec("p2p")):
       let addrPeerId = PeerId.init(?lastPart.protoArgument()).valueOr:
-        return err($error)
+        return err(error)
+      # Keep the requested peer constraint after recursive DNSADDR resolution.
+      if peerId.isSome and peerId.get() != addrPeerId:
+        trace "Resolved address skipped because it names another peer",
+          peerId, address = resolvedAddress
+        continue
       addrs.add((?resolvedAddress[0 ..^ 2], Opt.some(addrPeerId)))
     else:
       addrs.add((resolvedAddress, peerId))
@@ -263,7 +265,7 @@ proc normalizedDialAddrs(
 
 func fromNameLookup(candidate: DialCandidate): bool =
   ## Named directly, or reached through the dnsaddr chain that named it.
-  candidate.fromName or DNS.matchPartial(candidate.address)
+  candidate.fromName or candidate.address.containsDnsComponent()
 
 proc expandCandidate(
     self: Dialer, candidate: DialCandidate, deadline: Moment
@@ -332,7 +334,7 @@ proc directCandidates(
 
   var candidates: seq[DialCandidate]
   for address in addrs:
-    if DNS.matchPartial(address):
+    if address.containsDnsComponent():
       continue
     if self.transportFor(address).isNone():
       trace "Address skipped because no transport supports it", peerId, address
@@ -348,7 +350,9 @@ proc directCandidates(
 proc dnsCandidates(peerId: Opt[PeerId], addrs: seq[MultiAddress]): seq[DialCandidate] =
   ## The advertised addresses that need a lookup before anything can dial them.
 
-  addrs.filterIt(DNS.matchPartial(it)).mapIt(DialCandidate(address: it, peerId: peerId))
+  addrs.filterIt(it.containsDnsComponent()).mapIt(
+    DialCandidate(address: it, peerId: peerId)
+  )
 
 proc dialInOrder(
     self: Dialer,
@@ -437,7 +441,7 @@ proc tryDialAndUpgrade(
     return ok(mux)
 
   outcome = if deadline.timeLeft().isZero(): "timedOut" else: "exhausted"
-  err("peer dial " & outcome)
+  err(outcome, "peer dial failed")
 
 proc dialAndUpgrade*(
     self: Dialer,
@@ -498,7 +502,7 @@ proc finishUpgrade(
       await muxed.close()
 
   (await self.connManager.storeMuxer(muxed)).isOkOr:
-    return err("failed storeMuxer in finishUpgrade: " & error)
+    return err(error, "failed storeMuxer in finishUpgrade")
 
   try:
     # Its own budget, not the dial's leftovers: the connection stands at this
@@ -507,7 +511,7 @@ proc finishUpgrade(
     await self.peerStore.identify(muxed, dir).wait(self.dialTimeout)
   except AsyncTimeoutError, IdentityNoMatchError, IdentityInvalidMsgError,
       MultiStreamError, LPStreamError, MuxerError:
-    return err("failed identify in finishUpgrade: " & getCurrentExceptionMsg())
+    return err(getCurrentExceptionMsg(), "failed identify in finishUpgrade")
   await self.connManager.triggerPeerEvents(
     muxed.connection.peerId, PeerEvent(kind: PeerEventKind.Identified, initiator: true)
   )
@@ -536,7 +540,7 @@ proc establishConnection(
       return err("peer on dial backoff in establishConnection")
 
   let slot = self.connManager.getOutgoingSlot(forceDial).valueOr:
-    return err("failed getOutgoingSlot in establishConnection: " & error)
+    return err(error, "failed getOutgoingSlot in establishConnection")
 
   let
     dialAddrs = normalizedDialAddrs(peerId, addrs)
@@ -576,7 +580,7 @@ proc internalConnect(
     reuseConnection = true,
     dir = Direction.Out,
 ): Future[LPResult[Muxer]] {.async: (raises: [CancelledError]).} =
-  if Opt.some(self.localPeerId) == peerId:
+  if peerId == self.localPeerId:
     return err("internalConnect can't dial self!")
 
   # A dial without a peer id has no connection to reuse and no identity to
@@ -609,9 +613,8 @@ method connect*(
     return
 
   (await self.internalConnect(Opt.some(peerId), addrs, forceDial, reuseConnection, dir)).isOkOr:
-    raise newException(
-      DialFailedError,
-      "failed connect: peer_id=" & $peerId & " addrs=" & $addrs & ": " & error,
+    raise error.toException(
+      DialFailedError, "failed connect: peer_id=" & $peerId & " addrs=" & $addrs
     )
 
 method connect*(
@@ -623,9 +626,7 @@ method connect*(
     let muxed = (
       await self.internalConnect(Opt.some(fullAddress[0]), @[fullAddress[1]], false)
     ).valueOr:
-      raise newException(
-        DialFailedError, "failed connect: address=" & $address & ": " & error
-      )
+      raise error.toException(DialFailedError, "failed connect: address=" & $address)
     return muxed.connection.peerId
 
   if allowUnknownPeerId == false:
@@ -634,41 +635,56 @@ method connect*(
     )
 
   let muxed = (await self.internalConnect(Opt.none(PeerId), @[address], false)).valueOr:
-    raise newException(
-      DialFailedError, "failed connect: address=" & $address & ": " & error
-    )
+    raise error.toException(DialFailedError, "failed connect: address=" & $address)
   return muxed.connection.peerId
 
 proc negotiateStream*(
     self: Dialer, stream: Stream, protos: seq[string]
 ): Future[Stream] {.async: (raises: [CancelledError, LPError]).} =
-  ## Negotiate one of `protos` over an open stream.
-  ## Raises DialFailedError when negotiation selects no supported protocol or
-  ## the selected protocol's outgoing stream budget is exhausted.
+  ## Negotiates one protocol from `protos` on an open stream.
+  ##
+  ## If the peer store indicates that the peer supports a requested protocol,
+  ## returns before the peer acknowledges. If the peer then rejects the protocol,
+  ## the first read raises LPStreamError. Because the caller may write immediately,
+  ## rejection cannot fall back to another protocol.
+  ##
+  ## Raises DialFailedError if blocking negotiation selects no protocol, or
+  ## if the selected protocol has no outgoing stream budget left.
 
-  var negotiated = false
+  var
+    negotiated = false
+    selectedStream = stream
   defer:
     if not negotiated:
-      await stream.reset()
+      await selectedStream.reset()
 
   trace "Protocol negotiation started", stream, protocols = protos
-  let selected = await MultistreamSelect.select(stream, protos)
-  if not protos.contains(selected):
+  let preferredProto =
+    if self.peerStore.isNil:
+      Opt.none(string)
+    else:
+      self.peerStore.firstSupportedProtocol(stream.peerId, protos)
+
+  let selection = await MultistreamSelect.select(stream, protos, preferredProto)
+  selectedStream = selection.stream
+  let selectedProto = selection.protocol
+  if not protos.contains(selectedProto):
     raise newException(
       DialFailedError,
       "Unable to select sub-protocol. None of the offered protocols were accepted: " &
         $protos,
     )
 
-  self.ms.lookupProtocol(selected).ifValue(protocol):
-    if not protocol.reserveOutgoing(stream.peerId):
+  self.ms.lookupProtocol(selectedProto).ifValue(protocol):
+    if not protocol.reserveOutgoing(selectedStream.peerId):
       raise newException(
-        DialFailedError, "Outbound stream budget exceeded for protocol: " & selected
+        DialFailedError,
+        "Outbound stream budget exceeded for protocol: " & selectedProto,
       )
 
     proc releaseOnClose() {.async: (raises: []).} =
-      await noCancel stream.join()
-      protocol.releaseOutgoing(stream.peerId)
+      await noCancel selectedStream.join()
+      protocol.releaseOutgoing(selectedStream.peerId)
 
     let fut = releaseOnClose()
     self.ongoingReleaseOnClose.add(fut)
@@ -678,7 +694,7 @@ proc negotiateStream*(
         self.ongoingReleaseOnClose.del(idx)
 
   negotiated = true
-  return stream
+  return selectedStream
 
 proc tryDial*(
     self: Dialer, peerId: PeerId, addrs: seq[MultiAddress]
@@ -700,7 +716,7 @@ proc tryDial*(
       reach = DialReach(),
     )
   ).valueOr:
-    raise newException(DialFailedError, "tryDial failed: " & error)
+    raise error.toException(DialFailedError, "tryDial failed")
   await mux.close()
   mux.connection.observedAddr
 

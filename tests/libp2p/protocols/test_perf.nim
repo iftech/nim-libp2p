@@ -50,7 +50,7 @@ proc runTest(server: Switch, client: Switch) {.async.} =
     await client.stop()
     await server.stop()
 
-  let conn = await client.dial(server.peerInfo.peerId, server.peerInfo.addrs, PerfCodec)
+  let conn = await client.dial(server, PerfCodec)
   let perfClient = PerfClient.new()
   discard await perfClient.perf(conn, bytesToUpload, bytesToDownload)
 
@@ -73,7 +73,7 @@ proc runTestWithException(server: Switch, client: Switch) {.async.} =
     await client.stop()
     await server.stop()
 
-  let conn = await client.dial(server.peerInfo.peerId, server.peerInfo.addrs, PerfCodec)
+  let conn = await client.dial(server, PerfCodec)
   let perfClient = PerfClient.new()
   let perfFut = perfClient.perf(conn, bytesToUpload, bytesToDownload)
 

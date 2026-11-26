@@ -1,59 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[sequtils, tables]
+import std/[sequtils, strformat]
 import chronos, chronicles, results
 import ../../[peerid, switch, multihash]
-import ../../utils/[heartbeat, future]
+import ../../utils/future
 import ../protocol
-import ./[protobuf, types, find, rpc, kademlia_metrics]
+import ./[protobuf, types, find, rpc, kademlia_metrics, local_record]
 
 logScope:
   topics = "libp2p kademlia"
 
-proc isBestValue(kad: KadDHT, key: Key, record: EntryRecord): bool =
-  ## Returns whether `value` is a better value than what we have locally
-  ## Always returns `true` if we don't have the value locally
-
-  kad.dataTable.get(key).ifValue(existing):
-    kad.config.selector.select(key, @[record, existing]).ifValue(selectedIdx):
-      return selectedIdx == 0
-  return true
-
-proc isExpired*(
-    record: EntryRecord,
-    interval: chronos.Duration,
-    currentUnixSeconds = nowUnixSeconds(),
-): bool {.gcsafe, raises: [].} =
-  ## Returns true when the record's stored timestamp is older than `interval`.
-  ## Records whose timestamp cannot be parsed are treated as expired.
-  let storedUnix = record.time.toUnixSeconds().valueOr:
-    trace "Failed to parse record timestamp, treating as expired", time = record.time
-    return true
-
-  (currentUnixSeconds - storedUnix).seconds > interval
-
-proc manageExpiredRecords*(kad: KadDHT) {.async: (raises: [CancelledError]).} =
-  ## Periodically scans `dataTable` and evicts entries that are older than
-  ## `config.recordExpirationInterval`. Runs indefinitely as a heartbeat
-  ## loop until cancelled (e.g. via `cancelSoon` or `cancelAndWait`).
-  heartbeat "cleanup expired data entries", kad.config.cleanupDataEntriesInterval:
-    let currentUnixSeconds = nowUnixSeconds()
-    var toRemove: seq[Key]
-    for key, record in kad.dataTable:
-      if record.isExpired(kad.config.recordExpirationInterval, currentUnixSeconds):
-        toRemove.add(key)
-    for key in toRemove:
-      kad.dataTable.del(key)
-      trace "Expired record removed", key
-
 proc dispatchPutVal*(
-    kad: KadDHT, peer: PeerId, key: Key, value: Value
+    kad: KadDHT, peer: PeerId, key: RecordKey, value: Value
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let msg = Message(
     msgType: Opt.some(MessageType.putValue),
-    key: Opt.some(key),
-    record: Opt.some(Record(key: Opt.some(key), value: Opt.some(value))),
+    key: Opt.some(key.toKey()),
+    record: Opt.some(Record(key: Opt.some(key.toKey()), value: Opt.some(value))),
   )
   let reply = ?await kad.dispatchRpc(peer, msg)
 
@@ -66,20 +30,16 @@ proc dispatchPutVal*(
 
   ok()
 
-proc canStoreLocalRecord*(kad: KadDHT, key: Key): bool {.raises: [].} =
-  if kad.dataTable.hasKey(key):
-    return true
-  kad.config.limits.maxLocalRecords.ifValue(limit):
-    return kad.dataTable.len < limit
-  true
-
 proc putValue*(
-    kad: KadDHT, key: Key, value: Value
-): Future[LPResult[void]] {.async: (raises: [CancelledError]), gcsafe.} =
+    kad: KadDHT, key: RecordKey, value: Value
+): Future[LPResult[int]] {.async: (raises: [CancelledError]), gcsafe.} =
+  ## Stores `value` locally and on the closest peers. Returns the number of
+  ## peers that acknowledged it; 0 means no copy exists outside this node.
+  ## The caller decides what count counts as success. An error means the
+  ## value was rejected before replication.
   if value.len > kad.config.limits.maxValueSize:
     return err(
-      "value exceeds maxValueSize (" & $value.len & " > " &
-        $kad.config.limits.maxValueSize & ")"
+      fmt"{value.len} > {kad.config.limits.maxValueSize}", "value exceeds maxValueSize"
     )
 
   let record = EntryRecord(value: value, time: Timestamp.now())
@@ -87,16 +47,14 @@ proc putValue*(
   if not kad.config.validator.isValid(key, record):
     return err("invalid key/value pair")
 
-  if not kad.isBestValue(key, record):
+  let isBest = kad.isBestValue(key, record).valueOr:
+    return err(error, "could not compare with the local record")
+  if not isBest:
     return err("Value rejected, we have a better one")
 
-  let peers = await kad.findNode(key)
+  let peers = await kad.findNode(key.toKey())
 
-  let storedLocally = kad.canStoreLocalRecord(key)
-  if storedLocally:
-    kad.dataTable.insert(key, value, Timestamp.now())
-  else:
-    trace "PutValue: local record limit reached", current = kad.dataTable.len
+  let storedLocally = kad.putBestLocalRecord(key, record)
 
   var attempted, succeeded, failed, cancelled, pending: int
   var outcome = "cancelled"
@@ -128,7 +86,7 @@ proc putValue*(
       cancelled += results.cancelled
       pending += results.pending
   outcome = "completed"
-  ok()
+  ok(succeeded)
 
 proc handlePutValue*(
     kad: KadDHT, stream: Stream, msg: Message
@@ -143,7 +101,12 @@ proc handlePutValue*(
       reason = "missingKey", messageType = "putValue", stream
     return
 
-  if record.key.isNone or record.key.get() != msgKey:
+  let key = RecordKey.init(msgKey).valueOr:
+    trace "Put-value request rejected",
+      reason = "invalidKeyLength", messageType = "putValue", stream, err = error
+    return
+
+  if record.key != msgKey:
     trace "Put-value request rejected",
       reason = "keyMismatch", messageType = "putValue", stream
     return
@@ -162,22 +125,15 @@ proc handlePutValue*(
   let entryRecord = EntryRecord(value: value, time: Timestamp.now())
 
   # Value sanitisation done. Start insertion process
-  if not kad.config.validator.isValid(msgKey, entryRecord):
+  if not kad.config.validator.isValid(key, entryRecord):
     trace "Put-value request rejected",
       reason = "invalidRecord", messageType = "putValue", stream
     return
 
-  if not kad.isBestValue(msgKey, entryRecord):
-    trace "Dropping received value, we have a better one"
+  if not kad.putBestLocalRecord(key, entryRecord):
     await stream.reset()
     return
 
-  if not kad.canStoreLocalRecord(msgKey):
-    debug "PutValue: local record limit reached", stream, current = kad.dataTable.len
-    await stream.reset()
-    return
-
-  kad.dataTable.insert(msgKey, entryRecord.value, Timestamp.now())
   # consistent with following link, echo message without change
   # https://github.com/libp2p/js-libp2p/blob/cf9aab5c841ec08bc023b9f49083c95ad78a7a07/packages/kad-dht/src/rpc/handlers/put-value.ts#L22
   let encoded = msg.encode(kad.config.hideConnectionStatus)

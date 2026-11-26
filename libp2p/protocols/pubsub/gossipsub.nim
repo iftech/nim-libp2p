@@ -61,6 +61,10 @@ declareCounter(
 declareCounter(libp2p_gossipsub_duplicate, "number of duplicates received")
 declareCounter(libp2p_gossipsub_received, "number of messages received (deduplicated)")
 declarePublicGauge(
+  libp2p_gossipsub_pending_validations,
+  "number of messages in validation or waiting for a validation slot",
+)
+declarePublicGauge(
   libp2p_gossipsub_rpc_overhead_bytes_max,
   "maximum RPC overhead bytes observed in the current one-minute window",
 )
@@ -133,10 +137,15 @@ proc init*(
     maxHighPriorityQueueLen = DefaultMaxHighPriorityQueueLen,
     maxMediumPriorityQueueLen = DefaultMaxMediumPriorityQueueLen,
     maxLowPriorityQueueLen = DefaultMaxLowPriorityQueueLen,
+    maxIWantsPerMessage = DefaultMaxIWantsPerMessage,
     sendIDontWantOnPublish = false,
+    maxConcurrentValidations = GossipSubMaxConcurrentValidations,
+    topicStreamsConfig = Opt.none(TopicStreamsConfig),
     testExtensionConfig = Opt.none(TestExtensionConfig),
     partialMessageExtensionConfig = Opt.none(PartialMessageExtensionConfig),
     pingpongExtensionConfig = Opt.none(PingPongExtensionConfig),
+    acceptPXThreshold = 0.0,
+    maxOutboundQueueBytes = DefaultMaxOutboundQueueBytes,
 ): GossipSubParams =
   GossipSubParams(
     explicit: true,
@@ -159,6 +168,7 @@ proc init*(
     gossipThreshold: gossipThreshold,
     publishThreshold: publishThreshold,
     graylistThreshold: graylistThreshold,
+    acceptPXThreshold: acceptPXThreshold,
     opportunisticGraftThreshold: opportunisticGraftThreshold,
     decayInterval: decayInterval,
     decayToZero: decayToZero,
@@ -180,7 +190,11 @@ proc init*(
     maxHighPriorityQueueLen: maxHighPriorityQueueLen,
     maxMediumPriorityQueueLen: maxMediumPriorityQueueLen,
     maxLowPriorityQueueLen: maxLowPriorityQueueLen,
+    maxIWantsPerMessage: maxIWantsPerMessage,
+    maxOutboundQueueBytes: maxOutboundQueueBytes,
     sendIDontWantOnPublish: sendIDontWantOnPublish,
+    maxConcurrentValidations: maxConcurrentValidations,
+    topicStreamsConfig: topicStreamsConfig,
     testExtensionConfig: testExtensionConfig,
     partialMessageExtensionConfig: partialMessageExtensionConfig,
     pingpongExtensionConfig: pingpongExtensionConfig,
@@ -200,6 +214,9 @@ func validateOverheadRateLimit(parameters: GossipSubParams): Result[void, cstrin
   ok()
 
 proc validateParameters*(parameters: GossipSubParams): Result[void, cstring] =
+  parameters.topicStreamsConfig.ifValue(config):
+    ?config.validate()
+
   if (parameters.dOut >= parameters.dLow) or (parameters.dOut > (parameters.d div 2)):
     err(
       "gossipsub: dOut parameter error, Number of outbound connections to keep in the mesh. Must be less than D_lo and at most D/2"
@@ -248,6 +265,12 @@ proc validateParameters*(parameters: GossipSubParams): Result[void, cstring] =
     err("gossipsub: maxMediumPriorityQueueLen parameter error, Must be > 0")
   elif parameters.maxLowPriorityQueueLen <= 0:
     err("gossipsub: maxLowPriorityQueueLen parameter error, Must be > 0")
+  elif parameters.maxIWantsPerMessage <= 0:
+    err("gossipsub: maxIWantsPerMessage parameter error, Must be > 0")
+  elif parameters.maxConcurrentValidations <= 0:
+    err("gossipsub: maxConcurrentValidations parameter error, Must be > 0")
+  elif parameters.maxOutboundQueueBytes <= 0:
+    err("gossipsub: maxOutboundQueueBytes parameter error, Must be > 0")
   else:
     validateOverheadRateLimit(parameters)
 
@@ -283,28 +306,9 @@ proc validateParameters*(parameters: TopicParams): Result[void, cstring] =
   else:
     ok()
 
-method init*(g: GossipSub) =
-  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-    ## main protocol handler that gets triggered on every
-    ## connection for a protocol string
-    ## e.g. ``/floodsub/1.0.0``, etc...
-    ##
-    try:
-      await g.handleConn(stream, proto)
-    except CancelledError as exc:
-      trace "gossipsub handler cancelled", stream
-      raise exc
-
-  g.handler = handler
-
-  g.codecs &= GossipSubCodec_13
-  g.codecs &= GossipSubCodec_12
-  g.codecs &= GossipSubCodec_11
-  g.codecs &= GossipSubCodec_10
-
 proc usesExtensions(g: GossipSub): bool =
   return
-    g.parameters.testExtensionConfig.isSome() or
+    g.parameters.topicStreamsConfig.isSome() or g.parameters.testExtensionConfig.isSome() or
     g.parameters.partialMessageExtensionConfig.isSome() or
     g.parameters.pingpongExtensionConfig.isSome() or
     g.parameters.preambleExtensionConfig.isSome()
@@ -328,6 +332,10 @@ proc sendExtensionsControl(g: GossipSub, peer: PubSubPeer) =
     MessagePriority.High, # must be the first message on the stream
   )
 
+proc receiveTopicRPC(
+  g: GossipSub, peer: PubSubPeer, incoming: sink RPCMsg, msgSize: int
+): Future[void] {.async: (raises: [CancelledError]).}
+
 method onNewPeer*(g: GossipSub, peer: PubSubPeer) =
   g.withPeerStats(peer.peerId) do(stats: var PeerStats):
     # Make sure stats and peer information match, even when reloading peer stats
@@ -340,7 +348,28 @@ method onNewPeer*(g: GossipSub, peer: PubSubPeer) =
     # Check if the score is below the threshold and disconnect the peer if necessary
     g.disconnectIfBadScorePeer(peer, stats.score)
 
+  peer.extensionsState = g.extensionsState
+  if g.parameters.topicStreamsConfig.isSome:
+    proc dial(): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+      try:
+        return await g.switch.dial(peer.peerId, @[TopicStreamsCodec])
+      except DialFailedError as exc:
+        raise newException(LPStreamError, exc.msg)
+
+    proc receive(
+        msg: sink RPCMsg, size: int
+    ): Future[void] {.async: (raises: [CancelledError], raw: true).} =
+      g.receiveTopicRPC(peer, move(msg), size)
+
+    proc violation() {.gcsafe, raises: [].} =
+      g.pendingTasks.trackFut(g.disconnectPeer(peer))
+
+    g.extensionsState.initTopicStreams(
+      peer.peerId, g.maxMessageSize, dial, receive, violation, peer.outboundQueue
+    )
+
   peer.iHaveBudget = IHavePeerBudget
+  peer.validationSlots = newAsyncSemaphore(g.parameters.maxConcurrentValidations)
 
 method onPubSubPeerEvent*(
     p: GossipSub, peer: PubSubPeer, event: PubSubPeerEvent
@@ -397,6 +426,8 @@ method unsubscribePeer*(g: GossipSub, peer: PeerId) =
     for topic, info in stats[].topicInfos.mpairs:
       info.firstMessageDeliveries = 0
 
+  g.releasePeerIWantRequests(peer)
+
   g.extensionsState.removePeer(peer)
 
   procCall FloodSub(g).unsubscribePeer(peer)
@@ -429,8 +460,15 @@ proc handleSubscribe(
       peer.behaviourPenalty += SubscriptionFloodPenalty
       return false
 
+    # Bound retained topic names across RPCs using the existing message-size budget.
+    if not g.gossipsub.hasPeer(topic, peer) and
+        topic.len > g.maxMessageSize - peer.subscribedTopicBytes:
+      trace "ignoring subscription over topic byte budget", limit = g.maxMessageSize
+      return false
+
     if g.gossipsub.addPeer(topic, peer):
       peer.subscribedTopics.inc()
+      peer.subscribedTopicBytes += topic.len
       debug "peer subscribed to topic"
     if peer.peerId in g.parameters.directPeers:
       discard g.subscribedDirectPeers.addPeer(topic, peer)
@@ -440,10 +478,12 @@ proc handleSubscribe(
       g.mesh.removePeer(topic, peer)
       g.pruned(peer, topic)
 
+    g.pendingTasks.trackFut(g.extensionsState.closeTopicStreams(peer.peerId, topic))
     # unsubscribe remote peer from the topic
     let wasSubscribed = g.gossipsub.hasPeer(topic, peer)
     if wasSubscribed:
       peer.subscribedTopics.dec()
+      peer.subscribedTopicBytes -= topic.len
     g.gossipsub.removePeer(topic, peer)
 
     g.fanout.removePeer(topic, peer)
@@ -529,11 +569,31 @@ const iDontWantMessageSizeThreshold* = 512
 proc isLargeMessage(dataLen: int, msgId: MessageId): bool =
   dataLen > max(iDontWantMessageSizeThreshold, msgId.len * 10)
 
+proc acquireValidationSlot(
+    g: GossipSub, peer: PubSubPeer, saltedId: SaltedId
+) {.async: (raises: [CancelledError]).} =
+  libp2p_gossipsub_pending_validations.inc()
+  try:
+    await peer.validationSlots.acquire()
+  except CancelledError as e:
+    g.validationSeen.del(saltedId)
+    discard g.seen.del(saltedId)
+    libp2p_gossipsub_pending_validations.dec()
+    raise e
+
+proc releaseValidationSlot(g: GossipSub, peer: PubSubPeer, saltedId: SaltedId) =
+  g.validationSeen.del(saltedId)
+  libp2p_gossipsub_pending_validations.dec()
+  try:
+    peer.validationSlots.release()
+  except AsyncSemaphoreError:
+    raiseAssert "validation slot released without acquire"
+
 proc validateAndRelay(
     g: GossipSub, msg: Message, msgId: MessageId, saltedId: SaltedId, peer: PubSubPeer
 ) {.async: (raises: []).} =
   defer:
-    g.validationSeen.del(saltedId) # drop bookkeeping even if cancelled mid-task
+    g.releaseValidationSlot(peer, saltedId)
   try:
     let topic = msg.topic
 
@@ -600,14 +660,12 @@ proc validateAndRelay(
       toSendPeers.excl(sourcePeer[])
 
     proc isMsgInIdontWant(it: PubSubPeer): bool =
-      for iDontWant in it.iDontWants:
-        if saltedId in iDontWant:
-          libp2p_gossipsub_idontwant_saved_messages.inc
-          libp2p_gossipsub_saved_bytes.inc(
-            msg.data.len.int64, labelValues = ["idontwant"]
-          )
-          return true
-      return false
+      if not it.holdsIDontWant(saltedId):
+        return false
+
+      libp2p_gossipsub_idontwant_saved_messages.inc()
+      libp2p_gossipsub_saved_bytes.inc(msg.data.len.int64, labelValues = ["idontwant"])
+      true
 
     toSendPeers.exclIfIt(isMsgInIdontWant(it))
 
@@ -617,7 +675,12 @@ proc validateAndRelay(
 
     # In theory, if topics are the same in all messages, we could batch - we'd
     # also have to be careful to only include validated messages
-    g.broadcastResponse(toSendPeers, RPCMsg.withMessages(msg), MessagePriority.Low)
+    g.broadcastResponse(
+      toSendPeers,
+      RPCMsg.withMessages(msg),
+      MessagePriority.Low,
+      relayedSaltedId = Opt.some(saltedId),
+    )
     trace "forwarded message to peers", peers = toSendPeers.len, msgId, peer
 
     libp2p_pubsub_messages_rebroadcasted.inc(
@@ -633,7 +696,9 @@ proc validateAndRelay(
 proc dataAndTopicsIdSize(msgs: seq[Message]): int =
   msgs.mapIt(it.data.len + it.topic.len).foldl(a + b, 0)
 
-proc messageOverhead(g: GossipSub, msg: RPCMsg, msgSize: int): int =
+proc messageOverhead(
+    g: GossipSub, msg: RPCMsg, msgSize: int, fromTopicStream = false
+): int =
   # In this way we count even ignored fields by protobuf
   let
     payloadSize =
@@ -646,7 +711,11 @@ proc messageOverhead(g: GossipSub, msg: RPCMsg, msgSize: int): int =
     do:
       0
 
-  msgSize - payloadSize - controlSize
+  result = msgSize - payloadSize - controlSize
+  if fromTopicStream:
+    # The decoded topic comes from the stream header, not this frame's bytes.
+    for message in msg.messages:
+      result += message.topic.len
 
 proc recordOverheadMetrics(g: GossipSub, peer: PubSubPeer, overhead: int) =
   let now = Moment.now()
@@ -692,36 +761,30 @@ proc rateLimit*(
   libp2p_gossipsub_peers_rate_limit_hits.inc(labelValues = [peer.getAgent()])
   g.punishOverBudget(peer, overhead, g.parameters.disconnectPeerAboveRateLimit)
 
-method rpcHandler*(
-    g: GossipSub, peer: PubSubPeer, data: sink seq[byte]
-) {.async: (raises: [CancelledError, PeerMessageDecodeError, PeerRateLimitError]).} =
-  let msgSize = data.len
-
+template ignoreGraylistedRPC(g: GossipSub, peer: PubSubPeer, msgSize: int) =
   if g.isGraylisted(peer, peer.score):
-    await rateLimit(g, peer, msgSize)
+    await g.rateLimit(peer, msgSize)
     trace "PubSub RPC ignored",
       peerId = peer.peerId, reason = "graylisted", score = peer.score
     libp2p_gossipsub_graylisted_rpcs.inc(labelValues = [peer.getAgent()])
     return
 
-  var rpcMsg = RPCMsg.decode(move(data)).valueOr:
-    trace "PubSub RPC decode failed",
-      err = error, peerId = peer.peerId, messageType = "rpc", messageSize = msgSize
-    await rateLimit(g, peer, msgSize)
-    # Raising in the handler closes the gossipsub connection (but doesn't
-    # disconnect the peer!)
-    # TODO evaluate behaviour penalty values
-    peer.behaviourPenalty += 0.1
-
-    raise newException(PeerMessageDecodeError, "Peer msg couldn't be decoded")
-
+template processRPC(
+    g: GossipSub,
+    peer: PubSubPeer,
+    incoming: untyped,
+    msgSize: int,
+    fromTopicStream: static bool,
+) =
+  # Inline the shared pipeline so ordinary RPCs do not allocate another future.
+  var rpcMsg = move(incoming)
   when defined(libp2p_expensive_metrics):
     for m in rpcMsg.messages:
       libp2p_pubsub_received_messages.inc(labelValues = [$peer.peerId, m.topic])
 
   trace "PubSub RPC decoded",
     peerId = peer.peerId, messageType = "rpc", messageSize = msgSize
-  await rateLimit(g, peer, g.messageOverhead(rpcMsg, msgSize))
+  await rateLimit(g, peer, g.messageOverhead(rpcMsg, msgSize, fromTopicStream))
 
   # trigger hooks - these may modify the message
   peer.recvObservers(rpcMsg)
@@ -735,7 +798,10 @@ method rpcHandler*(
     if g.handleSubscribe(peer, sub.topic.get(), sub.isSubscribe):
       extensionsRpcMsg.subscriptions.add(sub)
 
-  g.extensionsState.handleRPC(peer.peerId, extensionsRpcMsg)
+  if fromTopicStream:
+    g.extensionsState.handleTopicRPC(peer.peerId, extensionsRpcMsg)
+  else:
+    g.extensionsState.handleRPC(peer.peerId, extensionsRpcMsg)
 
   # the above call applied limits to subs number
   # in gossipsub we want to apply scoring as well
@@ -743,6 +809,9 @@ method rpcHandler*(
     trace "received an rpc message with an oversized amount of subscriptions",
       peer, size = rpcMsg.subscriptions.len, limit = g.topicsHigh
     peer.behaviourPenalty += SubscriptionFloodPenalty
+
+  # Gathered from the whole RPC, so that the queue is scanned at most once.
+  var duplicates: HashSet[SaltedId]
 
   for i in 0 ..< rpcMsg.messages.len(): # for every message
     template msg(): untyped =
@@ -768,6 +837,9 @@ method rpcHandler*(
         msgId = shortLog(msgId), peer
       continue
 
+    # release before validation, so a bad copy cannot block the retry
+    g.requestedIWants.del(msgIdSalted)
+
     if (msg.signature.len > 0 or g.verifySignature) and not msg.verify():
       trace "Message dropped",
         peerId = peer.peerId, reason = "signatureVerificationFailed"
@@ -786,6 +858,9 @@ method rpcHandler*(
 
     if g.addSeen(msgIdSalted):
       trace "Dropping already-seen message", msgId = shortLog(msgId), peer
+
+      # The peer holds the message, so a relay of it still in our queue is waste.
+      duplicates.incl(msgIdSalted)
 
       var alreadyReceived = false
       g.validationSeen.withValue(msgIdSalted, seen):
@@ -811,10 +886,20 @@ method rpcHandler*(
     # (eg, pop everything you put in it)
     g.validationSeen[msgIdSalted] = initHashSet[PubSubPeer]()
 
+    # wait, not drop: msgId is already seen, so a drop loses the message
+    await g.acquireValidationSlot(peer, msgIdSalted)
     g.pendingTasks.trackFut(g.validateAndRelay(msg, msgId, msgIdSalted, peer))
 
-  if rpcMsg.control.isSome():
-    g.handleControl(peer, rpcMsg.control.unsafeGet())
+  var sawIDontWant = false
+  rpcMsg.control.ifValue(control):
+    sawIDontWant = control.idontwant.len > 0
+    g.handleControl(peer, control)
+
+  # Runs after handleControl, so the scan sees the IDONTWANTs of this RPC.
+  if duplicates.len > 0 or sawIDontWant:
+    libp2p_gossipsub_saved_bytes.inc(
+      peer.cancelQueuedRelays(duplicates).int64, labelValues = ["cancelled_relay"]
+    )
 
   # Now, check subscription to update the meshes if required
   for i in 0 ..< min(g.topicsHigh, rpcMsg.subscriptions.len):
@@ -824,6 +909,55 @@ method rpcHandler*(
       g.rebalanceMesh(topic, metrics = nil)
 
   g.updateMetrics(rpcMsg)
+
+proc receiveTopicRPC(
+    g: GossipSub, peer: PubSubPeer, incoming: sink RPCMsg, msgSize: int
+) {.async: (raises: [CancelledError]).} =
+  try:
+    ignoreGraylistedRPC(g, peer, msgSize)
+    processRPC(g, peer, incoming, msgSize, true)
+  except PeerRateLimitError as exc:
+    trace "Topic stream RPC rate limited", peerId = peer.peerId, err = exc.msg
+
+method rpcHandler*(
+    g: GossipSub, peer: PubSubPeer, data: sink seq[byte]
+) {.async: (raises: [CancelledError, PeerMessageDecodeError, PeerRateLimitError]).} =
+  let msgSize = data.len
+
+  let graylisted = g.isGraylisted(peer, peer.score)
+  if graylisted:
+    await g.rateLimit(peer, msgSize)
+    trace "PubSub RPC ignored",
+      peerId = peer.peerId, reason = "graylisted", score = peer.score
+    libp2p_gossipsub_graylisted_rpcs.inc(labelValues = [peer.getAgent()])
+    if not g.extensionsState.negotiationPending(peer.peerId):
+      return
+
+  var rpcMsg = RPCMsg.decode(move(data)).valueOr:
+    if graylisted:
+      return
+    trace "PubSub RPC decode failed",
+      err = error, peerId = peer.peerId, messageType = "rpc", messageSize = msgSize
+    await rateLimit(g, peer, msgSize)
+    # Raising in the handler closes the gossipsub connection (but doesn't
+    # disconnect the peer!)
+    # TODO: iftech/nim-libp2p#3307
+    peer.behaviourPenalty += 0.1
+
+    raise newException(PeerMessageDecodeError, "Peer msg couldn't be decoded")
+
+  if gossipExtensionsSupported(peer.codec):
+    if not g.extensionsState.negotiateTopicStreams(peer.peerId, rpcMsg):
+      return
+  elif g.extensionsState.peerHasTopicStreams(peer.peerId):
+    # A topic stream may arrive before an incompatible control protocol is known.
+    g.pendingTasks.trackFut(g.disconnectPeer(peer))
+    return
+  if graylisted:
+    # Discard payloads, but retain the actual first control RPC for negotiation.
+    g.extensionsState.negotiateExtensions(peer.peerId, rpcMsg)
+    return
+  processRPC(g, peer, rpcMsg, msgSize, false)
 
 method onTopicSubscription*(g: GossipSub, topic: string, subscribed: bool) =
   if subscribed:
@@ -851,6 +985,8 @@ method onTopicSubscription*(g: GossipSub, topic: string, subscribed: bool) =
       g.pruned(peer, topic, backoff = Opt.some(g.parameters.unsubscribeBackoff))
 
     g.mesh.del(topic)
+    for fut in g.extensionsState.closeTopicStreams(topic, incoming = true):
+      g.pendingTasks.trackFut(fut)
 
     # Send unsubscribe (in reverse order to sub/graft)
     procCall PubSub(g).onTopicSubscription(topic, subscribed)
@@ -956,6 +1092,19 @@ method publish*(
       messageSize, maxMessageSize = g.maxMessageSize
     return 0
 
+  let msgId = g.msgIdProvider(msg).valueOr:
+    trace "Publish skipped after message ID generation failed", err = error
+    g.handleSelfPublishing(topic, data)
+    libp2p_gossipsub_failed_publish.inc()
+    return 0
+
+  # Claim the id before self-delivery: local handlers may suspend, and addSeen
+  # (unlike hasSeen) is atomic with the check and expires stale entries, so a
+  # concurrent or later duplicate cannot reach the handlers again.
+  if g.addSeen(g.salt(msgId)):
+    trace "Dropping already-seen message before self-delivery", msgId
+    return 0
+
   g.handleSelfPublishing(topic, data)
 
   trace "Publishing message", messageSize = data.len
@@ -980,11 +1129,8 @@ method publish*(
       peersOnTopic = topicPeers.len,
       connectedPeers = topicPeers.filterIt(it.connected).len,
       topic
-    libp2p_gossipsub_failed_publish.inc()
-    return 0
-
-  let msgId = g.msgIdProvider(msg).valueOr:
-    trace "Publish skipped after message ID generation failed", err = error
+    # Release the claim so the message can be published once peers are available
+    discard g.seen.del(g.salt(msgId))
     libp2p_gossipsub_failed_publish.inc()
     return 0
 
@@ -993,13 +1139,6 @@ method publish*(
 
   trace "Message created",
     messageType = "publish", messageSize = messageSize, peerCount = peers.len
-
-  if g.addSeen(g.salt(msgId)):
-    # If the message was received or published recently, don't re-publish it -
-    # this might happen when not using sequence id:s and / or with a custom
-    # message id provider
-    trace "Dropping already-seen message"
-    return 0
 
   if not pubParams.skipMCache:
     g.mcache.put(msgId, msg)
@@ -1051,7 +1190,7 @@ proc maintainDirectPeer(
   if id notin g.peers:
     trace "Attempting to dial a direct peer", peerId = id
     if g.switch.isConnected(id):
-      warn "We are connected to a direct peer, but it isn't a GossipSub peer!", id
+      warn "We are connected to a direct peer, but it isn't a GossipSub peer", id
       return
     try:
       await g.switch.connect(id, addrs, forceDial = true)
@@ -1165,9 +1304,13 @@ proc createExtensionsState(g: GossipSub): ExtensionsState =
     g.parameters.preambleExtensionConfig = Opt.some(cfg)
 
   return ExtensionsState.new(
-    g.rng, updatePeerBehaviorPenalty, g.parameters.testExtensionConfig,
-    g.parameters.partialMessageExtensionConfig, g.parameters.pingpongExtensionConfig,
+    g.rng,
+    updatePeerBehaviorPenalty,
+    g.parameters.testExtensionConfig,
+    g.parameters.partialMessageExtensionConfig,
+    g.parameters.pingpongExtensionConfig,
     g.parameters.preambleExtensionConfig,
+    topicStreamsConfig = g.parameters.topicStreamsConfig,
   )
 
 method start*(g: GossipSub): Future[void] {.async: (raises: [CancelledError]).} =
@@ -1200,8 +1343,37 @@ method stop*(g: GossipSub): Future[void] {.async: (raw: true, raises: []).} =
   g.stopFut = noCancel allFutures(peersStopped, chronos.cancelAndWait(pending))
   return g.stopFut
 
+proc createTopicStreamProtocol(g: GossipSub): LPProtocol =
+  let protocol = LPProtocol(codecs: @[TopicStreamsCodec])
+  protocol.handler = proc(
+      stream: Stream, proto: string
+  ) {.async: (raises: [CancelledError]).} =
+    if not g.started or g.switch.isStopping:
+      await stream.reset()
+      return
+    let peer = g.getOrCreatePeer(stream.peerId, @[GossipSubCodec_13])
+    # An empty codec means control-stream protocol negotiation is still pending.
+    if peer.codec != "" and not gossipExtensionsSupported(peer.codec):
+      g.pendingTasks.trackFut(g.disconnectPeer(peer))
+      await stream.reset()
+      return
+    await g.extensionsState.readTopicStream(peer.peerId, stream)
+  protocol
+
 method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   procCall FloodSub(g).initPubSub()
+
+  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    try:
+      await g.handleConn(stream, proto)
+    except CancelledError as exc:
+      trace "gossipsub handler cancelled", stream
+      raise exc
+
+  g.handler = handler
+
+  g.codecs =
+    @[GossipSubCodec_13, GossipSubCodec_12, GossipSubCodec_11, GossipSubCodec_10]
 
   if not g.parameters.explicit:
     g.parameters = GossipSubParams.init()
@@ -1213,6 +1385,16 @@ method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
     )
 
   g.parameters.validateParameters().onErrorRaise(InitializationError)
+  g.parameters.topicStreamsConfig.ifValue(config):
+    config.validate(g.maxMessageSize).onErrorRaise(InitializationError)
+    let nonHighBudget =
+      g.parameters.maxOutboundQueueBytes -
+      highPriorityQueueReservedBytes(g.parameters.maxOutboundQueueBytes)
+    if g.maxMessageSize > nonHighBudget div 2:
+      raise newException(
+        InitializationError,
+        "gossipsub: non-High outbound budget must be at least twice maxMessageSize with topic streams",
+      )
 
   # init the floodsub stuff here, we customize timedcache in gossip!
   g.seen =
@@ -1222,6 +1404,8 @@ method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   # init gossip stuff
   g.mcache = MCache.init(g.parameters.historyGossip, g.parameters.historyLength)
   g.extensionsState = g.createExtensionsState()
+  if g.parameters.topicStreamsConfig.isSome:
+    g.switch.tryMount(g.createTopicStreamProtocol()).onErrorRaise(InitializationError)
 
 method getOrCreatePeer*(
     g: GossipSub,
@@ -1236,5 +1420,6 @@ method getOrCreatePeer*(
   peer.maxHighPriorityQueueLen = g.parameters.maxHighPriorityQueueLen
   peer.maxMediumPriorityQueueLen = g.parameters.maxMediumPriorityQueueLen
   peer.maxLowPriorityQueueLen = g.parameters.maxLowPriorityQueueLen
+  peer.maxOutboundQueueBytes = g.parameters.maxOutboundQueueBytes
 
   return peer

@@ -14,7 +14,7 @@ proc mockPreamble(
     id: MessageId = MessageId(@[1.byte, 2.byte, 3.byte]),
     startOffset: Duration = 0.seconds,
     expireOffset: Duration = 10.seconds,
-    sender: PeerId = randomPeerId(),
+    sender: PeerId = PeerId.random(),
 ): PreambleInfo =
   let now = Moment.now()
   PreambleInfo.init(
@@ -92,7 +92,7 @@ suite "preamble store":
     # add 10 peers — only last 6 should survive
     var peersInserted: seq[PeerId] = @[]
     for i in 0 ..< maxPossiblePeersOnPeerSet * 2:
-      let peerId = randomPeerId()
+      let peerId = PeerId.random()
       peersInserted.add(peerId)
       store.addPossiblePeerToQuery(p.messageId, peerId)
 

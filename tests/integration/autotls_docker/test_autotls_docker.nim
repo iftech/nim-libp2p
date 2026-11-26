@@ -47,7 +47,7 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     let service = switch.getAutotlsService()
     startAndDeferStop(@[switch])
 
-    let cert = await service.getCertWhenReady().wait(IssueTimeout)
+    let cert = (await service.getCertWhenReady().wait(IssueTimeout)).get()
     check cert.expiry > now()
 
   asyncTest "the certificate is renewed once it is about to expire":
@@ -58,7 +58,11 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     let service = switch.getAutotlsService()
     startAndDeferStop(@[switch])
 
-    let certBefore = await service.getCertWhenReady().wait(IssueTimeout)
+    let certBefore = (await service.getCertWhenReady().wait(IssueTimeout)).get()
+    let certificateUpdates = service.subscribeCertificateUpdates()
+    defer:
+      certificateUpdates.unsubscribe()
+
     service.certReady.clear()
     service.cert = Opt.some(
       AutotlsCert.new(
@@ -66,7 +70,10 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
       )
     )
 
-    let certAfter = await service.getCertWhenReady().wait(IssueTimeout)
+    let certificates = await certificateUpdates.waitUpdates().wait(IssueTimeout)
+    check certificates.len > 0
+
+    let certAfter = certificates[^1]
     check:
       certAfter.cert != certBefore.cert
       certAfter.expiry > now()
@@ -82,11 +89,9 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     let issuerService = issuer.getAutotlsService()
     startAndDeferStop(@[issuer])
 
-    let cert = await issuerService.getCertWhenReady().wait(IssueTimeout)
+    let cert = (await issuerService.getCertWhenReady().wait(IssueTimeout)).get()
 
-    let server = makeStandardSwitchBuilder(
-        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
-      )
+    let server = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
       .withPrivateKey(issuer.peerInfo.privateKey)
       .withAutotls(newAutotlsConfig())
       .withYamux()
@@ -118,6 +123,6 @@ suite "AutoTLS against a local ACME server and broker", timeout = 3 * IssueTimeo
     await client.connect(
       server.peerInfo.peerId, @[ma("/dns4/" & serverDomain & "/tcp/" & $port & "/wss")]
     )
-    check client.isConnected(server.peerInfo.peerId)
+    check client.isConnected(server)
     checkUntilTimeout:
-      server.isConnected(client.peerInfo.peerId)
+      server.isConnected(client)

@@ -15,7 +15,8 @@ import
   crypto/crypto,
   transports/[transport, tcptransport, wstransport, quictransport, memorytransport],
   muxers/[muxer, mplex/mplex, yamux/yamux],
-  protocols/[identify, secure/secure, secure/noise, secure/noisehfs, rendezvous, kademlia],
+  protocols/
+    [identify, secure/secure, secure/noise, secure/noisehfs, rendezvous, kademlia],
   protocols/connectivity/[
     autonat/server,
     autonatv2/server,
@@ -24,12 +25,12 @@ import
     relay/client,
     relay/rtransport,
   ],
-  services/[identify_pusher, natservice, wildcardresolverservice],
+  services/[identify_pusher, natservice, wildcardresolverservice, mdns],
   connmanager,
   upgrademngrs/muxedupgrade,
   address_manager,
   autotls/service,
-  nameresolving/nameresolver,
+  nameresolving/[nameresolver, dnsresolver, system_resolver],
   errors,
   utils/[opt, tlsredact]
 
@@ -41,7 +42,10 @@ export
   natservice.PortMapperFactory, natservice.NATService, natservice.natConfig,
   natservice.upnpConfig, natservice.natPmpConfig, natservice.explicitIpConfig,
   natservice.autonatConfig, natservice.holePunchingConfig,
-  natservice.AutonatV2ServiceConfig, natservice.AutonatV2Service, natservice.natService
+  natservice.AutonatV2ServiceConfig, natservice.AutonatV2Service, natservice.natService,
+  mdns.MdnsPeer, mdns.MdnsPeerFound, mdns.MdnsService, mdns.MdnsMinQueryInterval,
+  mdns.MdnsMaxQueryInterval, mdns.MdnsDefaultQueryInterval,
+  mdns.MdnsDefaultMaxPendingCallbacks
 
 logScope:
   topics = "libp2p builders"
@@ -66,7 +70,11 @@ type
       ## Post-quantum hybrid Noise (`Noise_XXhfs_25519+MLKEM768_ChaChaPoly_SHA256`).
       ## Mount alongside `Noise` (the default) so hybrid-capable peers
       ## negotiate the quantum-resistant handshake while classical-only
-      ## peers still fall back to `/noise` transparently.
+      ## peers still fall back to `/noise` transparently. When both are
+      ## mounted NoiseHFS is always proposed first, whatever the order of
+      ## the builder calls. The fallback is negotiated in the clear before
+      ## any handshake, so an active attacker can force `/noise`; mount
+      ## NoiseHFS alone when a classical session is not acceptable.
 
   KadMode* {.pure.} = enum
     Client ## never serves queries; only issues them
@@ -77,6 +85,15 @@ type
     config*: KadDHTConfig
     bootstrapNodes*: seq[(PeerId, seq[MultiAddress])]
     mode*: KadMode
+    autoMode*: AutoModeConfig ## The windows of ``KadMode.Auto``.
+
+  NameResolverService = ref object of Service
+    resolver: NameResolver
+
+  NameResolverKind {.pure.} = enum
+    Custom
+    Dns
+    System
 
   SwitchBuilder* = ref object
     privKey: Opt[PrivateKey]
@@ -94,6 +111,8 @@ type
     protoVersion: string
     agentVersion: string
     nameResolver: NameResolver
+    nameResolverKind: NameResolverKind
+    nameServers: seq[TransportAddress]
     dialRanking: bool
     dialBackoff: Opt[DialBackoffConfig]
     peerStoreCapacity: Opt[int]
@@ -104,13 +123,28 @@ type
     natPortMapperFactory: PortMapperFactory
     autotlsConfig: Opt[AutotlsConfig]
     circuitRelay: Opt[Relay]
+    resolvedRelay: Opt[Relay]
     rdvConfig: Opt[RendezVousConfig]
     kad: Opt[KadInfo]
     identifyPusherEnabled: bool
+    mdnsEnabled: bool
+    mdnsCallback: MdnsPeerFound
+    mdnsQueryInterval: Duration
+    mdnsMaxPendingCallbacks: int
     addressManagerConfig: Opt[AddressManagerConfig]
     enableWildcardResolver: bool
     addressPolicy: PeerAddressPolicy
     allowUndialableAddrs: bool
+
+method start(
+    self: NameResolverService, switch: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  self.resolver.start()
+
+method stop(
+    self: NameResolverService, switch: Switch
+) {.async: (raises: [CancelledError]).} =
+  await self.resolver.stop()
 
 proc new*(T: type[SwitchBuilder]): T =
   ## Creates a SwitchBuilder
@@ -132,6 +166,7 @@ proc new*(T: type[SwitchBuilder]): T =
     rdvConfig: Opt.none(RendezVousConfig),
     kad: Opt.none(KadInfo),
     identifyPusherEnabled: false,
+    mdnsEnabled: false,
     enableWildcardResolver: true,
     addressPolicy: defaultAddressPolicy,
     allowUndialableAddrs: false,
@@ -149,6 +184,26 @@ proc withPrivateKey*(
 
 proc withWildcardResolver*(b: SwitchBuilder, enabled: bool = true): SwitchBuilder =
   b.enableWildcardResolver = enabled
+  b
+
+proc withMdns*(
+    b: SwitchBuilder,
+    enabled: bool = true,
+    onPeerFound: MdnsPeerFound = nil,
+    queryInterval: Duration = MdnsDefaultQueryInterval,
+    maxPendingCallbacks: int = MdnsDefaultMaxPendingCallbacks,
+): SwitchBuilder =
+  ## Enable mDNS and optionally handle discovered peers.
+  if enabled:
+    doAssert queryInterval >= MdnsMinQueryInterval and
+      queryInterval <= MdnsMaxQueryInterval, "mDNS query interval is out of range"
+    doAssert maxPendingCallbacks >= 0, "mDNS callback limit cannot be negative"
+  ## Each call replaces the full mDNS configuration: passing no `onPeerFound`
+  ## clears a callback registered by an earlier `withMdns` call.
+  b.mdnsEnabled = enabled
+  b.mdnsCallback = onPeerFound
+  b.mdnsQueryInterval = queryInterval
+  b.mdnsMaxPendingCallbacks = maxPendingCallbacks
   b
 
 proc withAddresses*(b: SwitchBuilder, addresses: seq[MultiAddress]): SwitchBuilder =
@@ -199,7 +254,7 @@ proc withMplex*(
     maxChannCount = 200,
     maxBufferedBytes = MaxBufferedBytes,
 ): SwitchBuilder =
-  ## Uses `Mplex <https://docs.libp2p.io/concepts/stream-multiplexing/#mplex>`_ as a multiplexer
+  ## Uses `Mplex` as a multiplexer
   ## `Timeout` is the duration after which a inactive connection will be closed
   proc newMuxer(conn: RawConn): Muxer =
     Mplex.new(conn, inTimeout, outTimeout, maxChannCount, maxBufferedBytes)
@@ -294,16 +349,17 @@ proc withRng*(b: SwitchBuilder, rng: Rng): SwitchBuilder =
   b
 
 proc withConnectionLimits*(b: SwitchBuilder, limits: ConnectionLimits): SwitchBuilder =
-  ## Set the connection limits for the switch. Construct `limits` via
-  ## `ConnectionLimits.maxTotal` for a shared cap or `ConnectionLimits.maxInOut`
-  ## for independent per-direction caps.
+  ## Use `ConnectionLimits.maxTotal` for a shared cap with an optional outbound
+  ## reserve, or `ConnectionLimits.maxInOut` for independent per-direction caps.
   b.limits = Opt.some(limits)
   b
 
-proc withMaxConnections*(b: SwitchBuilder, maxConnections: int): SwitchBuilder =
-  ## Maximum concurrent connections of the switch. You should either use this,
-  ## or `withMaxInOut <#withMaxInOut,SwitchBuilder,int,int>`_.
-  b.limits = Opt.some(ConnectionLimits.maxTotal(maxConnections))
+proc withMaxConnections*(
+    b: SwitchBuilder, maxConnections: int, outboundReserve: int = 0
+): SwitchBuilder =
+  ## Shares the total cap between both directions. An optional `outboundReserve`
+  ## lowers the inbound ceiling, leaving those slots available for outbound dials.
+  b.limits = Opt.some(ConnectionLimits.maxTotal(maxConnections, outboundReserve))
   b
 
 proc withMaxInOut*(b: SwitchBuilder, maxIn: int, maxOut: int): SwitchBuilder =
@@ -370,7 +426,28 @@ proc withAgentVersion*(b: SwitchBuilder, agentVersion: string): SwitchBuilder =
   b
 
 proc withNameResolver*(b: SwitchBuilder, nameResolver: NameResolver): SwitchBuilder =
+  ## Use a caller-managed resolver. The switch never starts or stops it.
   b.nameResolver = nameResolver
+  b.nameResolverKind = NameResolverKind.Custom
+  b.nameServers = @[]
+  b
+
+proc withDNSNameResolver*(
+    b: SwitchBuilder, nameServers: seq[TransportAddress]
+): SwitchBuilder =
+  ## Create a switch-managed DNS resolver per build, using the supplied servers.
+  ## Replaces any previously configured resolver; an empty list disables DNS queries.
+  b.nameResolverKind = NameResolverKind.Dns
+  b.nameServers = nameServers
+  b.nameResolver = nil
+  b
+
+proc withSystemNameResolver*(b: SwitchBuilder): SwitchBuilder =
+  ## Create a switch-managed OS resolver per build, with system DNS servers for TXT.
+  ## Replaces any previously configured resolver.
+  b.nameResolverKind = NameResolverKind.System
+  b.nameServers = @[]
+  b.nameResolver = nil
   b
 
 proc withDialRanking*(b: SwitchBuilder, enabled: bool = true): SwitchBuilder =
@@ -445,8 +522,13 @@ proc withKademlia*(
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
     config: KadDHTConfig = KadDHTConfig.new(),
     mode: KadMode = KadMode.Server,
+    autoMode: AutoModeConfig = AutoModeConfig.init(),
 ): SwitchBuilder =
-  b.kad = Opt.some(KadInfo(config: config, bootstrapNodes: bootstrapNodes, mode: mode))
+  b.kad = Opt.some(
+    KadInfo(
+      config: config, bootstrapNodes: bootstrapNodes, mode: mode, autoMode: autoMode
+    )
+  )
   b
 
 proc withIdentifyPusher*(b: SwitchBuilder, enabled: bool = true): SwitchBuilder =
@@ -485,25 +567,60 @@ proc withPrivateAddressFilter*(b: SwitchBuilder): SwitchBuilder =
   ## Circuit relay and DNS addresses are never filtered.
   b.withAddressPolicy(publicRoutableAddressPolicy)
 
-proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
-  if isNil(b.rng):
-    b.rng = newRng()
+proc resolveCircuitRelay(b: SwitchBuilder): Opt[Relay] =
+  b.natConfig.ifValue(natCfg):
+    if natCfg.holePunching.isSome() and b.circuitRelay.isNone():
+      return Opt.some(Relay(RelayClient.new()))
+  b.circuitRelay
 
-  if b.rng == nil: # newRng could fail
-    raise newException(Defect, "Cannot initialize RNG")
+proc buildSwitch(b: SwitchBuilder): LPResult[Switch] =
+  if b.rng.isNil:
+    b.rng = newRng()
+    if b.rng.isNil: # newRng could fail
+      return err("Could not initialize RNG")
 
   let seckey = b.privKey.valueOr:
-    PrivateKey.random(b.rng).expect("Expected default Private Key")
+    PrivateKey.random(b.rng).valueOr:
+      return err(error, "Could not create new private key")
 
   if b.secureManagers.len == 0:
     debug "No secure managers configured; using Noise by default"
     b.secureManagers.add(SecureProtocol.Noise)
 
+  b.resolvedRelay = b.resolveCircuitRelay()
+
+  var muxers = b.muxers
+  b.resolvedRelay.ifValue(relay):
+    if relay of RelayClient and muxers.len == 0:
+      # Relay circuits need a stream muxer even when the relay is reached over QUIC.
+      warn "No stream muxers configured for relay client; using Mplex and Yamux defaults"
+      muxers.add(
+        MuxerProvider.new(
+          proc(conn: RawConn): Muxer =
+            Mplex.new(conn),
+          MplexCodec,
+        )
+      )
+      muxers.add(
+        MuxerProvider.new(
+          proc(conn: RawConn): Muxer =
+            Yamux.new(conn),
+          YamuxCodec,
+        )
+      )
+
   var secureManagerInstances: seq[Secure]
-  if SecureProtocol.Noise in b.secureManagers:
-    secureManagerInstances.add(Noise.new(b.rng, seckey).Secure)
+  # NoiseHFS goes first: multistream-select proposes codecs in list order and
+  # the first one both peers support wins, so listing `/noise` first would
+  # make two hybrid-capable peers always settle on the classical handshake.
   if SecureProtocol.NoiseHFS in b.secureManagers:
-    secureManagerInstances.add(NoiseHFS.new(b.rng, seckey).Secure)
+    secureManagerInstances.add(
+      NoiseHFS.new(b.rng, seckey, muxers = muxers.mapIt(it.codec)).Secure
+    )
+  if SecureProtocol.Noise in b.secureManagers:
+    secureManagerInstances.add(
+      Noise.new(b.rng, seckey, muxers = muxers.mapIt(it.codec)).Secure
+    )
 
   let peerInfo = ?PeerInfo.tryNew(
     seckey,
@@ -535,9 +652,20 @@ proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
   connManager.peerStore = peerStore
 
   let ms = MultistreamSelect.new()
-  let muxedUpgrade = MuxedUpgrade.new(b.muxers, secureManagerInstances, ms, connManager)
+  let muxedUpgrade = MuxedUpgrade.new(muxers, secureManagerInstances, ms, connManager)
+
+  let nameResolver =
+    case b.nameResolverKind
+    of NameResolverKind.Custom:
+      b.nameResolver
+    of NameResolverKind.Dns:
+      NameResolver(DnsResolver.new(b.nameServers, b.rng))
+    of NameResolverKind.System:
+      NameResolver(SystemResolver.new(b.rng))
 
   var services: seq[Service]
+  if b.nameResolverKind != NameResolverKind.Custom:
+    services.add(NameResolverService(resolver: nameResolver))
   var autotlsOpt = Opt.none(AutotlsService)
   b.autotlsConfig.ifValue(config):
     let autotlsService = AutotlsService.new(b.rng, config)
@@ -564,7 +692,7 @@ proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
     peerStore,
     transports,
     ms,
-    b.nameResolver,
+    nameResolver,
     dialRanking = b.dialRanking,
     dialBackoff = b.dialBackoff,
   )
@@ -576,7 +704,7 @@ proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
     connManager: connManager,
     peerStore: peerStore,
     dialer: dialer,
-    nameResolver: b.nameResolver,
+    nameResolver: nameResolver,
     rng: b.rng,
     muxedUpgrade: muxedUpgrade,
     services: services,
@@ -585,34 +713,36 @@ proc buildSwitch(b: SwitchBuilder): Result[Switch, string] =
 
   ok(switch)
 
+func relayClient(circuitRelay: Opt[Relay]): RelayClient =
+  circuitRelay.ifValue(relay):
+    if relay of RelayClient:
+      return RelayClient(relay)
+  nil
+
 proc addServices(b: SwitchBuilder, switch: Switch) =
   if b.enableWildcardResolver:
     switch.services.add(WildcardAddressResolverService.new())
 
   b.natConfig.ifValue(natCfg):
-    switch.services.add(NATService.new(natCfg, b.rng, b.natPortMapperFactory))
+    switch.services.add(
+      NATService.new(
+        natCfg, b.rng, b.natPortMapperFactory, b.resolvedRelay.relayClient()
+      )
+    )
 
   if b.identifyPusherEnabled:
     switch.services.add(IdentifyPusher.new(switch))
 
-proc makeKadReachabilityHandler(kad: KadDHT): ReachabilityHandler =
-  ## Handler for ``KadMode.Auto``: the node serves queries while it is
-  ## reachable, and stops serving when it is not. ``Unknown`` keeps the current
-  ## mode, since it means autonat has no verdict yet.
-  proc(
-      reachability: NetworkReachability,
-      confidence: Opt[float],
-      dialBackAddr: Opt[MultiAddress],
-  ) {.async: (raises: [CancelledError]).} =
-    case reachability
-    of NetworkReachability.Reachable:
-      discard await kad.changeMode(isServer = true)
-    of NetworkReachability.NotReachable:
-      discard await kad.changeMode(isServer = false)
-    of NetworkReachability.Unknown:
-      discard
+  if b.mdnsEnabled:
+    switch.services.add(
+      MdnsService.new(
+        b.mdnsCallback,
+        queryInterval = b.mdnsQueryInterval,
+        maxPendingCallbacks = b.mdnsMaxPendingCallbacks,
+      )
+    )
 
-proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
+proc mountProtocols(b: SwitchBuilder, switch: Switch): LPResult[void] =
   if not switch.peerStore.identify.isNil:
     ?switch.tryMount(switch.peerStore.identify)
 
@@ -627,7 +757,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
   if b.autonatEnabled:
     ?switch.tryMount(Autonat.new(switch))
 
-  b.circuitRelay.ifValue(relay):
+  b.resolvedRelay.ifValue(relay):
     if relay of RelayClient:
       switch.addTransport(RelayTransport.new(RelayClient(relay), switch.muxedUpgrade))
     relay.setup(switch)
@@ -649,7 +779,10 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
     if kadInfo.mode == KadMode.Auto:
       var wired = false
       switch.natService().ifValue(nat):
-        wired = nat.addReachabilityHandler(makeKadReachabilityHandler(kad))
+        let current = proc(): NetworkReachability {.gcsafe, raises: [].} =
+          nat.networkReachability()
+        wired =
+          nat.addReachabilityHandler(kad.enableAutoMode(current, kadInfo.autoMode))
       if not wired:
         warn "Kad-DHT auto mode has no reachability service; it stays a client",
           hint = "configure withNAT reachability or hole-punching"
@@ -657,7 +790,7 @@ proc mountProtocols(b: SwitchBuilder, switch: Switch): Result[void, string] =
 
 proc build*(b: SwitchBuilder): Switch {.raises: [LPError].} =
   b.natConfig.ifValue(natCfg):
-    validateNATConfig(natCfg).onErrorRaise(LPError)
+    validateNATConfig(natCfg, b.circuitRelay).onErrorRaise(LPError)
   let switch = b.buildSwitch().valueOrRaise(LPError)
   b.addServices(switch)
   b.mountProtocols(switch).onErrorRaise(LPError)

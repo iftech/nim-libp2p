@@ -63,8 +63,14 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        choco install nasm --no-progress -y
-        "C:\Program Files\NASM" | Out-File -FilePath $Env:GITHUB_PATH -Encoding utf8 -Append
+        # choco exits 0 when the feed times out and nothing installs
+        $nasmDir = "C:\Program Files\NASM"
+        for ($i = 1; -not (Test-Path "$nasmDir\nasm.exe"); $i++) {
+          if ($i -gt 3) { throw "nasm install failed after 3 attempts, last choco exit code $LASTEXITCODE" }
+          if ($i -gt 1) { Start-Sleep -Seconds 10 }
+          choco install nasm --no-progress -y
+        }
+        $nasmDir | Out-File -FilePath $Env:GITHUB_PATH -Encoding utf8 -Append
 
     - name: Prepare short paths (Windows)
       if: runner.os == 'Windows'

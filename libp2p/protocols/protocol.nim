@@ -52,6 +52,7 @@ type
 
   LPProtocol* = ref object of RootObj
     started*: bool
+    unadvertised*: bool ## when set, mounting keeps the codec out of identify
     codecs*: seq[string]
     handlerImpl: LPProtoHandler ## invoked by the protocol negotiator
     maxIncomingStreamsTotal: Opt[int]
@@ -60,9 +61,6 @@ type
     maxOutgoingStreamsPerPeer: Opt[int]
     streamBudget: StreamBudgetState
       ## Runtime counters shared across all codecs of this protocol
-
-method init*(p: LPProtocol) {.base, gcsafe.} =
-  discard
 
 method start*(p: LPProtocol) {.base, async: (raises: [CancelledError]).} =
   p.started = true

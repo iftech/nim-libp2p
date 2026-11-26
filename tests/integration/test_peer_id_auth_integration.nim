@@ -3,16 +3,15 @@
 
 {.push raises: [].}
 
-import json, uri, chronos, chronos/apps/http/httpclient
+import json, chronos, chronos/apps/http/httpclient
 import ../../libp2p/[stream/connection, upgrademngrs/upgrade, peeridauth/client, wire]
+from ../../libp2p/autotls/broker import DefaultRegistrationURL
 import ../tools/[unittest, crypto]
 
 when defined(linux) and defined(amd64):
   {.used.}
 
-const
-  AuthPeerURL = "https://registration.libp2p.direct/v1/_acme-challenge"
-  HttpPeerAuthFailed = 401
+const HttpPeerAuthFailed = 401
 
 suite "PeerID Auth":
   var client {.threadvar.}: PeerIDAuthClient
@@ -38,10 +37,10 @@ suite "PeerID Auth":
     }
 
     let (bearer, responseWithoutBearer) =
-      await client.send(parseUri(AuthPeerURL), peerInfo, payload)
+      await client.send(DefaultRegistrationURL, peerInfo, payload)
     check responseWithoutBearer.status != HttpPeerAuthFailed
     doAssert bearer.token.len > 0
 
     let (_, responseWithBearer) =
-      await client.send(parseUri(AuthPeerURL), peerInfo, payload, Opt.some(bearer))
+      await client.send(DefaultRegistrationURL, peerInfo, payload, Opt.some(bearer))
     check responseWithBearer.status != HttpPeerAuthFailed

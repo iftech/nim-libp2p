@@ -260,6 +260,39 @@ suite "Mplex":
       await chann.reset()
 
   suite "channel reset":
+    asyncTest "cleanup waits for the reset message":
+      let
+        resetStarted = Future[void].Raising([]).init(
+            "mplex-reset-started", {FutureFlag.OwnCancelSchedule}
+          )
+        releaseReset = Future[void].Raising([]).init(
+            "mplex-release-reset", {FutureFlag.OwnCancelSchedule}
+          )
+
+      proc blockingWriteHandler(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        resetStarted.complete()
+        await releaseReset
+
+      let
+        conn = TestBufferStream.new(blockingWriteHandler)
+        mplex = Mplex.new(conn)
+        chann = mplex.newStreamInternal(timeout = 1.seconds)
+
+      chann.isOpen = true
+      await chann.reset()
+      await resetStarted
+
+      await sleepAsync(10.millis) # sleep needed for negative assertion
+      check not chann.cleanupFut.finished()
+      check chann in mplex.getStreams()
+
+      releaseReset.complete()
+      await chann.cleanupFut
+      check chann notin mplex.getStreams()
+      await conn.close()
+
     asyncTest "channel should fail reading":
       let
         conn = TestBufferStream.new(noopWriteHandler)
@@ -523,7 +556,7 @@ suite "Mplex":
       await handleFut
 
   suite "mplex e2e":
-    asyncTest "read/write receiver", timeout = 20.seconds:
+    asyncTest "read/write receiver":
       let transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
       let listenFut = transport1.start(@[TcpWildcardAddress])
 
@@ -562,7 +595,7 @@ suite "Mplex":
       await listenFut
       await mplexDialFut
 
-    asyncTest "read/write receiver lazy", timeout = 20.seconds:
+    asyncTest "read/write receiver lazy":
       let transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
       let listenFut = transport1.start(@[TcpWildcardAddress])
 
@@ -921,6 +954,33 @@ suite "Mplex":
       await allFuturesRaising(transport1.stop(), transport2.stop())
       await mplexDialFut
       await acceptFut
+
+    asyncTest "concurrent close waits for channel cleanup":
+      let closeGate = newAsyncEvent()
+      var writes = 0
+
+      proc writeHandler(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        writes.inc()
+        if writes == 2:
+          await closeGate.wait()
+
+      let
+        conn = TestBufferStream.new(writeHandler)
+        mplex = Mplex.new(conn)
+        stream = await mplex.newStream()
+        firstClose = mplex.close()
+
+      checkUntilTimeout:
+        writes == 2
+
+      let secondClose = mplex.close()
+      check not secondClose.finished
+
+      closeGate.fire()
+      await allFutures(firstClose, secondClose)
+      await stream.join()
 
     asyncTest "dialing mplex closes both ends":
       let transport1 = TcpTransport.new(upgrade = Upgrade())

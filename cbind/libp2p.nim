@@ -7,7 +7,7 @@
 
 import ffi
 
-import std/[tables, sequtils, sets, json, jsonutils, strutils, locks, net]
+import std/[tables, sequtils, sets, json, jsonutils, strformat, strutils, locks, net]
 from std/times import getTime, toUnix, Time, nanosecond
 import chronos
 import chronicles
@@ -29,13 +29,22 @@ import ../libp2p/protocols/connectivity/relay/client
 import ../libp2p/protocols/connectivity/autonatv2/service
 import ../libp2p/extended_peer_record
 
+logScope:
+  topics = "libp2p cbind"
+
+type StreamEntry = ref object
+  ## A `ref` so an async proc keeps the same entry across an `await`.
+  stream: Stream
+  reading: bool
+  releaseWaiter: Future[void].Raising([CancelledError])
+    ## Keeps a custom-protocol handler alive until the host releases the stream.
+
 type StreamRegistry = ref object
-  ## Owns the live streams handed across the FFI boundary and the release-waiter
-  ## futures keeping custom-protocol handlers alive until the host is done. A `ref`
-  ## so a handler captures it alone, avoiding a `lib` cycle that leaks under `--mm:refc`.
-  streams: Table[uint64, Stream]
+  ## Owns the live streams handed across the FFI boundary. A `ref` so a handler
+  ## captures it alone, avoiding a `lib` cycle that leaks under `--mm:refc`.
+  entries: Table[uint64, StreamEntry]
   nextStreamId: uint64
-  releaseWaiters: Table[uint64, Future[void].Raising([CancelledError])]
+  closed: bool
 
 type LibP2P* = ref object
   ## Main library state. The FFI context owns one instance; its tables mutate
@@ -93,10 +102,12 @@ type StreamWriteRequest {.ffi.} = object
 type StreamReadExactlyRequest {.ffi.} = object
   streamId: uint64
   numBytes: int64
+  timeoutMs: int64
 
 type StreamReadLpRequest {.ffi.} = object
   streamId: uint64
   maxSize: int64
+  timeoutMs: int64
 
 type PublishRequest {.ffi.} = object
   topic: string
@@ -164,6 +175,8 @@ type ExtendedPeerRecordEntry {.ffi.} = object
   seqNo: uint64
   addrs: seq[string]
   services: seq[ServiceInfoEntry]
+  signedRecord: seq[byte]
+    ## Encoded signed record as `start_advertising` takes it; empty for random walks and `decode_xpr`.
 
 type ExtendedRecordsResponse {.ffi.} = object
   records: seq[ExtendedPeerRecordEntry]
@@ -228,27 +241,83 @@ proc onIncomingStream*(event: IncomingStreamEvent) {.ffiEvent.} =
 
 proc onPubsubMessage*(event: PubsubMessageEvent) {.ffiEvent.} =
   ## Fired for every message received on a subscribed gossipsub topic.
+  ## Messages drop past 3/4 of the event queue, so inbound streams keep the rest.
 
-proc register(reg: StreamRegistry, stream: Stream): uint64 =
+declareCounter libp2p_cbind_events_dropped,
+  "events dropped because the FFI event queue was full", labels = ["event"]
+
+const StreamReleaseTimeoutMs {.intdefine: "cbindStreamReleaseTimeoutMs".} = 600_000
+  ## How long an inbound custom-protocol stream waits for a release before a reset.
+
+static:
+  doAssert StreamReleaseTimeoutMs > 0, "cbindStreamReleaseTimeoutMs must be positive"
+
+const PubsubDropDepth = EventQueueCapacity * 3 div 4
+
+# One FFI thread per context, so this is per context.
+var droppingEvents {.threadvar.}: bool
+
+proc admitEvent(event: string, limit = EventQueueCapacity): bool =
+  # A full queue marks the library stuck for good; only this thread enqueues.
+  let q = ffiCurrentEventQueue
+  if not q.isNil() and q[].eventQueueLen() < limit:
+    droppingEvents = false
+    return true
+
+  libp2p_cbind_events_dropped.inc(labelValues = [event])
+  if not droppingEvents:
+    warn "FFI event queue past its limit, dropping events", event, limit
+    droppingEvents = true
+  false
+
+proc register(
+    reg: StreamRegistry,
+    stream: Stream,
+    releaseWaiter: Future[void].Raising([CancelledError]) = nil,
+): uint64 =
   reg.nextStreamId.inc()
   let id = reg.nextStreamId
-  reg.streams[id] = stream
+  reg.entries[id] = StreamEntry(stream: stream, releaseWaiter: releaseWaiter)
   id
 
-func get(reg: StreamRegistry, id: uint64): Result[Stream, string] =
-  let stream = reg.streams.getOrDefault(id, nil)
-  if stream.isNil():
+func get(reg: StreamRegistry, id: uint64): Result[StreamEntry, string] =
+  let entry = reg.entries.getOrDefault(id, nil)
+  if entry.isNil():
     return err("unknown stream handle")
-  ok(stream)
+  ok(entry)
 
-proc release(reg: StreamRegistry, id: uint64) =
+proc beginRead(reg: StreamRegistry, id: uint64): Result[StreamEntry, string] =
+  ## Marks the entry as being read; the caller must clear `reading` when done.
+  let entry = ?reg.get(id)
+  if entry.reading:
+    return err("read already in progress")
+  entry.reading = true
+  ok(entry)
+
+proc release(reg: StreamRegistry, id: uint64): bool =
+  ## Returns false when `id` is not registered.
+  var entry: StreamEntry
+  if not reg.entries.pop(id, entry):
+    return false
+
   # Completes the waiting protocol handler so multistream doesn't close the stream early.
-  let releaseWaiter = reg.releaseWaiters.getOrDefault(id, nil)
-  if not releaseWaiter.isNil():
-    reg.releaseWaiters.del(id)
-    if not releaseWaiter.finished():
-      releaseWaiter.complete()
-  reg.streams.del(id)
+  if not entry.releaseWaiter.isNil() and not entry.releaseWaiter.finished():
+    entry.releaseWaiter.complete()
+  true
+
+proc releaseAll(reg: StreamRegistry) {.async: (raises: []).} =
+  # Muxer close awaits every channel handler, so a parked handler blocks stop.
+  # Reset first: it fails host reads in flight, so closeWithEOF starts no second read.
+  reg.closed = true
+  var resets: seq[Future[void].Raising([])]
+  for entry in reg.entries.values():
+    resets.add(entry.stream.reset())
+  await noCancel allFutures(resets)
+
+  for entry in reg.entries.values():
+    if not entry.releaseWaiter.isNil() and not entry.releaseWaiter.finished():
+      entry.releaseWaiter.complete()
+  reg.entries.clear()
 
 const MaxReadBytes {.ffiConst.} = 64 * 1024 * 1024
   ## Caps the buffer an untrusted peer can make us pre-allocate before any byte
@@ -270,11 +339,11 @@ proc mountGossipsub(lib: LibP2P, cfg: ParsedGossipsub): Result[void, string] =
         ),
       )
     except InitializationError as e:
-      return err(e.msg)
+      return err(e)
   try:
     lib.switch.mount(gs)
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   lib.gossipSub = Opt.some(gs)
   ok()
 
@@ -297,39 +366,44 @@ proc mountKad(
     lib.switch.mount(k)
     lib.kad = Opt.some(k)
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok()
 
-proc mountServiceDiscovery(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
+proc mountServiceDiscovery(
+    lib: LibP2P,
+    cfg: ParsedServiceDiscovery,
+    bootstrapNodes: seq[(PeerId, seq[MultiAddress])],
+): Result[void, string] =
   try:
     let sd = ServiceDiscovery.new(
       lib.switch,
-      bootstrapNodes = cfg.bootstrapNodes,
+      bootstrapNodes = bootstrapNodes,
       config = defaultKadConfig(),
       rng = lib.rng,
-      client = cfg.serviceDiscoveryMode == ServiceDiscoveryMode.Client,
+      client = cfg.client,
       codec = ExtendedServiceDiscoveryCodec,
-      xprPublishing = not cfg.serviceDiscoveryDisableXprPublishing,
+      discoConfig = cfg.config,
+      xprPublishing = cfg.xprPublishing,
     )
     lib.switch.mount(sd)
     lib.kad = Opt.some(KadDHT(sd))
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok()
 
 proc mountProtocols(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
   if cfg.gossipsub.mount:
     ?mountGossipsub(lib, cfg.gossipsub)
 
-  if cfg.mountServiceDiscovery:
-    ?mountServiceDiscovery(lib, cfg)
+  if cfg.serviceDiscovery.mount:
+    ?mountServiceDiscovery(lib, cfg.serviceDiscovery, cfg.bootstrapNodes)
   elif cfg.mountKad:
     ?mountKad(lib, cfg.bootstrapNodes)
 
   try:
     lib.switch.mount(Ping.new(rng = lib.rng))
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok()
 
 proc withConfiguredTransport(
@@ -389,7 +463,7 @@ proc createLibp2pNode(config: Libp2pConfig): Result[LibP2P, string] =
     try:
       switchBuilder.build()
     except LPError as e:
-      return err("could not create libp2p node: " & e.msg)
+      return err(e, "could not create libp2p node")
 
   let lib = LibP2P(
     switch: switch, rng: rng, relayClient: relayClientOpt, streams: StreamRegistry()
@@ -401,7 +475,7 @@ proc createLibp2pNode(config: Libp2pConfig): Result[LibP2P, string] =
 
 proc applyLogLevel(level: int): Result[void, string] =
   if level < ord(low(chronicles.LogLevel)) or level > ord(high(chronicles.LogLevel)):
-    return err("invalid log level: " & $level)
+    return err($level, "invalid log level")
 
   when chronicles.runtimeFilteringEnabled:
     logging.setLogLevel(chronicles.LogLevel(level))
@@ -418,13 +492,14 @@ proc libp2pNew*(config: Libp2pConfig): Future[Result[LibP2P, string]] {.ffiCtor.
   try:
     createLibp2pNode(config)
   except LPError as e:
-    err("could not create libp2p node: " & e.msg)
+    err(e, "could not create libp2p node")
 
 proc shutdownSwitch(lib: LibP2P) {.async.} =
   ## Single source of truth for graceful shutdown. Idempotent: safe to call from
   ## both an explicit `libp2pStop` and `libp2pDestroy`'s teardown.
   if not lib.running:
     return
+  await lib.streams.releaseAll()
   await lib.switch.stop()
   lib.running = false
 
@@ -437,7 +512,8 @@ proc libp2pStart*(lib: LibP2P): Future[Result[bool, string]] {.ffi.} =
   try:
     await lib.switch.start()
   except LPError as e:
-    return err(e.msg)
+    return err(e)
+  lib.streams.closed = false
   lib.running = true
   ok(true)
 
@@ -467,13 +543,24 @@ type CGossipsubConfig {.exportc: "libp2p_gossipsub_config", bycopy.} = object
   overheadRateLimit: CRateLimitConfig
   disconnectPeerAboveRateLimit: cint
 
+type CServiceDiscoveryConfig {.exportc: "libp2p_service_discovery_config", bycopy.} = object
+  mount: cint
+  mode: cint
+  disableXprPublishing: cint
+  kRegister: cint
+  kLookup: cint
+  fLookup: cint
+  fReturn: cint
+  bucketsCount: cint
+  advertExpiryMs: int64
+  registrationWindowMs: int64
+  advertCacheCap: cint
+
 type CLibp2pConfig {.exportc: "libp2p_config", bycopy.} = object
   logLevel: cint
   gossipsub: CGossipsubConfig
   mountKad: cint
-  mountServiceDiscovery: cint
-  serviceDiscoveryMode: cint
-  serviceDiscoveryDisableXprPublishing: cint
+  serviceDiscovery: CServiceDiscoveryConfig
   dnsResolver: cstring
   addrs: ptr cstring
   addrsLen: csize_t
@@ -518,7 +605,7 @@ proc libp2pPublicKey*(lib: LibP2P): Future[Result[seq[byte], string]] {.ffi.} =
 
   # Scheme-native serialization: whatever key the switch was built with round-trips, not just secp256k1 (the default builder uses Ed25519).
   let rawBytes = peerInfo.publicKey.getRawBytes().valueOr:
-    return err("could not serialize public key: " & $error)
+    return err(error, "could not serialize public key")
   ok(rawBytes)
 
 func callTimeout(timeoutMs: int64): Duration =
@@ -538,14 +625,14 @@ proc libp2pConnect*(
     return err(error)
 
   let peerId = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
 
   try:
     await lib.switch.connect(peerId, multiaddresses).wait(callTimeout(req.timeoutMs))
   except AsyncTimeoutError:
     return err("dial timeout")
   except DialFailedError as e:
-    return err(e.msg)
+    return err(e)
 
   ok(true)
 
@@ -554,7 +641,7 @@ proc libp2pDisconnect*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Closes every connection to `peerId`.
   let pid = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   await lib.switch.disconnect(pid)
   ok(true)
 
@@ -566,7 +653,7 @@ proc libp2pPeerInfo*(lib: LibP2P): Future[Result[PeerInfoResponse, string]] {.ff
   try:
     ok(PeerInfoResponse(peerId: $peerInfo.peerId, addrs: peerInfo.addrs.mapIt($it)))
   except LPError as e:
-    err(e.msg)
+    err(e)
 
 proc libp2pConnectedPeers*(
     lib: LibP2P, direction: PeerDirection
@@ -590,7 +677,7 @@ proc libp2pDial*(
   ## Opens a stream to `peerId` speaking `proto`, returning its stream id.
   ## `timeoutMs <= 0` defers to libp2p's own dial timeout.
   let peerId = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   let multiaddresses = parseMultiaddrs(req.multiaddrs).valueOr:
     return err(error)
   if req.forceDial and multiaddresses.len == 0:
@@ -611,7 +698,7 @@ proc libp2pDial*(
     except AsyncTimeoutError:
       return err("dial timeout")
     except DialFailedError as e:
-      return err(e.msg)
+      return err(e)
   ok(DialResponse(streamId: lib.streams.register(stream)))
 
 proc libp2pDialCircuitRelay*(
@@ -620,9 +707,9 @@ proc libp2pDialCircuitRelay*(
   ## Opens a stream to `peerId` over the circuit-relay address `multiaddr`.
   ## `timeoutMs <= 0` defers to libp2p's own dial timeout.
   let dstPeerId = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   let relayCircuitAddr = MultiAddress.init(req.multiaddr).valueOr:
-    return err($error)
+    return err(error)
   let stream =
     try:
       await lib.switch.dial(dstPeerId, @[relayCircuitAddr], req.proto).wait(
@@ -631,7 +718,7 @@ proc libp2pDialCircuitRelay*(
     except AsyncTimeoutError:
       return err("dial timeout")
     except DialFailedError as e:
-      return err(e.msg)
+      return err(e)
   ok(DialResponse(streamId: lib.streams.register(stream)))
 
 func validateReadLength(n: int64): Result[int, string] =
@@ -646,85 +733,117 @@ func validateReadLength(n: int64): Result[int, string] =
     return err("read length too large")
   ok(int(n))
 
+proc readBytes(
+    stream: Stream, n: int
+): Future[seq[byte]] {.async: (raises: [CancelledError, LPStreamError]).} =
+  var buf = newSeqUninit[byte](n)
+  await stream.readExactly(addr buf[0], n)
+  buf
+
+proc readWithin(
+    stream: Stream,
+    read: Future[seq[byte]].Raising([CancelledError, LPStreamError]),
+    timeoutMs: int64,
+): Future[Result[seq[byte], string]] {.async: (raises: [CancelledError]).} =
+  try:
+    ok(await read.wait(callTimeout(timeoutMs)))
+  except AsyncTimeoutError:
+    # A cut read leaves the stream mid-frame, so no later read can resync.
+    await stream.reset()
+    err("read timeout")
+  except LPStreamError as e:
+    err(e)
+
 proc libp2pStreamReadExactly*(
     lib: LibP2P, req: StreamReadExactlyRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
   ## Reads exactly `numBytes` from the stream, capped at `MAX_READ_BYTES`.
-  let stream = ?lib.streams.get(req.streamId)
+  ## A timeout resets the stream; `timeoutMs <= 0` waits forever.
+  let entry = ?lib.streams.beginRead(req.streamId)
+  defer:
+    entry.reading = false
+
   let expected = ?validateReadLength(req.numBytes)
   if expected == 0:
     return ok(ReadResponse(data: @[]))
-  var buf = newSeqUninit[byte](expected)
-  try:
-    await stream.readExactly(addr buf[0], expected)
-  except LPStreamError as e:
-    return err(e.msg)
-  ok(ReadResponse(data: buf))
+
+  let data =
+    ?await entry.stream.readWithin(entry.stream.readBytes(expected), req.timeoutMs)
+  ok(ReadResponse(data: data))
 
 proc libp2pStreamReadLp*(
     lib: LibP2P, req: StreamReadLpRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
   ## Reads one length-prefixed message, rejecting a prefix above `maxSize`.
-  let stream = ?lib.streams.get(req.streamId)
+  ## A timeout resets the stream; `timeoutMs <= 0` waits forever.
+  let entry = ?lib.streams.beginRead(req.streamId)
+  defer:
+    entry.reading = false
+
   let maxSize = ?validateReadLength(req.maxSize)
-  let data =
-    try:
-      await stream.readLp(maxSize)
-    except LPStreamError as e:
-      return err(e.msg)
+  let data = ?await entry.stream.readWithin(entry.stream.readLp(maxSize), req.timeoutMs)
   ok(ReadResponse(data: data))
 
 proc libp2pStreamWrite*(
     lib: LibP2P, req: StreamWriteRequest
 ): Future[Result[bool, string]] {.ffi.} =
   ## Writes `data` to the stream as raw bytes.
-  let stream = ?lib.streams.get(req.streamId)
+  let stream = (?lib.streams.get(req.streamId)).stream
   try:
     await stream.write(req.data)
   except LPStreamError as e:
-    return err(e.msg)
+    return err(e)
   ok(true)
 
 proc libp2pStreamWriteLp*(
     lib: LibP2P, req: StreamWriteRequest
 ): Future[Result[bool, string]] {.ffi.} =
   ## Writes `data` to the stream as one length-prefixed message.
-  let stream = ?lib.streams.get(req.streamId)
+  let stream = (?lib.streams.get(req.streamId)).stream
   try:
     await stream.writeLp(req.data)
   except LPStreamError as e:
-    return err(e.msg)
+    return err(e)
   ok(true)
 
 proc libp2pStreamClose*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
   ## Closes the stream's write side; the handle stays valid until released.
-  let stream = ?lib.streams.get(streamId)
+  let stream = (?lib.streams.get(streamId)).stream
   await stream.close()
   ok(true)
 
 proc libp2pStreamCloseWithEof*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
-  ## Closes the stream and waits for the peer's EOF.
-  let stream = ?lib.streams.get(streamId)
-  await stream.closeWithEOF()
+  ## Closes the stream and waits for the peer's EOF; fails while a read is pending.
+  let entry = ?lib.streams.beginRead(streamId)
+  defer:
+    entry.reading = false
+
+  await entry.stream.closeWithEOF()
   ok(true)
 
 proc libp2pStreamRelease*(
     lib: LibP2P, streamId: uint64
 ): Future[Result[bool, string]] {.ffi.} =
-  ## Drops the stream handle, letting a custom-protocol handler finish.
-  discard ?lib.streams.get(streamId)
-  lib.streams.release(streamId)
+  ## Drops the stream handle and resets a dialed stream not yet closed with EOF.
+  let entry = ?lib.streams.get(streamId)
+  let stream = entry.stream
+  if entry.releaseWaiter.isNil() and not (stream.closed() and stream.atEof()):
+    await stream.reset()
+
+  if not lib.streams.release(streamId):
+    return err("unknown stream handle")
   ok(true)
 
 proc libp2pMountProtocol*(
     lib: LibP2P, proto: string
 ): Future[Result[bool, string]] {.ffi.} =
   ## Mounts a custom protocol; each inbound stream on it fires
-  ## `on_incoming_stream` and stays open until the host releases the handle.
+  ## `on_incoming_stream` and stays open until the host releases the handle or
+  ## `cbindStreamReleaseTimeoutMs` passes.
   if proto.len == 0:
     return err("proto is empty")
   if lib.switch.isNil():
@@ -732,25 +851,33 @@ proc libp2pMountProtocol*(
 
   let peerInfo = lib.switch.peerInfo
   if lib.customProtocols.hasKey(proto) or proto in peerInfo.protocols:
-    return err("protocol already mounted: " & proto)
+    return err(proto, "protocol already mounted")
 
   # Capture the registry ref, not `lib`: a closure over `lib` stored back into `lib.customProtocols` would cycle and leak under `--mm:refc`.
   let streams = lib.streams
   proc handle(
       stream: Stream, selectedProto: string
   ) {.async: (raises: [CancelledError]).} =
-    let streamId = streams.register(stream)
-    defer:
-      streams.release(streamId)
+    if streams.closed:
+      return
+    if not admitEvent("incoming_stream"):
+      await stream.reset()
+      return
+
     let releaseWaiter =
       Future[void].Raising([CancelledError]).init("cbind custom protocol release")
-    streams.releaseWaiters[streamId] = releaseWaiter
+    let streamId = streams.register(stream, releaseWaiter)
+    defer:
+      discard streams.release(streamId)
     onIncomingStream(
       IncomingStreamEvent(
         proto: selectedProto, streamId: streamId, peerId: $stream.peerId
       )
     )
-    await releaseWaiter
+    if not await releaseWaiter.withTimeout(StreamReleaseTimeoutMs.milliseconds):
+      debug "stream not released in time, resetting",
+        streamId, peerId = shortLog(stream.peerId)
+      await stream.reset()
 
   let mountedProtocol = LPProtocol.new(codecs = @[proto], handler = handle)
   await mountedProtocol.start()
@@ -759,7 +886,7 @@ proc libp2pMountProtocol*(
     lib.switch.mount(mountedProtocol)
   except LPError as e:
     await mountedProtocol.stop()
-    return err(e.msg)
+    return err(e)
 
   lib.customProtocols[proto] = mountedProtocol
   ok(true)
@@ -781,6 +908,8 @@ proc libp2pGossipsubSubscribe*(
     return err("gossipsub not initialized")
   if not lib.topicHandlers.hasKey(topic):
     let handler = proc(t: string, data: seq[byte]): Future[void] {.async.} =
+      if not admitEvent("pubsub_message", PubsubDropDepth):
+        return
       onPubsubMessage(PubsubMessageEvent(topic: t, data: data))
     lib.topicHandlers[topic] = handler
     gossipSub.subscribe(topic, handler)
@@ -811,6 +940,16 @@ func toExtendedRecordsResponse(
 ): ExtendedRecordsResponse =
   ExtendedRecordsResponse(records: records.mapIt(toExtendedRecordEntry(it)))
 
+func toExtendedRecordsResponse(ads: seq[Advertisement]): ExtendedRecordsResponse =
+  ExtendedRecordsResponse(
+    records: ads.mapIt(
+      block:
+        var entry = toExtendedRecordEntry(it.data)
+        entry.signedRecord = it.encode()
+        entry
+    )
+  )
+
 proc libp2pKadFindNode*(
     lib: LibP2P, peerId: string
 ): Future[Result[PeersResponse, string]] {.ffi.} =
@@ -818,12 +957,12 @@ proc libp2pKadFindNode*(
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
   let target = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   let peers =
     try:
       await kad.findNode(target.toKey())
     except LPError as e:
-      return err(e.msg)
+      return err(e)
   ok(PeersResponse(peerIds: peers.mapIt($it)))
 
 proc libp2pKadWaitBootstrap*(
@@ -848,18 +987,19 @@ proc libp2pKadPutValue*(
   ## Stores `value` under `key` on the DHT nodes closest to it.
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
-  let key = Key.fromBytes(req.key)
+  let key = RecordKey.fromBytes(req.key).valueOr:
+    return err(error)
   let value = Value.fromBytes(req.value)
-  let res = await kad.putValue(key, value)
-  if res.isErr():
-    return err(res.error)
+  (await kad.putValue(key, value)).isOkOr:
+    return err(error)
   ok(true)
 
 proc libp2pKadGetValue*(
     lib: LibP2P, req: KadGetValueRequest
 ): Future[Result[ReadResponse, string]] {.ffi.} =
-  ## Looks `key` up on the DHT. `quorum` is how many agreeing records to
-  ## require; pass a negative value for the default.
+  ## Looks `key` up on the DHT. `quorum` counts valid records for early stopping;
+  ## pass a negative value for the default. An exhausted search returns the best
+  ## valid record found even below quorum, or an error if none was found.
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
   if req.quorum == 0:
@@ -869,21 +1009,22 @@ proc libp2pKadGetValue*(
       Opt.none(int)
     else:
       Opt.some(req.quorum)
-  let key = Key.fromBytes(req.key)
+  let key = RecordKey.fromBytes(req.key).valueOr:
+    return err(error)
   let res =
     try:
       await kad.getValue(key, quorum)
     except LPError as e:
-      return err(e.msg)
+      return err(e)
   let entry = res.valueOr:
-    return err(res.error)
+    return err(error)
   ok(ReadResponse(data: entry.value.toBytes()))
 
 proc kadAndCid(lib: LibP2P, cid: string): Result[(KadDHT, Cid), string] =
   let kad = lib.kad.valueOr:
     return err("kad-dht not initialized")
   let c = Cid.init(cid).valueOr:
-    return err("invalid cid: " & $error)
+    return err(error, "invalid cid")
   ok((kad, c))
 
 proc libp2pKadAddProvider*(
@@ -913,26 +1054,24 @@ proc libp2pKadStopProviding*(
   kad.stopProviding(c)
   ok(true)
 
+func makeProviderInfo(providers: HashSet[Provider]): seq[ProviderInfo] =
+  var infos: seq[ProviderInfo]
+  for provider in providers:
+    let providerId = provider.id.valueOr:
+      continue
+    let peerId = PeerId.init(providerId).valueOr:
+      continue
+    infos.add(ProviderInfo(peerId: $peerId, addrs: provider.addrs.mapIt($it)))
+  infos
+
 proc libp2pKadGetProviders*(
     lib: LibP2P, cid: string
 ): Future[Result[ProvidersResponse, string]] {.ffi.} =
   ## Finds the peers advertising themselves as providers of `cid`.
   let (kad, c) = kadAndCid(lib, cid).valueOr:
     return err(error)
-  let providersSet =
-    try:
-      await kad.getProviders(c.toKey())
-    except LPError as e:
-      return err(e.msg)
-
-  var providers: seq[ProviderInfo]
-  for provider in providersSet.toSeq():
-    let providerId = provider.id.valueOr:
-      continue
-    let peerId = PeerId.init(providerId).valueOr:
-      continue
-    providers.add(ProviderInfo(peerId: $peerId, addrs: provider.addrs.mapIt($it)))
-  ok(ProvidersResponse(providers: providers))
+  let providersSet = await kad.getProviders(c.toKey())
+  ok(ProvidersResponse(providers: providersSet.makeProviderInfo()))
 
 proc runningServiceDiscovery(lib: LibP2P): Result[ServiceDiscovery, string] =
   let kad = lib.kad.valueOr:
@@ -1020,8 +1159,8 @@ proc libp2pServiceDiscoLookup*(
   let service = ServiceInfo(id: req.serviceId, data: Opt.some(req.serviceData))
   let res = await disco.lookup(service)
   let ads = res.valueOr:
-    return err($error)
-  ok(toExtendedRecordsResponse(ads.mapIt(it.data)))
+    return err(error)
+  ok(toExtendedRecordsResponse(ads))
 
 proc libp2pServiceDiscoRandomLookup*(
     lib: LibP2P
@@ -1068,10 +1207,10 @@ proc libp2pDecodeXpr*(
 ): Future[Result[ExtendedPeerRecordEntry, string]] {.ffiStatic.} =
   ## Decodes a signed extended peer record and verifies its signature.
   let sxpr = SignedExtendedPeerRecord.decode(req.encoded).valueOr:
-    return err("failed to decode signed extended peer record: " & $error)
+    return err(error, "failed to decode signed extended peer record")
 
   sxpr.checkValid().isOkOr:
-    return err("invalid XPR signature: " & $error)
+    return err(error, "invalid XPR signature")
 
   ok(toExtendedRecordEntry(sxpr.data))
 
@@ -1083,13 +1222,13 @@ proc libp2pCircuitRelayReserve*(
     return err("relay client is not mounted (set circuitRelayClient=true in config)")
 
   let peerId = PeerId.init(req.relayPeerId).valueOr:
-    return err($error)
+    return err(error)
 
   let multiaddresses = parseMultiaddrs(req.relayAddrs).valueOr:
     return err(error)
 
   let rsvp = (await cl.tryReserve(peerId, multiaddresses)).valueOr:
-    return err("reservation failed: " & error)
+    return err(error, "reservation failed")
 
   ok(ReservationResponse(addrs: rsvp.addrs.mapIt($it), expireTime: rsvp.expire))
 
@@ -1102,7 +1241,7 @@ proc libp2pPeerstoreGetPeers*(
     for peerId in keys(lib.switch.peerStore[AddressBook].book):
       peerIds.add($peerId)
   except LPError as e:
-    return err(e.msg)
+    return err(e)
   ok(PeersResponse(peerIds: peerIds))
 
 proc libp2pPeerstoreGetPeerInfo*(
@@ -1110,7 +1249,7 @@ proc libp2pPeerstoreGetPeerInfo*(
 ): Future[Result[PeerStoreEntryResponse, string]] {.ffi.} =
   ## Everything the peer store holds for `peerId`; absent books come back empty.
   let pid = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   let peerStore = lib.switch.peerStore
   try:
     var entry = PeerStoreEntryResponse(peerId: $pid)
@@ -1123,14 +1262,14 @@ proc libp2pPeerstoreGetPeerInfo*(
     entry.protoVersion = peerStore[ProtoVersionBook][pid]
     ok(entry)
   except LPError as e:
-    err(e.msg)
+    err(e)
 
 proc libp2pPeerstoreAddPeer*(
     lib: LibP2P, req: AddPeerRequest
 ): Future[Result[bool, string]] {.ffi.} =
   ## Adds `peerId` to the peer store, extending its addresses and protocols.
   let pid = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   if req.addrs.len == 0:
     return err("at least one address is required")
 
@@ -1148,7 +1287,7 @@ proc libp2pPeerstoreSetPeerAddresses*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Replaces the peer store's addresses for `peerId`.
   let pid = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
 
   let addrs = parseMultiaddrs(req.addrs).valueOr:
     return err(error)
@@ -1161,7 +1300,7 @@ proc libp2pPeerstoreSetPeerProtocols*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Replaces the peer store's protocol list for `peerId`.
   let pid = PeerId.init(req.peerId).valueOr:
-    return err($error)
+    return err(error)
   lib.switch.peerStore[ProtoBook][pid] = req.protocols
   ok(true)
 
@@ -1170,7 +1309,7 @@ proc libp2pPeerstoreDeletePeer*(
 ): Future[Result[bool, string]] {.ffi.} =
   ## Drops every peer-store entry for `peerId`.
   let pid = PeerId.init(peerId).valueOr:
-    return err($error)
+    return err(error)
   lib.switch.peerStore.del(pid)
   ok(true)
 
@@ -1190,13 +1329,13 @@ proc libp2pCreateCid*(
 
   let mc = MultiCodec.codec(req.multicodec)
   if mc == InvalidMultiCodec:
-    return err("invalid multicodec: " & req.multicodec)
+    return err(req.multicodec, "invalid multicodec")
 
   let mh = MultiHash.digest(req.hash, req.data).valueOr:
-    return err("multihash error: " & $error)
+    return err(error, "multihash error")
 
   let cid = Cid.init(cidVer, mc, mh).valueOr:
-    return err("cid init error: " & $error)
+    return err(error, "cid init error")
 
   ok($cid)
 
@@ -1211,10 +1350,10 @@ proc libp2pNewPrivateKey*(
 
   let rng = newRng()
   let key = PrivateKey.random(scheme, rng).valueOr:
-    return err("could not generate private key")
+    return err(error, "could not generate private key")
 
   let keyData = key.getBytes().valueOr:
-    return err("could not get bytes for private key")
+    return err(error, "could not get bytes for private key")
 
   ok(keyData)
 
@@ -1307,7 +1446,7 @@ proc libp2pCollectMetrics*(): Future[Result[string, string]] {.ffiStatic.} =
     {.cast(gcsafe).}:
       jsonText = $collectRegistryMetrics(defaultRegistry).toJson()
   except CatchableError as e:
-    return err("failed to serialize metrics: " & e.msg)
+    return err(e, "failed to serialize metrics")
   ok(jsonText)
 
 genBindings()

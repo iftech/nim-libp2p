@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-## `Ping <https://docs.libp2p.io/concepts/protocols/#ping>`_ protocol implementation
+## `Ping <https://libp2p.io/docs/protocols/#ping>`_ protocol implementation
 
 {.push raises: [].}
 
@@ -30,11 +30,7 @@ type
 
 proc new*(T: typedesc[Ping], handler: PingHandler = nil, rng: Rng): T =
   doAssert not rng.isNil, "Rng is nil"
-  let ping = Ping(pinghandler: handler, rng: rng)
-  ping.init()
-  ping
-
-method init*(p: Ping) =
+  let p = Ping(pinghandler: handler, rng: rng)
   proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
     try:
       trace "handling ping", stream
@@ -52,6 +48,7 @@ method init*(p: Ping) =
 
   p.handler = handle
   p.codec = PingCodec
+  p
 
 proc ping*(
     p: Ping, stream: Stream

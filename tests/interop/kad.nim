@@ -3,6 +3,7 @@
 
 import chronos, stew/byteutils
 import ../../libp2p/[switch, builders, peerid, protocols/kademlia, wire]
+import ../../libp2p/protocols/kademlia/store
 import ../tools/[crypto, multiaddress]
 
 proc kadInteropTest*(
@@ -36,7 +37,7 @@ proc kadInteropTest*(
   defer:
     await switch.stop()
 
-  let key = Key.fromBytes("key".toBytes())
+  let key = RecordKey.fromBytes("key".toBytes()).tryGet()
   let value = Value.fromBytes("value".toBytes())
 
   let res = await kad.putValue(key, value).wait(timeout)
@@ -47,7 +48,11 @@ proc kadInteropTest*(
   # wait for other peer's kad to store the value
   await sleepAsync(2.seconds)
 
-  # try to get the inserted value from peer
+  # Require retrieval from the peer rather than our local copy.
+  let delRes = kad.store.delValue(key)
+  if delRes.isErr():
+    echo "delValue failed: ", delRes.error
+    return false
   let getRes = await kad.getValue(key).wait(timeout)
   if getRes.isErr():
     echo "getValue failed: ", getRes.error

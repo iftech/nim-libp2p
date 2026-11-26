@@ -18,9 +18,10 @@
 ## confidential even if ML-KEM-768 is broken, since neither component's
 ## failure weakens the other's contribution.
 ##
-## This module reuses noise.nim's `SymmetricState`/`CipherState`/`KeyPair`
-## and message framing unchanged; only the extra KEM tokens and the
-## top-level connection encrypter are new. See `NOISE_HFS_SPEC.md` for the
+## This module reuses the `SymmetricState`/`CipherState`/`KeyPair`, message
+## framing and peer authentication that `noisecommon.nim` shares with
+## `noise.nim`; only the extra KEM tokens and the top-level connection
+## encrypter are new. See `NOISE_HFS_SPEC.md` for the
 ## full wire format and design rationale.
 ##
 ## https://github.com/noiseprotocol/noise_hfs_spec
@@ -28,14 +29,14 @@
 {.push raises: [].}
 
 import chronos, results, chronicles
-import protobuf_serialization, protobuf_serialization/pkg/results
 import nimcrypto/utils
 import ../../stream/connection
 import ../../peerid
-import ../../peerinfo
-import ../../utils/[opt, bytesview]
+import ../../utils/[opt, bytesview, redact]
 import ../../crypto/[crypto, chacha20poly1305, curve25519, mlkem768]
-import secure, noise
+import secure, noisecommon
+
+export NoiseHandshakeError
 
 logScope:
   topics = "libp2p noisehfs"
@@ -50,8 +51,8 @@ const
 type
   HandshakeStateHFS = object
     ss: SymmetricState
-    s: noise.KeyPair # local static DH keypair
-    e: noise.KeyPair # local ephemeral DH keypair
+    s: noisecommon.KeyPair # local static DH keypair
+    e: noisecommon.KeyPair # local ephemeral DH keypair
     rs: Curve25519Key # remote static DH public key
     re: Curve25519Key # remote ephemeral DH public key
     e1: MLKEM768KeyPair # local ephemeral KEM keypair
@@ -61,10 +62,16 @@ type
     rng: Rng
     localPrivateKey: PrivateKey
     localPublicKey: seq[byte]
-    noiseKeys: noise.KeyPair
+    noiseKeys: noisecommon.KeyPair
     commonPrologue: seq[byte]
+    muxers: seq[string]
 
   NoiseHFSHandshakeError* = object of NoiseHandshakeError
+    ## A malformed XXhfs handshake message. Failures of the peer
+    ## authentication shared with `/noise` raise `NoiseHandshakeError`.
+
+redactType(HandshakeStateHFS, exported = false)
+redactType(NoiseHFS)
 
 proc init(_: type[HandshakeStateHFS]): HandshakeStateHFS =
   HandshakeStateHFS(ss: SymmetricState.init(ProtocolXXHFSName))
@@ -112,13 +119,14 @@ proc handshakeXXHFSOutbound(
       burnMem(sharedSecret)
 
       let rsLen =
-        if hs.ss.cs.hasKey:
+        if hs.ss.hasKey:
           Curve25519Key.len + ChaChaPolyTag.len
         else:
           Curve25519Key.len
       if msg.len < rsLen:
         raise (ref NoiseHFSHandshakeError)(msg: "NoiseHFS s, expected more data")
-      hs.rs[0 .. Curve25519Key.high] = hs.ss.decryptAndHash(msg.toOpenArray(0, rsLen - 1))
+      hs.rs[0 .. Curve25519Key.high] =
+        hs.ss.decryptAndHash(msg.toOpenArray(0, rsLen - 1))
       msg.consume(rsLen)
 
       hs.ss.mixKey(dh(hs.e.privateKey, hs.rs)) # es (initiator)
@@ -132,9 +140,7 @@ proc handshakeXXHFSOutbound(
 
       conn.sendHSMessage(sbytes, hbytes)
 
-    let (cs1, cs2) = hs.ss.split()
-    return
-      HandshakeResult(cs1: cs1, cs2: cs2, remoteP2psecret: remoteP2psecret, rs: hs.rs)
+    return hs.ss.toHandshakeResult(remoteP2psecret, hs.rs)
   finally:
     burnMem(hs)
 
@@ -158,7 +164,8 @@ proc handshakeXXHFSInbound(
 
       if msg.len < MLKEM768PublicKeyLen:
         raise (ref NoiseHFSHandshakeError)(msg: "NoiseHFS e1, expected more data")
-      hs.re1[0 .. MLKEM768PublicKeyLen - 1] = msg.toOpenArray(0, MLKEM768PublicKeyLen - 1)
+      hs.re1[0 .. MLKEM768PublicKeyLen - 1] =
+        msg.toOpenArray(0, MLKEM768PublicKeyLen - 1)
       hs.ss.mixHash(hs.re1)
       msg.consume(MLKEM768PublicKeyLen)
 
@@ -188,137 +195,78 @@ proc handshakeXXHFSInbound(
     block: # <- s, se
       var msg = BytesView.init(await conn.receiveHSMessage())
       let rsLen =
-        if hs.ss.cs.hasKey:
+        if hs.ss.hasKey:
           Curve25519Key.len + ChaChaPolyTag.len
         else:
           Curve25519Key.len
       if msg.len < rsLen:
         raise (ref NoiseHFSHandshakeError)(msg: "NoiseHFS s, expected more data")
-      hs.rs[0 .. Curve25519Key.high] = hs.ss.decryptAndHash(msg.toOpenArray(0, rsLen - 1))
+      hs.rs[0 .. Curve25519Key.high] =
+        hs.ss.decryptAndHash(msg.toOpenArray(0, rsLen - 1))
       msg.consume(rsLen)
 
       hs.ss.mixKey(dh(hs.e.privateKey, hs.rs)) # se (responder)
 
       remoteP2psecret = hs.ss.decryptAndHash(msg.data())
 
-    let (cs1, cs2) = hs.ss.split()
-    return
-      HandshakeResult(cs1: cs1, cs2: cs2, remoteP2psecret: remoteP2psecret, rs: hs.rs)
+    return hs.ss.toHandshakeResult(remoteP2psecret, hs.rs)
   finally:
     burnMem(hs)
 
 method handshake*(
     p: NoiseHFS, conn: RawConn, initiator: bool, peerId: Opt[PeerId]
 ): Future[SecureConn] {.async: (raises: [CancelledError, LPStreamError]).} =
-  trace "Starting NoiseHFS handshake", conn, initiator
+  trace "NoiseHFS handshake started", conn, initiator
 
   let timeout = conn.timeout
   conn.timeout = HandshakeTimeout
+  defer:
+    # The connection belongs to the caller: give it back with its own
+    # timeout whether the handshake succeeded, failed or was cancelled.
+    conn.timeout = timeout
 
-  let signedPayload =
-    p.localPrivateKey.sign(PayloadString & p.noiseKeys.publicKey.getBytes)
-  if signedPayload.isErr():
-    raise (ref NoiseHFSHandshakeError)(
-      msg: "Failed to sign public key: " & $signedPayload.error()
-    )
-
-  let msg = NoiseHandshakePayloadMsg(
-    identityKey: Opt.some(p.localPublicKey),
-    identitySig: Opt.some(signedPayload.get().getBytes()),
+  let payload = encodeHandshakePayload(
+    p.localPrivateKey, p.localPublicKey, p.noiseKeys.publicKey, p.muxers
   )
 
   var handshakeRes =
     if initiator:
-      await handshakeXXHFSOutbound(p, conn, msg.encode())
+      await handshakeXXHFSOutbound(p, conn, payload)
     else:
-      await handshakeXXHFSInbound(p, conn, msg.encode())
+      await handshakeXXHFSInbound(p, conn, payload)
 
-  var secure =
-    try:
-      var
-        remoteMsg: NoiseHandshakePayloadMsg
-        remotePubKey: PublicKey
-        remoteSig: Signature
+  let secure = newNoiseConnection(conn, handshakeRes, initiator, peerId, p.muxers)
 
-      remoteMsg = NoiseHandshakePayloadMsg.decode(handshakeRes.remoteP2psecret).valueOr:
-        raise newException(NoiseHFSHandshakeError, error)
-
-      if remoteMsg.identityKey.isNone or remoteMsg.identitySig.isNone:
-        raise newException(
-          NoiseHFSHandshakeError, "NoiseHandshakePayloadMsg fields must be set"
-        )
-
-      if not remotePubKey.init(remoteMsg.identityKey.get()):
-        raise (ref NoiseHFSHandshakeError)(
-          msg: "Failed to decode remote public key. (initiator: " & $initiator & ")"
-        )
-      if not remoteSig.init(remoteMsg.identitySig.get()):
-        raise (ref NoiseHFSHandshakeError)(
-          msg: "Failed to decode remote signature. (initiator: " & $initiator & ")"
-        )
-
-      let verifyPayload = PayloadString & handshakeRes.rs.getBytes
-      if not remoteSig.verify(verifyPayload, remotePubKey):
-        raise (ref NoiseHFSHandshakeError)(msg: "NoiseHFS handshake signature verify failed.")
-      else:
-        trace "Remote signature verified", conn
-
-      let pid = PeerId.init(remotePubKey).valueOr:
-        raise (ref NoiseHFSHandshakeError)(msg: "Invalid remote peer id: " & $error)
-
-      trace "Remote peer id", pid = $pid
-
-      peerId.ifValue(targetPid):
-        if not targetPid.validate():
-          raise (ref NoiseHFSHandshakeError)(msg: "Failed to validate expected peerId.")
-
-        if pid != targetPid:
-          raise (ref NoiseHFSHandshakeError)(
-            msg: "NoiseHFS handshake, peer id don't match! " & $pid & " != " & $targetPid
-          )
-      conn.peerId = pid
-
-      var tmp =
-        NoiseConnection.new(conn, conn.peerId, conn.observedAddr, conn.localAddr)
-      if initiator:
-        tmp.readCs = handshakeRes.cs2
-        tmp.writeCs = handshakeRes.cs1
-      else:
-        tmp.readCs = handshakeRes.cs1
-        tmp.writeCs = handshakeRes.cs2
-      tmp
-    finally:
-      burnMem(handshakeRes)
-
-  trace "NoiseHFS handshake completed!", initiator, peer = shortLog(secure.peerId)
-
-  conn.timeout = timeout
+  trace "NoiseHFS handshake completed", initiator, peerId = secure.peerId
 
   return secure
 
-method init*(p: NoiseHFS) {.gcsafe.} =
-  procCall Secure(p).init()
-  p.codec = NoiseHFSCodec
-
-proc new*(
-    T: typedesc[NoiseHFS],
-    rng: Rng,
-    privateKey: PrivateKey,
-    commonPrologue: seq[byte] = @[],
-): T =
+proc newNoiseHFS(
+    rng: Rng, privateKey: PrivateKey, commonPrologue: seq[byte], muxers: seq[string]
+): NoiseHFS =
+  # Not generic on purpose: `Secure.new` logs through Chronicles, and
+  # instantiating it from the generic `new` below would resolve the log
+  # stream in the caller's module instead of this one.
   let pkBytes = privateKey
     .getPublicKey()
     .expect("Expected valid Private Key")
     .getBytes()
     .expect("Couldn't get public Key bytes")
 
-  var noiseHFS = NoiseHFS(
-    rng: rng,
-    localPrivateKey: privateKey,
-    localPublicKey: pkBytes,
-    noiseKeys: genKeyPair(rng),
-    commonPrologue: commonPrologue,
-  )
-
-  noiseHFS.init()
+  let noiseHFS = NoiseHFS.new(NoiseHFSCodec)
+  noiseHFS.rng = rng
+  noiseHFS.localPrivateKey = privateKey
+  noiseHFS.localPublicKey = pkBytes
+  noiseHFS.noiseKeys = genKeyPair(rng)
+  noiseHFS.commonPrologue = commonPrologue
+  noiseHFS.muxers = muxers
   noiseHFS
+
+proc new*(
+    T: typedesc[NoiseHFS],
+    rng: Rng,
+    privateKey: PrivateKey,
+    commonPrologue: seq[byte] = @[],
+    muxers: seq[string] = @[],
+): T =
+  newNoiseHFS(rng, privateKey, commonPrologue, muxers)

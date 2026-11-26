@@ -6,7 +6,8 @@
 import chronos, results, sequtils, tables
 import ../../../libp2p/[protocols/kademlia, switch, builders, multihash]
 import ../../../libp2p/utils/future
-import ../../tools/[lifecycle, multiaddress, stall_server, topology, unittest]
+import
+  ../../tools/[bufferstream, lifecycle, multiaddress, stall_server, topology, unittest]
 import ./utils.nim
 
 suite "KadDHT - Limits":
@@ -15,6 +16,10 @@ suite "KadDHT - Limits":
 
   asyncTest "admitPeers spawns at most maxConcurrentProbes probes":
     let kad = setupKad()
+    # A cancelled probe's dial keeps running (message_sender's dropLateDial);
+    # stopping the switch closes whatever it opened before the leak check.
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(2)
 
     let peers = peersWithAddrs(5)
@@ -28,6 +33,8 @@ suite "KadDHT - Limits":
 
   asyncTest "admitPeers records addresses of candidates past the probe cap":
     let kad = setupKad()
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(2)
 
     let peers = peersWithAddrs(5)
@@ -43,6 +50,8 @@ suite "KadDHT - Limits":
 
   asyncTest "a candidate dropped for a full probe cap is probed on a later call":
     let kad = setupKad()
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(1)
 
     let peers = peersWithAddrs(2)
@@ -70,7 +79,7 @@ suite "KadDHT - Limits":
       await stall.stop()
     kad.admissionSem = newAsyncSemaphore(1)
 
-    kad.admitPeers(@[PeerInfo(peerId: randomPeerId(), addrs: @[stall.address])])
+    kad.admitPeers(@[PeerInfo(peerId: PeerId.random(), addrs: @[stall.address])])
     check kad.admissionProbes.len == 1
 
     let probes = move kad.admissionProbes
@@ -82,6 +91,8 @@ suite "KadDHT - Limits":
     ## Admission and eviction use independent semaphores: a saturated
     ## livenessSem must not prevent admitPeers from launching probes.
     let kad = setupKad()
+    defer:
+      await kad.switch.stop()
     kad.admissionSem = newAsyncSemaphore(2)
     kad.livenessSem = newAsyncSemaphore(1)
     check kad.livenessSem.tryAcquire() # hold the only liveness slot
@@ -99,13 +110,13 @@ suite "KadDHT - Limits":
     let kad = setupKad()
     kad.config.limits.maxShortlistSize = 5
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
 
     # Generate 20 fresh peers and feed them through updateShortlist.
     var peers: seq[Peer]
     for i in 0 ..< 20:
-      peers.add(closerPeer(randomPeerId().toKey()))
+      peers.add(closerPeer(PeerId.random().toKey()))
 
     let msg = Message(msgType: MessageType.findNode, closerPeers: peers)
     discard state.updateShortlist(msg)
@@ -163,12 +174,12 @@ suite "KadDHT - Limits":
     let kad = setupKad()
     kad.config.limits.maxShortlistSize = 1
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     state.shortlist.clear()
 
     let ranked =
-      @[randomPeerId(), randomPeerId()].sortPeers(targetKey, kad.rtable.config.hasher)
+      @[PeerId.random(), PeerId.random()].sortPeers(targetKey, kad.rtable.config.hasher)
     let (near, far) = (ranked[0], ranked[1])
 
     discard state.updateShortlist(
@@ -191,12 +202,12 @@ suite "KadDHT - Limits":
     kad.config.addressPolicy = publicRoutableAddressPolicy
     kad.config.limits.maxShortlistSize = 1
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     var state = LookupState.init(kad, targetKey)
     state.shortlist.clear()
 
     let ranked =
-      @[randomPeerId(), randomPeerId()].sortPeers(targetKey, kad.rtable.config.hasher)
+      @[PeerId.random(), PeerId.random()].sortPeers(targetKey, kad.rtable.config.hasher)
     let (near, far) = (ranked[0], ranked[1])
 
     discard state.updateShortlist(
@@ -232,8 +243,8 @@ suite "KadDHT - Limits":
 
     check:
       res.isErr()
-      kads[0].dataTable.len == 0
-      kads[1].dataTable.len == 0
+      kads[0].valueCount() == 0
+      kads[1].valueCount() == 0
 
   asyncTest "handlePutValue drops records exceeding maxValueSize":
     let kads = setupKadSwitches(2)
@@ -256,20 +267,20 @@ suite "KadDHT - Limits":
       kads[1].containsData(key, value)
       kads[0].containsNoData(key)
 
-  asyncTest "handlePutValue drops new records when maxLocalRecords is reached":
-    let kads = setupKadSwitches(2)
+  asyncTest "handlePutValue drops new records when the store holds maxValues":
+    var config = testKadConfig()
+    config.storeLimits.maxValues = Opt.some(1)
+    let kads = @[setupKad(config), setupKad()]
     startAndDeferStop(kads)
     await connect(kads[0], kads[1])
 
-    kads[0].config.limits.maxLocalRecords = Opt.some(1)
-
     let
-      existingKey = randomPeerId().toKey()
-      newKey = randomPeerId().toKey()
+      existingKey = PeerId.random()
+      newKey = PeerId.random().toKey()
       existingValue = @[1.byte]
       newValue = @[2.byte]
 
-    kads[0].dataTable.insert(existingKey, existingValue, Timestamp.now())
+    check kads[0].seedLocalValue(existingKey, existingValue)
 
     let request = Message(
       msgType: MessageType.putValue,
@@ -285,21 +296,58 @@ suite "KadDHT - Limits":
       kads[0].containsData(existingKey, existingValue)
       kads[0].containsNoData(newKey)
 
-  asyncTest "getValue skips local insert when maxLocalRecords is reached":
-    let kads = setupKadSwitches(2)
+  asyncTest "handlePutValue drops a record whose key is empty or over MaxRecordKeyLen":
+    let kad = setupKad()
+    let stream = TestBufferStream.new(
+      proc(data: sink seq[byte]) {.async: (raises: [CancelledError, LPStreamError]).} =
+        raiseAssert "handlePutValue replied to an invalid key"
+    )
+    for keyLen in [0, MaxRecordKeyLen + 1]:
+      let key = Key.fromBytes(newSeq[byte](keyLen))
+      let request = Message(
+        msgType: MessageType.putValue,
+        key: key,
+        record: Record(key: key, value: Value.init([1.byte])),
+      )
+      await kad.handlePutValue(stream, request)
+
+      check kad.valueCount() == 0
+
+    await stream.close()
+
+  asyncTest "handleGetValue answers an invalid key with closer peers and no record":
+    let kads = setupKadSwitches(3)
+    startAndDeferStop(kads)
+    await connectHub(kads[0], kads[1 ..^ 1])
+
+    let conn = await kads[1].switch.dial(kads[0].switch, kads[0].codec)
+    for keyLen in [0, MaxRecordKeyLen + 1]:
+      let key = Key.fromBytes(newSeq[byte](keyLen))
+      await kads[0].handleGetValue(
+        conn, Message(msgType: MessageType.getValue, key: key)
+      )
+
+      let response = Message.decode(await conn.readLp(MaxMsgSize)).tryGet()
+      check:
+        response.record.isNone()
+        response.closerPeers.toHashSet().containsPeer(kads[2])
+
+  asyncTest "getValue returns the best record when the store holds maxValues":
+    var config = testKadConfig()
+    config.storeLimits.maxValues = Opt.some(1)
+    let kads = @[setupKad(config), setupKad()]
     startAndDeferStop(kads)
     await connect(kads[0], kads[1])
 
-    kads[0].config.limits.maxLocalRecords = Opt.some(1)
-
     let
-      existingKey = randomPeerId().toKey()
+      existingKey = PeerId.random()
       lookupKey = kads[1].rtable.selfId
       existingValue = @[1.byte]
       lookupValue = @[2.byte]
 
-    kads[0].dataTable.insert(existingKey, existingValue, Timestamp.now())
-    kads[1].dataTable.insert(lookupKey, lookupValue, Timestamp.now())
+    check:
+      kads[0].seedLocalValue(existingKey, existingValue)
+      kads[1].seedLocalValue(lookupKey, lookupValue)
 
     let res = await kads[0].getValue(lookupKey, quorumOverride = Opt.some(1))
 
@@ -317,7 +365,7 @@ suite "KadDHT - Limits":
     kads[0].config.limits.maxValueSize = 8
 
     let key = kads[1].rtable.selfId
-    kads[1].dataTable.insert(key, newSeq[byte](64), Timestamp.now())
+    check kads[1].seedLocalValue(key, newSeq[byte](64))
 
     let res = await kads[0].getValue(key, quorumOverride = Opt.some(1))
 
@@ -360,7 +408,7 @@ suite "KadDHT - Limits":
     let f2 = kads[0].dispatchFindNode(kads[1].switch.peerInfo.peerId, target)
     # Yield so both coroutines get a chance to start; with a 1-slot semaphore
     # f1 holds the slot (suspended in dial) while f2 is blocked on acquire.
-    await sleepAsync(0)
+    await stepsAsync(1)
     check kads[0].rpcSem.availableSlots == 0
     await allFutures(f1, f2)
     check:

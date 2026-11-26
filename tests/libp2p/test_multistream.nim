@@ -17,7 +17,7 @@ import
     upgrademngrs/upgrade,
     utils/future,
   ]
-import ../tools/[unittest, sync, multiaddress]
+import ../tools/[unittest, sync, multiaddress, stream, bufferstream]
 
 {.push raises: [].}
 
@@ -315,15 +315,18 @@ suite "Multistream select":
     await handlerWait
 
   asyncTest "e2e - streams limit":
+    const maxStreams = 5
     let blocker = newWaitGroup(1)
+    let handlersEntered = newWaitGroup(maxStreams)
 
-    # Start 5 streams which are blocked by `blocker`
+    # Start maxStreams streams which are blocked by `blocker`
     # Try to start a new one, which should fail
-    # Unblock the 5 streams, check that we can open a new one
+    # Unblock them, check that we can open a new one
     proc testHandler(
         stream: Stream, proto: string
     ): Future[void] {.async: (raises: [CancelledError]).} =
       try:
+        handlersEntered.done()
         await blocker.wait()
         await stream.writeLp("Hello!")
       except LPStreamError:
@@ -331,7 +334,8 @@ suite "Multistream select":
       finally:
         await stream.close()
 
-    let protocol = LPProtocol.new(codecs, testHandler, maxIncomingStreamsPerPeer = 5)
+    let protocol =
+      LPProtocol.new(codecs, testHandler, maxIncomingStreamsPerPeer = maxStreams)
 
     protocol.handler = testHandler
     let msListen = MultistreamSelect.new()
@@ -354,22 +358,24 @@ suite "Multistream select":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector() {.async.} =
+    proc connector(accepted = true) {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, codecs)) == true
+        (await msDial.select(stream, codecs)) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
 
-    # Fill up the 5 allowed streams
     var dialers: seq[Future[void]]
-    for _ in 0 ..< 5:
+    for _ in 0 ..< maxStreams:
       dialers.add(connector())
+    # accept order need not match dial order, so the extra dial must wait
+    await handlersEntered.wait()
 
-    # This one will fail during negotiation
-    expect LPStreamEOFError:
-      await connector()
+    await connector(accepted = false)
     # check that the dialers aren't finished
     check:
       (await dialers[0].withTimeout(10.milliseconds)) == false
@@ -514,10 +520,13 @@ suite "Multistream :: stream limits":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector() {.async.} =
+    proc connector(accepted = true) {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, protocol.codecs[0])) == true
+        (await msDial.select(stream, protocol.codecs[0])) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -528,8 +537,7 @@ suite "Multistream :: stream limits":
 
     await reserved.wait()
 
-    expect LPStreamEOFError:
-      await connector()
+    await connector(accepted = false)
 
     await dialers.cancelAndWait()
     await transport2.stop()
@@ -554,10 +562,13 @@ suite "Multistream :: stream limits":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector(proto: string): Future[void] {.async.} =
+    proc connector(proto: string, accepted = true): Future[void] {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, proto)) == true
+        (await msDial.select(stream, proto)) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -567,8 +578,7 @@ suite "Multistream :: stream limits":
 
     await reserved.wait()
 
-    expect LPStreamEOFError:
-      await connector("/test/proto1/1.0.0")
+    await connector("/test/proto1/1.0.0", accepted = false)
 
     await @[d1, d2].cancelAndWait()
     await transport2.stop()
@@ -639,10 +649,13 @@ suite "Multistream :: stream limits":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector(): Future[void] {.async.} =
+    proc connector(accepted = true): Future[void] {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, protocol.codecs[0])) == true
+        (await msDial.select(stream, protocol.codecs[0])) == accepted
+      if not accepted:
+        await stream.close()
+        return
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -653,13 +666,62 @@ suite "Multistream :: stream limits":
 
     await reserved.wait()
 
-    expect LPStreamEOFError:
-      await connector()
+    await connector(accepted = false)
 
     await dialers.cancelAndWait()
     await transport2.stop()
     await transport1.stop()
     await handlerWait.cancelAndWait()
+
+  asyncTest "a full protocol budget permits negotiation of another protocol":
+    let (client, server) = bridgedConnections()
+    let full = LPProtocol.new(codecs, makeBlockedHandler(), maxIncomingStreamsTotal = 1)
+    check full.reserveIncoming(server.peerId)
+    let other =
+      LPProtocol.new("/test/other/1", makeBlockedHandler(), maxIncomingStreamsTotal = 1)
+    let ms = MultistreamSelect.new()
+    ms.addHandler(full)
+    ms.addHandler(other)
+    let handling = ms.handle(server)
+    defer:
+      await handling.cancelAndWait()
+      full.releaseIncoming(server.peerId)
+      await client.close()
+    check (await MultistreamSelect.select(client, @[codecs, other.codec])) == other.codec
+    check not other.canAcceptIncoming(server.peerId)
+    await handling.cancelAndWait()
+    check other.canAcceptIncoming(server.peerId)
+
+  asyncTest "confirmation failure and cancellation release the reserved slot":
+    for cancel in [false, true]:
+      let cancelWrite = cancel
+      let gate = Future[void].Raising([CancelledError]).init()
+      let confirming = Future[void].Raising([CancelledError]).init()
+      proc write(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        confirming.complete()
+        if cancelWrite:
+          await gate
+        else:
+          raise newException(LPStreamError, "confirmation failed")
+
+      let server = TestBufferStream.new(write)
+      let protocol =
+        LPProtocol.new(codecs, makeBlockedHandler(), maxIncomingStreamsTotal = 1)
+      let ms = MultistreamSelect.new()
+      ms.addHandler(protocol)
+      let handling = ms.handle(server, active = true)
+      let proposal = codecs & "\n"
+      await server.pushData(@[byte proposal.len] & proposal.toBytes())
+      await confirming
+      if cancelWrite:
+        check not protocol.canAcceptIncoming(server.peerId)
+        await handling.cancelAndWait()
+      else:
+        await handling
+      check protocol.canAcceptIncoming(server.peerId)
+      await server.close()
 
   asyncTest "empty proposal produces one rejection before the next proposal":
     let (client, server) = bridgedConnections()
@@ -724,3 +786,181 @@ suite "Multistream :: result API":
       raiseAssert "handle must raise"
     except MultiStreamError as e:
       check e == MultiStreamFailure.InvalidFirstMessage
+
+suite "Multistream :: optimistic selection":
+  const
+    codec = "/test/optimistic/1.0.0"
+    header = "/multistream/1.0.0\n"
+
+  proc bufferedPair(closeTogether = true): (BridgeStream, BridgeStream) =
+    let (client, server) = bridgedConnections(closeTogether = closeTogether)
+    client.readQueue = newAsyncQueue[seq[byte]](16)
+    server.readQueue = newAsyncQueue[seq[byte]](16)
+    (client, server)
+
+  teardown:
+    checkTrackers()
+
+  asyncTest "payload is sent before acknowledgement and responses are consumed once":
+    let (client, server) = bufferedPair()
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+    check client.protocol == codec
+    await selected.writeLp("early payload")
+    check string.fromBytes(await server.readLp(1024)) == header
+    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await server.readLp(1024)) == "early payload"
+    check selected.getWrapped() == client
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+    await server.writeLp("first")
+    await server.writeLp("second")
+    check string.fromBytes(await selected.readLp(1024)) == "first"
+    check string.fromBytes(await selected.readLp(1024)) == "second"
+    check client.protocol == codec
+
+  asyncTest "works with the regular listener":
+    let (client, server) = bufferedPair()
+    let handling = MultistreamSelect.handle(server, @[codec])
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+    await selected.writeLp("request")
+    check (await handling) == codec
+    check string.fromBytes(await server.readLp(1024)) == "request"
+    await server.writeLp("response")
+    check string.fromBytes(await selected.readLp(1024)) == "response"
+
+  asyncTest "invalid acknowledgements reset the stream and prevent further IO":
+    for (responses, expectedError) in [
+      (
+        @["/wrong/header\n"],
+        "Optimistic multistream handshake failed: unexpected codec",
+      ),
+      (
+        @["/multistream/1.0.0"],
+        "Optimistic multistream handshake failed: MultistreamSelect failed, malformed message",
+      ),
+      (@[header, "na\n"], "Optimistic multistream protocol rejected"),
+      (@[header, "/wrong/protocol\n"], "Optimistic multistream protocol rejected"),
+      (
+        @[header, codec],
+        "Optimistic multistream protocol negotiation failed: MultistreamSelect failed, malformed message",
+      ),
+      (
+        @[header, ""],
+        "Optimistic multistream protocol negotiation failed: MultistreamSelect failed, malformed message",
+      ),
+    ]:
+      let (client, server) = bufferedPair()
+      let selected = await MultistreamSelect.selectOptimistic(client, codec)
+      defer:
+        await selected.close()
+      for response in responses:
+        await server.writeLp(response)
+      expectMsg LPStreamError, expectedError:
+        discard await selected.readLp(1024)
+      check selected.wasResetLocally
+      check client.wasResetLocally
+      expectMsg LPStreamClosedError, "Stream Closed!":
+        await selected.writeLp("must fail")
+      expectMsg LPStreamClosedError, "Stream Closed!":
+        discard await selected.readLp(1024)
+
+  asyncTest "EOF during acknowledgement resets the stream":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+    await client.pushEof()
+    expectMsg LPStreamEOFError, "Stream EOF!":
+      discard await selected.readLp(1024)
+    check client.wasResetLocally
+
+  asyncTest "cancellation during acknowledgement resets instead of retrying partial data":
+    let (client, server) = bufferedPair()
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+    await server.writeLp(header)
+    let reading = selected.readLp(1024)
+    await reading.cancelAndWait()
+    check reading.cancelled
+    check client.wasResetLocally
+
+  asyncTest "close waits for acknowledgement before closing the stream":
+    let (client, server) = bufferedPair()
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    await selected.writeLp("request")
+    let closing = selected.close()
+    check not closing.finished()
+
+    check string.fromBytes(await server.readLp(1024)) == header
+    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+    check string.fromBytes(await server.readLp(1024)) == "request"
+
+    await closing
+    await selected.close()
+    check client.closed
+    check server.closed
+
+  asyncTest "read and close share acknowledgement confirmation":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+
+    let reading = selected.readLp(1024)
+    let closing = selected.close()
+    check:
+      not reading.finished()
+      not closing.finished()
+
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+
+    await closing
+    expect LPStreamEOFError:
+      discard await reading
+    check:
+      client.protocol == codec
+      client.closed
+
+  asyncTest "reads the response after a half-close":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected =
+      await MultistreamSelect.selectOptimistic(newHalfCloseStream(client), codec)
+    defer:
+      await client.close()
+      await server.close()
+
+    await selected.writeLp("request")
+    let closing = selected.close()
+
+    check string.fromBytes(await server.readLp(1024)) == header
+    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await server.readLp(1024)) == "request"
+    await server.writeLp(header)
+    await server.writeLp(codec & "\n")
+    await server.writeLp("response")
+
+    await closing
+    check string.fromBytes(await selected.readLp(1024)) == "response"
+
+  asyncTest "join completes when the underlying stream closes":
+    let (client, server) = bufferedPair(closeTogether = false)
+    let selected = await MultistreamSelect.selectOptimistic(client, codec)
+    defer:
+      await selected.close()
+      await server.close()
+
+    let joined = selected.join()
+    check not joined.finished()
+    await client.close()
+    await joined
+    check selected.closed

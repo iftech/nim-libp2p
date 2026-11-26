@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import chronos/streams/tlsstream, stew/byteutils
+import chronos/streams/tlsstream, stew/byteutils, times
 import ../../libp2p/[crypto/crypto, peerid, transports/tls/certificate]
 
 var rngSingleton {.threadvar.}: Rng
 rngSingleton = newRng()
+
+const DefaultTlsCertValidToUnix* = 67090165200
+  ## The default `validTo` used by `generateX509` (4096-01-01T13:00:00Z).
 
 proc getRng(): Rng =
   rngSingleton
@@ -13,8 +16,13 @@ proc getRng(): Rng =
 template rng*(): Rng =
   getRng()
 
-proc randomPeerId*(r: Rng = rng()): PeerId =
-  PeerId.random(r).expect("the rng produces a valid peer id")
+proc random*(T: typedesc[PeerId]): PeerId =
+  ## A random peer id drawn from the shared test rng.
+  PeerId.random(rng()).expect("the rng produces a valid peer id")
+
+proc random*(T: typedesc[PeerId], count: int): seq[PeerId] =
+  ## `count` random peer ids drawn from the shared test rng.
+  PeerId.random(count.uint, rng()).expect("the rng produces valid peer ids")
 
 proc tlsCertGenerator*(
     kp: Opt[KeyPair] = Opt.none(KeyPair)
@@ -31,12 +39,15 @@ proc tlsCertGenerator*(
   except TLSStreamProtocolError, TLSCertificateError:
     raiseAssert "should not happen"
 
-proc tlsCertPemGenerator*(): string {.gcsafe, raises: [].} =
+proc tlsCertPemGenerator*(
+    validTo: Time = fromUnix(DefaultTlsCertValidToUnix)
+): string {.gcsafe, raises: [].} =
   ## The certificate as a server hands it over, before `TLSCertificate.init`.
   try:
     let keyPair = KeyPair.random(PKScheme.RSA, rng()).get()
-    let certX509 =
-      generateX509(keyPair, encodingFormat = EncodingFormat.PEM).certificate
+    let certX509 = generateX509(
+      keyPair, validTo = validTo, encodingFormat = EncodingFormat.PEM
+    ).certificate
 
     string.fromBytes(certX509)
   except TLSCertificateError:

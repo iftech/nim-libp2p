@@ -1,0 +1,4 @@
+--path:
+  "$nim/"
+--outDir:
+  "build"

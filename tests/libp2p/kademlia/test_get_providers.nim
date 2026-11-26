@@ -3,7 +3,7 @@
 
 {.used.}
 
-import chronos, results, sequtils, sets, tables
+import chronos, results, sequtils, sets
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
 import ../../tools/[lifecycle, topology, unittest]
@@ -14,11 +14,7 @@ suite "KadDHT - Get Providers":
     checkTrackers()
 
   asyncTest "Get providers uses iterative lookup":
-    let kads = setupKadSwitches(
-      4,
-      cleanupProvidersInterval = 1.seconds(),
-      republishProvidedKeysInterval = 1.seconds(),
-    )
+    let kads = setupKadSwitches(4, republishProvidedKeysInterval = 1.seconds())
     startAndDeferStop(kads)
 
     # topology: kads[0] <-> kads[1] <-> kads[2] <-> kads[3]
@@ -26,14 +22,14 @@ suite "KadDHT - Get Providers":
 
     let key = kads[0].rtable.selfId
 
-    # Add key to kads[3] providedKeys locally (without broadcasting via addProvider)
-    kads[3].providerManager.providedKeys.provided[key] = Moment.now()
+    # Provide the key on kads[3] locally (without broadcasting via addProvider)
+    kads[3].markProvided(key)
 
     # Verify other nodes don't know about the provider yet
     check:
-      kads[0].providerManager.providerRecords.len() == 0
-      kads[1].providerManager.providerRecords.len() == 0
-      kads[2].providerManager.providerRecords.len() == 0
+      kads[0].providerCount() == 0
+      kads[1].providerCount() == 0
+      kads[2].providerCount() == 0
 
     # kad0 iteratively queries the network and should find kad3 as a provider
     let providers = await kads[0].getProviders(key)
@@ -45,9 +41,9 @@ suite "KadDHT - Get Providers":
 
     checkUntilTimeout:
       # Provider records have propagated
-      kads[0].providerManager.providerRecords.len() == 1
-      kads[1].providerManager.providerRecords.len() == 1
-      kads[2].providerManager.providerRecords.len() == 1
+      kads[0].providerCount() == 1
+      kads[1].providerCount() == 1
+      kads[2].providerCount() == 1
       # Other peers have been discovered
       kads[0].hasKey(kads[2].rtable.selfId)
       kads[0].hasKey(kads[3].rtable.selfId)
@@ -57,9 +53,8 @@ suite "KadDHT - Get Providers":
 
   asyncTest "Get providers updates routing table with closerPeers when no providers are returned":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
@@ -80,9 +75,8 @@ suite "KadDHT - Get Providers":
 
   asyncTest "Get providers updates routing table with closerPeers (with providers)":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
@@ -90,7 +84,7 @@ suite "KadDHT - Get Providers":
     let key = kads[0].rtable.selfId
 
     # kads[0] is providing the key
-    kads[0].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[0].markProvided(key)
 
     check:
       kads[2].hasKey(kads[0].rtable.selfId)
@@ -125,7 +119,7 @@ suite "KadDHT - Get Providers":
       cidDagPb.toKey() == cidRaw.toKey()
 
     # kads[1] announces as provider using dag-pb CID key
-    kads[1].providerManager.providedKeys.provided[expectedKey] = Moment.now()
+    kads[1].markProvided(expectedKey)
 
     # kads[0] queries using raw CID - should find the same provider
     let providers = await kads[0].getProviders(cidRaw.toKey())
@@ -141,12 +135,12 @@ suite "KadDHT - Get Providers":
 
     await connect(kads[0], kads[1])
 
-    let key = @[1.byte, 2, 3, 4, 5]
+    let key = MultiHash.digest("sha2-256", @[1.byte, 2, 3, 4, 5]).get().toKey()
 
     # kads[0] (the querying node) is a provider for the key
-    kads[0].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[0].markProvided(key)
     # kads[1] is also a provider for the key
-    kads[1].providerManager.providedKeys.provided[key] = Moment.now()
+    kads[1].markProvided(key)
 
     let providers = await kads[0].getProviders(key)
 
@@ -168,11 +162,9 @@ suite "KadDHT - Get Providers":
     let provider3 = kads[3].toPeer()
 
     # Both kads[1] and kads[2] know about kads[3] as a provider
-    kads[1].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[1].providerManager.knownKeys[key].incl(provider3)
+    kads[1].seedProvider(key, provider3)
 
-    kads[2].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[2].providerManager.knownKeys[key].incl(provider3)
+    kads[2].seedProvider(key, provider3)
 
     let providers = await kads[0].getProviders(key)
 
@@ -182,26 +174,28 @@ suite "KadDHT - Get Providers":
       providers.containsPeer(kads[3])
 
   asyncTest "Get providers filters out invalid provider IDs":
-    let kads = setupKadSwitches(3)
-    startAndDeferStop(kads)
+    let key = Key.fromBytes(@[1.byte, 2, 3, 4, 5])
+    let querier = setupKad()
+    let provider = setupKad()
+    # The store refuses a malformed peer ID, so only a peer reply can carry one.
+    let replier = setupMockKad(
+      getProvidersResponse = Opt.some(
+        Message(
+          msgType: MessageType.getProviders,
+          key: Opt.some(key),
+          providerPeers: @[provider.toPeer(), Peer(id: @[1.byte, 1, 1])],
+        )
+      )
+    )
+    startAndDeferStop(@[querier, provider, replier])
 
-    await connect(kads[0], kads[1])
+    await connect(querier, replier)
 
-    let key = @[1.byte, 2, 3, 4, 5]
+    let providers = await querier.getProviders(key)
 
-    # kads[1] has both valid and invalid providers in its knownKeys
-    kads[1].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[1].providerManager.knownKeys[key].incl(kads[2].toPeer())
-    # Invalid provider with malformed peer ID bytes
-    kads[1].providerManager.knownKeys[key].incl(Peer(id: @[1.byte, 1, 1]))
-
-    # kads[0] queries - should filter out invalid provider and return only valid one
-    let providers = await kads[0].getProviders(key)
-
-    # Only the valid provider should be returned
     check:
       providers.len() == 1
-      providers.containsPeer(kads[2])
+      providers.containsPeer(provider)
 
   asyncTest "Get providers terminates early when sufficient providers found":
     # Use small replication value; beta must stay <= replication
@@ -215,14 +209,11 @@ suite "KadDHT - Get Providers":
 
     # kads[1] knows about 3 providers
     # kads[2] knows about additional 2 providers
-    kads[1].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[1].providerManager.knownKeys[key].incl(kads[3].toPeer())
-    kads[1].providerManager.knownKeys[key].incl(kads[4].toPeer())
-    kads[1].providerManager.knownKeys[key].incl(kads[5].toPeer())
+    for provider in kads[3 .. 5]:
+      kads[1].seedProvider(key, provider.toPeer())
 
-    kads[2].providerManager.knownKeys[key] = initHashSet[Provider]()
-    kads[2].providerManager.knownKeys[key].incl(kads[6].toPeer())
-    kads[2].providerManager.knownKeys[key].incl(kads[7].toPeer())
+    for provider in kads[6 .. 7]:
+      kads[2].seedProvider(key, provider.toPeer())
 
     # kads[0] queries and should stop at kad[1] as replication reached
     check:
@@ -281,13 +272,11 @@ suite "KadDHT - Get Providers":
 
     await connectChain(kads)
 
-    let key = @[1.byte, 2, 3, 4, 5]
+    let key = MultiHash.digest("sha2-256", @[1.byte, 2, 3, 4, 5]).get().toKey()
 
     # kads[1 .. 4] are providers
-    kads[1].providerManager.providedKeys.provided[key] = Moment.now()
-    kads[2].providerManager.providedKeys.provided[key] = Moment.now()
-    kads[3].providerManager.providedKeys.provided[key] = Moment.now()
-    kads[4].providerManager.providedKeys.provided[key] = Moment.now()
+    for kad in kads[1 .. 4]:
+      kad.markProvided(key)
 
     let providers = await kads[0].getProviders(key)
 
@@ -311,7 +300,7 @@ suite "KadDHT - Get Providers":
       bListenAddrs = b.switch.peerInfo.addrs
       providerKey = @[1.byte, 2, 3, 4, 5]
 
-    await b.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await b.switch.connect(a.switch)
     discard (await b.dispatchFindNode(a.switch.peerInfo.peerId, bId.toKey())).expect(
       "FIND_NODE reply"
     )
@@ -323,13 +312,11 @@ suite "KadDHT - Get Providers":
     checkUntilTimeout:
       bListenAddrs.allIt(it in a.switch.peerStore[AddressBook][bId])
 
-    await c.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await c.switch.connect(a.switch)
     let reply =
       (await c.dispatchGetProviders(a.switch.peerInfo.peerId, providerKey)).value()
-    let bProvider =
-      reply.providerPeers.filterIt(it.id.isSome and it.id.get() == bId.getBytes())
-    let bCloser =
-      reply.closerPeers.filterIt(it.id.isSome and it.id.get() == bId.getBytes())
+    let bProvider = reply.providerPeers.filterIt(it.id == bId.getBytes())
+    let bCloser = reply.closerPeers.filterIt(it.id == bId.getBytes())
     check:
       bProvider.len == 1
       bCloser.len == 1

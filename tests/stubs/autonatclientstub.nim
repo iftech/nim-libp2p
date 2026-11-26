@@ -18,6 +18,8 @@ type
     dials: int
     expectedDials: int
     finished*: Future[void]
+    release*: AsyncEvent
+    cancelledDials*: int
 
   Answer* = NetworkReachability
 
@@ -36,6 +38,12 @@ method dialMe*(
 
   if self.dials == self.expectedDials:
     self.finished.complete()
+  if not self.release.isNil():
+    try:
+      await self.release.wait()
+    except CancelledError as e:
+      self.cancelledDials.inc()
+      raise e
   case self.answer
   of NetworkReachability.Reachable:
     return TcpWildcardAddress

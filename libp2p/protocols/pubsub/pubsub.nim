@@ -21,6 +21,7 @@ import
   ../../stream/connection,
   ../../peerid,
   ../../peerinfo,
+  ../../peerstore,
   ../../errors,
   ../../utils/opt,
   ../../utils/future
@@ -315,16 +316,25 @@ proc broadcast*(
     for peer in sendPeers:
       p.send(peer, msg, priority, useCustomStream)
   else:
-    # Fast path that only encodes message once
-    let encoded = msg.encode(p.anonymize)
-    if encoded.len > p.maxMessageSize:
-      warn "message exceeds maximum message size; message will not be broadcasted",
-        encodedSize = encoded.len, maxMessageSize = p.maxMessageSize
-      return
-
+    # Lazily encode each wire format and reuse it across recipients.
+    var encoded: seq[byte]
+    var preparedRPC: PreparedTopicRPC
     for peer in sendPeers:
-      var peerEncoded = encoded
-      peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
+      if (msg.messages.len > 0 or msg.partialMessageExtension.isSome) and
+          peer.extensionsState.peerHasTopicStreams(peer.peerId):
+        if preparedRPC.isZero():
+          preparedRPC = makePreparedTopicRPC(msg, p.anonymize)
+        peer.sendTopicRPC(preparedRPC, priority, useCustomStream)
+      else:
+        if encoded.len == 0:
+          encoded = msg.encode(p.anonymize)
+          if encoded.len > p.maxMessageSize:
+            warn "legacy RPC exceeds maximum message size; skipping legacy recipients",
+              encodedSize = encoded.len, maxMessageSize = p.maxMessageSize
+        if encoded.len > p.maxMessageSize:
+          continue
+        var peerEncoded = encoded
+        peer.trackSend(peer.sendEncoded(move(peerEncoded), priority, useCustomStream))
 
 proc sendSubs*(
     p: PubSub, peer: PubSubPeer, subTopics: openArray[string], subscribe: bool
@@ -401,9 +411,13 @@ method onPubSubPeerEvent*(
 method getOrCreatePeer*(
     p: PubSub, peerId: PeerId, protosToDial: seq[string], protoNegotiated: string = ""
 ): PubSubPeer {.base, gcsafe.} =
+  let supported =
+    protoNegotiated != "" or
+    p.switch.peerStore[ProtoBook][peerId].anyIt(it in protosToDial)
   p.peers.withValue(peerId, peer):
     if peer[].codec == "":
       peer[].codec = protoNegotiated
+    peer[].protocolSupported = peer[].protocolSupported or supported
     return peer[]
 
   let protos =
@@ -443,7 +457,9 @@ method getOrCreatePeer*(
     p.maxMessageSize,
     customStreamCallbacks = p.customStreamCallbacks,
     handler = peerHandler,
+    rng = p.rng,
   )
+  pubSubPeer.protocolSupported = supported
   trace "created new pubsub peer", peerId
 
   p.peers[peerId] = pubSubPeer
@@ -569,13 +585,22 @@ method handleConn*(
     return
 
   let peer = p.getOrCreatePeer(stream.peerId, @[], proto)
+  peer.connect()
 
   try:
-    await peer.runHandleLoop(stream)
+    await peer.handleRecvStream(stream)
   except CancelledError as exc:
     raise exc
   finally:
     await stream.closeWithEOF()
+
+proc canSubscribePeer(p: PubSub, peerId: PeerId): bool =
+  # An inbound stream is stronger evidence than a stale Identify snapshot.
+  p.peers.withValue(peerId, peer):
+    if peer[].hasRecvStream():
+      return true
+  let protocols = p.switch.peerStore[ProtoBook]
+  peerId notin protocols or protocols[peerId].anyIt(it in p.codecs)
 
 method subscribePeer*(p: PubSub, peer: PeerId) {.base, gcsafe.} =
   ## subscribe to remote peer to receive/send pubsub
@@ -583,6 +608,9 @@ method subscribePeer*(p: PubSub, peer: PeerId) {.base, gcsafe.} =
   ##
 
   if p.stopping or p.switch.isStopping:
+    return
+
+  if not p.canSubscribePeer(peer):
     return
 
   let pubSubPeer = p.getOrCreatePeer(peer, p.codecs)
@@ -726,6 +754,7 @@ method initPubSub*(p: PubSub) {.base, raises: [InitializationError].} =
   p.observers = new(seq[PubSubObserver])
   if p.msgIdProvider == nil:
     p.msgIdProvider = defaultMsgIdProvider
+  p.rng.generate(p.msgSeqno)
 
 {.pop.}
 
@@ -836,19 +865,25 @@ proc init*[PubParams: object | bool](
       peerId: PeerId, event: PeerEvent
   ) {.async: (raises: [CancelledError]).} =
     case event.kind
-    of PeerEventKind.Joined:
+    of PeerEventKind.Identified:
       pubsub.subscribePeer(peerId)
     of PeerEventKind.Left:
       pubsub.unsubscribePeer(peerId)
-    of PeerEventKind.Identified:
-      # Identified events are handled by IdentifyPusher service
+    of PeerEventKind.Joined:
       discard
 
-  switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Joined)
+  switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Identified)
   switch.addPeerEventHandler(peerEventHandler, PeerEventKind.Left)
 
-  pubsub.knownTopics = KnownLibP2PTopicsSeq.toHashSet()
+  switch.peerStore[ProtoBook].addHandler proc(peerId: PeerId) {.gcsafe.} =
+    if pubsub.stopping or switch.isStopping or not switch.isConnected(peerId):
+      return
+    if not pubsub.canSubscribePeer(peerId):
+      pubsub.unsubscribePeer(peerId)
+    elif peerId in switch.peerStore[ProtoBook]:
+      pubsub.subscribePeer(peerId)
 
+  pubsub.knownTopics = KnownLibP2PTopicsSeq.toHashSet()
   pubsub.initPubSub()
 
   return pubsub

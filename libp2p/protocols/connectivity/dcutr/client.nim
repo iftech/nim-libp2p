@@ -26,6 +26,9 @@ proc new*(
 ): T =
   return T(connectTimeout: connectTimeout, maxDialableAddrs: maxDialableAddrs)
 
+func connectTimeout*(self: DcutrClient): Duration =
+  self.connectTimeout
+
 proc connectDirectly(
     self: DcutrClient,
     switch: Switch,
@@ -108,8 +111,8 @@ proc tryStartSync*(
     let rttStart = Moment.now()
     let connectAnswer = DcutrMsg.decode(await stream.readLp(1024)).valueOr:
       return err(
-        newException(
-          DcutrError, "Dcutr initiator received an invalid Connect message: " & $error
+        error.toException(
+          DcutrError, "Dcutr initiator received an invalid Connect message"
         )
       )
 

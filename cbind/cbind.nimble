@@ -10,6 +10,11 @@ import os, strutils
 
 requires "taskpools >= 0.1.0", "ffi >= 0.3.0", "cbor_serialization == 0.3.0"
 
+const EventQueueCapacity = 4096 # keep in sync with nix/cbind.nix
+# event_overflow holds a quarter of the queue as open streams; mplex caps a
+# connection at 200.
+const OverflowTestCapacity = 64
+
 proc sanitizer(): string =
   ## Sanitizer the examples build under: LIBP2P_SAN=asan|tsan|none. Empty means none.
   # mingw gcc ships no sanitizer runtime, so Windows defaults to none.
@@ -89,8 +94,7 @@ proc ffiLibExt(): string =
   else:
     "so"
 
-proc buildFfiLib(san = "") =
-  let buildDir = "../build"
+proc buildFfiLib(san = "", capacity = EventQueueCapacity, buildDir = "../build") =
   if not dirExists(buildDir):
     mkDir(buildDir)
 
@@ -99,11 +103,13 @@ proc buildFfiLib(san = "") =
       nimSanFlags(san)
     else:
       " --mm:refc"
-  let nimcache =
+  var nimcache =
     if san.len > 0:
       "nimcache_" & san
     else:
       "nimcache"
+  if capacity != EventQueueCapacity:
+    nimcache &= "_cap" & $capacity
   # libplum's vendored C is pulled in via Nim `{.compile.}`, so no separate
   # native-library build step is needed here.
   # Name the output `lib<name>` so the file matches the soname nim derives from
@@ -115,7 +121,7 @@ proc buildFfiLib(san = "") =
   exec "nim c --out:" & buildDir & "/liblibp2p." & ffiLibExt() &
     " --threads:on --app:lib --opt:size --noMain -d:metrics" & sanFlags &
     " -d:chronicles_runtime_filtering=on -d:chronicles_timestamps=RfcUtcTime" &
-    " -d:ffiThreadExitTimeoutMs=5000" & ffiDepPaths() &
+    " -d:ffiThreadExitTimeoutMs=5000 -d:EventQueueCapacity=" & $capacity & ffiDepPaths() &
     " --nimMainPrefix:liblibp2p --nimcache:" & nimcache & " libp2p.nim"
 
 task buildffi, "Build the FFI shared library":
@@ -143,11 +149,21 @@ proc findFfiVendorDir(): string =
     raise newException(IOError, "vendored tinycbor missing under " & vendor)
   vendor
 
-task examples, "Build and run the C bindings examples":
+type CBuild = object
+  san: string
+  ccFlags: string
+  vendor: string
+  cborObjs: string
+  capacity: int
+  buildDir: string
+  lib: string
+
+proc setupCBuild(capacity = EventQueueCapacity, buildDir = "../build"): CBuild =
+  ## Builds the FFI library, the C header and the TinyCBOR objects that every
+  ## C program here links against, under the `LIBP2P_SAN` sanitizer.
   let san = sanitizer()
   let ccFlags = ccSanFlags(san)
-  let lib = "../build/liblibp2p." & ffiLibExt()
-  buildFfiLib(san)
+  buildFfiLib(san, capacity, buildDir)
   if not fileExists("c_bindings/libp2p.h"):
     genBindingsFor("c", "c_bindings")
 
@@ -157,17 +173,59 @@ task examples, "Build and run the C bindings examples":
     "cborencoder", "cborencoder_close_container_checked", "cborparser",
     "cborparser_dup_string", "cborerrorstrings",
   ]:
-    let obj = "../build/" & name & ".o"
+    let obj = buildDir & "/" & name & ".o"
     exec "gcc -std=c99 -fPIC" & ccFlags & " -I " & vendor & " -I " & vendor &
       "/tinycbor -c " & vendor & "/tinycbor/" & name & ".c -o " & obj
     cborObjs.add obj
-  let cborObjsStr = cborObjs.join(" ")
+  CBuild(
+    san: san,
+    ccFlags: ccFlags,
+    vendor: vendor,
+    cborObjs: cborObjs.join(" "),
+    capacity: capacity,
+    buildDir: buildDir,
+    lib: buildDir & "/liblibp2p." & ffiLibExt(),
+  )
 
+proc buildAndRunC(b: CBuild, src: string) =
+  let outBin = b.buildDir & "/" & src.splitFile().name
+  exec "gcc -std=c11" & b.ccFlags & " -DEVENT_QUEUE_CAPACITY=" & $b.capacity &
+    " -I c_bindings -I " & b.vendor & " " & src & " " & b.cborObjs & " " & b.lib &
+    " -pthread -Wl,-rpath,'$ORIGIN' -o " & outBin
+  exec sanRunEnv(b.san) & outBin
+
+proc runExamples(b: CBuild) =
   for example in [
-    "echo", "gossipsub", "kad", "service_disco", "relay", "peerstore", "metrics"
+    "echo", "gossipsub", "kad", "service_disco", "relay", "peerstore", "metrics",
+    "read_timeout",
   ]:
-    let outBin = "../build/" & example
-    exec "gcc -std=c11" & ccFlags & " -I c_bindings -I " & vendor & " examples/" &
-      example & ".c " & cborObjsStr & " " & lib & " -pthread -Wl,-rpath,'$ORIGIN' -o " &
-      outBin
-    exec sanRunEnv(san) & outBin
+    b.buildAndRunC("examples/" & example & ".c")
+
+task examples, "Build and run the C bindings examples":
+  setupCBuild().runExamples()
+
+task test, "Run the config unit tests, the C FFI tests and the examples":
+  let san = sanitizer()
+  let sanFlags =
+    if san.len > 0:
+      nimSanFlags(san)
+    else:
+      " --mm:orc"
+  let nimcache =
+    if san.len > 0:
+      "nimcache_test_" & san
+    else:
+      "nimcache_test"
+  let outBin = "../build/test_config"
+  # The test declares its own nim-ffi library, so NimMain takes its prefix.
+  exec "nim c --threads:on -d:metrics -d:chronicles_runtime_filtering=on" & sanFlags &
+    " --nimMainPrefix:libconfigtest" & ffiDepPaths() & " --nimcache:" & nimcache &
+    " --out:" & outBin & " tests/test_config.nim"
+  exec sanRunEnv(san) & outBin
+  let b = setupCBuild()
+  b.buildAndRunC("tests/ffi_contract.c")
+  b.buildAndRunC("tests/release_resets.c")
+  setupCBuild(OverflowTestCapacity, "../build/overflow").buildAndRunC(
+    "tests/event_overflow.c"
+  )
+  b.runExamples()

@@ -7,7 +7,8 @@ import chronos
 import ./utils
 import ../../../libp2p/connmanager
 import ../../../libp2p/protocols/pubsub/[pubsub, pubsubpeer, floodsub, gossipsub]
-import ../../tools/[unittest, switch_builder, bufferstream, multiaddress, lifecycle]
+import
+  ../../tools/[unittest, switch_builder, bufferstream, multiaddress, lifecycle, futures]
 
 suite "PubSub shutdown":
   teardown:
@@ -18,7 +19,6 @@ suite "PubSub shutdown":
       sw = makeStandardSwitch()
       gossip = GossipSub.init(sw, rng = rng())
       dialing = newAsyncEvent()
-      never = newAsyncEvent()
     var
       attempts = 0
       cancelled = false
@@ -30,13 +30,13 @@ suite "PubSub shutdown":
       inc attempts
       dialing.fire()
       try:
-        await never.wait()
+        await waitForCancellation()
       finally:
         cancelled = true
         connectionsRunningAtCancellation = sw.connManager.isRunning()
 
     let peer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, GossipSubCodec_12, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, GossipSubCodec_12, 1024, voidPeerHandler
     )
     gossip.peers[peer.peerId] = peer
     sw.mount(gossip)
@@ -56,19 +56,18 @@ suite "PubSub shutdown":
     let
       sw = makeStandardSwitch()
       flood = FloodSub.init(sw, rng = rng())
-      never = newAsyncEvent()
     var cancelled = false
 
     proc getStream(): Future[Stream] {.
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
       try:
-        await never.wait()
+        await waitForCancellation()
       finally:
         cancelled = true
 
     let peer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
     )
     flood.peers[peer.peerId] = peer
     await flood.start()
@@ -77,7 +76,7 @@ suite "PubSub shutdown":
     check:
       cancelled
       flood.peers.len == 0
-    flood.subscribePeer(randomPeerId())
+    flood.subscribePeer(PeerId.random())
     check flood.peers.len == 0
     let lateStream = TestBufferStream.new(noop)
     await flood.handleConn(lateStream, FloodSubCodec)
@@ -86,7 +85,7 @@ suite "PubSub shutdown":
       flood.peers.len == 0
     await flood.start()
     let nextPeer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
     )
     flood.peers[nextPeer.peerId] = nextPeer
     cancelled = false
@@ -117,7 +116,7 @@ suite "PubSub shutdown":
     defer:
       releaseUpgrade.fire()
 
-    let connecting = client.connect(server.peerInfo.peerId, server.peerInfo.addrs)
+    let connecting = client.connect(server)
     await registered.wait()
     await connecting
     let peer = gossip.getOrCreatePeer(client.peerInfo.peerId, @[GossipSubCodec_12])
@@ -131,7 +130,7 @@ suite "PubSub shutdown":
     check reconnect.cancelled
     await noCancel reconnect.cancelAndWait()
 
-    let latePeer = randomPeerId()
+    let latePeer = PeerId.random()
     gossip.subscribePeer(latePeer)
     check latePeer notin gossip.peers
     let directDial = gossip.addDirectPeer(latePeer, client.peerInfo.addrs)
@@ -145,7 +144,6 @@ suite "PubSub shutdown":
     let
       sw = makeStandardSwitch()
       flood = FloodSub.init(sw, rng = rng())
-      never = newAsyncEvent()
       cleaningUp = newAsyncEvent()
       releaseCleanup = newAsyncEvent()
     var cleanupFinished = false
@@ -154,14 +152,14 @@ suite "PubSub shutdown":
         async: (raises: [CancelledError, GetStreamDialError])
     .} =
       try:
-        await never.wait()
+        await waitForCancellation()
       finally:
         cleaningUp.fire()
         await noCancel releaseCleanup.wait()
         cleanupFinished = true
 
     let peer = PubSubPeer.new(
-      randomPeerId(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
+      PeerId.random(), getStream, nil, FloodSubCodec, 1024, voidPeerHandler
     )
     flood.peers[peer.peerId] = peer
     peer.connect()
@@ -185,14 +183,13 @@ suite "PubSub shutdown":
       let
         sw = makeStandardSwitch()
         gossip = GossipSub.init(sw, rng = rng())
-        never = newAsyncEvent()
         cleaningUp = newAsyncEvent()
         releaseCleanup = newAsyncEvent()
       var cleanupFinished = false
 
       proc pendingTask() {.async: (raises: [CancelledError]).} =
         try:
-          await never.wait()
+          await waitForCancellation()
         finally:
           cleaningUp.fire()
           await noCancel releaseCleanup.wait()

@@ -67,7 +67,7 @@ template tcpListenerIPTests(suiteName: string, listenMA: MultiAddress) =
 
 template tcpDialerIPTest(suiteName: string, listenTA: TransportAddress) =
   block:
-    asyncTest suiteName & ":dialer: handle write":
+    asyncTest suiteName & ":dialer: handle read":
       let handlerFut = newFuture[void]()
       proc serverHandler(
           server: StreamServer, transp: StreamTransport

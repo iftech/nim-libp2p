@@ -13,7 +13,7 @@ import
     nameresolving/dnsresolver,
     wire,
   ]
-import ../../tools/unittest
+import ../../tools/[unittest, crypto]
 
 suite "AutoTLS Configuration Tests":
   teardown:
@@ -30,6 +30,7 @@ suite "AutoTLS Configuration Tests":
       config.renewCheckTime == DefaultRenewCheckTime
       config.renewBufferTime == DefaultRenewBufferTime
       config.initialCertTimeout == DefaultInitialCertTimeout
+      config.initialAddrTimeout == DefaultInitialAddrTimeout
       config.issueRetries == 3
       config.issueRetryTime == 1.seconds
       config.registrationURL == DefaultRegistrationURL
@@ -40,6 +41,7 @@ suite "AutoTLS Configuration Tests":
       config.acmeRetryTime == 1.seconds
       config.finalizeRetries == 10
       config.finalizeRetryTime == 1.seconds
+      config.storage.isNil
 
   test "AutotlsConfig constructor with custom values":
     let customIpAddress = parseIpAddress("203.0.113.7")
@@ -50,6 +52,7 @@ suite "AutoTLS Configuration Tests":
     let customRenewCheckTime = 7.minutes
     let customRenewBufferTime = 8.minutes
     let customInitialCertTimeout = 9.minutes
+    let customInitialAddrTimeout = 3.seconds
     let customIssueRetries = 7
     let customIssueRetryTime = 5.seconds
     let customRegistrationURL =
@@ -70,6 +73,7 @@ suite "AutoTLS Configuration Tests":
       renewCheckTime = customRenewCheckTime,
       renewBufferTime = customRenewBufferTime,
       initialCertTimeout = customInitialCertTimeout,
+      initialAddrTimeout = customInitialAddrTimeout,
       issueRetries = customIssueRetries,
       issueRetryTime = customIssueRetryTime,
       registrationURL = customRegistrationURL,
@@ -83,7 +87,7 @@ suite "AutoTLS Configuration Tests":
     )
 
     check:
-      config.ipAddress == Opt.some(customIpAddress)
+      config.ipAddress == customIpAddress
       # nameServers reaches the config as the DnsResolver built out of it.
       DnsResolver(config.nameResolver).nameServers == customNameServers
       config.acmeDirectoryURL == customAcmeDirectoryURL
@@ -91,6 +95,7 @@ suite "AutoTLS Configuration Tests":
       config.renewCheckTime == customRenewCheckTime
       config.renewBufferTime == customRenewBufferTime
       config.initialCertTimeout == customInitialCertTimeout
+      config.initialAddrTimeout == customInitialAddrTimeout
       config.issueRetries == customIssueRetries
       config.issueRetryTime == customIssueRetryTime
       config.registrationURL == customRegistrationURL
@@ -101,3 +106,22 @@ suite "AutoTLS Configuration Tests":
       config.acmeRetryTime == customAcmeRetryTime
       config.finalizeRetries == customFinalizeRetries
       config.finalizeRetryTime == customFinalizeRetryTime
+
+  asyncTest "storage defaults to a fresh memory store and preserves custom stores":
+    let config = AutotlsConfig.new()
+    let first = AutotlsService.new(rng(), config)
+    let second = AutotlsService.new(rng(), config)
+    let custom = AutotlsMemoryStorage.new()
+    let configured = AutotlsService.new(rng(), AutotlsConfig.new(storage = custom))
+    let nilStorage = AutotlsService.new(rng(), AutotlsConfig.new(storage = nil))
+
+    check:
+      second.storage of AutotlsMemoryStorage
+      first.storage != second.storage
+      configured.storage == AutotlsStorage(custom)
+      nilStorage.storage of AutotlsMemoryStorage
+
+    await first.stop(nil)
+    await second.stop(nil)
+    await configured.stop(nil)
+    await nilStorage.stop(nil)

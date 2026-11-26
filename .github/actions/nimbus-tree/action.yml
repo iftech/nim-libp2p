@@ -1,0 +1,38 @@
+name: Nimbus test tree
+description: Check out nimbus-eth2 into nbc with vendor/nim-libp2p at the commit under test
+inputs:
+  nimbus-repo:
+    description: "nimbus-eth2 repository, owner/name"
+    required: true
+  nimbus-sha:
+    description: "nimbus-eth2 commit to check out"
+    required: true
+  libp2p-sha:
+    description: "nim-libp2p commit for vendor/nim-libp2p"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Checkout nimbus-eth2
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      with:
+        repository: ${{ inputs.nimbus-repo }}
+        ref: ${{ inputs.nimbus-sha }}
+        path: nbc
+        submodules: recursive
+        persist-credentials: false
+
+    - name: Point vendor/nim-libp2p at the commit under test
+      shell: bash
+      env:
+        LIBP2P_SHA: ${{ inputs.libp2p-sha }}
+        LIBP2P_URL: ${{ github.server_url }}/${{ github.repository }}.git
+      run: |
+        cd nbc/vendor/nim-libp2p
+        git fetch --quiet "$LIBP2P_URL" "$LIBP2P_SHA"
+        git checkout --quiet FETCH_HEAD
+        git submodule update --init --recursive --quiet
+
+    - name: Align vendor submodules with libp2p.nimble
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/../../../tools/align_nimbus_vendor.py" nbc

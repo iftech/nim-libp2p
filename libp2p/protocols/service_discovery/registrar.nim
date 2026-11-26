@@ -27,19 +27,13 @@ proc updateRegistrarMetrics(registrar: Registrar) {.raises: [].} =
   cd_registrar_cache_services.set(registrar.ads.serviceLen.float64)
   cd_iptree_total_ips.set(registrar.ads.ipTree.ipsLen.float64)
 
-proc isExpired(now, ts: Moment, expiry: Duration): bool =
-  now - ts > expiry
-
-proc pruneExpiredEntries[K](
-    timestamps: var Table[K, Moment],
-    bounds: var Table[K, Moment],
-    now: Moment,
-    expiry: Duration,
+proc pruneExpiredBounds[K](
+    timestamps: var Table[K, Moment], bounds: var Table[K, Moment], now: Moment
 ) =
   var toRemove: seq[K] = @[]
 
-  for k, ts in timestamps:
-    if isExpired(now, ts, expiry):
+  for k, bound in bounds:
+    if now > bound:
       toRemove.add(k)
 
   for k in toRemove:
@@ -56,15 +50,18 @@ proc pruneExpiredAds*(registrar: Registrar, advertExpiry: Duration) =
     cd_registrar_ads_expired.inc(expiredCount.float64)
     registrar.updateRegistrarMetrics()
 
-  # Expire service-level bounds
-  pruneExpiredEntries(
-    registrar.timestampService, registrar.boundService, now, advertExpiry
-  )
-
-  # Expire IP-level bounds
-  pruneExpiredEntries(registrar.timestampIp, registrar.boundIp, now, advertExpiry)
+  pruneExpiredBounds(registrar.timestampService, registrar.boundService, now)
+  pruneExpiredBounds(registrar.timestampIp, registrar.boundIp, now)
 
   debug "Pruned expired adverts", count = expiredCount
+
+proc pruneExpiredAdsThrottled*(registrar: Registrar, advertExpiry: Duration) =
+  let nowSecond = Moment.now().epochSeconds
+  if registrar.lastPruneSecond == nowSecond:
+    return
+
+  registrar.lastPruneSecond = nowSecond
+  registrar.pruneExpiredAds(advertExpiry)
 
 proc advertiserIps*(
     disco: ServiceDiscovery, advertiser: PeerId, connectionIps: seq[IpAddress] = @[]
@@ -80,6 +77,9 @@ proc advertiserIps*(
     addrs = disco.switch.peerInfo.addrs
 
   addrs.getIPs()
+
+# Near a full cache the formula reaches uint32.high s; the cap keeps bounds prunable.
+const MaxLowerBoundFactor* = 24
 
 proc waitingTime*(
     registrar: Registrar,
@@ -108,9 +108,8 @@ proc waitingTime*(
     discoConfig.advertExpiry.seconds.float64 * occupancy *
     (serviceSim + discoConfig.ipSimCoefficient * ipSim + discoConfig.safetyParam)
 
-  # Bound & Quantize W
-  w = w.clamp(0.0, float64(uint32.high))
-  w = round(w)
+  let maxWait = (MaxLowerBoundFactor * discoConfig.advertExpiry).seconds.float64
+  w = round(w.clamp(0.0, maxWait))
 
   var waitDuration = w.int64.secs
 
@@ -163,6 +162,8 @@ proc updateLowerBounds*(
       registrar.boundIp[ipKey] = now + waitDuration
       registrar.timestampIp[ipKey] = now
 
+const OversizedAdvertisementCause* = "oversized"
+
 proc isValidAdvertisement*(
     regMsg: RegisterMessage, serviceId: ServiceId
 ): LPResult[Advertisement] =
@@ -170,10 +171,10 @@ proc isValidAdvertisement*(
     return err("advertisement not set")
 
   if advertisment.len > MaxXPRSize:
-    return err("oversized")
+    return err(OversizedAdvertisementCause)
 
   let ad = Advertisement.decode(advertisment).valueOr:
-    return err("cannot decode: " & $error)
+    return err(error, "cannot decode")
 
   for svc in ad.data.services:
     if not svc.isValid():
@@ -204,7 +205,7 @@ proc isValidTicket(
     return err("message & ticket advertisement mismatch")
 
   let registrarPubKey = disco.switch.peerInfo.privateKey.getPublicKey().valueOr:
-    return err("failed to get registrar public key")
+    return err(error, "failed to get registrar public key")
 
   if not ticket.verify(registrarPubKey):
     return err("ticket fails verification")
@@ -299,6 +300,8 @@ proc registration*(
       ),
     )
 
+  disco.registrar.pruneExpiredAdsThrottled(disco.discoConfig.advertExpiry)
+
   let closerPeers = disco.getCloserPeers(serviceId, peerId, disco.discoConfig.fReturn)
 
   var msg = Message(
@@ -359,7 +362,8 @@ proc registration*(
   disco.seatSender(serviceId, peerId)
 
   let ips = disco.advertiserIps(peerId, connectionIps)
-  var tWait = disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now)
+  let fullWait = disco.registrar.waitingTime(disco.discoConfig, serviceId, ips, now)
+  var tWait = fullWait
 
   disco.updateWaitAfterRetry(ticketOpt, unixNow, tWait)
 
@@ -376,7 +380,7 @@ proc registration*(
 
   tWait = min(disco.discoConfig.advertExpiry, tWait)
 
-  disco.registrar.updateLowerBounds(serviceId, ips, tWait, now)
+  disco.registrar.updateLowerBounds(serviceId, ips, fullWait, now)
 
   var ticket = Ticket(
     advertisement: regMsg.advertisement,
@@ -418,6 +422,7 @@ proc getAdvertisements*(
       getAds: Opt.some(GetAdsMessage(advertisements: @[])),
     )
 
+  disco.registrar.pruneExpiredAdsThrottled(disco.discoConfig.advertExpiry)
   disco.seatSender(serviceId, peerId)
 
   let cap = disco.discoConfig.fReturn

@@ -11,9 +11,6 @@ import
 import ../../../tools/[unittest, crypto]
 import ./extension_recording
 
-proc makeRPC(extensions: ControlExtensions = ControlExtensions()): RPCMsg =
-  RPCMsg.withControl(ControlMessage.withExtensions(extensions))
-
 proc createBehaviorPenaltyProc*(): (ref seq[PeerId], UpdatePeerBehaviorPenaltyProc) =
   let peers = new seq[PeerId]
   peers[] = @[]
@@ -26,7 +23,29 @@ proc createBehaviorPenaltyProc*(): (ref seq[PeerId], UpdatePeerBehaviorPenaltyPr
   (peers, cb)
 
 suite "GossipSub Extensions :: State":
-  let peerId = PeerId.random(rng()).get()
+  let peerId = PeerId.random()
+
+  test "negotiation does not dispatch RPC payloads":
+    let ext = RecordingExtension()
+    let state = ExtensionsState.new(rng(), externalExtensions = @[Extension(ext)])
+    state.addPeer(peerId)
+    state.negotiateExtensions(
+      peerId, makeRPC(ControlExtensions(testExtension: Opt.some(true)))
+    )
+    check:
+      ext.negotiatedPeers == @[peerId]
+      ext.handledRPC.len == 0
+
+  test "negotiation pending resets after peer removal":
+    let state = ExtensionsState.new(rng())
+    for rpc in [makeRPC(), RPCMsg()]:
+      check state.negotiationPending(peerId)
+      state.addPeer(peerId)
+      check state.negotiationPending(peerId)
+      state.negotiateExtensions(peerId, rpc)
+      check not state.negotiationPending(peerId)
+      state.removePeer(peerId)
+      check state.negotiationPending(peerId)
 
   test "default unconfigured state":
     var state = ExtensionsState.new(rng())
@@ -75,7 +94,7 @@ suite "GossipSub Extensions :: State":
 
     var peers = newSeq[PeerId]()
     for i in 0 ..< 5:
-      let pid = PeerId.random(rng()).get()
+      let pid = PeerId.random()
       state.handleRPC(pid, makeRPC())
       state.handleRPC(pid, makeRPC())
       peers.add(pid)
@@ -99,7 +118,7 @@ suite "GossipSub Extensions :: State":
     var state = ExtensionsState.new(rng(), behaviorPenaltyCb)
 
     for i in 0 ..< 5:
-      let pid = PeerId.random(rng()).get()
+      let pid = PeerId.random()
       state.handleRPC(pid, makeRPC())
 
       # when peer is removed state is cleared, so second handleRPC()
@@ -111,7 +130,7 @@ suite "GossipSub Extensions :: State":
 
   test "isControlSent tracks addPeer and removePeer":
     var state = ExtensionsState.new(rng())
-    let pid = PeerId.random(rng()).get()
+    let pid = PeerId.random()
 
     # initially false
     check not state.isControlSent(pid)
@@ -135,7 +154,7 @@ suite "GossipSub Extensions :: State":
   test "addPeer called twice does not trigger duplicate onNegotiated":
     var ext = RecordingExtension()
     var state = ExtensionsState.new(rng(), externalExtensions = @[Extension(ext)])
-    let pid = PeerId.random(rng()).get()
+    let pid = PeerId.random()
 
     # peer sends extensions first (path A: handleRPC then addPeer)
     state.handleRPC(pid, makeRPC(ControlExtensions(testExtension: Opt.some(true))))
@@ -149,7 +168,7 @@ suite "GossipSub Extensions :: State":
   test "onNegotiated fires again after removePeer":
     var ext = RecordingExtension()
     var state = ExtensionsState.new(rng(), externalExtensions = @[Extension(ext)])
-    let pid = PeerId.random(rng()).get()
+    let pid = PeerId.random()
 
     state.handleRPC(pid, makeRPC(ControlExtensions(testExtension: Opt.some(true))))
     state.addPeer(pid)
@@ -185,7 +204,7 @@ suite "GossipSub Extensions :: State":
     check ext.negotiatedPeers.len == 0
 
     # assert that onNegotiated is called (handleRPC, then addPeer)
-    let peerId1 = PeerId.random(rng()).get()
+    let peerId1 = PeerId.random()
     state.handleRPC(peerId1, makeRPC(ControlExtensions(testExtension: Opt.some(true))))
     check ext.handledRPC.len == 3
     check ext.negotiatedPeers.len == 0
@@ -193,7 +212,7 @@ suite "GossipSub Extensions :: State":
     check ext.negotiatedPeers == @[peerId1]
 
     # assert that onNegotiated is called (addPeer, then handleRPC)
-    let peerId2 = PeerId.random(rng()).get()
+    let peerId2 = PeerId.random()
     state.addPeer(peerId2)
     check ext.negotiatedPeers.len == 1
     state.handleRPC(peerId2, makeRPC(ControlExtensions(testExtension: Opt.some(true))))

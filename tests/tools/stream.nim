@@ -31,3 +31,22 @@ proc readExactlyAsStr*(stream: Stream, nbytes: int): Future[string] {.async.} =
   var buffer = newSeq[byte](nbytes)
   await stream.readExactly(addr buffer[0], nbytes)
   string.fromBytes(buffer)
+
+type HalfCloseStream* = ref object of Connection
+  ## Close ends only the wrapper, so reads reach the open inner stream
+  inner: Connection
+
+method readOnce*(
+    s: HalfCloseStream, pbytes: pointer, nbytes: int
+): Future[int] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
+  s.inner.readOnce(pbytes, nbytes)
+
+method write*(
+    s: HalfCloseStream, msg: sink seq[byte]
+): Future[void] {.async: (raises: [CancelledError, LPStreamError], raw: true).} =
+  s.inner.write(move(msg))
+
+proc newHalfCloseStream*(inner: Connection): HalfCloseStream =
+  let stream = HalfCloseStream(inner: inner)
+  stream.initStream()
+  stream

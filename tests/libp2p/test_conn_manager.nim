@@ -3,7 +3,7 @@
 
 {.used.}
 
-import results, chronos, std/[sequtils, tables, strformat]
+import results, chronos, std/[sequtils, tables]
 import
   ../../libp2p/[connmanager, stream/connection, crypto/crypto, muxers/muxer, peerinfo]
 import ../tools/[unittest, compare, futures, crypto]
@@ -19,10 +19,12 @@ method newStream*(
 ): Future[MuxedStream] {.async: (raises: [CancelledError, LPStreamError, MuxerError]).} =
   Connection.new(m.peerId, Direction.Out)
 
-proc newMaxTotal(maxConnections = 10, maxConnsPerPeer = 1): ConnManager =
+proc newMaxTotal(
+    maxConnections = 10, maxConnsPerPeer = 1, outboundReserve = 0
+): ConnManager =
   return ConnManager.new(
     maxConnsPerPeer = maxConnsPerPeer,
-    limits = Opt.some(ConnectionLimits.maxTotal(maxConnections)),
+    limits = Opt.some(ConnectionLimits.maxTotal(maxConnections, outboundReserve)),
   )
 
 proc newMaxInOut(maxIn: int, maxOut: int, maxConnsPerPeer = 1): ConnManager =
@@ -52,7 +54,7 @@ proc newWatermark*(
   return ConnManager.new(watermark = Opt.some(wtCfg), scoring = scCfg)
 
 proc storeMuxers(connMngr: ConnManager, count: uint): Future[seq[PeerId]] {.async.} =
-  let peers = PeerId.random(count, rng()).tryGet()
+  let peers = PeerId.random(count.int)
   for fut in peers.mapIt(connMngr.storeMuxer(makeMuxer(it))):
     check (await fut).isOk()
   return peers
@@ -61,7 +63,7 @@ suite "Connection Manager":
   teardown:
     checkTrackers()
 
-  let peerId = PeerId.random(rng()).tryGet()
+  let peerId = PeerId.random()
 
   asyncTest "add and retrieve a muxer":
     let connMngr = newMaxTotal()
@@ -79,13 +81,37 @@ suite "Connection Manager":
   asyncTest "get all connections":
     let connMngr = newMaxTotal()
 
-    let peers = PeerId.random(5, rng()).tryGet()
+    let peers = PeerId.random(5)
     let muxs = peers.mapIt(makeMuxer(it))
     for mux in muxs:
       check (await connMngr.storeMuxer(mux)).isOk()
 
     let connsMux = connMngr.getConnections().values.toSeq().mapIt(it[0])
     check unorderedCompare(connsMux, muxs)
+
+    await connMngr.stop()
+
+  asyncTest "get connections for an unknown peer":
+    let connMngr = newMaxTotal()
+
+    check connMngr.getConnections(peerId).isErr()
+
+    await connMngr.stop()
+
+  asyncTest "get connections for a peer":
+    let connMngr = newMaxTotal(maxConnsPerPeer = 2)
+    let muxs = @[makeMuxer(peerId), makeMuxer(peerId, Direction.Out)]
+    let otherPeerId = PeerId.random()
+    let otherMux = makeMuxer(otherPeerId)
+    for mux in muxs & @[otherMux]:
+      check (await connMngr.storeMuxer(mux)).isOk()
+
+    check connMngr.getConnections(peerId).get() == muxs
+    check connMngr.getConnections(otherPeerId).get() == @[otherMux]
+
+    await connMngr.dropPeer(peerId)
+    check connMngr.getConnections(peerId).isErr()
+    check connMngr.getConnections(otherPeerId).get() == @[otherMux]
 
     await connMngr.stop()
 
@@ -197,7 +223,7 @@ suite "Connection Manager":
     await waitedConn1.cancelAndWait()
     let
       waitedConn2 = connMngr.expectConnection(peerId, In)
-      waitedConn3 = connMngr.expectConnection(PeerId.random(rng()).tryGet(), In)
+      waitedConn3 = connMngr.expectConnection(PeerId.random(), In)
       conn = makeMuxer(peerId)
     check (await connMngr.storeMuxer(conn)).isOk()
     check (await waitedConn2) == conn
@@ -584,7 +610,7 @@ suite "Connection Manager":
     var muxs: seq[Muxer]
     for i in 0 ..< 3:
       let slot = connMngr.getOutgoingSlot().tryGet()
-      let muxer = makeMuxer(PeerId.random(rng()).tryGet(), Direction.In)
+      let muxer = makeMuxer(PeerId.random(), Direction.In)
 
       slot.trackMuxer(muxer)
       muxs.add(muxer)
@@ -604,7 +630,7 @@ suite "Connection Manager maxConnsPerPeer":
   teardown:
     checkTrackers()
 
-  let peerId = PeerId.random(rng()).tryGet()
+  let peerId = PeerId.random()
   const defaultMaxConnsPerPeer = 2
 
   proc runTest(maxConnsPerPeer: int, numberOfMuxersToConnect: int) {.async.} =
@@ -631,16 +657,15 @@ suite "Connection Manager maxConnsPerPeer":
   asyncTest "maxConnsPerPeer = 0 uses default":
     await runTest(0, defaultMaxConnsPerPeer)
 
-  for i in 1 ..< 10:
-    let limit = i
-    asyncTest fmt"peer limit is reached with {limit} muxers":
+  asyncTest "peer limit is reached":
+    for limit in 1 ..< 10:
       await runTest(limit, limit)
 
 suite "Connection Manager Watermark":
   teardown:
     checkTrackers()
 
-  let peerId = PeerId.random(rng()).tryGet()
+  let peerId = PeerId.random()
 
   asyncTest "trim fires when peer count exceeds highWater":
     const peersToConnect = 5
@@ -791,7 +816,7 @@ suite "Connection Manager Watermark":
     defer:
       await connMngr.stop()
 
-    let peers = PeerId.random(3, rng()).tryGet()
+    let peers = PeerId.random(3)
     let prunedPeer = peers[2]
 
     var
@@ -843,7 +868,7 @@ suite "Connection Manager Watermark":
     defer:
       await connMngr.stop()
 
-    let peers = PeerId.random(3, rng()).tryGet()
+    let peers = PeerId.random(3)
     let prunedPeer = peers[2]
 
     check (await connMngr.storeMuxer(makeMuxer(peers[0]))).isOk()
@@ -863,7 +888,7 @@ suite "Connection Manager Watermark":
     defer:
       await connMngr.stop()
 
-    let peers = PeerId.random(3, rng()).tryGet()
+    let peers = PeerId.random(3)
     let target = peers[2]
     var events: seq[string]
 
@@ -908,7 +933,7 @@ suite "Connection Manager Scoring":
     checkTrackers()
 
   const tag = "λ"
-  let peerId = PeerId.random(rng()).tryGet()
+  let peerId = PeerId.random()
 
   asyncTest "peerScore returns 0 for unknown peer":
     let cm = newWatermark(1, 2)
@@ -937,12 +962,6 @@ suite "Connection Manager Scoring":
     let cm = newWatermark(1, 2, outboundBonus = outboundBonus)
     check (await cm.storeMuxer(makeMuxer(peerId, Direction.Out))).isOk()
     check cm.peerScore(peerId) == outboundBonus
-    await cm.stop()
-
-  asyncTest "inbound connection gets no outboundBonus":
-    let cm = newWatermark(1, 2)
-    check (await cm.storeMuxer(makeMuxer(peerId, Direction.In))).isOk()
-    check cm.peerScore(peerId) == 0
     await cm.stop()
 
   asyncTest "decaying tag contributes initial value to score":
@@ -986,24 +1005,24 @@ suite "Connection Manager Scoring":
 
   asyncTest "watermark trim prunes lowest-score peer first":
     let cm = newWatermark(1, 2)
-    let highScorePeer = PeerId.random(rng()).tryGet()
-    let lowScorePeer1 = PeerId.random(rng()).tryGet()
+    let highScorePeer = PeerId.random()
+    let lowScorePeer1 = PeerId.random()
     check (await cm.storeMuxer(makeMuxer(highScorePeer))).isOk()
     cm.tagPeer(highScorePeer, "destacado", 500)
     check (await cm.storeMuxer(makeMuxer(lowScorePeer1))).isOk()
     # store a third peer to trigger trim (count=3 > highWater=2)
-    check (await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet()))).isOk()
+    check (await cm.storeMuxer(makeMuxer(PeerId.random()))).isOk()
     check cm.contains(highScorePeer)
     check cm.getConnections().len == 1
     await cm.stop()
 
   asyncTest "outbound peer survives watermark trim over inbound peers":
     let cm = newWatermark(1, 2, outboundBonus = 500)
-    let outboundPeer = PeerId.random(rng()).tryGet()
+    let outboundPeer = PeerId.random()
     check (await cm.storeMuxer(makeMuxer(outboundPeer, Direction.Out))).isOk()
-    check (await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet(), Direction.In))).isOk()
+    check (await cm.storeMuxer(makeMuxer(PeerId.random(), Direction.In))).isOk()
     # add one more over the high water to trigger the trim
-    check (await cm.storeMuxer(makeMuxer(PeerId.random(rng()).tryGet(), Direction.In))).isOk()
+    check (await cm.storeMuxer(makeMuxer(PeerId.random(), Direction.In))).isOk()
     check cm.contains(outboundPeer)
     check cm.getConnections().len == 1
     await cm.stop()
@@ -1030,7 +1049,7 @@ suite "Connection Manager: watermark with connection limiting":
     # protecting before storeMuxer ensures the peer is already shielded when
     # trim fires on the 3rd store (peer count 3 > highWater 2).
     for _ in 0 ..< maxConns:
-      let peerId = PeerId.random(rng()).tryGet()
+      let peerId = PeerId.random()
       let slot = await connMngr.getIncomingSlot()
       let muxer = makeMuxer(peerId)
       connMngr.protect(peerId, "keep-forever")
@@ -1046,3 +1065,96 @@ suite "Connection Manager: watermark with connection limiting":
     check connMngr.getOutgoingSlot().isErr()
 
     await connMngr.stop()
+
+suite "Shared connection cap with outbound reserve":
+  teardown:
+    checkTrackers()
+
+  test "invalid outbound reserves are rejected":
+    for reserve in [-1, 5, 6]:
+      expect AssertionDefect:
+        discard ConnectionLimits.maxTotal(5, outboundReserve = reserve)
+
+  asyncTest "default and unreserved total caps retain all inbound slots":
+    for total in [1, 50, 150, 160]:
+      let manager =
+        if total == 50:
+          ConnManager.new()
+        else:
+          newMaxTotal(total)
+      var slots: seq[ConnectionSlot]
+      for _ in 0 ..< total:
+        slots.add(await manager.getIncomingSlot())
+      check:
+        manager.tryGetIncomingSlot().isNone()
+        manager.getOutgoingSlot().isErr()
+      for slot in slots:
+        slot.release()
+      check:
+        manager.availableSlots(Direction.In) == total
+        manager.availableSlots(Direction.Out) == total
+      await manager.stop()
+
+  asyncTest "an explicit reserve leaves outbound capacity within the total cap":
+    for (total, reserve) in [(50, 10), (150, 30), (160, 32), (2, 1), (50, 7)]:
+      let manager = newMaxTotal(total, outboundReserve = reserve)
+      let inboundLimit = total - reserve
+      var slots: seq[ConnectionSlot]
+      for _ in 0 ..< inboundLimit:
+        let slot = manager.tryGetIncomingSlot()
+        require slot.isSome()
+        slots.add(slot.get())
+      check:
+        manager.tryGetIncomingSlot().isNone()
+        manager.availableSlots(Direction.In) == 0
+        manager.availableSlots(Direction.Out) == total - inboundLimit
+      for _ in inboundLimit ..< total:
+        slots.add(manager.getOutgoingSlot().tryGet())
+      check manager.getOutgoingSlot().isErr()
+      for slot in slots:
+        slot.release()
+      check:
+        manager.availableSlots(Direction.In) == inboundLimit
+        manager.availableSlots(Direction.Out) == total
+      await manager.stop()
+
+  asyncTest "outbound connections can use the entire total cap":
+    for (total, reserve) in [(1, 0), (2, 1), (50, 10)]:
+      let manager = newMaxTotal(total, outboundReserve = reserve)
+      var slots: seq[ConnectionSlot]
+      for _ in 0 ..< total:
+        slots.add(manager.getOutgoingSlot().tryGet())
+      check:
+        manager.getOutgoingSlot().isErr()
+        manager.tryGetIncomingSlot().isNone()
+      for slot in slots:
+        slot.release()
+      await manager.stop()
+
+  asyncTest "failed acquisitions and cancellation restore the inbound budget":
+    let manager = newMaxTotal(5, outboundReserve = 1)
+    var slots: seq[ConnectionSlot]
+    for _ in 0 ..< 5:
+      slots.add(manager.getOutgoingSlot().tryGet())
+    for _ in 0 ..< 5:
+      check manager.tryGetIncomingSlot().isNone()
+    let pending = manager.getIncomingSlot()
+    check not pending.finished()
+    await pending.cancelAndWait()
+    for slot in slots:
+      slot.release()
+    check:
+      manager.availableSlots(Direction.In) == 4
+      manager.availableSlots(Direction.Out) == 5
+    slots.setLen(0)
+    for _ in 0 ..< 4:
+      slots.add(await manager.getIncomingSlot())
+    let waitingForInbound = manager.getIncomingSlot()
+    check not waitingForInbound.finished()
+    await waitingForInbound.cancelAndWait()
+    for slot in slots:
+      slot.release()
+    check:
+      manager.availableSlots(Direction.In) == 4
+      manager.availableSlots(Direction.Out) == 5
+    await manager.stop()

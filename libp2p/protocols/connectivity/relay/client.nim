@@ -80,7 +80,7 @@ proc handleRelayedConnect(
   try:
     await stream.writeLp(encode(msg))
   except LPStreamError as e:
-    return err("error writing stop status: " & e.msg)
+    return err(e, "error writing stop status")
 
   # This sound redundant but the callback could, in theory, be set to nil during
   # stream.writeLp so it's safer to double check
@@ -90,30 +90,35 @@ proc handleRelayedConnect(
     await cl.onNewConnection(stream, limitDuration, limitData)
   ok()
 
+const ReservationFailedCause* = "Reservation failed"
+
 proc toRsvp(msg: HopMessage, relayPeerId: PeerId): LPResult[Rsvp] =
-  if msg.msgType != Opt.some(HopMessageType.Status):
+  if msg.msgType != HopMessageType.Status:
     return err("Unexpected relay response type")
-  if msg.status.get(UnexpectedMessage) != Ok:
-    return err("Reservation failed")
+  if msg.status != Ok:
+    return err(ReservationFailedCause)
 
   let reservation = msg.reservation.valueOr:
     return err("Missing reservation information")
   let expire = reservation.expire.valueOr:
     return err("Missing expire")
-  if expire > int64.high().uint64 or getTime().utc > expire.int64.fromUnix.utc:
+  let now = getTime().toUnix()
+  if expire > int64.high().uint64 or expire < now.uint64:
     return err("Bad expiration date")
 
+  let maxExpire = (now + MaxReservationTTL.inSeconds()).uint64
+  if expire > maxExpire:
+    debug "Clamping relay reservation expiry", relayPeerId, expire, maxExpire
+
   var rsvp = Rsvp(
-    expire: expire,
+    expire: min(expire, maxExpire),
     addrs: reservation.addrs,
     limitDuration: msg.limit.get(Limit()).duration,
     limitData: msg.limit.get(Limit()).data,
   )
   reservation.svoucher.ifValue(sv):
     let svoucher = SignedVoucher.decode(sv).valueOr:
-      if error == EnvelopeFieldMissing:
-        return err("Missing voucher field")
-      return err("Invalid voucher")
+      return err("Invalid voucher: " & $error)
     let voucherRelayPeerId = svoucher.data.relayPeerId.valueOr:
       return err("Missing voucher relay PeerId")
     if voucherRelayPeerId != relayPeerId:
@@ -129,7 +134,7 @@ proc tryReserve*(
     try:
       await cl.switch.dial(peerId, addrs, RelayV2HopCodec)
     except DialFailedError as e:
-      return err("dial relay peer failed: " & e.msg)
+      return err(e, "dial relay peer failed")
   defer:
     await stream.close()
 
@@ -139,10 +144,10 @@ proc tryReserve*(
         encode(HopMessage(msgType: Opt.some(HopMessageType.Reserve)))
       )
       HopMessage.decode(await stream.readLp(RelayClientMsgSize)).valueOr:
-        return err("Invalid reservation response: " & error)
+        return err(error, "Invalid reservation response")
     except LPStreamError as e:
       trace "error writing or reading reservation message", err = e.msg
-      return err(e.msg)
+      return err(e)
 
   msg.toRsvp(peerId)
 
@@ -151,12 +156,12 @@ proc reserve*(
 ): Future[Rsvp] {.async: (raises: [ReservationError, CancelledError]).} =
   (await cl.tryReserve(peerId, addrs)).valueOrRaise(ReservationError)
 
-func checkHopResponse(msg: LPResult[RelayMessage]): LPResult[void] =
+func checkHopResponse(msg: Result[RelayMessage, string]): LPResult[void] =
   let response = msg.valueOr:
-    return err("Hop can't open destination stream: " & error)
-  if response.msgType != Opt.some(RelayType.Status):
+    return err(error, "Hop can't open destination stream")
+  if response.msgType != RelayType.Status:
     return err("Hop can't open destination stream: wrong message type")
-  if response.status != Opt.some(StatusV1.Success):
+  if response.status != StatusV1.Success:
     return err("Hop can't open destination stream: status failed")
   ok()
 
@@ -177,7 +182,7 @@ proc tryDialPeerV1*(
     await stream.writeLp(encode(msg))
   except LPStreamError as e:
     trace "error writing hop request", err = e.msg
-    return err("error writing hop request: " & e.msg)
+    return err(e, "error writing hop request")
 
   let response =
     try:
@@ -185,7 +190,7 @@ proc tryDialPeerV1*(
     except LPStreamError as e:
       trace "error reading stop response", err = e.msg
       await sendStatus(stream, StatusV1.HopCantOpenDstStream)
-      return err("error reading stop response: " & e.msg)
+      return err(e, "error reading stop response")
 
   checkHopResponse(response).isOkOr:
     await sendStatus(stream, StatusV1.HopCantOpenDstStream)
@@ -199,9 +204,9 @@ proc dialPeerV1*(
   (await cl.tryDialPeerV1(stream, dstPeerId, dstAddrs)).valueOrRaise(RelayV1DialError)
 
 func checkStopResponse(msg: HopMessage): LPResult[void] =
-  if msg.msgType != Opt.some(HopMessageType.Status):
+  if msg.msgType != HopMessageType.Status:
     return err("Unexpected stop response")
-  if msg.status.get(UnexpectedMessage) != Ok:
+  if msg.status != Ok:
     return err("Relay stop failure")
   ok()
 
@@ -221,10 +226,10 @@ proc tryDialPeerV2*(
         encode(HopMessage(msgType: Opt.some(HopMessageType.Connect), peer: Opt.some(p)))
       )
       HopMessage.decode(await relayConn.readLp(RelayClientMsgSize)).valueOr:
-        return err("invalid stop response: " & error)
+        return err(error, "invalid stop response")
     except LPStreamError as e:
       trace "error exchanging stop messages", err = e.msg
-      return err("error exchanging stop messages: " & e.msg)
+      return err(e, "error exchanging stop messages")
 
   checkStopResponse(response).isOkOr:
     trace "Relay stop failed", description = response.status
@@ -251,16 +256,16 @@ proc handleStopStreamV2(
     try:
       StopMessage.decode(await stream.readLp(RelayClientMsgSize))
     except LPStreamError as e:
-      return err("error reading stop message: " & e.msg)
+      return err(e, "error reading stop message")
   let msg = decoded.valueOr:
     try:
       await sendHopStatus(stream, MalformedMessage)
     except LPStreamError as e:
-      return err("error writing hop status: " & e.msg)
+      return err(e, "error writing hop status")
     return ok()
   trace "client circuit relay v2 handle stream", msg
 
-  if msg.msgType != Opt.some(StopMessageType.Connect):
+  if msg.msgType != StopMessageType.Connect:
     trace "Unexpected client / relayv2 handshake", msgType = msg.msgType
     await sendStopError(stream, MalformedMessage)
     return ok()
@@ -303,7 +308,7 @@ proc handleStreamV1(
     try:
       RelayMessage.decode(await stream.readLp(RelayClientMsgSize))
     except LPStreamError as e:
-      return err("error reading relay message: " & e.msg)
+      return err(e, "error reading relay message")
   let msg = decoded.valueOr:
     await sendStatus(stream, StatusV1.MalformedMessage)
     return ok()
@@ -314,16 +319,17 @@ proc handleStreamV1(
     await sendStatus(stream, StatusV1.MalformedMessage)
     return ok()
 
+  let servesHop = cl.canHop and cl.isCircuitRelayV1
   case typ
   of RelayType.Hop:
-    if cl.canHop:
+    if servesHop:
       await cl.handleHop(stream, msg)
     else:
       await sendStatus(stream, StatusV1.HopCantSpeakRelay)
   of RelayType.Stop:
     await cl.handleStop(stream, msg)
   of RelayType.CanHop:
-    if cl.canHop:
+    if servesHop:
       await sendStatus(stream, StatusV1.Success)
     else:
       await sendStatus(stream, StatusV1.HopCantSpeakRelay)
@@ -346,7 +352,7 @@ proc new*(
 ): T =
   let cl = T(
     canHop: canHop,
-    reservationTTL: reservationTTL,
+    reservationTTL: clampReservationTTL(reservationTTL),
     limit: Limit(duration: limitDuration, data: limitData),
     heartbeatSleepTime: heartbeatSleepTime,
     maxCircuit: maxCircuit,
@@ -367,9 +373,9 @@ proc new*(
         await cl.handleHopStreamV2(stream)
         ok()
       except LPStreamError as e:
-        err(e.msg)
+        err(e)
     else:
-      err("unexpected protocol " & proto)
+      err(proto, "unexpected protocol")
 
   proc handleStream(
       stream: Stream, proto: string

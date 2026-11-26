@@ -3,10 +3,12 @@
 
 {.used.}
 
-import chronos, chronos/rateLimit, stew/byteutils, utils, sequtils
+import chronos, chronos/rateLimit, stew/byteutils, utils, sequtils, strutils
 import ../../../libp2p/[muxers/muxer, connmanager, switch]
 import ../../../libp2p/stream/[bufferstream, connection]
 import ../../../libp2p/utils/future
+import ../../../libp2p/utils/protobuf_metrics
+import ../../tools/metrics_utils
 import
   ../../../libp2p/protocols/pubsub/[
     floodsub,
@@ -30,6 +32,38 @@ suite "GossipSub":
 
   teardown:
     checkTrackers()
+
+  proc checkGraylistedDecoding(first: RPCMsg) {.async.} =
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    let peer = peers[0]
+    gossipSub.parameters.graylistThreshold = 100000.0
+
+    gossipSub.extensionsState.removePeer(peer.peerId)
+    await gossipSub.rpcHandler(peer, first.encode(false))
+    check not gossipSub.extensionsState.negotiationPending(peer.peerId)
+    let
+      decoded = metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"])
+      ignored = currentGraylistedRpcs("unknown")
+      overhead = peer.overheadBytesInSecondWindow
+      data = RPCMsg.withSubs([topic], true).encode(false)
+    await gossipSub.rpcHandler(peer, data)
+    check:
+      metricValue(libp2p_protobuf_messages_received, ["gossipsub.RPCMsg"]) == decoded
+      currentGraylistedRpcs("unknown") == ignored + 1
+      peer.overheadBytesInSecondWindow == overhead + data.len
+      not gossipSub.gossipsub.hasPeerId(topic, peer.peerId)
+
+  asyncTest "rpcHandler - graylisted peers stop decoding after an extension advertisement":
+    # Even an empty ControlExtensions records an explicit capability advertisement.
+    await checkGraylistedDecoding(
+      RPCMsg.withControl(ControlMessage.withExtensions(ControlExtensions()))
+    )
+
+  asyncTest "rpcHandler - graylisted peers stop decoding after an RPC without extensions":
+    # Without an advertisement, receivedNonExtCtrlMsg settles negotiation instead.
+    await checkGraylistedDecoding(RPCMsg())
 
   asyncTest "onNewPeer - sets peer stats and budgets and disconnects if bad score":
     # Given a GossipSub instance with one peer
@@ -127,7 +161,7 @@ suite "GossipSub":
     let
       gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
       connMngr = gossipSub.switch.connManager
-      peerId = randomPeerId()
+      peerId = PeerId.random()
       muxer = Muxer(connection: Connection.new(peerId, Direction.In))
       unblockConnected = newAsyncEvent()
       connectedStartedFut = newFuture[void]("connectedStarted")
@@ -170,7 +204,7 @@ suite "GossipSub":
       await teardownGossipSub(gossipSub, conns)
 
     # And a non-existent peer ID
-    let nonExistentPeerId = randomPeerId()
+    let nonExistentPeerId = PeerId.random()
 
     # When unsubscribePeer is called with non-existent peer
     gossipSub.unsubscribePeer(nonExistentPeerId)
@@ -188,7 +222,7 @@ suite "GossipSub":
     # in onTopicSubscription (via sendSubs -> send -> sendObservers). We use it
     # to mutate `gossipSub.peers` mid-iteration, standing in for an incoming
     # subscription arriving on the network path.
-    let extraPeerId = randomPeerId()
+    let extraPeerId = PeerId.random()
     let extraPeer = peers[0]
 
     var injected = false
@@ -333,7 +367,7 @@ suite "GossipSub":
       await teardownGossipSub(gossipSub, conns)
 
     # And peer is not in gossipSub.peers
-    let nonExistentPeerId = randomPeerId()
+    let nonExistentPeerId = PeerId.random()
     peer.peerId = nonExistentPeerId # override PeerId
 
     # When a subscribe message is sent via RPC handler
@@ -348,7 +382,7 @@ suite "GossipSub":
     defer:
       await teardownGossipSub(gossipSub, conns)
 
-    let disconnectedPeer = randomPeerId()
+    let disconnectedPeer = PeerId.random()
     let pubSubPeer = gossipSub.getOrCreatePeer(disconnectedPeer, @[], GossipSubCodec_12)
 
     check:
@@ -357,10 +391,32 @@ suite "GossipSub":
       # peers created by other means are untouched
       peers[0].peerId in gossipSub.peers
 
+  asyncTest "handleConn caps each peer independently and preserves send streams":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(2, "topic")
+    var readers: seq[Future[void]]
+    var streams: seq[TestBufferStream]
+    for peer in peers:
+      for i in 0 ..< MaxInboundStreamsPerPeer + 1:
+        let stream = TestBufferStream.new(noop)
+        stream.peerId = peer.peerId
+        streams.add(stream)
+        readers.add(gossipSub.handleConn(stream, GossipSubCodec_12))
+        await stream.pushData(@[byte 0x80, 0x08, 0x01])
+
+    for peer in peers:
+      check streams.countIt(it.peerId == peer.peerId and not it.closed) ==
+        MaxInboundStreamsPerPeer
+      check not peer.sendStream.closed
+      await peer.stopTasks()
+    await allFutures(readers)
+    for stream in streams:
+      check stream.closed
+    await teardownGossipSub(gossipSub, conns)
+
   test "PubSubPeer requires a non-nil handler":
     expect AssertionDefect:
       discard
-        PubSubPeer.new(randomPeerId(), nil, nil, GossipSubCodec_12, 1024 * 1024, nil)
+        PubSubPeer.new(PeerId.random(), nil, nil, GossipSubCodec_12, 1024 * 1024, nil)
 
   asyncTest "runHandleLoop dispatches the first message":
     var handled = false
@@ -373,7 +429,7 @@ suite "GossipSub":
     let
       stream = TestBufferStream.new(noop)
       peer = PubSubPeer.new(
-        randomPeerId(), nil, nil, GossipSubCodec_12, 1024 * 1024, handler = handler
+        PeerId.random(), nil, nil, GossipSubCodec_12, 1024 * 1024, handler = handler
       )
     defer:
       await peer.stopTasks()
@@ -427,6 +483,62 @@ suite "GossipSub":
 
     check gossipSub.mcache.msgs.len == 0
 
+  asyncTest "rpcHandler - an outstanding IWANT is forgotten when the message arrives":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(2, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    gossipSub.verifySignature = false
+
+    let
+      sender = peers[0]
+      announcer = peers[1]
+      msg = Message.init(conns[0].peerId, "bar".toBytes(), topic, Opt.some(1'u64))
+      msgId = gossipSub.msgIdProvider(msg).get()
+      ihave = ControlIHave(topicID: topic, messageIDs: @[msgId])
+
+    # Given the announcer was asked for the message
+    check:
+      gossipSub.handleIHave(announcer, @[ihave]).messageIDs == @[msgId]
+      gossipSub.requestedIWants[gossipSub.salt(msgId)].len == 1
+
+    # When the message arrives from another peer
+    await gossipSub.rpcHandler(sender, RPCMsg.withMessages(msg).encode(false))
+
+    # Then the request is forgotten and the seen message is not requested again
+    check:
+      gossipSub.salt(msgId) notin gossipSub.requestedIWants
+      gossipSub.handleIHave(announcer, @[ihave]).messageIDs.len == 0
+
+  asyncTest "rpcHandler - an outstanding IWANT is forgotten when the message is invalid":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(3, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+
+    let
+      sender = peers[0]
+      announcer = peers[1]
+      otherAnnouncer = peers[2]
+      msg = Message.init(conns[0].peerId, "bar".toBytes(), topic, Opt.some(1'u64))
+      msgId = gossipSub.msgIdProvider(msg).get()
+      ihave = ControlIHave(topicID: topic, messageIDs: @[msgId])
+
+    # Given the announcer was asked for the message
+    check:
+      gossipSub.handleIHave(announcer, @[ihave]).messageIDs == @[msgId]
+
+    # When an unsigned copy arrives and fails verification
+    await gossipSub.rpcHandler(sender, RPCMsg.withMessages(msg).encode(false))
+
+    # Then the message is not seen, yet the request is released
+    check:
+      not gossipSub.hasSeen(gossipSub.salt(msgId))
+      gossipSub.salt(msgId) notin gossipSub.requestedIWants
+
+    # And another peer can still be asked for it
+    check:
+      gossipSub.handleIHave(otherAnnouncer, @[ihave]).messageIDs == @[msgId]
+
   test "seen cache uses configured maximum size":
     let
       params = GossipSubParams.init(seenMaxSize = 3)
@@ -440,6 +552,62 @@ suite "GossipSub":
       gossipSub.seen.len == 3
       gossipSub.salt("0".toBytes()) notin gossipSub.seen
 
+  test "invalid topic stream configuration fails GossipSub construction":
+    const largeMessageSize = 10 * 1024 * 1024
+    for (config, maxMessageSize) in [
+      (TopicStreamsConfig(maxIncomingStreams: 2), DefaultPubSubMaxMessageSize),
+      # Raising the message limit must not leave the incoming byte budget too small.
+      (TopicStreamsConfig(), largeMessageSize),
+    ]:
+      let params = GossipSubParams.init(topicStreamsConfig = Opt.some(config))
+      expect InitializationError:
+        discard GossipSub.init(
+          makeStandardSwitch(),
+          parameters = params,
+          maxMessageSize = maxMessageSize,
+          rng = rng(),
+        )
+
+  test "a zero outbound budget fails GossipSub construction":
+    let params = GossipSubParams.init(maxOutboundQueueBytes = 0)
+    expectMsg InitializationError,
+      "gossipsub: maxOutboundQueueBytes parameter error, Must be > 0":
+      discard GossipSub.init(makeStandardSwitch(), parameters = params, rng = rng())
+
+  test "topic streams reject an outbound budget below the minimum":
+    const maxMessageSize = 64
+    for budget in [127, 128, 135]:
+      let params = GossipSubParams.init(
+        topicStreamsConfig = Opt.some(TopicStreamsConfig()),
+        maxOutboundQueueBytes = budget,
+      )
+      expectMsg InitializationError,
+        "gossipsub: non-High outbound budget must be at least twice maxMessageSize with topic streams":
+        discard GossipSub.init(
+          makeStandardSwitch(),
+          parameters = params,
+          maxMessageSize = maxMessageSize,
+          rng = rng(),
+        )
+
+  test "topic streams accept the minimum outbound budget including the High reserve":
+    let params = GossipSubParams.init(
+      topicStreamsConfig = Opt.some(TopicStreamsConfig()), maxOutboundQueueBytes = 136
+    )
+    discard GossipSub.init(
+      makeStandardSwitch(), parameters = params, maxMessageSize = 64, rng = rng()
+    )
+
+  test "disabled topic streams accept outbound budgets below the topic stream minimum":
+    for budget in [127, 128, 135, 136]:
+      let params = GossipSubParams.init(
+        topicStreamsConfig = Opt.none(TopicStreamsConfig),
+        maxOutboundQueueBytes = budget,
+      )
+      discard GossipSub.init(
+        makeStandardSwitch(), parameters = params, maxMessageSize = 64, rng = rng()
+      )
+
   asyncTest "rpcHandler - subscription limits":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
     gossipSub.topicsHigh = 10
@@ -450,7 +618,7 @@ suite "GossipSub":
     let lotOfSubs = RPCMsg.withSubs(tooManyTopics, true)
 
     let conn = TestBufferStream.new(noop)
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     conn.peerId = peerId
     let peer = gossipSub.getPubSubPeer(peerId)
 
@@ -467,7 +635,7 @@ suite "GossipSub":
     gossipSub.topicsHigh = 10
 
     let conn = TestBufferStream.new(noop)
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     conn.peerId = peerId
     let peer = gossipSub.getPubSubPeer(peerId)
 
@@ -492,6 +660,41 @@ suite "GossipSub":
       gossipSub.gossipsub.hasKey(topic & "late")
 
     await conn.close()
+
+  asyncTest "rpcHandler - cumulative subscription topic byte budget":
+    let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
+    let peer = gossipSub.getPubSubPeer(PeerId.random())
+    gossipSub.maxMessageSize = 1024
+    let
+      first = repeat('a', 512)
+      second = repeat('b', 512)
+      replacement = repeat('c', 512)
+
+    for (name, subscribe) in [
+      (first, true),
+      (second, true),
+      (first, true),
+      (replacement, false),
+      (replacement, true),
+    ]:
+      await gossipSub.rpcHandler(
+        peer, RPCMsg.withSubs(@[name], subscribe).encode(false)
+      )
+    check:
+      gossipSub.gossipsub.hasPeer(first, peer)
+      gossipSub.gossipsub.hasPeer(second, peer)
+      not gossipSub.gossipsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
+
+    for (name, subscribe) in [(first, false), (replacement, true)]:
+      await gossipSub.rpcHandler(
+        peer, RPCMsg.withSubs(@[name], subscribe).encode(false)
+      )
+    check:
+      not gossipSub.gossipsub.hasPeer(first, peer)
+      gossipSub.gossipsub.hasPeer(second, peer)
+      gossipSub.gossipsub.hasPeer(replacement, peer)
+      peer.subscribedTopicBytes == 1024
 
   asyncTest "rpcHandler - extensions only see accepted subscriptions":
     proc unionPartsMetadata(
@@ -531,7 +734,7 @@ suite "GossipSub":
     )
     gossipSub.topicsHigh = 2
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let peer = gossipSub.getPubSubPeer(peerId)
 
     var subs: seq[SubOpts]
@@ -551,7 +754,7 @@ suite "GossipSub":
   asyncTest "rpcHandler - invalid message bytes":
     let gossipSub = TestGossipSub.init(makeStandardSwitch(), rng = rng())
 
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     let peer = gossipSub.getPubSubPeer(peerId)
 
     expect PeerMessageDecodeError:
@@ -803,6 +1006,27 @@ suite "GossipSub":
     check:
       gossipSub.getPeerTopicInfo(peer.peerId, topic).invalidMessageDeliveries == 1.0
 
+  asyncTest "rpcHandler - cancelled validation slot allows retry":
+    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    gossipSub.verifySignature = false
+    let peer = peers[0]
+    let msg = Message.init(peer.peerId, "bar".toBytes(), topic, Opt.some(1'u64))
+    let msgId = gossipSub.msgIdProvider(msg).get()
+    let data = RPCMsg.withMessages(msg).encode(false)
+    peer.validationSlots = newAsyncSemaphore(1)
+    await peer.validationSlots.acquire()
+    let receiving = gossipSub.rpcHandler(peer, data)
+    checkUntilTimeout:
+      gossipSub.hasSeen(gossipSub.salt(msgId))
+      not receiving.finished()
+    await receiving.cancelAndWait()
+    peer.validationSlots.release()
+    await gossipSub.rpcHandler(peer, data)
+    checkUntilTimeout:
+      gossipSub.mcache.get(msgId).isSome
+
   asyncTest "rpcHandler - peer is punished when message validation is rejected":
     # Given a GossipSub instance with one peer
     let
@@ -939,3 +1163,37 @@ suite "GossipSub":
     # Then the topic should be removed from mesh
     check:
       topic notin gossipSub.mesh
+
+  asyncTest "publish - already-seen message is not delivered to local handlers again":
+    # Given a GossipSub instance delivering to itself, with a peer to publish to
+    let (gossipSub, conns, _) =
+      setupGossipSubWithPeers(1, topic, populateMesh = true, populateGossipsub = true)
+    defer:
+      await teardownGossipSub(gossipSub, conns)
+    gossipSub.triggerSelf = true
+
+    # And a msgIdProvider that maps messages to an id derived from the first byte
+    func firstByteMsgIdProvider(m: Message): Result[MessageId, ValidationResult] =
+      ok(MessageId(@[m.data[0]]))
+    gossipSub.msgIdProvider = firstByteMsgIdProvider
+
+    # And a local handler counting deliveries
+    var delivered = 0
+    proc handler(topic: string, data: seq[byte]) {.async.} =
+      inc delivered
+
+    gossipSub.subscribe(topic, handler)
+
+    # When two messages with the same id are published, then one with a new id
+    discard await gossipSub.publish(topic, @[1'u8, 1])
+    discard await gossipSub.publish(topic, @[1'u8, 2])
+
+    # Then the duplicate is dropped before reaching the local handler
+    check:
+      delivered == 1
+
+    discard await gossipSub.publish(topic, @[2'u8])
+
+    # And a message with a different id is still delivered
+    check:
+      delivered == 2

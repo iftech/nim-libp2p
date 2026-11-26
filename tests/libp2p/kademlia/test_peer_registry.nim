@@ -66,7 +66,7 @@ suite "KadDHT PeerRegistry":
 
     let record = registry.get(nodeId).get()
     check:
-      record.lastUsefulAt.get() == usefulAt
+      record.lastUsefulAt == usefulAt
       record.lastSeen == usefulAt
 
   test "markUseful is a no-op for unknown peers":
@@ -87,7 +87,7 @@ suite "KadDHT PeerRegistry":
 
     let record = registry.get(nodeId).get()
     check:
-      record.lastUsefulAt.get() == usefulAt
+      record.lastUsefulAt == usefulAt
       record.lastSeen == usefulAt
 
   test "addMembership records per-table membership":
@@ -363,7 +363,7 @@ suite "KadDHT PeerRegistry":
 
     let stored = registry.get(nodeId).get()
     check:
-      stored.lastUsefulAt.get() == now
+      stored.lastUsefulAt == now
       stored.lastSeen == now + 1.seconds
 
   test "shared row: usefulness is global across table memberships":

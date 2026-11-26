@@ -10,7 +10,7 @@
 ##   - Deterministic data: start = BE(groupId), part i position j = start + i*128 + j
 
 import results, stew/endians2
-import ../../../libp2p/[protocols/pubsub/gossipsub/partial_message]
+import ../../../libp2p/[protocols/pubsub/gossipsub/partial_message, results]
 
 const
   MetadataLen = 1 # uint8
@@ -142,7 +142,7 @@ proc partsMetadata*(pm: InteropPartialMessage): PartsMetadata =
 
 proc materializeParts*(
     pm: InteropPartialMessage, metadata: PartsMetadata
-): Result[PartsData, string] =
+): LPResult[PartsData] {.gcsafe, raises: [].} =
   ## Encode parts that the peer doesn't have.
   ## metadata is the peer's 1-byte bitmap (what parts they have).
   ## Returns: [bitmap][parts...][groupId] for parts we have that they don't.
@@ -171,7 +171,7 @@ proc materializeParts*(
 
 proc interopUnionPartsMetadata*(
     a, b: PartsMetadata
-): Result[PartsMetadata, string] {.gcsafe, raises: [].} =
+): LPResult[PartsMetadata] {.gcsafe, raises: [].} =
   let metaA = InteropPartsMetadata.convert(a).valueOr:
     return err(error)
 

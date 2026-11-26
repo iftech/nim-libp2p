@@ -12,14 +12,20 @@ logScope:
   topics = "libp2p service-discovery"
 
 type PendingGetVal = object
-  key: Key
+  key: RecordKey
   fut: Future[LPResult[Message]].Raising([CancelledError])
+
+proc cancelAll(pending: seq[PendingGetVal]) {.async: (raises: [CancelledError]).} =
+  var futs: seq[Future[void].Raising([])]
+  for p in pending:
+    futs.add(p.fut.cancelAndWait())
+  await allFutures(futs)
 
 proc replyXpr*(key: Key, reply: Message): Opt[SignedExtendedPeerRecord] =
   let record = reply.record.valueOr:
     return Opt.none(SignedExtendedPeerRecord)
 
-  if record.key != Opt.some(key):
+  if record.key != key:
     trace "Get-value reply names another key", key
     return Opt.none(SignedExtendedPeerRecord)
 
@@ -46,15 +52,19 @@ proc randomRecords(
   let onReply = proc(
       peerId: PeerId, msg: Opt[Message], state: LookupState
   ): Future[void] {.async: (raises: []), gcsafe.} =
-    if peerId notin queried:
-      queried.incl(peerId)
-      let key = peerId.toKey()
-      pending.add(PendingGetVal(key: key, fut: disco.dispatchGetVal(peerId, key)))
+    if peerId in queried:
+      return
+    queried.incl(peerId)
+
+    let key = RecordKey.init(peerId.toKey()).valueOr:
+      trace "Peer id is not a record key", peerId, err = error
+      return
+    pending.add(PendingGetVal(key: key, fut: disco.dispatchGetVal(peerId, key)))
 
   try:
     discard await disco.iterativeLookup(randomKey, findNodeDispatch, onReply)
   except CancelledError as e:
-    await noCancel allFutures(pending.mapIt(it.fut.cancelAndWait()))
+    await noCancel pending.cancelAll()
     raise e
 
   var records: HashSet[ExtendedPeerRecord]
@@ -63,14 +73,14 @@ proc randomRecords(
       try:
         await p.fut
       except CancelledError as e:
-        await noCancel allFutures(pending.mapIt(it.fut.cancelAndWait()))
+        await noCancel pending.cancelAll()
         raise e
 
     let reply = res.valueOr:
       trace "Kademlia get-value failed", err = error
       continue
 
-    let sxpr = replyXpr(p.key, reply).valueOr:
+    let sxpr = replyXpr(p.key.toKey(), reply).valueOr:
       continue
 
     records.incl(sxpr.data)

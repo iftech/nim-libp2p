@@ -4,20 +4,25 @@
 {.used.}
 
 import chronos, json, net, results, sequtils, uri
-from times import now, format, initDuration, `+`
+import stew/byteutils
+from times import fromUnix, now, initDuration, utc, `+`, `==`
 import
   ../../../libp2p/[
     autotls/service,
     autotls/broker,
     autotls/utils,
     autotls/acme/client,
+    crypto/crypto,
     crypto/rsa,
+    transports/tls/certificate,
     switch,
     wire,
   ]
 import
-  ../../tools/
-    [unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder]
+  ../../tools/[
+    unittest, http_server, crypto, lifecycle, multiaddress, resolver, switch_builder,
+    futures,
+  ]
 import ../../stubs/[acme_api_stub, peer_id_auth_client_stub]
 
 suite "AutoTLS certificate issuance and renewal":
@@ -54,11 +59,15 @@ suite "AutoTLS certificate issuance and renewal":
       running: newAsyncEvent(),
       config: config,
       rng: rng(),
+      storage:
+        if config.storage.isNil:
+          AutotlsStorage(AutotlsMemoryStorage.new())
+        else:
+          config.storage,
     )
 
   proc installCert(service: AutotlsService, expiresIn: times.Duration) =
-    service.cert = Opt.some(AutotlsCert.new(cert, certKey, now() + expiresIn))
-    service.certReady.fire()
+    service.installCertificate(AutotlsCert.new(cert, certKey, now() + expiresIn))
 
   asyncSetup:
     acmeApi = ACMEApiStub.new()
@@ -102,8 +111,74 @@ suite "AutoTLS certificate issuance and renewal":
     await service.start(switch)
 
     # Every attempt fails on its first ACME request, so a request is an attempt.
-    checkUntilTimeout:
-      acmeApi.requestedUris.len == 4
+    checkUntilTimeoutCustom(15.seconds, 500.milliseconds):
+      acmeApi.requestedUris.len >= 4
+
+    let certResult = await service.getCertWhenReady()
+    check:
+      certResult.isErr()
+      certResult.error == "ACMEApiStub refused https://acme.example/new-account"
+
+  asyncTest "address discovery can recover on a later issuance attempt":
+    service = newService(
+      AutotlsConfig.new(
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        initialAddrTimeout = 20.milliseconds,
+        initialCertTimeout = 10.seconds,
+        issueRetries = 1,
+        issueRetryTime = 1.milliseconds,
+      )
+    )
+    var discoveryAttempts = 0
+    switch.peerInfo.addressMappers.add(
+      proc(
+          addrs: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        discoveryAttempts.inc()
+        if discoveryAttempts == 1:
+          # Stay blocked until the discovery timeout cancels this attempt.
+          await waitForCancellation()
+        return addrs
+    )
+
+    await service.start(switch)
+    let certResult =
+      await service.getCertWhenReady().wait(service.config.initialCertTimeout)
+
+    # The second attempt reaches ACME instead of spending the whole certificate
+    # budget on the first address discovery attempt.
+    check:
+      discoveryAttempts == 2
+      acmeApi.requestedUris.len == 1
+      certResult.isOfError("ACMEApiStub refused https://acme.example/new-account")
+
+  asyncTest "discovery polls within its budget when issuance retry delay is longer":
+    service = newService(
+      AutotlsConfig.new(
+        ipAddress = Opt.some(parseIpAddress(NodeIP)),
+        initialAddrTimeout = 100.milliseconds,
+        issueRetries = 0,
+        issueRetryTime = 1.seconds,
+      )
+    )
+    var discoveryPasses = 0
+    switch.peerInfo.addressMappers.add(
+      proc(
+          addrs: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        discoveryPasses.inc()
+        if discoveryPasses == 1:
+          return @[]
+        return addrs
+    )
+
+    await service.start(switch)
+    let certResult = await service.getCertWhenReady().wait(10.seconds)
+
+    check:
+      discoveryPasses == 2
+      acmeApi.requestedUris.len == 1
+      certResult.isOfError("ACMEApiStub refused https://acme.example/new-account")
 
   asyncTest "a failed round is retried on the next heartbeat":
     # No retries, so a round is one request.
@@ -140,10 +215,64 @@ suite "AutoTLS certificate issuance and renewal":
 
     service.installCert(initDuration(hours = 2))
 
-    let autotlsCert = await certFut
+    let autotlsCert = (await certFut).get()
     check:
       autotlsCert.cert == cert
       autotlsCert.privkey == certKey
+
+  asyncTest "certificate updates are delivered only to current subscribers":
+    service = newService()
+    let currentSubscriber = service.subscribeCertificateUpdates()
+    defer:
+      currentSubscriber.unsubscribe()
+
+    service.installCert(initDuration(hours = 2))
+
+    let updates = await currentSubscriber.waitUpdates()
+    check:
+      updates.len == 1
+      updates[0].cert == cert
+      updates[0].privkey == certKey
+
+    let lateSubscriber = service.subscribeCertificateUpdates()
+    defer:
+      lateSubscriber.unsubscribe()
+
+    let staleUpdates = lateSubscriber.waitUpdates()
+    check not staleUpdates.finished
+    lateSubscriber.unsubscribe()
+    check (await staleUpdates).len == 0
+
+  asyncTest "certificate update subscribers are unblocked when the service stops":
+    service = newService()
+    let subscriber = service.subscribeCertificateUpdates()
+    defer:
+      subscriber.unsubscribe()
+
+    let updates = subscriber.waitUpdates()
+    check not updates.finished
+
+    await service.stop(switch)
+
+    check (await updates).len == 0
+
+  asyncTest "certificate update subscribers survive a service restart":
+    service = newService()
+    service.installCert(initDuration(hours = 2))
+    let subscriber = service.subscribeCertificateUpdates()
+    defer:
+      subscriber.unsubscribe()
+
+    await service.start(switch)
+    let stopped = subscriber.waitUpdates()
+    await service.stop(switch)
+    check (await stopped).len == 0
+
+    await service.start(switch)
+    let updates = subscriber.waitUpdates()
+    service.installCert(initDuration(hours = 3))
+
+    check (await updates).len == 1
 
   asyncTest "the certificate in place is handed over while its renewal is in flight":
     acmeApi.stalls = true
@@ -153,7 +282,7 @@ suite "AutoTLS certificate issuance and renewal":
 
     check acmeApi.requestedUris.len == 1
 
-    let autotlsCert = await service.getCertWhenReady()
+    let autotlsCert = (await service.getCertWhenReady()).get()
     check autotlsCert.cert == cert
 
   asyncTest "the broker is sent the addresses the peer announces":
@@ -163,10 +292,12 @@ suite "AutoTLS certificate issuance and renewal":
 
     acmeApi.scriptChallenge(ChallengeToken)
 
-    var config = AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      issueRetries = 0,
+      dnsRetries = 0,
+      nameResolver = StubNameResolver.new(),
     )
-    config.nameResolver = StubNameResolver.new()
     service = newService(config)
     await service.start(switch)
 
@@ -189,6 +320,7 @@ suite "AutoTLS certificate issuance and renewal":
       AutotlsConfig.new(
         ipAddress = Opt.some(parseIpAddress(NodeIP)),
         domainSuffix = DomainSuffix,
+        renewCheckTime = RenewCheckTime,
         issueRetries = 3,
         issueRetryTime = 1.milliseconds,
       )
@@ -199,7 +331,7 @@ suite "AutoTLS certificate issuance and renewal":
     service.config.nameResolver = resolver
 
     await service.start(switch)
-    let autotlsCert = await service.getCertWhenReady()
+    let autotlsCert = (await service.getCertWhenReady()).get()
     # Nothing signals a round that ended, so wait out a three retries window.
     await sleepAsync(50.milliseconds)
 
@@ -207,43 +339,192 @@ suite "AutoTLS certificate issuance and renewal":
     check:
       # One round is 8 requests, so more would be a second attempt.
       acmeApi.requestedUris.len == 8
-      # TODO: vacp2p/nim-libp2p#2977
-      autotlsCert.expiry.format("yyyy-MM-dd'T'HH:mm:ss'Z'") == OrderExpires
+      autotlsCert.expiry == fromUnix(DefaultTlsCertValidToUnix).utc
       resolver.txtQueries == @["_acme-challenge." & baseDomain]
       resolver.ipQueries == @["127-0-0-1." & baseDomain]
       parseJson(authClient.payloads[0])["value"].getStr == keyAuth
 
+  asyncTest "persisted state prevents issuance after a process restart":
+    const OrderExpires = "2099-01-01T00:00:00Z"
+    let certPem = tlsCertPemGenerator()
+    let certServer = startTestHttpServer(certPem)
+    defer:
+      await certServer.stop()
+
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      acmeDirectoryURL = parseUri(certServer.url),
+      registrationURL = parseUri(certServer.url),
+      storage = AutotlsMemoryStorage.new(),
+      renewCheckTime = RenewCheckTime,
+      issueRetries = 0,
+      dnsRetries = 0,
+    )
+    acmeApi.directoryURL = parseUri(certServer.url)
+    acmeApi.scriptChallenge(ChallengeToken)
+    acmeApi.scriptCertificate(certServer.url, OrderExpires)
+
+    # The first service stands in for the original process and uses the stub
+    # API to issue the certificate. Its account and certificate are saved.
+    service = newService(config)
+    let keyAuth = service.acmeClient.genKeyAuthorization(ChallengeToken)
+    service.config.nameResolver =
+      StubNameResolver.new(txtRecords = @[keyAuth], ipAddresses = @[NodeIP])
+    await service.start(switch)
+    let issued = (await service.getCertWhenReady()).get()
+    await service.stop(switch)
+    let connectionCount = certServer.connectionCount
+
+    # The fixed HTTP response cannot sign the issuance CSR. Replace its test
+    # certificate and key with a matching pair before exercising restoration.
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    var saved = (await config.storage.load(storageKey)).get().get()
+    check saved.certificatePem == certPem
+    let pair = generateX509(
+      KeyPair.random(PKScheme.RSA, rng()).get(), encodingFormat = EncodingFormat.PEM
+    )
+    saved.certificatePem = string.fromBytes(pair.certificate)
+    saved.certificateKeyPem = string.fromBytes(pair.privateKey)
+    check (await config.storage.save(storageKey, saved)).isOk()
+
+    # A fresh service has no injected ACME client. It must restore both the
+    # certificate and account from storage before it could contact ACME.
+    service = AutotlsService.new(rng(), config)
+    await service.start(switch)
+    let restored = (await service.getCertWhenReady()).get()
+    # Nothing signals a heartbeat that decided against renewing, so wait out
+    # several rounds in which an unwanted issuance could have started.
+    await sleepAsync(3 * RenewCheckTime)
+
+    check:
+      restored.expiry == issued.expiry
+      service.acmeClient.key == accountKey
+      service.acmeClient.kid == AccountURL
+      certServer.connectionCount == connectionCount
+
+  asyncTest "account identity survives a failed issuance and restart":
+    let certServer = startTestHttpServer("not an ACME directory")
+    defer:
+      await certServer.stop()
+
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      acmeDirectoryURL = parseUri(certServer.url),
+      registrationURL = parseUri(certServer.url),
+      storage = AutotlsMemoryStorage.new(),
+      issueRetries = 0,
+    )
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let oldCert = tlsCertPemGenerator(fromUnix(1600000000))
+    let oldState =
+      AutotlsStoredState(certificatePem: oldCert, certificateKeyPem: "expired key")
+    check (await config.storage.save(storageKey, oldState)).isOk()
+
+    # Registration succeeds, but the following order request fails.
+    acmeApi.queueRegister()
+    service = newService(config)
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let saved = (await service.storage.load(storageKey)).get().get()
+    check:
+      saved.accountKey == accountKey.getBytes().get()
+      saved.accountKid == AccountURL
+      saved.certificatePem == oldState.certificatePem
+      saved.certificateKeyPem == oldState.certificateKeyPem
+    await service.stop(switch)
+
+    service = AutotlsService.new(rng(), config)
+    await service.start(switch)
+    check:
+      service.acmeClient.key == accountKey
+      service.acmeClient.kid == AccountURL
+
+  asyncTest "an unknown account is cleared from memory and storage":
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      domainSuffix = DomainSuffix,
+      issueRetries = 0,
+    )
+    service = newService(config)
+    service.acmeClient.kid = AccountURL
+    acmeApi.mockedResponses.add(
+      HTTPResponse(
+        body: %*{"type": ACMEAccountDoesNotExist, "detail": "account missing"}
+      )
+    )
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let saved = (await service.storage.load(storageKey)).get().get()
+    check:
+      service.acmeClient.kid.len == 0
+      saved.accountKid.len == 0
+      saved.accountKey == accountKey.getBytes().get()
+
+  asyncTest "account key is saved before registration":
+    let config =
+      AutotlsConfig.new(ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0)
+    service = newService(config)
+    await service.start(switch)
+    check (await service.getCertWhenReady()).isErr()
+    let storageKey = AutotlsStorageKey(
+      peerLabel: encodePeerId(switch.peerInfo.peerId).get(),
+      acmeDirectoryURL: config.acmeDirectoryURL,
+      domainSuffix: config.domainSuffix,
+    )
+    let saved = (await service.storage.load(storageKey)).get().get()
+    check:
+      saved.accountKey == accountKey.getBytes().get()
+      saved.accountKid.len == 0
+
   asyncTest "the certificate is not requested until the DNS records are published":
     acmeApi.scriptChallenge(ChallengeToken)
 
-    var config = AutotlsConfig.new(
-      ipAddress = Opt.some(parseIpAddress(NodeIP)), issueRetries = 0, dnsRetries = 0
+    let config = AutotlsConfig.new(
+      ipAddress = Opt.some(parseIpAddress(NodeIP)),
+      issueRetries = 0,
+      dnsRetries = 0,
+      # The A record resolves, so only the missing TXT record holds issuance back.
+      nameResolver = StubNameResolver.new(ipAddresses = @[NodeIP]),
     )
-    # The A record resolves, so only the missing TXT record holds issuance back.
-    config.nameResolver = StubNameResolver.new(ipAddresses = @[NodeIP])
     service = newService(config)
     await service.start(switch)
 
     check acmeApi.requestedUris.len == 3
 
-  asyncTest "no certificate is issued without a TcpTransport, and the service still runs":
+  asyncTest "certificate wait fails when the switch has no TcpTransport":
     let memSwitch = makeStandardSwitch(MemoryAutoAddress())
     startAndDeferStop(@[memSwitch])
 
     service = newService()
     await service.start(memSwitch)
+    let certResult = await service.getCertWhenReady()
 
     check:
       acmeApi.requestedUris.len == 0
       service.running.isSet
+      certResult.isOfError(MissingTcpTransportCause)
 
   asyncTest "issuance aborts when no public IP address can be determined":
     acmeApi.scriptChallenge(ChallengeToken)
     service = newService(AutotlsConfig.new(issueRetries = 0))
     await service.start(switch)
 
-    let issued = await service.issueCertificateForTest(switch)
-
+    let issued = await service.issueCertificate(switch)
     check:
       issued.isErr
       acmeApi.requestedUris.len == 0
@@ -260,15 +541,13 @@ suite "AutoTLS on a switch":
     let authClient = PeerIDAuthClientStub.new()
     acmeApi.scriptChallenge("some-token")
 
-    var config = AutotlsConfig.new(
+    let config = AutotlsConfig.new(
       ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
       issueRetries = 0,
       dnsRetries = 0,
+      nameResolver = StubNameResolver.new(),
     )
-    config.nameResolver = StubNameResolver.new()
-    let switch = makeStandardSwitchBuilder(
-        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
-      )
+    let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
       .withAutotls(config)
       .build()
     let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
@@ -322,25 +601,78 @@ suite "AutoTLS on a switch":
 
     check switch.addressManager.candidates.anyIt(it.address == wsAddr)
 
-  asyncTest "a switch listening on wss fails to start without a certificate":
-    let switch = makeStandardSwitchBuilder(
-        @[TcpAutoAddress, ma("/ip4/127.0.0.1/tcp/0/wss")]
-      )
+  # RSA key generation can take substantially longer on loaded CI runners.
+  # Leave time for issuance to report its error and for switch cleanup afterward.
+  asyncTest "a switch listening on wss fails to start without a certificate", 90.seconds:
+    let acmeApi = ACMEApiStub.new()
+    let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
       .withAutotls(
         AutotlsConfig.new(
           ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
-          # A refused connection fails issuance at once, leaving the certificate
-          # wait as the only thing that can hang.
-          acmeDirectoryURL = parseUri("http://127.0.0.1:1"),
-          initialCertTimeout = 100.milliseconds,
+          issueRetries = 0,
+          initialCertTimeout = 60.seconds,
         )
       )
       .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    defer:
+      await switch.stop()
+
+    expectMsgContains LPError, "ACMEApiStub refused https://acme.example/new-account":
+      await switch.start()
+
+  asyncTest "address discovery retries fail before the WSS certificate deadline":
+    let acmeApi = ACMEApiStub.new()
+    let switch = makeStandardSwitchBuilder(@[TcpAutoAddress, WssAutoAddress])
+      .withAutotls(
+        AutotlsConfig.new(
+          ipAddress = Opt.some(parseIpAddress("127.0.0.1")),
+          issueRetries = 2,
+          issueRetryTime = 1.milliseconds,
+          initialAddrTimeout = 20.milliseconds,
+          initialCertTimeout = 2.seconds,
+        )
+      )
+      .build()
+    let service = AutotlsService(switch.services.filterIt(it of AutotlsService)[0])
+    service.acmeClient = ACMEClient.new(rng(), api = ACMEApi(acmeApi))
+    var discoveryAttempts = 0
+    var cancelledAttempts = 0
+    switch.peerInfo.addressMappers.add(
+      proc(
+          addrs: seq[MultiAddress]
+      ): Future[seq[MultiAddress]] {.async: (raises: [CancelledError]).} =
+        # Other services also expand configured addresses before TCP binds.
+        if addrs.len == 0 or addrs.anyIt(it == TcpAutoAddress or it == WssAutoAddress):
+          return addrs
+        discoveryAttempts.inc()
+        try:
+          await waitForCancellation()
+          return addrs
+        finally:
+          cancelledAttempts.inc()
+    )
     defer:
       await switch.stop()
 
     expectMsgContains LPError,
-      "autotls certificate was not available before the certificate deadline":
+      "No dialable TCP address available before the address discovery deadline":
+      await switch.start()
+
+    check:
+      discoveryAttempts == 3
+      cancelledAttempts == 3
+      acmeApi.requestedUris.len == 0
+
+  asyncTest "a switch listening on wss fails when autotls has no TcpTransport":
+    let switch = makeStandardSwitchBuilder(@[WssAutoAddress])
+      .withAutotls(AutotlsConfig.new(initialCertTimeout = 10.seconds))
+      .build()
+    defer:
+      await switch.stop()
+
+    expectMsgContains LPError, MissingTcpTransportCause:
       await switch.start()
 
   asyncTest "a switch listening only on ws starts without an autotls certificate":

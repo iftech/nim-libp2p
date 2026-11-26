@@ -2,13 +2,13 @@
   "version": 2,
   "packages": {
     "nim": {
-      "version": "2.2.10",
-      "vcsRevision": "9fe2137fa2f3f66cf5a44f357d461829ac9e20c4",
+      "version": "2.2.14",
+      "vcsRevision": "44b94bcab08cc3c61c942f91d8a7d2cd3ac222b6",
       "url": "https://github.com/nim-lang/Nim.git",
       "downloadMethod": "git",
       "dependencies": [],
       "checksums": {
-        "sha1": "19c7dc767547c8c8252f4f26f5853ca574f41eb7"
+        "sha1": "42e968908a59376dc70f2fc32fc9ccfc8e079cba"
       }
     },
     "unittest2": {
@@ -195,20 +195,20 @@
       }
     },
     "protobuf_serialization": {
-      "version": "0.6.0",
-      "vcsRevision": "7861570c5182bd69f6b7c151028ffd5d0134b9ab",
+      "version": "0.6.2",
+      "vcsRevision": "a671c6d497c7028ed7390b2d5a80c7b62138c586",
       "url": "https://github.com/status-im/nim-protobuf-serialization",
       "downloadMethod": "git",
       "dependencies": [
         "nim",
-        "stew",
         "faststreams",
-        "serialization",
         "npeg",
+        "serialization",
+        "stew",
         "unittest2"
       ],
       "checksums": {
-        "sha1": "42d1fcecc4efff1319378c52b582dc1591b79221"
+        "sha1": "6b4e372946039599559ed1efe14c53bc47c32d02"
       }
     },
     "json_serialization": {
@@ -291,20 +291,20 @@
       }
     },
     "boringssl": {
-      "version": "0.0.11",
-      "vcsRevision": "346429e4cda48e775f2d1eb3ccb8757edf4f3648",
+      "version": "0.0.14",
+      "vcsRevision": "a57b97f5ba45353a1a38c81b4f5e6f537469a63e",
       "url": "https://github.com/vacp2p/nim-boringssl",
       "downloadMethod": "git",
       "dependencies": [
         "nim"
       ],
       "checksums": {
-        "sha1": "49acb43d56a26b30587c9758edb34e3c44b63d8f"
+        "sha1": "a3e25afd96fc983d7d6eef29a319c35bf540c182"
       }
     },
     "lsquic": {
-      "version": "0.10.0",
-      "vcsRevision": "f156ed72554d16e925ed654833e7f37e8c8e7f8f",
+      "version": "0.11.3",
+      "vcsRevision": "f09db7565f79327c76faff547b1a33bfaf68d047",
       "url": "https://github.com/vacp2p/nim-lsquic",
       "downloadMethod": "git",
       "dependencies": [
@@ -317,7 +317,7 @@
         "boringssl"
       ],
       "checksums": {
-        "sha1": "89e99d3b9707a63f64226c4a6d653736d9f662f4"
+        "sha1": "3aba53cb29a83ddf8f7bd761ee24d75cf3d60c8d"
       }
     }
   },

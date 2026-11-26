@@ -109,7 +109,7 @@ suite "KadDHT Find":
         @[kads[3].rtable.selfId, kads[4].rtable.selfId, kads[5].rtable.selfId]
       )
 
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let foundPeers = await kads[0].findNode(targetKey)
 
     # Results from both branches are merged and deduplicated
@@ -170,7 +170,7 @@ suite "KadDHT Find":
     # kads[1] and kads[2] marked as responded
     # No new unqueried candidates -> lookup terminates
     # Without exclusion: would re-query kads[1]/kads[2] until all attempts exhausted
-    let targetKey = randomPeerId().toKey()
+    let targetKey = PeerId.random().toKey()
     let peerIds = await kads[0].findNode(targetKey)
 
     # Lookup completed without hanging (proves exclusion works)
@@ -191,7 +191,7 @@ suite "KadDHT Find":
     check res1.get().peerId == kads[2].switch.peerInfo.peerId
 
     # try to find peer that does not exist
-    let res2 = await kads[1].findPeer(randomPeerId())
+    let res2 = await kads[1].findPeer(PeerId.random())
     check res2.isErr()
 
   asyncTest "Find peer returns a connected peer without a lookup":
@@ -212,7 +212,7 @@ suite "KadDHT Find":
     await connect(kads[0], kads[1])
 
     # kads[1] vouches for a peer nothing is listening for
-    let deadPeerId = randomPeerId()
+    let deadPeerId = PeerId.random()
     let deadAddrs = @[ma("/ip4/127.0.0.1/tcp/59999")]
     kads[1].updatePeers(@[(deadPeerId, deadAddrs)])
 
@@ -265,7 +265,7 @@ suite "KadDHT Find":
     check:
       response.msgType == MessageType.findNode
       response.closerPeers.len == 1
-      response.closerPeers[0].id.get() == kads[2].rtable.selfId
+      response.closerPeers[0].id == kads[2].rtable.selfId.toBytes()
 
   asyncTest "Find node for own PeerID excludes the requester":
     let kads = setupKadSwitches(3)
@@ -300,7 +300,7 @@ suite "KadDHT Find":
 
     check:
       response.closerPeers.len == 1
-      response.closerPeers[0].id.get() == kads[2].rtable.selfId
+      response.closerPeers[0].id == kads[2].rtable.selfId.toBytes()
 
   asyncTest "Find node for an unknown target omits it":
     let kads = setupKadSwitches(3)
@@ -308,7 +308,7 @@ suite "KadDHT Find":
 
     await connectHub(kads[0], kads[1 ..^ 1])
 
-    let unknownTarget = randomPeerId().toKey()
+    let unknownTarget = PeerId.random().toKey()
     let response = (
       await kads[1].dispatchFindNode(kads[0].switch.peerInfo.peerId, unknownTarget)
     ).value()
@@ -325,7 +325,7 @@ suite "KadDHT Find":
     await connectHub(kads[0], kads[1 ..^ 1])
 
     # A client-mode peer is in nobody's routing table, but its addresses are known.
-    let client = randomPeerId()
+    let client = PeerId.random()
     kads[0].switch.peerStore[AddressBook][client] = @[ma("/ip4/127.0.0.1/tcp/9999")]
 
     let response = (
@@ -334,7 +334,7 @@ suite "KadDHT Find":
 
     check:
       not kads[0].hasKey(client.toKey())
-      response.closerPeers[0].id.get() == client.toKey()
+      response.closerPeers[0].id == client.toKey().toBytes()
 
   asyncTest "Find node excludes the requester for an unrelated target":
     let kads = setupKadSwitches(3)
@@ -346,7 +346,7 @@ suite "KadDHT Find":
     # kads[1] would get itself back even though the target is unrelated to it.
     let response = (
       await kads[1].dispatchFindNode(
-        kads[0].switch.peerInfo.peerId, randomPeerId().toKey()
+        kads[0].switch.peerInfo.peerId, PeerId.random().toKey()
       )
     ).value()
 
@@ -362,7 +362,7 @@ suite "KadDHT Find":
     # Routing table is empty (no peers connected)
     check kads[0].getPeersFromRoutingTable().len == 0
 
-    let peerIds = await kads[0].findNode(randomPeerId().toKey())
+    let peerIds = await kads[0].findNode(PeerId.random().toKey())
 
     # Returns empty - no peers to query
     check peerIds.len == 0
@@ -408,7 +408,7 @@ suite "KadDHT Find":
     # machine, which would exhaust the responsive peer's retries too and leave
     # the lookup with nothing to return.
     for peer in [mockKad.KadDHT, responsiveKad]:
-      await kad.switch.connect(peer.switch.peerInfo.peerId, peer.switch.peerInfo.addrs)
+      await kad.switch.connect(peer.switch)
 
     check mockKad.handleFindNodeCalls == 0
 
@@ -448,15 +448,14 @@ suite "KadDHT Find":
       bListenAddrs = b.switch.peerInfo.addrs
 
     # B's inbound connection to A uses an ephemeral source port.
-    await b.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await b.switch.connect(a.switch)
     discard (await b.dispatchFindNode(a.switch.peerInfo.peerId, bKey)).expect(
       "FIND_NODE reply"
     )
 
     check a.switch.peerStore[AddressBook][bId].allIt(it in bListenAddrs)
 
-    await c.switch.connect(a.switch.peerInfo.peerId, a.switch.peerInfo.addrs)
+    await c.switch.connect(a.switch)
     let reply = (await c.dispatchFindNode(a.switch.peerInfo.peerId, bKey)).value()
-    let bCloser =
-      reply.closerPeers.filterIt(it.id.isSome and it.id.get() == bId.getBytes())
+    let bCloser = reply.closerPeers.filterIt(it.id == bId.getBytes())
     check bCloser.mapIt(it.addrs).concat().allIt(it in bListenAddrs)

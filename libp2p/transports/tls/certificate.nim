@@ -2,7 +2,7 @@
 # Copyright (c) Status Research & Development GmbH
 
 import strutils
-import results
+import ../../results
 import times
 import stew/byteutils
 import chronicles
@@ -20,7 +20,6 @@ type
   KeyGenerationError* = object of TLSCertificateError
   CertificateCreationError* = object of TLSCertificateError
   CertificatePubKeySerializationError* = object of TLSCertificateError
-  CertificateParsingError* = object of TLSCertificateError
   IdentityPubKeySerializationError* = object of TLSCertificateError
   IdentitySigningError* = object of TLSCertificateError
 
@@ -106,25 +105,22 @@ proc makeExtValues(
   ## - `IdentityPubKeySerializationError` if serialization of identity public key fails.
 
   let certificatePubKeyDer = cert_serialize_pubk(certKey, DER.cert_format_t()).valueOr:
-    raise newException(
-      CertificatePubKeySerializationError,
-      "Failed to serialize the certificate pubkey: " & $error,
+    raise error.toException(
+      CertificatePubKeySerializationError, "Failed to serialize the certificate pubkey"
     )
 
   let msg = makeSignatureMessage(certificatePubKeyDer)
 
   # Sign the message with the Identity Key
   let signature = identityKeypair.seckey.sign(msg).valueOr:
-    raise newException(
-      IdentitySigningError,
-      "Failed to sign the message with the identity key: " & $error,
+    raise error.toException(
+      IdentitySigningError, "Failed to sign the message with the identity key"
     )
 
   # Get the public key bytes
   let pubKeyBytes = identityKeypair.pubkey.getBytes().valueOr:
-    raise newException(
-      IdentityPubKeySerializationError,
-      "Failed to get identity public key bytes: " & $error,
+    raise error.toException(
+      IdentityPubKeySerializationError, "Failed to get identity public key bytes"
     )
 
   return (signature.data, pubKeyBytes)
@@ -156,8 +152,7 @@ proc generateX509*(
   ## - `CertificateCreationError` if certificate creation fails.
 
   var certKey = cert_generate_key().valueOr:
-    raise
-      newException(KeyGenerationError, "Failed to generate certificate key: " & $error)
+    raise error.toException(KeyGenerationError, "Failed to generate certificate key")
   defer:
     cert_free_key(certKey)
 
@@ -170,18 +165,20 @@ proc generateX509*(
     certKey, libp2pExtension.signature, libp2pExtension.pubkey, issuerDN,
     validFromAsn1.cstring, validToAsn1.cstring, encodingFormat.cert_format_t,
   ).valueOr:
-    raise newException(
-      CertificateCreationError, "Failed to generate certificate: " & $error
-    )
+    raise error.toException(CertificateCreationError, "Failed to generate certificate")
 
   let privKDer = cert_serialize_privk(certKey, encodingFormat.cert_format_t).valueOr:
-    raise newException(KeyGenerationError, "Failed to serialize privK: " & $error)
+    raise error.toException(KeyGenerationError, "Failed to serialize privK")
 
   return CertificateX509(certificate: certificate, privateKey: privKDer)
 
-proc parseCertTime*(certTime: string): Time {.raises: [TimeParseError].} =
+const
+  InvalidCertTimeCause* = "invalid certificate time"
+  CertParseCause* = "failed to parse certificate"
+
+proc parseCertTime(certTime: string): LPResult[DateTime] =
   if certTime.len <= 4 or not certTime.endsWith(" GMT"):
-    raise newException(TimeParseError, "invalid certificate time")
+    return err(certTime, InvalidCertTimeCause)
 
   var timeNoZone = certTime[0 ..^ 5] # removes GMT part
   # days with 1 digit have additional space -> strip it
@@ -189,41 +186,48 @@ proc parseCertTime*(certTime: string): Time {.raises: [TimeParseError].} =
 
   const certTimeFormat = "MMM d HH:mm:ss yyyy"
   const f = initTimeFormat(certTimeFormat)
-  return parse(timeNoZone, f, utc()).toTime()
-
-proc parse*(
-    certificateDer: seq[byte]
-): P2pCertificate {.raises: [CertificateParsingError].} =
-  ## Parses a DER-encoded certificate and extracts the P2pCertificate.
-  ##
-  ## Parameters:
-  ## - `certificateDer`: The DER-encoded certificate bytes.
-  ##
-  ## Returns:
-  ## A `P2pCertificate` object containing the certificate and its libp2p extension.
-  ##
-  ## Raises:
-  ## - `CertificateParsingError` if certificate parsing fails.
-
-  let certParsed = cert_parse(certificateDer, DER.cert_format_t()).valueOr:
-    raise
-      newException(CertificateParsingError, "Failed to parse certificate: " & $error)
-
-  var validFrom, validTo: Time
   try:
-    validFrom = parseCertTime($certParsed.validFrom)
-    validTo = parseCertTime($certParsed.validTo)
+    return ok(parse(timeNoZone, f, utc()))
   except TimeParseError as e:
-    raise newException(
-      CertificateParsingError, "Failed to parse certificate validity time: " & $e.msg, e
-    )
+    return err(certTime & ": " & e.msg, InvalidCertTimeCause)
 
-  P2pCertificate(
-    extension:
-      P2pExtension(signature: certParsed.signature, publicKey: certParsed.identPubk),
-    pubKeyDer: certParsed.certPubk,
-    validFrom: validFrom,
-    validTo: validTo,
+proc matchesPrivateKey*(cert, key: openArray[byte]): bool =
+  ## Check a PEM private key against the leaf certificate of a PEM chain.
+  cert_matches_private_key(cert, key)
+
+proc validTo*(cert: openArray[byte], format: EncodingFormat): Result[Time, CertError] =
+  ## Returns a certificate's notAfter value.
+  ##
+  ## Unlike `parse`, this accepts certificates without a libp2p-specific
+  ## extension, such as certificates issued by external CAs.
+  let certTime = cert_valid_to(@cert, format.cert_format_t()).valueOr:
+    return err(error)
+  let time = parseCertTime(string(certTime)).valueOr:
+    return err(CERT_ERROR_VALIDITY_PERIOD)
+  ok(time.toTime())
+
+func `$`*(cert: P2pCertificate): string {.raises: [].} =
+  # `$Time` reads the local timezone, so the generic object `$` has side effects
+  "P2pCertificate(validFrom: " & $cert.validFrom.toUnix() & ", validTo: " &
+    $cert.validTo.toUnix() & ")"
+
+proc parse*(certificateDer: seq[byte]): LPResult[P2pCertificate] {.raises: [].} =
+  ## Parses a DER-encoded certificate and extracts the P2pCertificate.
+  let certParsed = cert_parse(certificateDer, DER.cert_format_t()).valueOr:
+    return err(error, CertParseCause)
+  let validFrom = parseCertTime($certParsed.validFrom).valueOr:
+    return err(error, "failed to parse certificate validFrom")
+  let validTo = parseCertTime($certParsed.validTo).valueOr:
+    return err(error, "failed to parse certificate validTo")
+
+  ok(
+    P2pCertificate(
+      extension:
+        P2pExtension(signature: certParsed.signature, publicKey: certParsed.identPubk),
+      pubKeyDer: certParsed.certPubk,
+      validFrom: validFrom.toTime(),
+      validTo: validTo.toTime(),
+    )
   )
 
 proc verifiedIdentityKey*(self: P2pCertificate): Opt[PublicKey] =
@@ -258,3 +262,6 @@ proc verify*(self: P2pCertificate, expectedPeerId: PeerId): bool =
     return false
 
   actualPeerId == expectedPeerId
+
+when defined(libp2p_testing):
+  export parseCertTime

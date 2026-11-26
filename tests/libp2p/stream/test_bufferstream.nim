@@ -37,16 +37,6 @@ suite "BufferStream":
     check buff.len == 4
     await buff.close()
 
-  asyncTest "read with size":
-    let buff = BufferStream.new()
-    check buff.len == 0
-
-    await buff.pushData("12345".toBytes())
-    var data: array[3, byte]
-    await buff.readExactly(addr data[0], data.len)
-    check ['1', '2', '3'] == string.fromBytes(data)
-    await buff.close()
-
   asyncTest "readExactly":
     let buff = BufferStream.new()
     check buff.len == 0

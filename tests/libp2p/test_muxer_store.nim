@@ -4,7 +4,7 @@
 {.used.}
 
 import std/tables
-import results, chronos
+import chronos, results
 import ../../libp2p/[muxer_store, muxers/muxer, stream/connection, peerinfo]
 import ../tools/unittest
 import ../tools/crypto
@@ -18,8 +18,8 @@ suite "MuxerStore":
   teardown:
     checkTrackers()
 
-  let pidA = PeerId.random(rng()).tryGet()
-  let pidB = PeerId.random(rng()).tryGet()
+  let pidA = PeerId.random()
+  let pidB = PeerId.random()
   let pid = pidA
 
   test "new creates an empty store":
@@ -250,6 +250,9 @@ suite "MuxerStore":
     check mux1 in all[pidA]
     check mux2 in all[pidA]
     check mux3 in all[pidB]
+    check store.get(pidA).get() == @[mux1, mux2]
+    check store.get(pidB).get() == @[mux3]
+    check store.get(PeerId.random()).isErr()
 
   asyncTest "clear removes all entries":
     let store = MuxerStore.new()

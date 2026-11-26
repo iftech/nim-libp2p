@@ -57,7 +57,7 @@ suite "Discovery tracker":
     check disco.registerInterest(service)
     let reply = disco.registerAd(serviceId, ad)
 
-    check reply.status.get() == RegistrationStatus.Wait
+    check reply.status == RegistrationStatus.Wait
     check disco.tracker.discoveries(serviceId).len == 1
 
   test "records the same provider once":
@@ -118,12 +118,12 @@ suite "Discovery tracker":
     check disco.tracker.discoveries(serviceId).len == 0
 
   test "stops recording at the provider cap":
-    let tracker = DiscoveryTracker.new(randomPeerId(), maxProviders = 2)
+    let tracker = DiscoveryTracker.new(PeerId.random(), maxProviders = 2)
     let serviceId = makeServiceId()
 
     tracker.startInterest(serviceId)
     for i in 0 ..< 5:
-      tracker.recordProvider(serviceId, randomPeerId(), FromLookup)
+      tracker.recordProvider(serviceId, PeerId.random(), FromLookup)
 
     check tracker.discoveries(serviceId).len == 2
 
@@ -198,7 +198,7 @@ suite "Discovery tracker":
     let startedAt = disco.tracker.startedAt(serviceId).get()
     discard disco.registerInterest(service)
 
-    check disco.tracker.startedAt(serviceId).get() == startedAt
+    check disco.tracker.startedAt(serviceId) == startedAt
 
   test "dumps raw rows as csv":
     let disco = setupServiceDiscoveryNode()

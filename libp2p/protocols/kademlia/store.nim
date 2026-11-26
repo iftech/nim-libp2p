@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright (c) Status Research & Development GmbH
+
+## The storage backend of Kademlia: value records, provider records and the
+## keys this node provides. Subclass ``KadStore`` and override every method.
+##
+## Contract for every backend:
+## - A read never returns an entry with ``expiresAt <= now``. Provided keys do not expire.
+## - The backend deletes expired entries by itself, for example before a call that takes ``now``. ``KadDHT`` never asks it to prune.
+## - An expired entry never costs capacity. A store refuses a new value or provider with ``ok(false)``, ``keyFull``, ``peerFull`` or ``storeFull`` only when its live entries fill the cap.
+## - At the total provider cap, ``addProvider`` evicts the provider with the lowest ``expiresAt`` when the new provider expires later. Else it answers ``storeFull``.
+## - At the provided cap, ``addProvided`` evicts the key provided least recently.
+## - ``getProviders`` returns the providers of a key in no fixed order.
+## - ``err`` means the backend failed. The core logs it and treats the call as "not stored" or "not found".
+## - A ``limit`` below 1 returns no entries.
+## - A method is synchronous and must not block for long: ``KadDHT`` calls it on the chronos event loop.
+## - A method is atomic: a check and its write run in one call, so no other write lands between them.
+## - The application opens and closes the store. ``KadDHT`` does not.
+
+import ../../[peerid, results]
+import ./[key_value, protobuf, types]
+
+type
+  StoredValue* = object
+    key*: RecordKey
+    record*: EntryRecord
+    expiresAt*: UnixTimestamp
+
+  StoredProvider* = object
+    provider*: Provider
+    expiresAt*: UnixTimestamp
+
+  AddProviderOutcome* {.pure.} = enum
+    added
+    refreshed ## the provider was already stored for the key; ``expiresAt`` is updated
+    keyFull ## the key holds ``maxPerKey`` other live providers
+    peerFull ## the peer holds its cap of live provider records
+    storeFull
+      ## the store holds its total cap of live providers and none expires before the new one
+
+method getValue*(
+    store: KadStore, key: RecordKey, now: UnixTimestamp
+): LPResult[Opt[StoredValue]] {.base, gcsafe, raises: [].} =
+  raiseAssert "[KadStore.getValue] abstract method not implemented!"
+
+method putValue*(
+    store: KadStore, value: StoredValue, now: UnixTimestamp
+): LPResult[bool] {.base, gcsafe, raises: [].} =
+  ## Inserts or replaces the value of ``value.key``. ``false`` when live values fill the store.
+  raiseAssert "[KadStore.putValue] abstract method not implemented!"
+
+method delValue*(
+    store: KadStore, key: RecordKey
+): LPResult[void] {.base, gcsafe, raises: [].} =
+  raiseAssert "[KadStore.delValue] abstract method not implemented!"
+
+method listValues*(
+    store: KadStore, after: Opt[RecordKey], now: UnixTimestamp, limit: int
+): LPResult[seq[StoredValue]] {.base, gcsafe, raises: [].} =
+  ## Keyset paging in ``Key`` byte order. ``after`` is exclusive. Deletes the expired values.
+  raiseAssert "[KadStore.listValues] abstract method not implemented!"
+
+method addProvider*(
+    store: KadStore, key: Key, p: StoredProvider, now: UnixTimestamp, maxPerKey: int
+): LPResult[AddProviderOutcome] {.base, gcsafe, raises: [].} =
+  ## Matches by ``provider.id``. A match is ``refreshed`` even at ``maxPerKey``, the cap per peer or the total cap.
+  ## An id that is missing or is not a ``PeerId`` is ``err``.
+  raiseAssert "[KadStore.addProvider] abstract method not implemented!"
+
+method getProviders*(
+    store: KadStore, key: Key, now: UnixTimestamp, limit: int
+): LPResult[seq[StoredProvider]] {.base, gcsafe, raises: [].} =
+  raiseAssert "[KadStore.getProviders] abstract method not implemented!"
+
+method removeProvider*(
+    store: KadStore, key: Key, peerId: PeerId
+): LPResult[void] {.base, gcsafe, raises: [].} =
+  raiseAssert "[KadStore.removeProvider] abstract method not implemented!"
+
+method addProvided*(
+    store: KadStore, key: ProvidedKey
+): LPResult[bool] {.base, gcsafe, raises: [].} =
+  ## Stores or refreshes the key and returns ``true``. A full store evicts the key provided least recently; a re-add of a stored key refreshes its position. ``false`` when the cap is below 1.
+  raiseAssert "[KadStore.addProvided] abstract method not implemented!"
+
+method delProvided*(
+    store: KadStore, key: ProvidedKey
+): LPResult[void] {.base, gcsafe, raises: [].} =
+  raiseAssert "[KadStore.delProvided] abstract method not implemented!"
+
+method hasProvided*(
+    store: KadStore, key: ProvidedKey
+): LPResult[bool] {.base, gcsafe, raises: [].} =
+  raiseAssert "[KadStore.hasProvided] abstract method not implemented!"
+
+method listProvided*(
+    store: KadStore, after: Opt[ProvidedKey], limit: int
+): LPResult[seq[ProvidedKey]] {.base, gcsafe, raises: [].} =
+  ## Keyset paging in byte order. ``after`` is exclusive.
+  raiseAssert "[KadStore.listProvided] abstract method not implemented!"

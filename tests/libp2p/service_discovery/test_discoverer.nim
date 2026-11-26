@@ -120,9 +120,9 @@ suite "Discoverer - lookup":
     check disco.registerInterest(service.id)
     let table = disco.rtManager.getTable(serviceId).get()
 
-    var peerId = randomPeerId()
+    var peerId = PeerId.random()
     while table.bucketIndex(peerId.toKey()) == 0:
-      peerId = randomPeerId()
+      peerId = PeerId.random()
     check table.insert(peerId)
 
     let res = await disco.lookup(serviceId)

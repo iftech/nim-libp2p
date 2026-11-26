@@ -5,7 +5,7 @@
 
 import std/[strutils, sequtils]
 import chronos, results, chronicles, stew/byteutils
-import stream/connection, protocols/protocol
+import stream/connection, protocols/protocol, utils/opt
 
 logScope:
   topics = "libp2p multistream"
@@ -49,6 +49,124 @@ func decodeMessage(data: openArray[byte]): MultiStreamResult[string] =
 
 template readMessage(stream: Stream): MultiStreamResult[string] =
   decodeMessage(await stream.readLp(MsgSize))
+
+type OptimisticStream = ref object of Connection
+  stream: Stream
+  confirmed: bool
+  confirmFut: Future[void].Raising([CancelledError, LPStreamError])
+
+method getWrapped(s: OptimisticStream): Connection =
+  s.stream
+
+method atEof(s: OptimisticStream): bool =
+  s.stream.atEof
+
+method closed(s: OptimisticStream): bool =
+  s.isClosed or s.stream.closed
+
+method join(s: OptimisticStream) {.async: (raises: [CancelledError]).} =
+  await s.stream.join()
+  if s.isClosed:
+    await s.closeEvent.wait()
+  else:
+    await s.close()
+
+proc confirm(s: OptimisticStream) {.async: (raises: [CancelledError, LPStreamError]).} =
+  let header = s.stream.readMessage().valueOr:
+    raise
+      newException(LPStreamError, "Optimistic multistream handshake failed: " & $error)
+  if header != Codec:
+    raise newException(
+      LPStreamError, "Optimistic multistream handshake failed: unexpected codec"
+    )
+  let response = s.stream.readMessage().valueOr:
+    raise newException(
+      LPStreamError, "Optimistic multistream protocol negotiation failed: " & $error
+    )
+  if response != s.protocol:
+    raise newException(LPStreamError, "Optimistic multistream protocol rejected")
+  s.confirmed = true
+
+method closeImpl(s: OptimisticStream) {.async: (raises: []).} =
+  if not s.confirmed and not s.stream.closed:
+    # Let the responder finish negotiation before signalling that reads ended.
+    # Otherwise it may discard already-written application data.
+    try:
+      if s.confirmFut.isNil:
+        s.confirmFut = s.confirm()
+      await s.confirmFut
+    except CancelledError, LPStreamError:
+      discard
+  await s.stream.close()
+  await procCall Connection(s).closeImpl()
+
+method resetImpl(s: OptimisticStream) {.async: (raises: []).} =
+  await s.stream.reset()
+  await procCall Connection(s).closeImpl()
+
+method closeWrite(s: OptimisticStream) {.async: (raises: []).} =
+  await s.stream.closeWrite()
+
+method write(
+    s: OptimisticStream, msg: sink seq[byte]
+) {.async: (raises: [CancelledError, LPStreamError]).} =
+  if s.closed:
+    raise newLPStreamClosedError()
+  await s.stream.write(move(msg))
+
+method readOnce(
+    s: OptimisticStream, pbytes: pointer, nbytes: int
+): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
+  # close() is a half-close, so reads continue until the remote side ends.
+  if s.wasResetLocally():
+    raise newLPStreamClosedError()
+  if not s.confirmed:
+    try:
+      if s.confirmFut.isNil:
+        s.confirmFut = s.confirm()
+      await s.confirmFut
+    except CancelledError as exc:
+      await noCancel s.reset()
+      raise exc
+    except LPStreamError as exc:
+      await s.reset()
+      raise exc
+  await s.stream.readOnce(pbytes, nbytes)
+
+proc selectOptimistic*(
+    _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: string
+): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
+  ## Propose one nonempty protocol without waiting for acknowledgement.
+  ## Both streams expose the proposed protocol before acknowledgement.
+  ## Use only the returned stream thereafter. Writes may precede acceptance;
+  ## the first read validates negotiation and resets the stream on rejection,
+  ## malformed responses, EOF, or cancellation. There is no protocol fallback.
+  ## As with the underlying stream, concurrent reads are not supported.
+  doAssert proto.len > 0, "Optimistic selection requires a protocol"
+  try:
+    await stream.writeLp(Codec & "\n")
+    await stream.writeLp(proto & "\n")
+  except CancelledError as exc:
+    await noCancel stream.reset()
+    raise exc
+  except LPStreamError as exc:
+    await stream.reset()
+    raise exc
+  stream.protocol = proto
+  let selected = OptimisticStream(
+    stream: stream,
+    protocol: proto,
+    peerId: stream.peerId,
+    dir: stream.dir,
+    transportDir: stream.transportDir,
+    observedAddr: stream.observedAddr,
+    localAddr: stream.localAddr,
+    objName: "OptimisticStream",
+  )
+  when defined(libp2p_agents_metrics):
+    selected.shortAgent = stream.shortAgent
+  selected.initStream()
+  return selected
 
 proc trySelect*(
     _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: seq[string]
@@ -97,6 +215,22 @@ proc select*(
   (await MultistreamSelect.trySelect(stream, proto)).valueOrRaise(MultiStreamError)
 
 proc select*(
+    _: MultistreamSelect | type MultistreamSelect,
+    stream: Stream,
+    protos: seq[string],
+    preferredProto: Opt[string],
+): Future[tuple[protocol: string, stream: Stream]] {.
+    async: (raises: [CancelledError, LPStreamError, MultiStreamError])
+.} =
+  ## Select optimistically when `preferredProto` is present, otherwise use
+  ## blocking negotiation. The preferred protocol must belong to `protos`.
+  preferredProto.ifValue(proto):
+    doAssert proto in protos,
+      "Preferred protocol must be one of the requested protocols"
+    return (proto, await MultistreamSelect.selectOptimistic(stream, proto))
+  (await MultistreamSelect.select(stream, protos), stream)
+
+proc select*(
     _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: string
 ): Future[bool] {.async: (raises: [CancelledError, LPStreamError, MultiStreamError]).} =
   if proto.len > 0:
@@ -130,16 +264,15 @@ proc list*(
 
   list
 
-proc tryHandle*(
+proc tryHandleImpl(
     _: type MultistreamSelect,
     stream: Stream,
     protos: seq[string],
-    matchers = newSeq[Matcher](),
-    active: bool = false,
+    accept: Matcher,
+    active: bool,
 ): Future[MultiStreamResult[string]] {.
     async: (raises: [CancelledError, LPStreamError])
 .} =
-  ## Returns "" when the stream reaches EOF before a proposal matches.
   trace "Multistream negotiation started", stream, handshaked = active
   var handshaked = active
   while not stream.atEof:
@@ -165,17 +298,32 @@ proc tryHandle*(
       else:
         trace "Duplicate multistream handshake rejected", stream
         await stream.writeLp(Na)
-    elif ms.len > 0 and (ms in protos or matchers.anyIt(it(ms))):
+    elif ms.len > 0 and accept(ms):
       trace "Protocol handler selected", stream, protocol = ms
       await stream.writeLp(ms & "\n")
       stream.protocol = ms
       return ok(ms)
     else:
       trace "Protocol negotiation rejected",
-        stream, protocol = ms, reason = "no handler"
+        stream, protocol = ms, reason = "no available handler"
       await stream.writeLp(Na)
 
   ok("")
+
+proc tryHandle*(
+    _: type MultistreamSelect,
+    stream: Stream,
+    protos: seq[string],
+    matchers = newSeq[Matcher](),
+    active: bool = false,
+): Future[MultiStreamResult[string]] {.
+    async: (raises: [CancelledError, LPStreamError], raw: true)
+.} =
+  ## Returns "" when the stream reaches EOF before a proposal matches.
+  proc matches(proto: string): bool {.gcsafe, raises: [].} =
+    proto in protos or matchers.anyIt(it(proto))
+
+  MultistreamSelect.tryHandleImpl(stream, protos, matches, active)
 
 proc handle*(
     _: type MultistreamSelect,
@@ -196,19 +344,6 @@ proc lookupProtocol*(m: MultistreamSelect, proto: string): Opt[LPProtocol] =
       return Opt.some(h.protocol)
   return Opt.none(LPProtocol)
 
-func allProtosAndMatchers(m: MultistreamSelect): (seq[string], seq[Matcher]) =
-  var
-    protos: seq[string]
-    matchers: seq[Matcher]
-
-  for h in m.handlers:
-    if h.match != nil:
-      matchers.add(h.match)
-    for proto in h.protos:
-      protos.add(proto)
-
-  return (protos, matchers)
-
 proc handle*(
     m: MultistreamSelect, stream: Stream, active: bool = false
 ) {.async: (raises: [CancelledError]).} =
@@ -217,32 +352,34 @@ proc handle*(
     trace "Multistream handler stopped", stream
     await noCancel stream.close()
 
+  var admitted: LPProtocol
+  proc admit(proto: string): bool {.gcsafe, raises: [].} =
+    m.lookupProtocol(proto).ifValue(p):
+      if p.reserveIncoming(stream.peerId):
+        admitted = p
+        return true
+      debug "Inbound stream budget exceeded, rejecting incoming stream",
+        stream, protocol = proto, peerId = stream.peerId
+    false
+
+  defer:
+    if admitted != nil:
+      admitted.releaseIncoming(stream.peerId)
+
   let negotiated =
     try:
-      let (protos, matchers) = m.allProtosAndMatchers()
-      await MultistreamSelect.tryHandle(stream, protos, matchers, active)
+      let protos = m.handlers.mapIt(it.protos).concat()
+      await MultistreamSelect.tryHandleImpl(stream, protos, admit, active)
     except LPStreamError as e:
       trace "Multistream negotiation failed", err = e.msg, stream
       return
   let ms = negotiated.valueOr:
-    trace "Multistream negotiation failed", err = $error, stream
+    trace "Multistream negotiation failed", err = error, stream
     return
 
-  m.lookupProtocol(ms).ifValue(p):
-    trace "Protocol handler selected", stream, protocol = ms
-
-    if not p.reserveIncoming(stream.peerId):
-      debug "Inbound stream budget exceeded, rejecting incoming stream",
-        stream, protocol = ms, peerId = stream.peerId
-      return
-
-    try:
-      let h = p.handler
-      await h(stream, ms)
-    finally:
-      p.releaseIncoming(stream.peerId)
-  else:
-    trace "Protocol handler unavailable", stream, protocol = ms
+  if admitted != nil:
+    let h = admitted.handler
+    await h(stream, ms)
 
 proc addHandler*(m: MultistreamSelect, protocol: LPProtocol, matcher: Matcher = nil) =
   trace "Protocol handlers registered", protocols = protocol.codecs

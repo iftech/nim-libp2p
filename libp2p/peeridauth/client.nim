@@ -75,7 +75,7 @@ func extractField(data, key: string): LPResult[string] =
     let parts = segment.split("=", 1)
     if parts.len == 2 and parts[0].strip() == key:
       return ok(parts[1].strip(chars = {' ', '"'}))
-  err("Failed to find " & key & " in PeerID Auth header")
+  err(key, "Failed to find field in PeerID Auth header")
 
 func genDataToSign(
     parts: seq[SigParam], prefix: string = PeerIDAuthPrefix
@@ -83,7 +83,7 @@ func genDataToSign(
   var buf: seq[byte] = prefix.toBytes()
   for p in parts:
     let varintLen = PB.encodeVarint(hint(p.k.len + p.v.len + 1)).valueOr:
-      return err("could not encode fields length to varint")
+      return err(error, "could not encode fields length to varint")
     buf.add varintLen
     buf.add (p.k & "=").toBytes()
     buf.add p.v
@@ -93,7 +93,7 @@ proc getSigParams(
     clientSender: bool, hostname: string, challenge: string, publicKey: PublicKey
 ): LPResult[seq[SigParam]] =
   let keyBytes = publicKey.getBytes().valueOr:
-    return err("Failed to get public key bytes: " & $error)
+    return err(error, "Failed to get public key bytes")
   if clientSender:
     ok(
       @[
@@ -121,8 +121,10 @@ proc sign(
   let params = ?getSigParams(clientSender, hostname, challenge, publicKey)
   let bytesToSign = ?params.genDataToSign()
   let sig = privateKey.sign(bytesToSign).valueOr:
-    return err("Failed to sign: " & $error)
+    return err(error, "Failed to sign")
   ok(PeerIDAuthSignature(base64.encode(sig.getBytes(), safe = true)))
+
+const UndecodableSignatureCause* = "Failed to decode server's signature"
 
 proc tryCheckSignature*(
     serverSig: PeerIDAuthSignature,
@@ -134,7 +136,7 @@ proc tryCheckSignature*(
   let params = ?getSigParams(false, hostname, challengeServer, clientPublicKey)
   let bytesToSign = ?params.genDataToSign()
   let sigBytes = serverSig.tryDecode().valueOr:
-    return err("Failed to decode server's signature: " & error)
+    return err(error, UndecodableSignatureCause)
 
   var serverSignature: Signature
   if not serverSignature.init(sigBytes):
@@ -198,9 +200,9 @@ proc tryGet(
   try:
     ok(await self.get(uri))
   except HttpError as e:
-    err(e.msg)
+    err(e)
   except PeerIDAuthError as e:
-    err(e.msg)
+    err(e)
 
 proc tryPost(
     self: PeerIDAuthClient, uri: Uri, payload: string, authHeader: string
@@ -208,7 +210,7 @@ proc tryPost(
   try:
     ok(await self.post(uri, payload, authHeader))
   except HttpError as e:
-    err(e.msg)
+    err(e)
 
 proc tryRequestAuthentication*(
     self: PeerIDAuthClient, uri: Uri
@@ -216,7 +218,7 @@ proc tryRequestAuthentication*(
     async: (raises: [CancelledError])
 .} =
   let response = (await self.tryGet(uri)).valueOr:
-    return err("Failed to start PeerID Auth: " & error)
+    return err(error, "Failed to make PeerID Auth GET request to " & $uri)
 
   let wwwAuthenticate = response.headers.getString("WWW-Authenticate")
   if wwwAuthenticate == "":
@@ -224,9 +226,9 @@ proc tryRequestAuthentication*(
 
   let encodedPubkey = ?wwwAuthenticate.extractField("public-key")
   let pubkeyBytes = encodedPubkey.tryDecode().valueOr:
-    return err("Failed to decode server public-key: " & error)
+    return err(error, "Failed to decode server public-key")
   let serverPubkey = PublicKey.init(pubkeyBytes).valueOr:
-    return err("Failed to initialize server public-key")
+    return err(error, "Failed to initialize server public-key")
 
   ok(
     PeerIDAuthAuthenticationResponse(
@@ -246,8 +248,8 @@ proc requestAuthentication*(
 
 proc pubkeyBytes*(pubkey: PublicKey): seq[byte] {.raises: [PeerIDAuthError].} =
   pubkey.getBytes().valueOr:
-    raise newException(
-      PeerIDAuthError, "Failed to get bytes from PeerInfo's publicKey: " & $error
+    raise error.toException(
+      PeerIDAuthError, "Failed to get bytes from PeerInfo's publicKey"
     )
 
 proc parseBearerExpiry(value: string): Opt[DateTime] =
@@ -270,14 +272,14 @@ proc tryRequestAuthorization*(
     async: (raises: [CancelledError])
 .} =
   let clientPubkey = peerInfo.publicKey.getBytes().valueOr:
-    return err("Failed to get bytes from PeerInfo's publicKey: " & $error)
+    return err(error, "Failed to get bytes from PeerInfo's publicKey")
   let sig = ?peerInfo.privateKey.sign(challengeClient, serverPubkey, uri.hostname)
   let authHeader =
     PeerIDAuthPrefix & " public-key=\"" & clientPubkey.encode(safe = true) & "\"" &
     ", opaque=\"" & opaque & "\"" & ", challenge-server=\"" & challengeServer & "\"" &
     ", sig=\"" & sig & "\""
   let response = (await self.tryPost(uri, $payload, authHeader)).valueOr:
-    return err("Failed to send Authorization for PeerID Auth: " & error)
+    return err(error, "Failed to send Authorization for PeerID Auth")
 
   let authenticationInfo = response.headers.getString("authentication-info")
   let bearerExpires = authenticationInfo.extractField("expires").valueOr("")
@@ -336,17 +338,20 @@ proc sendWithoutBearer(
 
   ok((authorization.bearer, authorization.response))
 
+const BearerExpiredCause* = "Bearer expired"
+
 proc sendWithBearer(
     self: PeerIDAuthClient, uri: Uri, payload: auto, bearer: BearerToken
 ): Future[LPResult[(BearerToken, PeerIDAuthResponse)]] {.
     async: (raises: [CancelledError])
 .} =
-  if bearer.expires.isSome() and bearer.expires.get() <= now():
-    return err("Bearer expired")
+  bearer.expires.ifValue(expiry):
+    if expiry <= now():
+      return err(BearerExpiredCause)
 
   let authHeader = PeerIDAuthPrefix & " bearer=\"" & bearer.token & "\""
   let response = (await self.tryPost(uri, $payload, authHeader)).valueOr:
-    return err("Failed to send request with bearer token for PeerID Auth: " & error)
+    return err(error, "Failed to send request with bearer token for PeerID Auth")
 
   ok((bearer, response))
 

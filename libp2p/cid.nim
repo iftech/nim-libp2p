@@ -138,7 +138,7 @@ proc decode(data: openArray[char]): Result[Cid, CidError] =
     if MultiBase.decode(data, buffer, plen) != MultiBaseStatus.Success:
       return err(CidError.Incorrect)
     buffer.setLen(plen)
-    if buffer[0] == 0x12'u8:
+    if len(buffer) == 0 or buffer[0] == 0x12'u8:
       return err(CidError.Incorrect)
   decode(buffer)
 

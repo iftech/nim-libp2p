@@ -12,7 +12,7 @@ import ./utils.nim
 proc peerIdInBucket(kad: KadDHT, bucket: int): PeerId =
   ## A draw lands in `bucket` with probability ~2^-(bucket+1), so keep drawing.
   for _ in 0 ..< 1000:
-    let peerId = randomPeerId()
+    let peerId = PeerId.random()
     if kad.rtable.bucketIndex(peerId.toKey()) == bucket:
       return peerId
   raiseAssert "no random peer id landed in bucket " & $bucket
@@ -96,7 +96,7 @@ suite "KadDHT IP diversity":
       @[PeerInfo(peerId: admitted, addrs: @[ma("/ip4/8.8.8.1/tcp/4001")])]
     )
 
-    let state = LookupState.init(kad, randomPeerId().toKey())
+    let state = LookupState.init(kad, PeerId.random().toKey())
     state.shortlist.clear()
 
     let added = state.updateShortlist(

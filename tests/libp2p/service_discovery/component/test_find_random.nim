@@ -4,9 +4,11 @@
 {.used.}
 
 import chronos, sequtils
-import ../../../../libp2p/[extended_peer_record, peerid]
-import ../../../../libp2p/protocols/[kademlia, service_discovery]
+import ../../../../libp2p/[extended_peer_record, peerid, utils/future]
+import ../../../../libp2p/protocols/[kademlia, protocol, service_discovery]
+import ../../../../libp2p/stream/connection
 import ../../../tools/[lifecycle, topology, unittest]
+import ../../kademlia/utils as kad_utils
 import ../utils
 
 proc foreignXpr(): Value =
@@ -24,15 +26,21 @@ suite "Service Discovery - XPR key binding":
 
     check:
       replyXpr(ownKey, reply).isSome()
-      replyXpr(randomPeerId().toKey(), reply).isNone()
+      replyXpr(PeerId.random().toKey(), reply).isNone()
+
+  test "replyXpr rejects a reply with no record or a record with no value":
+    let key = PeerId.random().toKey()
+    check:
+      replyXpr(key, Message()).isNone()
+      replyXpr(key, Message(record: Opt.some(Record(key: Opt.some(key))))).isNone()
 
   asyncTest "lookupRandom drops a record whose subject is not the queried peer":
     let discos = setupServiceDiscoveryNodes(3, xprPublishing = false)
     startAndDeferStop(discos)
     await connectStar(discos)
 
-    let servedKey = discos[2].switch.peerInfo.peerId.toKey()
-    discos[2].dataTable.insert(servedKey, foreignXpr(), Timestamp.now())
+    let servedKey = discos[2].switch.peerInfo.peerId
+    check discos[2].seedLocalValue(servedKey, foreignXpr())
 
     check (await discos[1].lookupRandom()).len == 0
 
@@ -47,7 +55,7 @@ suite "Service Discovery - XPR key binding":
     check discos[0].startAdvertising(service, Opt.some(advert.encode())).isOk()
 
     checkUntilTimeout:
-      discos[2].dataTable.get(signer.peerId.toKey()).isSome()
+      discos[2].localValue(signer.peerId).isSome()
 
     let records = await discos[1].lookupRandom()
     check records.mapIt(it.peerId) == @[signer.peerId]
@@ -78,9 +86,37 @@ suite "Service Discovery Component - Find Random":
     check await discos[0].lookupRandom().withTimeout(5.seconds)
 
   asyncTest "lookupRandom can be cancelled while the lookup is in flight":
-    # Cancelling lookupRandom must propagate the cancellation cleanly without
-    # leaking transport resources, which teardown's checkTrackers verifies.
-    let discos = setupServiceDiscoveryNodes(3)
+    # Hold the peer's FIND_NODE request open. This is a synchronization point,
+    # so cancellation always happens while lookupRandom owns an active RPC stream.
+    let discos = setupServiceDiscoveryNodes(2)
+    let requestReceived = newFuture[void]("find-random-request-received")
+    let handlerFinished = newFuture[void]("find-random-handler-finished")
+    discos[1].handler = proc(
+        stream: Stream, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      defer:
+        handlerFinished.completeOnce()
+        await stream.close()
+      try:
+        discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
+        requestReceived.completeOnce()
+        await stream.join()
+      except LPStreamError as e:
+        raiseAssert e.msg
+
+    startAndDeferStop(discos)
+    await connectStar(discos)
+
+    let fut = discos[0].lookupRandom()
+    await requestReceived
+    await fut.cancelAndWait()
+    await handlerFinished
+
+  asyncTest "lookupRandom cancellation cleans up concurrent requests":
+    # Keep the scheduler-sensitive case as a stress regression: on a slow
+    # runner, the lookup can have several FIND_NODE and GET_VALUE requests in
+    # flight when cancellation arrives.
+    let discos = setupServiceDiscoveryNodes(9)
     startAndDeferStop(discos)
     await connectStar(discos)
 
@@ -92,6 +128,4 @@ suite "Service Discovery Component - Find Random":
     let discos = setupServiceDiscoveryNodes(2)
     startAndDeferStop(discos)
 
-    check await discos[0].ping(
-      discos[1].switch.peerInfo.peerId, discos[1].switch.peerInfo.addrs
-    )
+    check (await discos[0].ping(discos[1].switch.peerInfo)).isOk()

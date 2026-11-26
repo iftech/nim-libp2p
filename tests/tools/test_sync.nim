@@ -14,10 +14,6 @@ suite "WaitGroup":
     expect AssertionDefect:
       discard newWaitGroup(-1)
 
-  asyncTest "zero count":
-    let wg = newWaitGroup(0)
-    check wg.wait().finished
-
   asyncTest "zero count - done() has no effect":
     let wg = newWaitGroup(0)
     check wg.wait().finished

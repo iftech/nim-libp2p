@@ -3,7 +3,7 @@
 
 {.used.}
 
-import results, sequtils, chronos, stew/byteutils
+import results, sequtils, chronos, stew/byteutils, std/importutils
 import
   ../../libp2p/[
     errors,
@@ -24,16 +24,45 @@ import
     stream/lpstream,
     nameresolving/mockresolver,
     stream/chronosstream,
+    transports/transport,
     transports/tcptransport,
     transports/wstransport,
     transports/quictransport,
   ]
 import
-  ../tools/[unittest, trackers, futures, crypto, sync, switch_builder, multiaddress]
+  ../tools/
+    [unittest, trackers, futures, crypto, sync, switch_builder, multiaddress, lifecycle]
 
 const TestCodec = "/test/proto/1.0.0"
 
 type TestProto = ref object of LPProtocol
+
+type FailingWsTransport = ref object of WsTransport
+  fail: bool
+  entered: AsyncEvent
+  gate: Future[void]
+
+method start(
+    self: FailingWsTransport, addrs: seq[MultiAddress]
+) {.async: (raises: [LPError, transport.TransportError, CancelledError]).} =
+  if not self.gate.isNil():
+    self.entered.fire()
+    await self.gate.join()
+  if self.fail:
+    raise newException(TransportStartError, "injected start failure")
+  await procCall WsTransport(self).start(addrs)
+
+proc makeFailingWsSwitch(
+    listenAddrs: seq[MultiAddress]
+): (Switch, FailingWsTransport) {.raises: [LPError].} =
+  let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+    .withAddresses(listenAddrs)
+    .withTransport(
+      proc(config: TransportConfig): Transport =
+        FailingWsTransport.new(config.upgr, config.rng)
+    )
+    .build()
+  (switch, FailingWsTransport(switch.transports.filterIt(it of FailingWsTransport)[0]))
 
 suite "Switch":
   teardown:
@@ -63,11 +92,10 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    let stream = await switch2.dial(switch1, TestCodec)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
     await stream.writeLp("Hello!")
     let msg = string.fromBytes(await stream.readLp(1024))
@@ -76,8 +104,8 @@ suite "Switch":
 
     await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
-    check not switch1.isConnected(switch2.peerInfo.peerId)
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch1.isConnected(switch2)
+    check not switch2.isConnected(switch1)
 
   asyncTest "e2e use switch dial proto string with custom matcher":
     let handleFinished = newWaitGroup(1)
@@ -108,51 +136,10 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, callProto)
+    let stream = await switch2.dial(switch1, callProto)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
-
-    await stream.writeLp("Hello!")
-    let msg = string.fromBytes(await stream.readLp(1024))
-    check "Hello!" == msg
-    await stream.close()
-
-    await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
-
-    check not switch1.isConnected(switch2.peerInfo.peerId)
-    check not switch2.isConnected(switch1.peerInfo.peerId)
-
-  asyncTest "e2e should not leak bufferstreams and connections on channel close":
-    let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
-      try:
-        let msg = string.fromBytes(await stream.readLp(1024))
-        check "Hello!" == msg
-        await stream.writeLp("Hello!")
-      except LPStreamError:
-        raiseAssert "Unexpected LPStreamError in bufferstream leak test handler"
-      finally:
-        await stream.close()
-        handleFinished.done()
-
-    let testProto = new TestProto
-    testProto.codec = TestCodec
-    testProto.handler = handle
-
-    let switch1 = makeStandardSwitch()
-    switch1.mount(testProto)
-
-    let switch2 = makeStandardSwitch()
-    await switch1.start()
-    await switch2.start()
-
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
-
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
     await stream.writeLp("Hello!")
     let msg = string.fromBytes(await stream.readLp(1024))
@@ -161,8 +148,8 @@ suite "Switch":
 
     await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
-    check not switch1.isConnected(switch2.peerInfo.peerId)
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch1.isConnected(switch2)
+    check not switch2.isConnected(switch1)
 
   asyncTest "e2e use connect then dial":
     proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
@@ -186,12 +173,11 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    await switch2.connect(switch1)
+    let stream = await switch2.dial(switch1, TestCodec)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
     await stream.writeLp("Hello!")
     let msg = string.fromBytes(await stream.readLp(1024))
@@ -199,8 +185,8 @@ suite "Switch":
 
     await allFuturesRaising(stream.close(), switch1.stop(), switch2.stop())
 
-    check not switch1.isConnected(switch2.peerInfo.peerId)
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch1.isConnected(switch2)
+    check not switch2.isConnected(switch1)
 
   asyncTest "e2e connect to peer with unknown PeerId":
     let resolver = MockResolver.new()
@@ -215,14 +201,14 @@ suite "Switch":
 
     check:
       (await switch2.connect(ma("/dnsaddr/test.io/"), true)) == switch1.peerInfo.peerId
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
     # via direct ip
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
     check:
       (await switch2.connect(switch1.peerInfo.addrs[0], true)) == switch1.peerInfo.peerId
 
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
     await allFuturesRaising(switch1.stop(), switch2.stop())
 
@@ -233,7 +219,7 @@ suite "Switch":
     await switch2.start()
 
     # via direct ip
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
 
     # without specifying allow unknown, will fail
     expect(DialFailedError):
@@ -242,7 +228,7 @@ suite "Switch":
     # with invalid PeerId, will fail
     let fakeMa = concat(
         switch1.peerInfo.addrs[0],
-        MultiAddress.init(multiCodec("p2p"), PeerId.random(rng()).tryGet().data).tryGet(),
+        MultiAddress.init(multiCodec("p2p"), PeerId.random().data).tryGet(),
       )
       .tryGet()
     expect(DialFailedError):
@@ -253,7 +239,7 @@ suite "Switch":
     let connectedPeerId = await switch2.connect(fullAddr)
     check connectedPeerId == switch1.peerInfo.peerId
 
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
     await allFuturesRaising(switch1.stop(), switch2.stop())
 
@@ -270,16 +256,16 @@ suite "Switch":
       switch2.connManager.availableSlots(Direction.Out),
     ]
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+    await switch2.connect(switch1)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
+      not switch1.isConnected(switch2)
 
     checkTracker(LPChannelTrackerName)
     checkTracker(SecureConnTrackerName)
@@ -324,16 +310,16 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+    await switch2.connect(switch1)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
+      not switch1.isConnected(switch2)
 
     checkTracker(LPChannelTrackerName)
     checkTracker(SecureConnTrackerName)
@@ -372,16 +358,16 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+    await switch2.connect(switch1)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
+      not switch1.isConnected(switch2)
 
     checkTracker(LPChannelTrackerName)
     checkTracker(SecureConnTrackerName)
@@ -421,16 +407,16 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+    await switch2.connect(switch1)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
+      not switch1.isConnected(switch2)
 
     checkTracker(LPChannelTrackerName)
     checkTracker(SecureConnTrackerName)
@@ -470,16 +456,16 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
+    await switch2.connect(switch1)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
-    await switch2.disconnect(switch1.peerInfo.peerId)
+    await switch2.disconnect(switch1)
 
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
+      not switch1.isConnected(switch2)
 
     checkTracker(LPChannelTrackerName)
     checkTracker(SecureConnTrackerName)
@@ -523,24 +509,22 @@ suite "Switch":
     await switch2.start()
     await switch3.start()
 
-    await switch2.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
-      # should trigger 1st Join event
-    await switch3.connect(switch1.peerInfo.peerId, switch1.peerInfo.addrs)
-      # should trigger 2nd Join event
+    await switch2.connect(switch1) # should trigger 1st Join event
+    await switch3.connect(switch1) # should trigger 2nd Join event
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
-    check switch3.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
+    check switch3.isConnected(switch1)
 
-    await switch2.disconnect(switch1.peerInfo.peerId) # should trigger 1st Left event
-    await switch3.disconnect(switch1.peerInfo.peerId) # should trigger 2nd Left event
+    await switch2.disconnect(switch1) # should trigger 1st Left event
+    await switch3.disconnect(switch1) # should trigger 2nd Left event
 
-    check not switch2.isConnected(switch1.peerInfo.peerId)
-    check not switch3.isConnected(switch1.peerInfo.peerId)
+    check not switch2.isConnected(switch1)
+    check not switch3.isConnected(switch1)
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
+      not switch1.isConnected(switch2)
     checkUntilTimeout:
-      not switch1.isConnected(switch3.peerInfo.peerId)
+      not switch1.isConnected(switch3)
 
     checkTracker(LPChannelTrackerName)
     checkTracker(SecureConnTrackerName)
@@ -565,9 +549,9 @@ suite "Switch":
         case event.kind
         of ConnEventKind.Connected:
           await onConnect.wait()
-          await switches[0].disconnect(peerInfo.peerId) # trigger disconnect
+          await switches[0].disconnect(peerInfo) # trigger disconnect
         of ConnEventKind.Disconnected:
-          check not switches[0].isConnected(peerInfo.peerId)
+          check not switches[0].isConnected(peerInfo)
           onDisconnect.done()
       except DialFailedError:
         raiseAssert "Unexpected DialFailedError in connection event hook"
@@ -622,11 +606,11 @@ suite "Switch":
     await allConnected.wait()
 
     # Trigger disconnect safely
-    await switches[0].disconnect(peerInfo.peerId)
+    await switches[0].disconnect(peerInfo)
 
     # Wait until all disconnected
     await allDisconnected.wait()
-    check not switches[0].isConnected(peerInfo.peerId)
+    check not switches[0].isConnected(peerInfo)
 
     checkUntilTimeout:
       not isCounterLeaked(LPChannelTrackerName)
@@ -646,10 +630,13 @@ suite "Switch":
       # Wait for the remote's dial to fully complete before disconnecting,
       # to avoid racing with multistream protocol negotiation completion
       # (the handler fires before the remote reads the protocol confirmation).
-      await futSwitch1Connected.wait()
       try:
+        await stream.writeLp("ready")
+        await futSwitch1Connected.wait()
         await switch1.disconnect(stream.peerId)
         disconnected.done()
+      except LPStreamError:
+        raiseAssert "Unexpected LPStreamError in protocol handler"
       finally:
         await stream.close()
 
@@ -669,18 +656,18 @@ suite "Switch":
     await switch1.start()
     await switch2.start()
 
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    let stream = await switch2.dial(switch1, TestCodec)
 
-    # Signal to the handler that the dial has completed so it can proceed with the disconnect.
+    check string.fromBytes(await stream.readLp(1024)) == "ready"
+    # Signal after reading the optimistic negotiation response.
     futSwitch1Connected.done()
 
     # with the deadlock, the disconnect never completes and this times out
     await disconnected.wait()
 
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
-      not switch2.isConnected(switch1.peerInfo.peerId)
+      not switch1.isConnected(switch2)
+      not switch2.isConnected(switch1)
       PeerEventKind.Left in events
 
     await stream.closeWithEOF()
@@ -729,8 +716,7 @@ suite "Switch":
 
     await switch1.start()
 
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    let stream = await switch2.dial(switch1, TestCodec)
 
     proc closeReader() {.async.} =
       await stream.closeWithEOF()
@@ -742,7 +728,7 @@ suite "Switch":
     await allFuturesRaising(readers)
     await switch2.stop() #Otherwise this leaks
     checkUntilTimeout:
-      not switch1.isConnected(switch2.peerInfo.peerId)
+      not switch1.isConnected(switch2)
 
     checkTracker(LPChannelTrackerName)
     checkTracker(SecureConnTrackerName)
@@ -757,7 +743,7 @@ suite "Switch":
     let seckey = PrivateKey.random(ECDSA, rng()).get()
     let somePeer = PeerInfo.new(seckey, [someAddr])
     expect(DialFailedError):
-      discard await switch2.dial(somePeer.peerId, somePeer.addrs, TestCodec)
+      discard await switch2.dial(somePeer, TestCodec)
     await switch2.stop()
 
   asyncTest "e2e total connection limits on incoming connections":
@@ -774,20 +760,37 @@ suite "Switch":
       switches.add(switch)
       await switch.start()
 
-      check await switch.connect(destPeerInfo.peerId, destPeerInfo.addrs).withTimeout(
-        1000.millis
-      )
+      check await switch.connect(destPeerInfo).withTimeout(1000.millis)
 
     let switchFail = makeStandardSwitch(TcpAutoAddress)
     switches.add(switchFail)
     await switchFail.start()
 
     expect DialFailedError:
-      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs)
+      await switchFail.connect(destPeerInfo)
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
-  asyncTest "e2e total connection limits on incoming connections":
+  asyncTest "an opt-in outbound reserve leaves room for repair dials":
+    privateAccess(Switch)
+    let server = makeStandardSwitchBuilder(TcpAutoAddress)
+      .withMaxConnections(3, outboundReserve = 1)
+      .build()
+    let peers = (0 ..< 3).mapIt(makeStandardSwitch(TcpAutoAddress))
+    startAndDeferStop(@[server] & peers)
+    for peer in peers[0 .. 1]:
+      await peer.connect(server)
+      checkUntilTimeout:
+        server.pendingUpgrades == 0
+    expect DialFailedError:
+      await peers[2].connect(server)
+    await server.connect(peers[2])
+    check:
+      server.isConnected(peers[2])
+      server.connManager.availableSlots(Direction.In) == 0
+      server.connManager.availableSlots(Direction.Out) == 0
+
+  asyncTest "e2e total connection limits on outgoing connections":
     var switches: seq[Switch]
     for i in 0 ..< 3:
       switches.add(makeStandardSwitch(TcpAutoAddress))
@@ -804,12 +807,10 @@ suite "Switch":
     switches.add(dstSwitch)
 
     for s in switches:
-      check await srcSwitch.connect(s.peerInfo.peerId, s.peerInfo.addrs).withTimeout(
-        1000.millis
-      )
+      check await srcSwitch.connect(s).withTimeout(1000.millis)
 
     expect DialFailedError:
-      await srcSwitch.connect(dstSwitch.peerInfo.peerId, dstSwitch.peerInfo.addrs)
+      await srcSwitch.connect(dstSwitch)
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
@@ -827,16 +828,14 @@ suite "Switch":
       switches.add(switch)
       await switch.start()
 
-      check await switch.connect(destPeerInfo.peerId, destPeerInfo.addrs).withTimeout(
-        1000.millis
-      )
+      check await switch.connect(destPeerInfo).withTimeout(1000.millis)
 
     let switchFail = makeStandardSwitch(TcpAutoAddress)
     switches.add(switchFail)
     await switchFail.start()
 
     expect DialFailedError:
-      await switchFail.connect(destPeerInfo.peerId, destPeerInfo.addrs)
+      await switchFail.connect(destPeerInfo)
 
     await allFuturesRaising(switches.mapIt(it.stop()))
 
@@ -855,12 +854,10 @@ suite "Switch":
     await dstSwitch.start()
 
     for s in switches:
-      check await srcSwitch.connect(s.peerInfo.peerId, s.peerInfo.addrs).withTimeout(
-        1000.millis
-      )
+      check await srcSwitch.connect(s).withTimeout(1000.millis)
 
     expect DialFailedError:
-      await srcSwitch.connect(dstSwitch.peerInfo.peerId, dstSwitch.peerInfo.addrs)
+      await srcSwitch.connect(dstSwitch)
 
     switches.add(srcSwitch)
     switches.add(dstSwitch)
@@ -892,11 +889,10 @@ suite "Switch":
       makeStandardSwitchBuilder(TcpAutoAddress).withPeerStore(capacity = 0).build()
     await switch2.start()
 
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    let stream = await switch2.dial(switch1, TestCodec)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
     await stream.writeLp("Hello!")
     let msg = string.fromBytes(await stream.readLp(1024))
@@ -905,8 +901,8 @@ suite "Switch":
 
     await allFuturesRaising(handleFinished.wait(), switch1.stop(), switch2.stop())
 
-    check not switch1.isConnected(switch2.peerInfo.peerId)
-    check not switch2.isConnected(switch1.peerInfo.peerId)
+    check not switch1.isConnected(switch2)
+    check not switch2.isConnected(switch1)
 
     check:
       switch1.peerStore[AddressBook][switch2.peerInfo.peerId] == switch2.peerInfo.addrs
@@ -942,11 +938,10 @@ suite "Switch":
     await switch2.start()
 
     # Switch2 dials switch1 (outbound from switch2's perspective)
-    let stream =
-      await switch2.dial(switch1.peerInfo.peerId, switch1.peerInfo.addrs, TestCodec)
+    let stream = await switch2.dial(switch1, TestCodec)
 
-    check switch1.isConnected(switch2.peerInfo.peerId)
-    check switch2.isConnected(switch1.peerInfo.peerId)
+    check switch1.isConnected(switch2)
+    check switch2.isConnected(switch1)
 
     await stream.writeLp("Hello!")
     let msg = string.fromBytes(await stream.readLp(1024))
@@ -1001,8 +996,8 @@ suite "Switch":
         switch1.peerInfo.peerId, @[switch1.peerInfo.addrs[0]], TestCodec
       )
 
-      check switch1.isConnected(switch2.peerInfo.peerId)
-      check switch2.isConnected(switch1.peerInfo.peerId)
+      check switch1.isConnected(switch2)
+      check switch2.isConnected(switch1)
 
       await stream.writeLp("Hello!")
       check "Hello!" == string.fromBytes(await stream.readLp(1024))
@@ -1012,8 +1007,8 @@ suite "Switch":
         switch1.peerInfo.peerId, @[switch1.peerInfo.addrs[1]], TestCodec
       )
 
-      check switch1.isConnected(switch3.peerInfo.peerId)
-      check switch3.isConnected(switch1.peerInfo.peerId)
+      check switch1.isConnected(switch3)
+      check switch3.isConnected(switch1)
 
       await connv6.writeLp("Hello!")
       check "Hello!" == string.fromBytes(await connv6.readLp(1024))
@@ -1021,8 +1016,8 @@ suite "Switch":
 
       await allFuturesRaising(switch1.stop(), switch2.stop(), switch3.stop())
 
-      check not switch1.isConnected(switch2.peerInfo.peerId)
-      check not switch2.isConnected(switch1.peerInfo.peerId)
+      check not switch1.isConnected(switch2)
+      check not switch2.isConnected(switch1)
 
   asyncTest "e2e dial dns4 address":
     let resolver = MockResolver.new()
@@ -1040,7 +1035,7 @@ suite "Switch":
     let testAddr = ma("/dns4/localhost/") & destSwitch.peerInfo.addrs[0][1].tryGet()
 
     await srcSwitch.connect(destSwitch.peerInfo.peerId, @[testAddr])
-    check srcSwitch.isConnected(destSwitch.peerInfo.peerId)
+    check srcSwitch.isConnected(destSwitch)
 
     await destSwitch.stop()
     await srcSwitch.stop()
@@ -1068,10 +1063,10 @@ suite "Switch":
     let testAddr = ma("/dnsaddr/test.io/")
 
     await srcTcpSwitch.connect(destSwitch.peerInfo.peerId, @[testAddr])
-    check srcTcpSwitch.isConnected(destSwitch.peerInfo.peerId)
+    check srcTcpSwitch.isConnected(destSwitch)
 
     await srcWsSwitch.connect(destSwitch.peerInfo.peerId, @[testAddr])
-    check srcWsSwitch.isConnected(destSwitch.peerInfo.peerId)
+    check srcWsSwitch.isConnected(destSwitch)
 
     await destSwitch.stop()
     await srcWsSwitch.stop()
@@ -1085,8 +1080,8 @@ suite "Switch":
     await destSwitch.start()
     await srcSwitch.start()
 
-    await srcSwitch.connect(destSwitch.peerInfo.peerId, destSwitch.peerInfo.addrs)
-    check srcSwitch.isConnected(destSwitch.peerInfo.peerId)
+    await srcSwitch.connect(destSwitch)
+    check srcSwitch.isConnected(destSwitch)
 
     await destSwitch.stop()
     await srcSwitch.stop()
@@ -1109,17 +1104,17 @@ suite "Switch":
     # Test TCP transport connection
     let tcpAddr = destSwitch.peerInfo.addrs.filterIt(TCP.match(it))[0]
     await srcTcpSwitch.connect(destSwitch.peerInfo.peerId, @[tcpAddr])
-    check srcTcpSwitch.isConnected(destSwitch.peerInfo.peerId)
+    check srcTcpSwitch.isConnected(destSwitch)
 
     # Test WebSocket transport connection
     let wsAddr = destSwitch.peerInfo.addrs.filterIt(WebSockets.match(it))[0]
     await srcWsSwitch.connect(destSwitch.peerInfo.peerId, @[wsAddr])
-    check srcWsSwitch.isConnected(destSwitch.peerInfo.peerId)
+    check srcWsSwitch.isConnected(destSwitch)
 
     # Test QUIC transport connection
     let quicAddr = destSwitch.peerInfo.addrs.filterIt(QUIC_V1.match(it))[0]
     await srcQuicSwitch.connect(destSwitch.peerInfo.peerId, @[quicAddr])
-    check srcQuicSwitch.isConnected(destSwitch.peerInfo.peerId)
+    check srcQuicSwitch.isConnected(destSwitch)
 
   asyncTest "mount unstarted protocol":
     let handleFinished = newWaitGroup(1)
@@ -1149,7 +1144,7 @@ suite "Switch":
     await testProto.start()
     dst.mount(testProto)
 
-    let stream = await src.dial(dst.peerInfo.peerId, dst.peerInfo.addrs, TestCodec)
+    let stream = await src.dial(dst, TestCodec)
 
     await stream.writeLp("test123")
     check "test456" == string.fromBytes(await stream.readLp(1024))
@@ -1161,15 +1156,14 @@ suite "Switch":
 
     let noHandler = new TestProto
     noHandler.codec = TestCodec
-    check switch.tryMount(noHandler).error ==
-      "Protocol has to define a handle method or proc"
+    check switch.tryMount(noHandler).isOfError(MissingHandlerCause)
 
     let noCodec = LPProtocol.new(
       @[""],
       proc(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
         discard,
     )
-    check switch.tryMount(noCodec).error == "Protocol has to define a codec string"
+    check switch.tryMount(noCodec).isOfError(MissingCodecCause)
     check TestCodec notin switch.peerInfo.protocols
 
   asyncTest "switch failing to start stops properly":
@@ -1178,6 +1172,39 @@ suite "Switch":
     expect LPError:
       await switch.start()
     # test is that this doesn't leak
+
+  asyncTest "retried start after a failed start listens on the original addresses":
+    let listenAddrs = @[TcpAutoAddress, WsAutoAddress]
+    let (switch, ws) = makeFailingWsSwitch(listenAddrs)
+    ws.fail = true
+
+    expect LPError:
+      await switch.start()
+    check switch.peerInfo.listenAddrs == listenAddrs
+
+    ws.fail = false
+    await switch.start()
+    defer:
+      await switch.stop()
+
+    check switch.peerInfo.listenAddrs.len == listenAddrs.len
+    check switch.peerInfo.listenAddrs.countIt(TCP.match(it)) == 1
+    check switch.peerInfo.listenAddrs.countIt(WebSockets.match(it)) == 1
+    check switch.transports.allIt(it.running)
+
+  asyncTest "cancelled start restores the original listen addresses":
+    let listenAddrs = @[TcpAutoAddress, WsAutoAddress]
+    let (switch, ws) = makeFailingWsSwitch(listenAddrs)
+    ws.entered = newAsyncEvent()
+    ws.gate = newFuture[void]("test.gate")
+
+    let startFut = switch.start()
+    await ws.entered.wait()
+    await startFut.cancelAndWait()
+    check switch.peerInfo.listenAddrs == listenAddrs
+
+    ws.gate.complete()
+    await switch.stop()
 
   asyncTest "starting two times does not crash":
     let switch = makeStandardSwitch()
@@ -1233,10 +1260,9 @@ suite "Switch":
       switch.transports[0].upgrader.secureManagers.len == 1
       switch.transports[0].upgrader.secureManagers[0] of Noise
 
-  asyncTest "accept loop not blocked by upgrade semaphore", timeout = 30.seconds:
-    # Regression: old code held the upgrade semaphore in the accept loop, blocking
-    # it when ConcurrentUpgrades (4) were in flight; manifested as 80+ kad nodes
-    # getting stuck on bootstrap.
+  asyncTest "accept loop handles more peers than the pending upgrade budget":
+    privateAccess(Switch)
+    const BatchSize = PendingUpgradesPerSourceForTesting
     const NumPeers = 85
     let server = makeStandardSwitchBuilder(TcpAutoAddress)
       .withConnectionLimits(ConnectionLimits.maxTotal(NumPeers))
@@ -1245,36 +1271,51 @@ suite "Switch":
 
     var clients: seq[Switch]
     for _ in 0 ..< NumPeers:
-      let c = makeStandardSwitch(TcpAutoAddress)
-      await c.start()
-      clients.add(c)
-    defer:
-      await allFuturesRaising(clients.mapIt(it.stop()) & @[server.stop()])
+      clients.add(makeStandardSwitch(TcpAutoAddress))
+    await allFuturesRaising(clients.mapIt(it.start()))
 
-    let connects =
-      clients.mapIt(it.connect(server.peerInfo.peerId, server.peerInfo.addrs))
-    await allFuturesRaising(connects)
+    for i in countup(0, clients.high, BatchSize):
+      await allFuturesRaising(
+        clients[i .. min(i + BatchSize - 1, clients.high)].mapIt(it.connect(server))
+      )
+      checkUntilTimeout:
+        server.pendingUpgrades == 0
+
+    await allFuturesRaising(clients.mapIt(it.stop()) & @[server.stop()])
+
+proc makePusherSwitch(): Switch {.raises: [LPError].} =
+  makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
+
+proc startConnectedPushers(
+    switch1, switch2: Switch
+) {.async: (raises: [CancelledError, LPError]).} =
+  await switch1.start()
+  await switch2.start()
+
+  # the listener pusher tracks the dialer on Identified, after ProtoBook is set
+  let identified = newAsyncEvent()
+  proc onIdentified(
+      peerId: PeerId, event: PeerEvent
+  ) {.async: (raises: [CancelledError]).} =
+    identified.fire()
+
+  switch2.addPeerEventHandler(onIdentified, PeerEventKind.Identified)
+  defer:
+    switch2.removePeerEventHandler(onIdentified, PeerEventKind.Identified)
+
+  await switch1.connect(switch2)
+  await identified.wait()
+  check IdentifyPushCodec in switch2.peerStore[ProtoBook][switch1.peerInfo.peerId]
+  check switch1.isConnected(switch2)
+  check switch2.isConnected(switch1)
 
 suite "Switch :: IdentifyPusher Service":
-  var
-    switch1 {.threadvar.}: Switch
-    switch2 {.threadvar.}: Switch
-
-  asyncSetup:
-    switch1 = makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
-    switch2 = makeStandardSwitchBuilder(TcpAutoAddress).withIdentifyPusher().build()
-    await switch1.start()
-    await switch2.start()
-    await switch1.connect(switch2.peerInfo.peerId, switch2.peerInfo.addrs)
-
-  asyncTeardown:
-    await switch1.stop()
-    await switch2.stop()
-
   asyncTest "broadcasts on mount of new protocol":
-    checkUntilTimeout:
-      switch1.isConnected(switch2.peerInfo.peerId)
-      switch2.isConnected(switch1.peerInfo.peerId)
+    let switch1 = makePusherSwitch()
+    let switch2 = makePusherSwitch()
+    defer:
+      await allFutures(switch1.stop(), switch2.stop())
+    await startConnectedPushers(switch1, switch2)
 
     # mount new protocol to switch2
     let codecs = "/switch/protocol/1.0.0"
@@ -1292,9 +1333,11 @@ suite "Switch :: IdentifyPusher Service":
       codecs in switch1.peerStore[ProtoBook][switch2.peerInfo.peerId]
 
   asyncTest "broadcasts on updateAddrs":
-    checkUntilTimeout:
-      switch1.isConnected(switch2.peerInfo.peerId)
-      switch2.isConnected(switch1.peerInfo.peerId)
+    let switch1 = makePusherSwitch()
+    let switch2 = makePusherSwitch()
+    defer:
+      await allFutures(switch1.stop(), switch2.stop())
+    await startConnectedPushers(switch1, switch2)
 
     # switch2 starts listening on new address
     let extra = ma("/ip4/127.0.0.1/tcp/999")
@@ -1314,6 +1357,6 @@ suite "Switch :: IdentifyPusher Service":
     await dialer.start()
     defer:
       await allFutures(listener.stop(), dialer.stop())
-    await dialer.connect(listener.peerInfo.peerId, listener.peerInfo.addrs)
-    check listener.isConnected(dialer.peerInfo.peerId)
+    await dialer.connect(listener)
+    check listener.isConnected(dialer)
     check (await listener.connManager.waitForPeerReady(dialer.peerInfo.peerId))

@@ -46,12 +46,16 @@ proc connectStar*[T: Connectable](nodes: seq[T]) {.async.} =
   ##
   ## Creates a fully connected graph.
   mixin connect
+  # Each dialer adds at most one pending inbound connection per listener.
+  const BatchSize = PendingUpgradesPerSourceForTesting
   var futs: seq[Future[void]]
   for i, dialer in nodes:
     for j, listener in nodes:
       if i != j:
         futs.add(connect(dialer, listener))
-  await allFuturesRaising(futs)
+    if (i + 1) mod BatchSize == 0 or i == nodes.high:
+      await allFuturesRaising(futs)
+      futs.setLen(0)
 
 proc connectSparse*[T: Connectable](nodes: seq[T], degree: int = 2) {.async.} =
   ## Sparse topology: only nodes at (i mod degree == 0) connect to all others

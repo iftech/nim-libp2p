@@ -5,17 +5,13 @@ import std/deques
 
 type Chunk = ref object
   data: seq[byte]
-  size: int
   start: int
 
-template clone(c: Chunk): Chunk =
-  Chunk(data: c.data, size: c.size, start: c.start)
-
 template newChunk(b: sink seq[byte]): Chunk =
-  Chunk(data: b, size: b.len, start: 0)
+  Chunk(data: b, start: 0)
 
 template len(c: Chunk): int =
-  c.size - c.start
+  c.data.len - c.start
 
 type ZeroQueue* = object
   # ZeroQueue is queue structure optimized for efficient pushing and popping of 
@@ -39,33 +35,24 @@ proc push*(q: var ZeroQueue, b: sink seq[byte]) =
     q.queuedBytes += b.len.int64
     q.chunks.addLast(newChunk(b))
 
-proc popChunk(q: var ZeroQueue, count: int): Chunk =
-  doAssert(count > 0, "count must be positive integer")
-  var first = q.chunks.popFirst()
+func nextReadLen(q: ZeroQueue, count: int): int =
+  min(q.chunks.peekFirst().len(), count)
 
-  # first chunk has up to requested count elements,
-  # queue will return this chunk (chunk might have less then requested)
-  if first.len() <= count:
-    q.queuedBytes -= first.len().int64
-    return first
-
-  # first chunk has more elements then requested count, 
-  # queue will return view of first count elements, leaving the rest in the queue
-  var ret = first.clone()
-  ret.size = ret.start + count
+proc consumeFirst(q: var ZeroQueue, dest: pointer, count: int) =
+  let first = q.chunks.peekFirst()
+  doAssert(count > 0 and count <= first.len(), "count must fit in the first chunk")
+  copyMem(dest, first.data[first.start].addr, count)
   first.start += count
-  q.chunks.addFirst(first)
   q.queuedBytes -= count.int64
-  return ret
+  if first.len() == 0:
+    q.chunks.shrink(fromFirst = 1)
 
 proc consumeTo*(q: var ZeroQueue, pbytes: pointer, nbytes: int): int =
   var consumed = 0
   while consumed < nbytes and not q.isEmpty():
-    let chunk = q.popChunk(nbytes - consumed)
-    let dest = cast[pointer](cast[uint](pbytes) + consumed.uint)
-    let offsetPtr = cast[ptr byte](cast[int](addr chunk.data[0]) + chunk.start)
-    copyMem(dest, offsetPtr, chunk.len())
-    consumed += chunk.len()
+    let count = q.nextReadLen(nbytes - consumed)
+    q.consumeFirst(cast[pointer](cast[uint](pbytes) + consumed.uint), count)
+    consumed += count
 
   return consumed
 
@@ -74,9 +61,7 @@ proc popChunkSeq*(q: var ZeroQueue, count: int): seq[byte] =
   if count == 0 or q.isEmpty:
     return @[]
 
-  let chunk = q.popChunk(count)
-  var dest = newSeqUninit[byte](chunk.len())
-  let offsetPtr = cast[ptr byte](cast[int](addr chunk.data[0]) + chunk.start)
-  copyMem(dest[0].addr, offsetPtr, chunk.len())
+  var dest = newSeqUninit[byte](q.nextReadLen(count))
+  q.consumeFirst(dest[0].addr, dest.len)
 
   return dest

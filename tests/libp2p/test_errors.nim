@@ -15,9 +15,9 @@ type
 suite "Errors":
   test "toException carries the formatted error":
     let e = Malformed.toException(DemoError)
-    check:
-      e of ref DemoError
-      e.msg == "Malformed"
+    static:
+      doAssert typeof(e) is ref DemoError
+    check e.msg == "Malformed"
 
   test "valueOrRaise returns the value":
     let r = LPResult[int].ok(7)

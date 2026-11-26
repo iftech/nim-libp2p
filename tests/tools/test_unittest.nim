@@ -70,12 +70,6 @@ suite "exception message helpers - failed":
       raiseTestException("different text")
 
 suite "checkUntilTimeout helpers":
-  asyncTest "checkUntilTimeout should pass if the condition is true":
-    let a = 2
-    let b = 2
-    checkUntilTimeout:
-      a == b
-
   asyncTest "checkUntilTimeout should pass if the conditions are true":
     let a = 2
     let b = 2
@@ -93,12 +87,6 @@ suite "checkUntilTimeout helpers":
 
     asyncSpawn makeConditionTrueLater()
     checkUntilTimeout:
-      a == b
-
-  asyncTest "checkUntilTimeoutCustom should pass when the condition is true":
-    let a = 2
-    let b = 2
-    checkUntilTimeoutCustom(2.seconds, 100.milliseconds):
       a == b
 
   asyncTest "checkUntilTimeoutCustom should pass when the conditions are true":

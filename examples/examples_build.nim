@@ -1,3 +1,3 @@
 {.used.}
 
-import directchat
+import directchat, mdns

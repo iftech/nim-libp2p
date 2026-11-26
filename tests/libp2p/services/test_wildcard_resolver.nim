@@ -27,25 +27,34 @@ proc getAddressesMock(
     echo "Error: " & $e.msg
     fail()
 
-proc createSwitch(svc: Service, addrs: seq[MultiAddress]): Switch =
-  var switch = makeStandardSwitchBuilder(addrs).withWildcardResolver(false).build()
+proc createSwitch(addrs: seq[MultiAddress]): Switch =
+  return makeStandardSwitchBuilder(addrs).withWildcardResolver(false).build()
 
-  switch.add(svc)
+proc startResolverSwitch(
+    switch: Switch, service: WildcardAddressResolverService
+) {.async.} =
+  await switch.start()
+  await service.start(switch)
 
-  return switch
+proc stopResolverSwitch(
+    switch: Switch, service: WildcardAddressResolverService
+) {.async.} =
+  try:
+    await service.stop(switch)
+  finally:
+    await switch.stop()
 
 suite "WildcardAddressResolverService":
   teardown:
     checkTrackers()
 
   asyncTest "WildcardAddressResolverService must resolve wildcard addresses and stop doing so when stopped":
-    let svc: Service =
+    let svc =
       WildcardAddressResolverService.new(networkInterfaceProvider = getAddressesMock)
     let switch = createSwitch(
-      svc,
-      @[ma("/ip4/127.0.0.1/tcp/0/"), ma("/ip4/0.0.0.0/tcp/0/"), ma("/ip6/::/tcp/0/")],
+      @[ma("/ip4/127.0.0.1/tcp/0/"), ma("/ip4/0.0.0.0/tcp/0/"), ma("/ip6/::/tcp/0/")]
     )
-    await switch.start()
+    await startResolverSwitch(switch, svc)
     let tcpIp4Locahost = switch.peerInfo.addrs[0][multiCodec("tcp")].get
     let tcpIp4Wildcard = switch.peerInfo.addrs[1][multiCodec("tcp")].get
     let tcpIp6 = switch.peerInfo.addrs[3][multiCodec("tcp")].get # tcp port for ip6
@@ -61,7 +70,7 @@ suite "WildcardAddressResolverService":
         ma("/ip4/127.0.0.1" & $tcpIp6),
         ma("/ip4/192.168.1.22" & $tcpIp6),
       ]
-    await switch.stop()
+    await stopResolverSwitch(switch, svc)
     check switch.peerInfo.addrs ==
       @[
         ma("/ip4/127.0.0.1" & $tcpIp4Locahost),

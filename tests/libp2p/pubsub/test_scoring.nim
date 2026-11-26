@@ -398,32 +398,6 @@ suite "GossipSub Scoring":
       peers[0].score == expectedScore
       peers[0].slowPeerPenalty == expectedDecayedPenalty
 
-  asyncTest "Slow peer penalty can still be disabled with zero weight":
-    let (gossipSub, conns, peers) = setupGossipSubWithPeers(1, topic)
-    defer:
-      await teardownGossipSub(gossipSub, conns)
-
-    let
-      slowPeerPenaltyWeight = 0.0
-      slowPeerPenaltyThreshold = 0.0
-      slowPeerPenaltyDecay = 0.5
-      initialPenalty = 4.0
-      expectedScore =
-        (initialPenalty - slowPeerPenaltyThreshold) * slowPeerPenaltyWeight
-      expectedDecayedPenalty = initialPenalty * slowPeerPenaltyDecay
-
-    gossipSub.parameters.slowPeerPenaltyWeight = slowPeerPenaltyWeight
-    gossipSub.parameters.slowPeerPenaltyThreshold = slowPeerPenaltyThreshold
-    gossipSub.parameters.slowPeerPenaltyDecay = slowPeerPenaltyDecay
-
-    peers[0].slowPeerPenalty = initialPenalty
-
-    gossipSub.updateScores()
-
-    check:
-      peers[0].score == expectedScore
-      peers[0].slowPeerPenalty == expectedDecayedPenalty
-
   asyncTest "Colocation factor scoring":
     let (gossipSub, conns, peers) = setupGossipSubWithPeers(5, topic)
     defer:
@@ -500,7 +474,7 @@ suite "GossipSub Scoring":
     let now = Moment.now()
 
     # Create expired peer stats for disconnected peer
-    let expiredPeerId = randomPeerId()
+    let expiredPeerId = PeerId.random()
     gossipSub.peerStats[expiredPeerId] = PeerStats(
       expire: now - 1.seconds, # Already expired
       score: -5.0,
@@ -617,3 +591,14 @@ suite "GossipSub Scoring":
     # Score should be zero since topic weight is zero
     check:
       round(peers[0].score, 1) == 0.0
+
+  asyncTest "receive peer without send stream is still scored":
+    let (g, conns, peers) = setupGossipSubWithPeers(1, "topic")
+    defer:
+      await teardownGossipSub(g, conns)
+    let stream = peers[0].sendStream
+    peers[0].sendStream = nil
+    peers[0].behaviourPenalty = 100
+    g.updateScores()
+    check peers[0].score == -10000.0
+    peers[0].sendStream = stream

@@ -22,7 +22,7 @@
 ## ```
 ##
 ## ## A simple ping application
-## We'll start by creating a simple application, which is starting two libp2p [switch](https://docs.libp2p.io/concepts/stream-multiplexing/#switch-swarm), and pinging each other using the [Ping](https://docs.libp2p.io/concepts/protocols/#ping) protocol.
+## We'll start by creating a simple application, which is starting two libp2p [switch](https://libp2p.io/docs/switch/), and pinging each other using the [Ping](https://libp2p.io/docs/protocols/#ping) protocol.
 ##
 ## !!! tips ""
 ##     You can find the source of this tutorial (and other tutorials) in the [libp2p/examples](https://github.com/status-im/nim-libp2p/tree/master/examples) folder!
@@ -53,7 +53,7 @@ proc createSwitch(ma: MultiAddress, rng: Rng): Switch =
 
   return switch
 
-## This will create a switch using [Mplex](https://docs.libp2p.io/concepts/stream-multiplexing/) as a multiplexer, Noise to secure the communication, and TCP as an underlying transport.
+## This will create a switch using [Mplex](https://libp2p.io/docs/multiplexing-overview/) as a multiplexer, Noise to secure the communication, and TCP as an underlying transport.
 ##
 ## You can of course tweak this, to use a different or multiple transport, or tweak the configuration of Mplex and Noise, but this is some sane defaults that we'll use going forward.
 ##

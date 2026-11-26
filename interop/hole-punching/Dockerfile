@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.5-labs
-ARG NIM_VERSION=2.2.10
+ARG NIM_VERSION=2.2.14
 ARG NIMBLE_COMMIT=aa8e6ea09ecac774b6fad42552569ce07bef37ec
 FROM nimlang/nim:${NIM_VERSION} as builder
 ARG NIM_VERSION

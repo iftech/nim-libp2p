@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[sets, tables, sequtils]
+import std/[sets, strformat, tables, sequtils]
 import chronos, chronicles, results
 import ../../utils/[heartbeat, opt, future]
 import
@@ -14,6 +14,17 @@ import
 
 logScope:
   topics = "libp2p service-discovery"
+
+const MinTicketWait* = 1.seconds
+
+func ticketWait*(config: ServiceDiscoveryConfig, tWaitFor: Duration): Duration =
+  # a retry later than the registration window misses the ticket
+  let floor =
+    if config.registrationWindow > ZeroDuration:
+      min(MinTicketWait, config.registrationWindow)
+    else:
+      MinTicketWait
+  max(floor, min(config.advertExpiry, tWaitFor))
 
 type
   RegistrationResponse* = object
@@ -50,7 +61,7 @@ proc cleanupFinishedTasks(a: Advertiser) =
 
 proc getAdvertBytes(disco: ServiceDiscovery, explicit: Opt[seq[byte]]): Opt[seq[byte]] =
   if explicit.isSome():
-    return Opt.some(explicit.get())
+    return explicit
 
   let extRecord = disco.record().valueOr:
     trace "Failed to create extended peer record", error
@@ -271,7 +282,7 @@ proc sendRegister*(
       await disco.send(peerId, msg)
 
   let reply = replyRes.valueOr:
-    return err($error)
+    return err(error)
 
   let registerMsg = reply.register.valueOr:
     return err("register reply not found")
@@ -348,11 +359,14 @@ proc advertiseToRegistrar*(
 
       currentTicket = Opt.some(newTicket)
 
-      let waitSecs = min(disco.discoConfig.advertExpiry, newTicket.tWaitFor.get())
+      let tWaitFor = newTicket.tWaitFor.valueOr:
+        trace "Ticket without a wait time", serviceId, registrar
+        return
+      let delay = ticketWait(disco.discoConfig, tWaitFor)
 
-      trace "Waiting for registrar", serviceId, registrar, wait = $waitSecs
+      trace "Waiting for registrar", serviceId, registrar, wait = $delay
 
-      await sleepAsync(waitSecs)
+      await sleepAsync(delay)
     of kademlia_protobuf.RegistrationStatus.Rejected:
       trace "Registrar rejection, aborting", serviceId, registrar
       return
@@ -363,21 +377,19 @@ proc validateAdvert(advert: seq[byte], service: ServiceInfo): LPResult[PeerId] =
 
   # measured before the decode, which skips (and so hides) unknown fields
   if advert.len > MaxXPRSize:
-    return err(
-      "oversized advertisement: " & $advert.len & " bytes, the limit is " & $MaxXPRSize
-    )
+    return err(fmt"{advert.len} > {MaxXPRSize} bytes", "oversized advertisement")
 
   let ad = Advertisement.decode(advert).valueOr:
-    return err("cannot decode advertisement: " & $error)
+    return err(error, "cannot decode advertisement")
 
   if not ad.isValid():
     return err(
-      "invalid advertisement: the record must stay at most " & $MaxXPRSize &
-        " bytes and each service data at most " & $MaxServiceDataSize & " bytes"
+      fmt"record limit {MaxXPRSize} bytes, service data limit {MaxServiceDataSize} bytes",
+      "invalid advertisement",
     )
 
   if not ad.advertisesService(service.id.hashServiceId()):
-    return err("advertisement does not advertise service '" & service.id & "'")
+    return err(service.id, "advertisement does not advertise service")
 
   ok(ad.data.peerId)
 
@@ -412,7 +424,7 @@ proc dropOwnService(disco: ServiceDiscovery, serviceId: string): Opt[ServiceInfo
 
 proc ownXpr(disco: ServiceDiscovery): LPResult[SignedXpr] =
   let record = disco.record().valueOr:
-    return err("cannot build own signed peer record: " & $error)
+    return err(error, "cannot build own signed peer record")
   ok(SignedXpr(peerId: disco.switch.peerInfo.peerId, bytes: record.encode()))
 
 proc xprsToPublish*(disco: ServiceDiscovery): seq[SignedXpr] =
@@ -438,7 +450,11 @@ proc publishXpr(
     disco: ServiceDiscovery, xpr: SignedXpr
 ) {.async: (raises: [CancelledError]).} =
   ## A random walk finds the record only when its signer is a DHT peer.
-  (await disco.putValue(xpr.peerId.toKey(), Value.fromBytes(xpr.bytes))).isOkOr:
+  let key = RecordKey.init(xpr.peerId.toKey()).valueOr:
+    debug "Failed to put signed peer record", err = error, peerId = xpr.peerId
+    return
+
+  (await disco.putValue(key, Value.fromBytes(xpr.bytes))).isOkOr:
     debug "Failed to put signed peer record", err = error, peerId = xpr.peerId
 
 proc publishXprs(disco: ServiceDiscovery) {.async: (raises: [CancelledError]).} =
@@ -501,7 +517,10 @@ proc addProvidedService*(
     return err("cannot advertise in client mode")
 
   if not service.isValid():
-    return err("service data exceeds the maximum of " & $MaxServiceDataSize & " bytes")
+    return err(
+      fmt"{service.data.get(@[]).len} > {MaxServiceDataSize} bytes",
+      "service data exceeds the byte limit",
+    )
 
   let signer =
     if advert.isSome():
@@ -517,7 +536,7 @@ proc addProvidedService*(
         serviceId, disco.rtable, disco.config.replication,
         disco.discoConfig.bucketsCount, Provided,
       ):
-    return err("service '" & service.id & "' is already advertised")
+    return err(service.id, "service is already advertised")
 
   let previous =
     if replacing or advert.isSome():

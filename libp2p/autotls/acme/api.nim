@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import json, parseutils, sequtils, strutils, uri
-from times import DateTime
+import json, parseutils, sequtils, strformat, strutils, uri
+from times import DateTime, utc
 import chronos/apps/http/httpclient
 
 import ./jws
@@ -10,11 +10,12 @@ import ./utils
 import ../../crypto/rsa
 import ../../utils/opt
 import ../../results
-import ../../utils/rfc3339
+import ../../transports/tls/certificate
 
 export results
 
 const
+  ACMEAccountDoesNotExist* = "urn:ietf:params:acme:error:accountDoesNotExist"
   LetsEncryptDirectoryURL* = parseUri("https://acme-v02.api.letsencrypt.org/directory")
   LetsEncryptStagingDirectoryURL* =
     parseUri("https://acme-staging-v02.api.letsencrypt.org/directory")
@@ -99,7 +100,6 @@ type ACMEFinalizeResponse* = object
 
 type ACMEOrderResponse* = object
   certificate: string
-  expires: string
 
 type ACMECertificateResponse* = object
   rawCertificate*: string
@@ -184,7 +184,8 @@ func checkOrigin*(self: ACMEApi, uri: Uri): Result[void, LPResultError] =
   ## The directory is the only URL the caller chooses; the rest come from the server.
   if uri.origin != self.directoryURL.origin:
     return err(
-      "ACME URL " & $uri & " is not on the directory origin " & self.directoryURL.origin
+      fmt"{uri}, origin {self.directoryURL.origin}",
+      "ACME URL is not on the directory origin",
     )
   ok()
 
@@ -193,9 +194,10 @@ func checkAPIError(resp: HTTPResponse): Result[void, LPResultError] =
   if not respType.contains("acme:error"):
     return ok()
 
-  err(
-    "API request failed. type: " & respType & " detail: " & resp.body{"detail"}.getStr()
-  )
+  let detail = resp.body{"detail"}.getStr()
+  if respType == ACMEAccountDoesNotExist:
+    return err(detail, ACMEAccountDoesNotExist)
+  err(fmt"type: {respType}, detail: {detail}", "API request failed")
 
 proc toHTTPResponse(
     raw: HttpClientResponseRef
@@ -249,8 +251,8 @@ proc new*(
 proc getDirectory(
     self: ACMEApi
 ): Future[Result[ACMEDirectory, LPResultError]] {.async: (raises: [CancelledError]).} =
-  if self.directory.isSome():
-    return ok(self.directory.get())
+  self.directory.ifValue(directory):
+    return ok(directory)
 
   let acmeResponse = ?(await self.get(self.directoryURL))
   let directory = ?acmeResponse.body.tryTo(ACMEDirectory)
@@ -336,13 +338,17 @@ proc postAsGet(
     self: ACMEApi, uri: Uri, key: RsaPrivateKey, kid: Kid
 ): Future[Result[HTTPResponse, LPResultError]] {.async: (raises: [CancelledError]).} =
   let payload = ?(await self.createPostAsGetRequest(uri, key, kid))
-  await self.post(uri, payload)
+  let response = ?(await self.post(uri, payload))
+  ?response.checkAPIError()
+  ok(response)
 
 proc postSigned(
     self: ACMEApi, uri: Uri, payload: string, key: RsaPrivateKey, kid: Opt[Kid]
 ): Future[Result[HTTPResponse, LPResultError]] {.async: (raises: [CancelledError]).} =
   let signed = ?(await self.createSignedAcmeRequest(uri, payload, key, kid))
-  await self.post(uri, signed)
+  let response = ?(await self.post(uri, signed))
+  ?response.checkAPIError()
+  ok(response)
 
 func parseRegister(resp: HTTPResponse): Result[ACMERegisterResponse, LPResultError] =
   let body = ?resp.body.tryTo(ACMERegisterResponseBody)
@@ -378,7 +384,7 @@ func parseAuthorizations(
   if challenges.len > 0:
     return ok(ACMEAuthorizationsResponse(challenges: challenges))
   if decodeErrors.len > 0:
-    return err("Failed to decode challenges: " & decodeErrors.join("; "))
+    return err(decodeErrors.join("; "), "Failed to decode challenges")
   err("No challenges received")
 
 func dns01Challenge(
@@ -426,10 +432,10 @@ func parseCheck(
 
 const InvalidCertificateExpiry* = "Invalid certificate expiry"
 
-proc parseExpiry(expires: string): Result[DateTime, LPResultError] =
-  let expiry = parseRfc3339DateTime(expires).valueOr:
+proc parseCertificateExpiry(certificate: seq[byte]): Result[DateTime, LPResultError] =
+  let certificateValidTo = validTo(certificate, PEM).valueOr:
     return err(error, InvalidCertificateExpiry)
-  ok(expiry)
+  ok(certificateValidTo.utc)
 
 proc requestRegister*(
     self: ACMEApi, key: RsaPrivateKey
@@ -479,7 +485,7 @@ proc requestChallenge*(
 .} =
   let orderResp = ?(await self.requestNewOrder(domains, key, kid))
   if orderResp.status notin [ACMEOrderStatus.PENDING, ACMEOrderStatus.READY]:
-    return err("Invalid new order status: " & $orderResp.status)
+    return err($orderResp.status, "Invalid new order status")
 
   let authResp = ?(await self.requestAuthorizations(orderResp.authorizations, key, kid))
   dns01Challenge(orderResp, authResp)
@@ -516,10 +522,7 @@ proc checkChallengeCompleted*(
     of ACMEChallengeStatus.VALID:
       return ok(true)
     else:
-      return err(
-        "Failed challenge completion: expected 'valid', got '" &
-          $checkResponse.chalStatus & "'"
-      )
+      return err($checkResponse.chalStatus, "Failed challenge completion")
   ok(false)
 
 proc completeChallenge*(
@@ -564,10 +567,7 @@ proc checkCertFinalized*(
     of ACMEOrderStatus.PROCESSING:
       await sleepAsync(checkResponse.retryAfter) # try again after some delay
     else:
-      return err(
-        "Failed certificate finalization: expected 'valid', got '" &
-          $checkResponse.orderStatus & "'"
-      )
+      return err($checkResponse.orderStatus, "Failed certificate finalization")
   ok(false)
 
 proc certificateFinalized*(
@@ -598,13 +598,13 @@ proc downloadCertificate*(
     async: (raises: [CancelledError])
 .} =
   let orderResponse = ?(await self.requestGetOrder(order, key, kid))
-  let expiry = ?parseExpiry(orderResponse.expires)
 
   let certificateURL = parseUri(orderResponse.certificate)
   let payload = ?(await self.createPostAsGetRequest(certificateURL, key, kid))
   # not `self.post` as it reads the response as JSON, and a certificate is PEM
   let rawResponse = ?(await self.sendPost(certificateURL, payload))
   let certificate = ?(await rawResponse.tryGetBodyBytes())
+  let expiry = ?parseCertificateExpiry(certificate)
   ok(
     ACMECertificateResponse(
       rawCertificate: bytesToString(certificate), certificateExpiry: expiry

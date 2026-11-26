@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/sequtils
+import std/[importutils, sequtils]
 import chronos
 import
   ../../../libp2p/[
@@ -16,14 +16,20 @@ import
     services/autorelayservice,
     utils/future,
   ]
-import ../../tools/[unittest, crypto, switch_builder, multiaddress, lifecycle]
+import ../../tools/[unittest, crypto, switch_builder, multiaddress]
 
-proc createSwitch(r: Relay, autorelay: Service = nil): Switch =
-  let switch = makeStandardSwitchBuilder(TcpAutoAddress).withCircuitRelay(r).build()
+proc createSwitch(r: Relay): Switch =
+  return makeStandardSwitchBuilder(TcpAutoAddress).withCircuitRelay(r).build()
 
-  switch.add(autorelay)
+proc startAutorelaySwitch(switch: Switch, service: AutoRelayService) {.async.} =
+  await switch.start()
+  await service.start(switch)
 
-  switch
+proc stopAutorelaySwitch(switch: Switch, service: AutoRelayService) {.async.} =
+  try:
+    await service.stop(switch)
+  finally:
+    await switch.stop()
 
 proc buildRelayMA(switchRelay: Switch, switchClient: Switch): seq[MultiAddress] =
   var addrs: seq[MultiAddress]
@@ -59,14 +65,14 @@ suite "Autorelay":
         fut.complete()
 
     autorelay = AutoRelayService.new(3, relayClient, checkMA, rng())
-    switchClient = createSwitch(relayClient, autorelay)
-    await allFutures(switchClient.start(), switchRelay.start())
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    switchClient = createSwitch(relayClient)
+    await allFutures(startAutorelaySwitch(switchClient, autorelay), switchRelay.start())
+    await switchClient.connect(switchRelay)
     await fut
     let addresses = autorelay.getAddresses()
     check:
       addresses == buildRelayMA(switchRelay, switchClient)
-    await allFutures(switchClient.stop(), switchRelay.stop())
+    await allFutures(stopAutorelaySwitch(switchClient, autorelay), switchRelay.stop())
 
   asyncTest "Connect after starting switches":
     switchRelay = createSwitch(Relay.new())
@@ -79,10 +85,10 @@ suite "Autorelay":
         fut.complete()
 
     let autorelay = AutoRelayService.new(3, relayClient, checkMA, rng())
-    switchClient = createSwitch(relayClient, autorelay)
-    await allFutures(switchClient.start(), switchRelay.start())
+    switchClient = createSwitch(relayClient)
+    await allFutures(startAutorelaySwitch(switchClient, autorelay), switchRelay.start())
     await sleepAsync(250.millis)
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
     await fut
     let addresses = autorelay.getAddresses()
 
@@ -91,15 +97,17 @@ suite "Autorelay":
     for address in addresses:
       check address in switchClient.peerInfo.addrs
 
-    await allFutures(switchClient.stop(), switchRelay.stop())
+    await allFutures(stopAutorelaySwitch(switchClient, autorelay), switchRelay.stop())
 
   asyncTest "a confirmed direct address withdraws only the same-family relay address":
     switchRelay = createSwitch(Relay.new())
     relayClient = RelayClient.new()
     autorelay = AutoRelayService.new(3, relayClient, nil, rng())
-    switchClient = createSwitch(relayClient, autorelay)
-    startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    switchClient = createSwitch(relayClient)
+    await allFutures(startAutorelaySwitch(switchClient, autorelay), switchRelay.start())
+    defer:
+      await allFutures(stopAutorelaySwitch(switchClient, autorelay), switchRelay.stop())
+    await switchClient.connect(switchRelay)
 
     # the relay listens on IPv4, so its circuit addresses are the IPv4 family
     let
@@ -140,7 +148,7 @@ suite "Autorelay":
     switchRelay = createSwitch(Relay.new())
     relayClient = RelayClient.new()
     autorelay = AutoRelayService.new(3, relayClient, nil, rng())
-    switchClient = createSwitch(relayClient, autorelay)
+    switchClient = createSwitch(relayClient)
 
     let
       directAddr = ma("/ip4/1.2.3.4/tcp/1")
@@ -155,8 +163,10 @@ suite "Autorelay":
 
     # registered before AutoRelay starts, so it produces before the relay mapper runs
     manager.addMapper(mappingMapper, AddrSource.Upnp)
-    startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await allFutures(startAutorelaySwitch(switchClient, autorelay), switchRelay.start())
+    defer:
+      await allFutures(stopAutorelaySwitch(switchClient, autorelay), switchRelay.stop())
+    await switchClient.connect(switchRelay)
     let relayMAs = buildRelayMA(switchRelay, switchClient)
 
     checkUntilTimeout:
@@ -193,10 +203,12 @@ suite "Autorelay":
     switchRelay = createSwitch(relay)
     relayClient = RelayClient.new()
     autorelay = AutoRelayService.new(3, relayClient, nil, rng())
-    switchClient = createSwitch(relayClient, autorelay)
+    switchClient = createSwitch(relayClient)
 
-    startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await allFutures(startAutorelaySwitch(switchClient, autorelay), switchRelay.start())
+    defer:
+      await allFutures(stopAutorelaySwitch(switchClient, autorelay), switchRelay.stop())
+    await switchClient.connect(switchRelay)
 
     # stop the service while the reservation is still unanswered
     await reservationRequested
@@ -213,12 +225,14 @@ suite "Autorelay":
     switchRelay = createSwitch(Relay.new())
     relayClient = RelayClient.new()
     autorelay = AutoRelayService.new(3, relayClient, nil, rng())
-    switchClient = createSwitch(relayClient, autorelay)
+    switchClient = createSwitch(relayClient)
 
     # the relay switch is stopped mid-test, so it is not in the deferred stop
-    startAndDeferStop(@[switchClient])
+    await startAutorelaySwitch(switchClient, autorelay)
+    defer:
+      await stopAutorelaySwitch(switchClient, autorelay)
     await switchRelay.start()
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    await switchClient.connect(switchRelay)
 
     let relayMAs = buildRelayMA(switchRelay, switchClient)
     checkUntilTimeout:
@@ -240,9 +254,11 @@ suite "Autorelay":
     switchRelay = createSwitch(Relay.new())
     relayClient = RelayClient.new()
     autorelay = AutoRelayService.new(1, relayClient, nil, rng())
-    switchClient = createSwitch(relayClient, autorelay)
-    startAndDeferStop(@[switchClient, switchRelay])
-    await switchClient.connect(switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs)
+    switchClient = createSwitch(relayClient)
+    await allFutures(startAutorelaySwitch(switchClient, autorelay), switchRelay.start())
+    defer:
+      await allFutures(stopAutorelaySwitch(switchClient, autorelay), switchRelay.stop())
+    await switchClient.connect(switchRelay)
     let relayMAs = buildRelayMA(switchRelay, switchClient)
     checkUntilTimeout:
       autorelay.getAddresses() == relayMAs
@@ -302,12 +318,17 @@ suite "Autorelay":
         discard # final state is checked below with retry/polling
 
     let autorelay = AutoRelayService.new(maxNumRelays = 2, relayClient, checkMA, rng())
-    switchClient = createSwitch(relayClient, autorelay)
-    await allFutures(switchClient.start(), rel1.start(), rel2.start(), rel3.start())
-    await switchClient.connect(rel1.peerInfo.peerId, rel1.peerInfo.addrs)
+    switchClient = createSwitch(relayClient)
+    await allFutures(
+      startAutorelaySwitch(switchClient, autorelay),
+      rel1.start(),
+      rel2.start(),
+      rel3.start(),
+    )
+    await switchClient.connect(rel1)
     await rel1Checked
-    await switchClient.connect(rel2.peerInfo.peerId, rel2.peerInfo.addrs)
-    await switchClient.connect(rel3.peerInfo.peerId, rel3.peerInfo.addrs)
+    await switchClient.connect(rel2)
+    await switchClient.connect(rel3)
     await rel1And2Checked
     await rel2.stop()
 
@@ -319,4 +340,40 @@ suite "Autorelay":
         let addresses = autorelay.getAddresses()
         containsAll(addresses, relay1MAs) and containsAll(addresses, relay3MAs)
 
-    await allFutures(switchClient.stop(), rel1.stop(), rel3.stop())
+    await allFutures(
+      stopAutorelaySwitch(switchClient, autorelay), rel1.stop(), rel3.stop()
+    )
+
+  func callbackCount(fut: FutureBase): int =
+    # chronos keeps the first callback in `internalCallback`, the rest in `internalCallbacks`
+    ord(not fut.internalCallback.function.isNil()) + fut.internalCallbacks.len
+
+  asyncTest "waitReservationOrPeer leaves no callback on a reservation after a wake-up":
+    const wakeUps = 3
+    let
+      reservations = @[newFuture[void](), newFuture[void]()]
+      peerAvailable = newAsyncEvent()
+    defer:
+      await noCancel allFutures(reservations.mapIt(it.cancelAndWait()))
+
+    for i in 0 ..< wakeUps:
+      checkpoint "wake-up " & $i
+      peerAvailable.fire()
+      await waitReservationOrPeer(reservations, peerAvailable)
+      peerAvailable.clear()
+      check reservations.allIt(not it.finished() and it.callbackCount() == 0)
+
+  asyncTest "waitReservationOrPeer leaves no peerAvailable waiter after a reservation finishes":
+    privateAccess(AsyncEvent)
+    let
+      reservations = @[newFuture[void](), newFuture[void]()]
+      peerAvailable = newAsyncEvent()
+    defer:
+      await noCancel allFutures(reservations.mapIt(it.cancelAndWait()))
+
+    reservations[0].complete()
+    await waitReservationOrPeer(reservations, peerAvailable)
+
+    check:
+      peerAvailable.waiters.len == 0
+      reservations[1].callbackCount() == 0

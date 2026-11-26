@@ -36,6 +36,7 @@ export chronicles
 const
   RelayMsgSize* = 4096
   DefaultReservationTTL* = initDuration(hours = 1)
+  MaxReservationTTL* = initDuration(hours = 24)
   DefaultLimitDuration* = 120
   DefaultLimitData* = 1 shl 17
   DefaultHeartbeatSleepTime* = 1
@@ -112,7 +113,8 @@ proc handleReserve(
     await sendHopStatus(stream, PermissionDenied)
     return
 
-  if r.peerCount[stream.peerId] + r.rsvp.len() >= r.maxCircuit:
+  if stream.peerId notin r.rsvp and
+      r.peerCount[stream.peerId] + r.rsvp.len() >= r.maxCircuit:
     libp2p_relay_reservation_attempts.inc(labelValues = ["limit"])
     trace "Too many reservations", pid = stream.peerId
     await sendHopStatus(stream, ReservationRefused)
@@ -188,10 +190,10 @@ proc handleConnect(
     await dstStream.writeLp(encode(stopMsg))
     let msg = StopMessage.decode(await dstStream.readLp(r.msgSize)).valueOr:
       raise newException(SendStopError, "Malformed message")
-    if msg.msgType != Opt.some(StopMessageType.Status):
+    if msg.msgType != StopMessageType.Status:
       raise
         newException(SendStopError, "Unexpected stop response, not a status message")
-    if msg.status.get(UnexpectedMessage) != Ok:
+    if msg.status != Ok:
       raise newException(SendStopError, "Relay stop failure")
     await srcStream.writeLp(
       encode(HopMessage(msgType: Opt.some(HopMessageType.Status), status: Opt.some(Ok)))
@@ -216,8 +218,13 @@ proc handleConnect(
     srcRelayConn = RelayConnection.new(srcStream, r.limit.duration, r.limit.data)
     dstRelayConn = RelayConnection.new(dstStream, r.limit.duration, r.limit.data)
   defer:
-    await srcRelayConn.close()
-    await dstRelayConn.close()
+    # circuit-v2 spec: a relay that hits a limit resets both legs
+    if srcStream.wasResetLocally() or dstStream.wasResetLocally():
+      await srcRelayConn.reset()
+      await dstRelayConn.reset()
+    else:
+      await srcRelayConn.close()
+      await dstRelayConn.close()
   await bridge(srcRelayConn, dstRelayConn)
 
 proc handleHopStreamV2*(
@@ -318,8 +325,8 @@ proc handleHop*(
     await sendStatus(srcStream, StatusV1.HopCantOpenDstStream)
     return
 
-  if msgRcvFromDst.msgType.get(RelayType.Stop) != RelayType.Status or
-      msgRcvFromDst.status.get(StatusV1.StopRelayRefused) != StatusV1.Success:
+  if msgRcvFromDst.msgType != RelayType.Status or
+      msgRcvFromDst.status != StatusV1.Success:
     trace "Unexpected relay stop response", response = msgRcvFromDst
     await sendStatus(srcStream, StatusV1.HopCantOpenDstStream)
     return
@@ -360,6 +367,9 @@ proc setup*(r: Relay, switch: Switch) =
     Left,
   )
 
+func clampReservationTTL*(ttl: times.Duration): times.Duration =
+  if ttl > MaxReservationTTL: MaxReservationTTL else: ttl
+
 proc new*(
     T: typedesc[Relay],
     reservationTTL: times.Duration = DefaultReservationTTL,
@@ -372,7 +382,7 @@ proc new*(
     circuitRelayV1: bool = false,
 ): T =
   let r = T(
-    reservationTTL: reservationTTL,
+    reservationTTL: clampReservationTTL(reservationTTL),
     limit: Limit(duration: limitDuration, data: limitData),
     heartbeatSleepTime: heartbeatSleepTime,
     maxCircuit: maxCircuit,

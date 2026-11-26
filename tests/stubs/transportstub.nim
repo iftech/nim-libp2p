@@ -15,17 +15,15 @@ import
     upgrademngrs/upgrade,
     crypto/crypto,
   ]
+import ../tools/futures
 
 type
   StubAcceptBehavior* = enum
     RaiseAlways ## every accept raises: the transport can never accept
-    NilAlways ## every accept returns nil: the switch's non-fatal branch
-    NilThenAccept ## return nil `nilCount` times, then accept normally
     BlockingClose ## return connections whose close waits for `closeGate`
 
   MemoryTransportStub* = ref object of MemoryTransport
     behavior: StubAcceptBehavior
-    nilCount: int ## for NilThenAccept: how many nils before accepting normally
     acceptLimit: int ## for BlockingClose: block after this many accepts
     acceptCalls*: int ## number of times accept was invoked
     closeCalls*: int ## number of blocking connection closes started
@@ -48,14 +46,12 @@ proc new*(
     upgrade: Upgrade,
     rng: Rng,
     behavior: StubAcceptBehavior,
-    nilCount: int = 0,
     acceptLimit: int = 0,
 ): T =
   let self = T(
     upgrader: upgrade,
     rng: rng,
     behavior: behavior,
-    nilCount: nilCount,
     acceptLimit: acceptLimit,
     closeGate: newAsyncEvent(),
   )
@@ -129,11 +125,11 @@ method dial*(
     raise newException(MemoryTransportError, "stub dial fails as scripted")
 
   try:
-    await sleepAsync(1.hours)
+    await waitForCancellation()
   except CancelledError as e:
     self.cancelledAddrs.add(ma)
     raise e
-  raise newException(MemoryTransportError, "stub dial stalled past its hour")
+  raise newException(MemoryTransportError, "stub dial unexpectedly resumed")
 
 method accept*(
     self: MemoryTransportStub
@@ -143,26 +139,10 @@ method accept*(
   case self.behavior
   of RaiseAlways:
     raise newException(MemoryTransportError, "stub accept always fails")
-  of NilAlways:
-    # the switch retries immediately whenever accept returns nil.
-    # without an await here, that retry loop would run non-stop and never let any
-    # other async task run, so the test would hang.
-    # sleepAsync(0) pauses this task for an instant each retry, letting the rest
-    # of the test run. a real transport's accept pauses here anyway while it waits
-    # for a connection.
-    await sleepAsync(0.milliseconds)
-    return nil
-  of NilThenAccept:
-    if self.acceptCalls <= self.nilCount:
-      # pause an instant each retry, else this loop runs non-stop and hangs the test
-      await sleepAsync(0.milliseconds)
-      return nil
-    # accept normally by delegating to the base transport
-    return await procCall MemoryTransport(self).accept()
   of BlockingClose:
     if self.acceptLimit > 0 and self.acceptCalls > self.acceptLimit:
-      await sleepAsync(1.hours)
-    await sleepAsync(0.milliseconds)
+      await waitForCancellation()
+    await stepsAsync(1)
     let conn = BlockingCloseConnection(transport: self)
     conn.initStream()
     return conn

@@ -60,6 +60,7 @@ suite "TCP transport":
     invalidAddresses,
   )
   cancellationTransportTest(tcpTransProvider, addressIP4)
+  upgradeCancellationTransportTest(tcpTransProvider, addressIP4)
   # tcp specific tests
   tcpTests()
 

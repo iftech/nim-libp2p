@@ -6,7 +6,7 @@
 import nimcrypto/utils
 import protobuf_serialization
 import ../../../libp2p/crypto/[crypto, minasn1, rsa]
-import ../../tools/[unittest, crypto]
+import ../../tools/[unittest, crypto, der]
 
 const
   NotAllowedPrivateKeys = [
@@ -352,123 +352,31 @@ type
   RsaPublicKey = rsa.RsaPublicKey
 
 suite "RSA 2048/3072/4096 test suite":
-  test "[rsa2048] Private key serialize/deserialize test":
-    var rkey1, rkey2: RsaPrivateKey
-    var skey2 = newSeq[byte](4096)
-    var key = RsaPrivateKey.random(rng(), 2048).expect("random failed")
-    var skey1 = key.getBytes().expect("bytes")
-    check key.toBytes(skey2).expect("bytes") > 0
-    check:
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPrivateKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPrivateKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == key
-      rkey2 == key
-      rkey3 == key
-      rkey4 == key
-
-  test "[rsa3072] Private key serialize/deserialize test":
-    var rkey1, rkey2: RsaPrivateKey
-    var skey2 = newSeq[byte](4096)
-    var key = RsaPrivateKey.random(rng(), 3072).expect("random failed")
-    var skey1 = key.getBytes().expect("bytes")
-    check key.toBytes(skey2).expect("bytes") > 0
-    check:
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPrivateKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPrivateKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == key
-      rkey2 == key
-      rkey3 == key
-      rkey4 == key
-
-  test "[rsa4096] Private key serialize/deserialize test":
-    # This test is too slow to run in debug mode.
-    when defined(release):
-      var rkey1, rkey2: RsaPrivateKey
-      var skey2 = newSeq[byte](4096)
-      var key = RsaPrivateKey.random(rng(), 4096).expect("random failed")
-      var skey1 = key.getBytes().expect("bytes")
-      check key.toBytes(skey2).expect("bytes") > 0
+  template checkKeyRoundtrip(key: typed) =
+    block:
+      var restored, restoredFromBuffer: typeof(key)
+      var buffer = newSeq[byte](4096)
+      let encoded = key.getBytes().expect("bytes")
+      check key.toBytes(buffer).expect("bytes") > 0
       check:
-        rkey1.init(skey1).isOk()
-        rkey2.init(skey2).isOk()
-      var rkey3 = RsaPrivateKey.init(skey1).expect("key initialization")
-      var rkey4 = RsaPrivateKey.init(skey2).expect("key initialization")
+        restored.init(encoded).isOk()
+        restoredFromBuffer.init(buffer).isOk()
+      let decoded = typeof(key).init(encoded).expect("key initialization")
+      let decodedFromBuffer = typeof(key).init(buffer).expect("key initialization")
       check:
-        rkey1 == key
-        rkey2 == key
-        rkey3 == key
-        rkey4 == key
-    else:
-      skip()
-
-  test "[rsa2048] Public key serialize/deserialize test":
-    var rkey1, rkey2: RsaPublicKey
-    var skey2 = newSeq[byte](4096)
-    var pair = RsaKeyPair.random(rng(), 2048).expect("random failed")
-    var skey1 = pair.pubkey.getBytes().expect("bytes")
-    check:
-      pair.pubkey.toBytes(skey2).expect("bytes") > 0
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPublicKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPublicKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == pair.pubkey
-      rkey2 == pair.pubkey
-      rkey3 == pair.pubkey
-      rkey4 == pair.pubkey
-
-  test "[rsa3072] Public key serialize/deserialize test":
-    var rkey1, rkey2: RsaPublicKey
-    var skey2 = newSeq[byte](4096)
-    var pair = RsaKeyPair.random(rng(), 3072).expect("random failed")
-    var skey1 = pair.pubkey.getBytes().expect("bytes")
-    check:
-      pair.pubkey.toBytes(skey2).expect("bytes") > 0
-      rkey1.init(skey1).isOk()
-      rkey2.init(skey2).isOk()
-    var rkey3 = RsaPublicKey.init(skey1).expect("key initialization")
-    var rkey4 = RsaPublicKey.init(skey2).expect("key initialization")
-    check:
-      rkey1 == pair.pubkey
-      rkey2 == pair.pubkey
-      rkey3 == pair.pubkey
-      rkey4 == pair.pubkey
-
-  test "[rsa4096] Public key serialize/deserialize test":
-    when defined(release):
-      var rkey1, rkey2: RsaPublicKey
-      var skey2 = newSeq[byte](4096)
-      var pair = RsaKeyPair.random(rng(), 4096).expect("random failed")
-      var skey1 = pair.pubkey.getBytes().expect("bytes")
-      check:
-        pair.pubkey.toBytes(skey2).expect("bytes") > 0
-        rkey1.init(skey1).isOk()
-        rkey2.init(skey2).isOk()
-      var rkey3 = RsaPublicKey.init(skey1).expect("key initialization")
-      var rkey4 = RsaPublicKey.init(skey2).expect("key initialization")
-      check:
-        rkey1 == pair.pubkey
-        rkey2 == pair.pubkey
-        rkey3 == pair.pubkey
-        rkey4 == pair.pubkey
-    else:
-      skip()
+        restored == key
+        restoredFromBuffer == key
+        decoded == key
+        decodedFromBuffer == key
 
   test "[rsa2048] Generate/Sign/Serialize/Deserialize/Verify test":
     var message = "message to sign"
     var kp = RsaKeyPair.random(rng(), 2048).expect("RsaPrivateKey.random failed")
+    checkKeyRoundtrip(kp.seckey)
+    checkKeyRoundtrip(kp.pubkey)
     var sig = kp.seckey.sign(message).expect("signature")
-    var sersk = kp.seckey.getBytes().expect("bytes")
     var serpk = kp.pubkey.getBytes().expect("bytes")
     var sersig = sig.getBytes().expect("bytes")
-    discard RsaPrivateKey.init(sersk).expect("key initialization")
     var pubkey = RsaPublicKey.init(serpk).expect("key initialization")
     var csig = RsaSignature.init(sersig).expect("key initialization")
     check csig.verify(message, pubkey) == true
@@ -479,11 +387,11 @@ suite "RSA 2048/3072/4096 test suite":
   test "[rsa3072] Generate/Sign/Serialize/Deserialize/Verify test":
     var message = "message to sign"
     var kp = RsaKeyPair.random(rng(), 3072).expect("RsaPrivateKey.random failed")
+    checkKeyRoundtrip(kp.seckey)
+    checkKeyRoundtrip(kp.pubkey)
     var sig = kp.seckey.sign(message).expect("signature")
-    var sersk = kp.seckey.getBytes().expect("bytes")
     var serpk = kp.pubkey.getBytes().expect("bytes")
     var sersig = sig.getBytes().expect("bytes")
-    discard RsaPrivateKey.init(sersk).expect("key initialization")
     var pubkey = RsaPublicKey.init(serpk).expect("key initialization")
     var csig = RsaSignature.init(sersig).expect("key initialization")
     check csig.verify(message, pubkey) == true
@@ -495,11 +403,11 @@ suite "RSA 2048/3072/4096 test suite":
     when defined(release):
       var message = "message to sign"
       var kp = RsaKeyPair.random(rng(), 4096).expect("RsaPrivateKey.random failed")
+      checkKeyRoundtrip(kp.seckey)
+      checkKeyRoundtrip(kp.pubkey)
       var sig = kp.seckey.sign(message).expect("signature")
-      var sersk = kp.seckey.getBytes().expect("bytes")
       var serpk = kp.pubkey.getBytes().expect("bytes")
       var sersig = sig.getBytes().expect("bytes")
-      discard RsaPrivateKey.init(sersk).expect("key initialization")
       var pubkey = RsaPublicKey.init(serpk).expect("key initialization")
       var csig = RsaSignature.init(sersig).expect("key initialization")
       check csig.verify(message, pubkey) == true
@@ -615,6 +523,11 @@ suite "RSA 2048/3072/4096 test suite":
       modulus[i] = 0xFF'u8
     return modulus
 
+  proc rsa2048BitModulus(): array[MinKeySize shr 3, byte] =
+    var modulus = rsa2047BitModulus()
+    modulus[0] = 0x80'u8
+    modulus
+
   proc rsaOversizedModulus(): seq[byte] =
     let cap = (MaxKeySize + 1 + 7) shr 3
     var modulus = newSeq[byte](cap)
@@ -623,14 +536,15 @@ suite "RSA 2048/3072/4096 test suite":
       modulus[i] = 0xFF'u8
     modulus
 
-  proc pkcs1PrivateKeyDer(modulus: openArray[byte]): seq[byte] =
+  proc pkcs1PrivateKeyDer(
+      modulus: openArray[byte], exponent = uint64(DefaultPublicExponent)
+  ): seq[byte] =
     var b = Asn1Buffer.init()
     var p = Asn1Composite.init(Asn1Tag.Sequence)
     p.write(0'u64)
     p.write(Asn1Tag.Integer, modulus)
-    p.write(uint64(DefaultPublicExponent))
-    # The RSA importer checks these fields are present before accepting the key.
-    # Placeholder values keep the fixture small; the modulus-size check must fail first.
+    p.write(exponent)
+    # Placeholder CRT fields isolate import validation from RSA arithmetic.
     for _ in 0 ..< 6:
       p.write(1'u64)
     p.finish()
@@ -678,12 +592,59 @@ suite "RSA 2048/3072/4096 test suite":
       key2.error == RsaKeyIncorrectError
 
   test "Invalid public exponents are rejected":
-    var modulus = rsa2047BitModulus()
-    modulus[0] = 0x80
+    let modulus = rsa2048BitModulus()
+    for exponent in [0'u64, 1, 2]:
+      check:
+        RsaPublicKey.init(spkiPublicKeyDer(modulus, exponent)).error ==
+          RsaKeyIncorrectError
+        RsaPrivateKey.init(pkcs1PrivateKeyDer(modulus, exponent)).error ==
+          RsaKeyIncorrectError
+    for exponent in [3'u64, uint64(DefaultPublicExponent), uint64(high(int32))]:
+      let privateKey =
+        RsaPrivateKey.init(pkcs1PrivateKeyDer(modulus, exponent)).expect("private key")
+      check:
+        RsaPublicKey.init(spkiPublicKeyDer(modulus, exponent)).isOk()
+        RsaPublicKey
+          .init(privateKey.getPublicKey().getBytes().expect("public key"))
+          .isOk()
+
+  test "Oversized public exponents are rejected":
+    proc spki(exponent: openArray[byte]): seq[byte] =
+      derSequence(
+        [
+          derSequence([derField(Asn1Tag.Oid, Asn1OidRsaEncryption), derNull()]),
+          derBitString(
+            derSequence(
+              [
+                derField(Asn1Tag.Integer, rsa2048BitModulus()),
+                derField(Asn1Tag.Integer, exponent),
+              ]
+            )
+          ),
+        ]
+      )
+
+    var exponent = newSeq[byte](9)
+    exponent[0] = 0x01
+    exponent[^1] = 0x01
+    let pubDer = spki(exponent)
     check:
-      RsaPublicKey.init(spkiPublicKeyDer(modulus, 1)).isErr()
-      RsaPublicKey.init(spkiPublicKeyDer(modulus, 2)).isErr()
-      RsaPublicKey.init(spkiPublicKeyDer(modulus, 3)).isOk()
+      RsaPublicKey.init(spkiPublicKeyDer(rsa2048BitModulus(), uint64(high(int32)))).isOk()
+      RsaPublicKey.init(pubDer).error == RsaKeyIncorrectError
+      PublicKey.init(libp2pPublicKeyBytes(pubDer)).error == KeyError
+
+    for exponent in [
+      0x80000001'u64, uint64(high(uint32)), 0x100000001'u64, high(uint64)
+    ]:
+      let
+        pubDer = spkiPublicKeyDer(rsa2048BitModulus(), exponent)
+        privDer = pkcs1PrivateKeyDer(rsa2048BitModulus(), exponent)
+      var privateKey: RsaPrivateKey
+      check:
+        privateKey.init(privDer).error == Asn1Error.Incorrect
+        RsaPrivateKey.init(privDer).error == RsaKeyIncorrectError
+        RsaPublicKey.init(pubDer).error == RsaKeyIncorrectError
+        PublicKey.init(libp2pPublicKeyBytes(pubDer)).error == KeyError
 
   test "[rsa4097] not allowed test":
     let modulus = rsaOversizedModulus()
@@ -701,3 +662,113 @@ suite "RSA 2048/3072/4096 test suite":
       key2.error == RsaKeyIncorrectError
       key3.error == RsaKeyIncorrectError
       key4.error == KeyError
+
+  test "PKCS#1 private key DER with a malformed field is rejected":
+    proc parse(data: seq[byte]): Result[void, Asn1Error] =
+      var key: RsaPrivateKey
+      key.init(data)
+
+    var fields = @[
+      derUint(0),
+      derField(Asn1Tag.Integer, rsa2048BitModulus()),
+      derUint(uint64(DefaultPublicExponent)),
+    ]
+    for _ in 0 ..< 6:
+      fields.add(derUint(1))
+    var badVersion = fields
+    badVersion[0] = derUint(1)
+
+    check:
+      parse(derSequence(fields)).isOk()
+      parse(derUint(0)).error == Asn1Error.Incorrect
+      parse(derSequence(badVersion)).error == Asn1Error.Incorrect
+      RsaPrivateKey.init(derUint(0)).error == RsaKeyIncorrectError
+
+    for i in 0 ..< len(fields):
+      var bad = fields
+      bad[i] = derNull()
+      check parse(derSequence(bad)).error == Asn1Error.Incorrect
+
+  test "SPKI public key DER with a malformed field is rejected":
+    proc parse(data: seq[byte]): Result[void, Asn1Error] =
+      var key: RsaPublicKey
+      key.init(data)
+
+    let
+      rsaOid = derField(Asn1Tag.Oid, Asn1OidRsaEncryption)
+      algorithm = derSequence([rsaOid, derNull()])
+      n = derField(Asn1Tag.Integer, rsa2048BitModulus())
+      e = derUint(uint64(DefaultPublicExponent))
+      key = derBitString(derSequence([n, e]))
+      ecAlgorithm = derSequence([derField(Asn1Tag.Oid, Asn1OidEcPublicKey), derNull()])
+      negativeExponent = @[0x02'u8, 0x01, 0x81]
+      paddedExponent = @[0x02'u8, 0x02, 0x00, 0x81]
+
+    check:
+      parse(derSequence([algorithm, key])).isOk()
+      parse(derSequence([algorithm, derBitString(derSequence([n, paddedExponent]))]))
+        .isOk()
+      parse(derUint(0)).error == Asn1Error.Incorrect
+      parse(derSequence([derUint(0), key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([derNull(), derNull()]), key])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([ecAlgorithm, key])).error == Asn1Error.Incorrect
+      parse(derSequence([derSequence([rsaOid, derUint(0)]), key])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derSequence([n, e])])).error == Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derUint(0))])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derSequence([derNull(), e]))])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derSequence([n, derNull()]))])).error ==
+        Asn1Error.Incorrect
+      parse(derSequence([algorithm, derBitString(derSequence([n, negativeExponent]))])).error ==
+        Asn1Error.Incorrect
+      RsaPublicKey.init(derUint(0)).error == RsaKeyIncorrectError
+
+  test "Nil and empty keys and signatures":
+    let pubkey =
+      RsaPublicKey.init(spkiPublicKeyDer(rsa2048BitModulus())).expect("public key")
+    var buf = newSeq[byte](16)
+
+    check:
+      RsaPrivateKey(nil).toBytes(buf).error == RsaKeyIncorrectError
+      RsaPublicKey(nil).toBytes(buf).error == RsaKeyIncorrectError
+      RsaSignature(nil).toBytes(buf).error == RsaSignatureError
+      RsaPrivateKey(nil).getBytes().error == RsaKeyIncorrectError
+      RsaPublicKey(nil).getBytes().error == RsaKeyIncorrectError
+      RsaSignature(nil).getBytes().error == RsaSignatureError
+      RsaPrivateKey().toBytes(buf).error == RsaKeyIncorrectError
+      RsaPrivateKey().getBytes().error == RsaKeyIncorrectError
+      RsaPublicKey().toBytes(buf).error == RsaKeyIncorrectError
+      RsaPublicKey().getBytes().error == RsaKeyIncorrectError
+      RsaPrivateKey(nil).sign("message").error == RsaKeyIncorrectError
+      RsaSignature.init(newSeq[byte]()).error == RsaSignatureError
+      not RsaSignature(buffer: @[]).verify("message", pubkey)
+      $RsaPublicKey(nil) == "Empty or uninitialized RSA key"
+      $RsaPublicKey() == "Empty or uninitialized RSA key"
+      $RsaSignature(nil) == "Empty or uninitialized RSA signature"
+      $RsaSignature(buffer: @[]) == "Empty or uninitialized RSA signature"
+      pubkey.copy() == pubkey
+      RsaPublicKey().copy().isNil()
+
+  test "Equality with nil or empty values":
+    let pubkey =
+      RsaPublicKey.init(spkiPublicKeyDer(rsa2048BitModulus())).expect("public key")
+    let sig = RsaSignature.init(@[0x01'u8, 0x02, 0x03]).expect("signature")
+
+    check:
+      RsaPrivateKey(nil) == RsaPrivateKey(nil)
+      RsaPrivateKey(nil) != RsaPrivateKey()
+      RsaPrivateKey() != RsaPrivateKey(nil)
+      RsaPrivateKey() == RsaPrivateKey()
+      RsaPublicKey(nil) == RsaPublicKey(nil)
+      RsaPublicKey(nil) != pubkey
+      pubkey != RsaPublicKey(nil)
+      RsaSignature(nil) == RsaSignature(nil)
+      RsaSignature(nil) != sig
+      sig != RsaSignature(nil)
+      RsaSignature(buffer: @[]) == RsaSignature(buffer: @[])
+      RsaSignature(buffer: @[]) != sig
+      sig != RsaSignature(buffer: @[])
+      RsaSignature(buffer: @[0x01'u8]) != sig

@@ -5,20 +5,21 @@
 
 {.push raises: [].}
 
+import std/sequtils
 import chronos
-import
-  ../../../libp2p/
-    [builders, switch, wire, services/hpservice, services/autorelayservice]
+import ../../../libp2p/[builders, switch, wire, services/autorelayservice]
+import ../../../libp2p/services/hpservice {.all.}
 import ../../../libp2p/protocols/connectivity/relay/[relay, client]
+import ../../../libp2p/protocols/connectivity/dcutr/client as dcutr_client
 import ../../../libp2p/protocols/connectivity/autonat/[service]
 import ../../../libp2p/nameresolving/[nameresolver, mockresolver]
 import ../../stubs/[autonatclientstub, switchstub]
 import ../../tools/[unittest, futures, resolver, crypto, switch_builder, multiaddress]
 
 proc createSwitch(
-    r: Relay = nil, hpService: Service = nil, nameResolver: NameResolver = nil
+    r: Relay = nil, nameResolver: NameResolver = nil
 ): Switch {.raises: [LPError].} =
-  let switch = makeStandardSwitchBuilder(TcpAutoAddress)
+  return makeStandardSwitchBuilder(TcpAutoAddress)
     .withAutonat()
     .withMaxConnsPerPeer(2)
     # HP needs relay + direct to coexist briefly during upgrade
@@ -26,9 +27,15 @@ proc createSwitch(
     .withNameResolver(nameResolver)
     .build()
 
-  switch.add(hpService)
+proc startHpSwitch(switch: Switch, service: HPService) {.async.} =
+  await switch.start()
+  await service.start(switch)
 
-  return switch
+proc stopHpSwitch(switch: Switch, service: HPService) {.async.} =
+  try:
+    await service.stop(switch)
+  finally:
+    await switch.stop()
 
 suite "Hole Punching":
   teardown:
@@ -43,6 +50,107 @@ suite "Hole Punching":
     let hpService = HPService.new(autonatService, nil)
 
     check hpService.reachabilityObservers == autonatService.reachabilityObservers
+
+  asyncTest "tryStartingDirectConn filters and ranks the dials":
+    type DirectCase = object
+      name: string
+      book: seq[MultiAddress]
+      verified: seq[MultiAddress]
+      silent: seq[MultiAddress]
+      dialed: seq[MultiAddress]
+      expected: bool
+
+    let
+      dcutrClient = DcutrClient.new(connectTimeout = 100.milliseconds)
+      peerId = PeerId.random()
+      nonPublic = @[
+        ma("/ip4/8.8.4.4/tcp/4001/p2p-circuit"),
+        ma("/ip4/192.168.1.5/tcp/4001"),
+        ma("/ip4/127.0.0.1/tcp/4001"),
+      ]
+      dnsAddr = @[ma("/dns4/example.com/tcp/4001")]
+      public = toSeq(1 .. 50).mapIt(ma("/ip4/8.8.8." & $it & "/tcp/4001"))
+      cases = @[
+        DirectCase(
+          name: "every public addr is dialed in one call when all fail",
+          book: nonPublic & public,
+          dialed: public,
+          expected: false,
+        ),
+        DirectCase(
+          name: "a verified addr is dialed first",
+          book: public,
+          verified: public[^1 .. ^1],
+          dialed: public[^1 .. ^1] & public[0 ..< ^1],
+          expected: false,
+        ),
+        DirectCase(
+          name: "success returns true",
+          book: nonPublic & public[0 .. 1],
+          dialed: public[0 .. 1],
+          expected: true,
+        ),
+        DirectCase(
+          name: "only silent addrs time out",
+          book: public[0 .. 1],
+          silent: public[0 .. 1],
+          dialed: public[0 .. 1],
+          expected: false,
+        ),
+        DirectCase(
+          name: "dns addr is dialed alongside public ip addr",
+          book: nonPublic & dnsAddr & public[0 .. 0],
+          dialed: dnsAddr & public[0 .. 0],
+          expected: true,
+        ),
+        DirectCase(
+          name: "no public addr makes no connect call",
+          book: nonPublic,
+          dialed: @[],
+          expected: false,
+        ),
+      ]
+
+    let switch = SwitchStub.new(createSwitch())
+    var
+      calls: seq[seq[MultiAddress]]
+      forcedOrReused: seq[bool]
+      fails = false
+      silent: seq[MultiAddress]
+
+    proc recordConnect(
+        self: SwitchStub,
+        peerId: PeerId,
+        addrs: seq[MultiAddress],
+        forceDial = false,
+        reuseConnection = true,
+        dir = Direction.Out,
+    ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
+      calls.add(addrs)
+      forcedOrReused.add(forceDial or reuseConnection)
+      if addrs.anyIt(it in silent):
+        await Future[void].Raising([CancelledError]).init("test_hp.silent")
+      if fails:
+        raise newException(DialFailedError, "unreachable")
+
+    switch.connectStub = recordConnect
+    let hp = HPService.new(nil, nil)
+
+    for c in cases:
+      checkpoint c.name
+      calls.setLen(0)
+      forcedOrReused.setLen(0)
+      fails = not c.expected
+      silent = c.silent
+      discard switch.peerStore[AddressBook].del(peerId)
+      switch.peerStore[AddressBook].set(peerId, c.verified, AddressConfidence.High)
+      switch.peerStore[AddressBook][peerId] = c.book
+
+      check:
+        (await hp.tryStartingDirectConn(switch, peerId, dcutrClient.connectTimeout)) ==
+          c.expected
+        calls == (if c.dialed.len == 0: @[] else: @[c.dialed])
+        forcedOrReused == newSeqWith(calls.len, false)
 
   template directConnection(restart: bool) =
     let autonatClientStub = AutonatClientStub.new(expectedDials = 1)
@@ -63,13 +171,13 @@ suite "Hole Punching":
     let hpservice = HPService.new(autonatService, autoRelayService)
 
     let privatePeerSwitch =
-      createSwitch(relayClient, hpservice, nameresolver = MockResolver.default())
+      createSwitch(relayClient, nameresolver = MockResolver.default())
     let peerSwitch = createSwitch()
     let switchRelay = createSwitch(Relay.new())
 
     await allFuturesRaising(
       switchRelay.start(),
-      privatePeerSwitch.start(),
+      startHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.start(),
       peerSwitch.start(),
     )
@@ -81,12 +189,8 @@ suite "Hole Punching":
       [ma("/dns4/localhost/") & publicPeerSwitch.peerInfo.addrs[0][1].tryGet()]
     )
 
-    await privatePeerSwitch.connect(
-      switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs
-    )
-    await privatePeerSwitch.connect(
-      peerSwitch.peerInfo.peerId, peerSwitch.peerInfo.addrs
-    ) # for autonat
+    await privatePeerSwitch.connect(switchRelay)
+    await privatePeerSwitch.connect(peerSwitch) # for autonat
 
     await publicPeerSwitch.connect(
       privatePeerSwitch.peerInfo.peerId, (await privatePeerRelayAddr)
@@ -99,7 +203,7 @@ suite "Hole Punching":
       )
 
     await allFuturesRaising(
-      privatePeerSwitch.stop(),
+      stopHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.stop(),
       switchRelay.stop(),
       peerSwitch.stop(),
@@ -130,13 +234,13 @@ suite "Hole Punching":
     let hpservice = HPService.new(autonatService, autoRelayService)
 
     let privatePeerSwitch =
-      createSwitch(relayClient, hpservice, nameResolver = MockResolver.default())
+      createSwitch(relayClient, nameResolver = MockResolver.default())
     let peerSwitch = createSwitch()
     let switchRelay = createSwitch(Relay.new())
 
     await allFuturesRaising(
       switchRelay.start(),
-      privatePeerSwitch.start(),
+      startHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.start(),
       peerSwitch.start(),
     )
@@ -144,12 +248,8 @@ suite "Hole Punching":
       [ma("/dns4/localhost/") & publicPeerSwitch.peerInfo.addrs[0][1].tryGet()]
     )
 
-    await privatePeerSwitch.connect(
-      switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs
-    )
-    await privatePeerSwitch.connect(
-      peerSwitch.peerInfo.peerId, peerSwitch.peerInfo.addrs
-    ) # for autonat
+    await privatePeerSwitch.connect(switchRelay)
+    await privatePeerSwitch.connect(peerSwitch) # for autonat
 
     await publicPeerSwitch.connect(
       privatePeerSwitch.peerInfo.peerId, (await privatePeerRelayAddr)
@@ -162,7 +262,7 @@ suite "Hole Punching":
       )
 
     await allFuturesRaising(
-      privatePeerSwitch.stop(),
+      stopHpSwitch(privatePeerSwitch, hpservice),
       publicPeerSwitch.stop(),
       switchRelay.stop(),
       peerSwitch.stop(),
@@ -200,10 +300,9 @@ suite "Hole Punching":
     let hpservice1 = HPService.new(autonatService1, autoRelayService1)
     let hpservice2 = HPService.new(autonatService2, autoRelayService2)
 
-    let privatePeerSwitch1 = SwitchStub.new(
-      createSwitch(relayClient1, hpservice1, nameresolver = MockResolver.default())
-    )
-    let privatePeerSwitch2 = SwitchStub.new(createSwitch(relayClient2, hpservice2))
+    let privatePeerSwitch1 =
+      SwitchStub.new(createSwitch(relayClient1, nameresolver = MockResolver.default()))
+    let privatePeerSwitch2 = SwitchStub.new(createSwitch(relayClient2))
 
     let switchRelay = createSwitch(Relay.new())
     let switchAux = createSwitch()
@@ -213,42 +312,26 @@ suite "Hole Punching":
 
     await allFuturesRaising(
       switchRelay.start(),
-      privatePeerSwitch1.start(),
-      privatePeerSwitch2.start(),
+      startHpSwitch(privatePeerSwitch1, hpservice1),
+      startHpSwitch(privatePeerSwitch2, hpservice2),
       switchAux.start(),
       switchAux2.start(),
       switchAux3.start(),
       switchAux4.start(),
     )
 
-    await privatePeerSwitch1.connect(
-      switchRelay.peerInfo.peerId, switchRelay.peerInfo.addrs
-    )
-    await privatePeerSwitch2.connect(
-      switchAux.peerInfo.peerId, switchAux.peerInfo.addrs
-    )
+    await privatePeerSwitch1.connect(switchRelay)
+    await privatePeerSwitch2.connect(switchAux)
 
     await sleepAsync(100.millis)
 
-    await privatePeerSwitch1.connect(
-      switchAux2.peerInfo.peerId, switchAux2.peerInfo.addrs
-    )
-    await privatePeerSwitch1.connect(
-      switchAux3.peerInfo.peerId, switchAux3.peerInfo.addrs
-    )
-    await privatePeerSwitch1.connect(
-      switchAux4.peerInfo.peerId, switchAux4.peerInfo.addrs
-    )
+    await privatePeerSwitch1.connect(switchAux2)
+    await privatePeerSwitch1.connect(switchAux3)
+    await privatePeerSwitch1.connect(switchAux4)
 
-    await privatePeerSwitch2.connect(
-      switchAux2.peerInfo.peerId, switchAux2.peerInfo.addrs
-    )
-    await privatePeerSwitch2.connect(
-      switchAux3.peerInfo.peerId, switchAux3.peerInfo.addrs
-    )
-    await privatePeerSwitch2.connect(
-      switchAux4.peerInfo.peerId, switchAux4.peerInfo.addrs
-    )
+    await privatePeerSwitch2.connect(switchAux2)
+    await privatePeerSwitch2.connect(switchAux3)
+    await privatePeerSwitch2.connect(switchAux4)
 
     privatePeerSwitch1.connectStub = initiatorConnectStub
     await privatePeerSwitch2.connect(
@@ -260,8 +343,8 @@ suite "Hole Punching":
     await sleepAsync(300.millis)
 
     await allFuturesRaising(
-      privatePeerSwitch1.stop(),
-      privatePeerSwitch2.stop(),
+      stopHpSwitch(privatePeerSwitch1, hpservice1),
+      stopHpSwitch(privatePeerSwitch2, hpservice2),
       switchRelay.stop(),
       switchAux.stop(),
       switchAux2.stop(),

@@ -11,11 +11,12 @@ import ../crypto/crypto
 import ./nat/[portmapper, plum_mapper]
 import ../protocols/connectivity/autonat/[client, service]
 import ../protocols/connectivity/autonatv2/[client, service]
-import ../protocols/connectivity/relay/client as relayclient
+import ../protocols/connectivity/relay/[relay, client as relayclient]
 import ./[autorelayservice, hpservice, reachabilityobservers]
 
 export portmapper, reachabilityobservers
 export OnReservationHandler, AutonatV2ServiceConfig, AutonatV2Service
+export Relay, RelayClient
 
 logScope:
   topics = "libp2p nat-traversal"
@@ -67,6 +68,7 @@ type
     rng: Rng
     addressMapper: AddressMapper
     portMapperFactory: PortMapperFactory
+    relayClient: RelayClient # set up and mounted by the owner of the switch
     mapper: PortMapper
     mappedPorts: seq[(Port, MapProto)]
     externalIp*: Opt[IpAddress]
@@ -90,11 +92,13 @@ proc new*(
     config: NATConfig,
     rng: Rng,
     portMapperFactory: PortMapperFactory = nil,
+    relayClient: RelayClient = nil,
 ): T =
   T(
     config: config,
     rng: rng,
     portMapperFactory: portMapperFactory,
+    relayClient: relayClient,
     observers: ReachabilityObservers.new(),
   )
 
@@ -418,7 +422,9 @@ proc validatePortMapperConfig(cfg: PortMappingConfig): Result[void, string] =
     )
   ok()
 
-proc validateNATConfig*(config: NATConfig): Result[void, string] =
+proc validateNATConfig*(
+    config: NATConfig, circuitRelay = Opt.none(Relay)
+): Result[void, string] =
   ## Validates combinations of NAT concerns that are known before startup.
   config.portMapping.ifValue(pm):
     if pm.mode in {Upnp, NatPmp, Auto}:
@@ -435,17 +441,25 @@ proc validateNATConfig*(config: NATConfig): Result[void, string] =
       return err(
         "NATService: holePunching maxNumRelays must be >= 1; use holePunchingConfig"
       )
+    circuitRelay.ifValue(relay):
+      if not (relay of RelayClient):
+        return err(
+          "NATService: holePunching needs a RelayClient; withCircuitRelay got a Relay server"
+        )
   ok()
 
 proc setupHolePunching(
     self: NATService, switch: Switch, hp: HolePunchingConfig
 ): Result[void, string] =
+  if self.relayClient.isNil() or self.relayClient.switch != switch:
+    return err("NATService: holePunching needs a RelayClient mounted on the switch")
+
   let
     autonatService = AutonatService.new(
       AutonatClient(), self.rng, scheduleInterval = hp.scheduleInterval
     )
     autoRelayService = AutoRelayService.new(
-      hp.maxNumRelays, RelayClient.new(), hp.onReservation, self.rng
+      hp.maxNumRelays, self.relayClient, hp.onReservation, self.rng
     )
     hpService = HPService.new(autonatService, autoRelayService)
   # Share observers before constructing the hole-punching service.
@@ -467,10 +481,10 @@ proc setupAutonatV2(
       AutonatV2ServiceConfig.new()
     autonatV2Client = AutonatV2Client.new(self.rng)
     autonatV2Service =
-      AutonatV2Service.new(self.rng, client = autonatV2Client, config = serviceConfig)
+      AutonatV2Service.new(client = autonatV2Client, config = serviceConfig)
   autonatV2Client.setup(switch)
   switch.tryMount(autonatV2Client).isOkOr:
-    return err("NATService failed to mount AutonatV2Client: " & error)
+    return err(error, "NATService failed to mount AutonatV2Client")
   autonatV2Service.reachabilityObservers = self.observers
   self.reachability = autonatV2Service
   ok()
@@ -599,3 +613,4 @@ method stop*(self: NATService, switch: Switch) {.async: (raises: [CancelledError
   info "Stopping NATService"
   await self.stopPortMapping(switch)
   await self.stopReachability(switch)
+  self.observers.reset()

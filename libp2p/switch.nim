@@ -47,7 +47,8 @@ const
   ConcurrentUpgrades* = 32
   MaxRejectedConnectionCloses = ConcurrentUpgrades
   UpgradeTimeout* = 30.seconds
-  AcceptRetryDelay* = 100.millis
+  IncomingUpgradeTimeout* = 10.seconds
+  MaxPendingUpgradesPerSource = 8
 
 # a Switch built field by field, as TorSwitch and SwitchStub do, must copy it
 const MissingAddressManager = "switch has no AddressManager"
@@ -61,6 +62,8 @@ type
     ms*: MultistreamSelect
     acceptFuts: seq[Future[void]]
     upgradeFuts: seq[Future[void]]
+    pendingUpgrades: int
+    pendingUpgradesBySource: Table[string, int]
     rejectedConnCloseFuts: seq[Future[void]]
     dialer*: Dialer
     peerStore*: PeerStore
@@ -135,9 +138,29 @@ proc isConnected*(s: Switch, peerId: PeerId): bool =
 
   peerId in s.connManager
 
+proc isConnected*(s: Switch, peerInfo: PeerInfo): bool =
+  ## Returns true if `peerInfo` has one or more associated connections.
+
+  s.isConnected(peerInfo.peerId)
+
+proc isConnected*(s, other: Switch): bool =
+  ## Returns true if `other` has one or more associated connections.
+
+  s.isConnected(other.peerInfo)
+
 proc disconnect*(s: Switch, peerId: PeerId) {.async: (raises: [CancelledError]).} =
   ## Disconnect from a peer, waiting for the connection(s) to be dropped
   await s.connManager.dropPeer(peerId)
+
+proc disconnect*(s: Switch, peerInfo: PeerInfo) {.async: (raises: [CancelledError]).} =
+  ## Disconnect from a peer described by `peerInfo`.
+
+  await s.disconnect(peerInfo.peerId)
+
+proc disconnect*(s, other: Switch) {.async: (raises: [CancelledError]).} =
+  ## Disconnect from another switch.
+
+  await s.disconnect(other.peerInfo)
 
 method connect*(
     s: Switch,
@@ -150,6 +173,24 @@ method connect*(
   ## Connects to a peer without opening a stream to it
 
   s.dialer.connect(peerId, addrs, forceDial, reuseConnection, dir)
+
+method connect*(
+    s: Switch,
+    peerInfo: PeerInfo,
+    forceDial = false,
+    reuseConnection = true,
+    dir = Direction.Out,
+): Future[void] {.base, async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to a peer described by `peerInfo` without opening a stream to it
+
+  s.connect(peerInfo.peerId, peerInfo.addrs, forceDial, reuseConnection, dir)
+
+method connect*(
+    s, other: Switch, forceDial = false, reuseConnection = true, dir = Direction.Out
+): Future[void] {.base, async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to another switch without opening a stream to it
+
+  s.connect(other.peerInfo, forceDial, reuseConnection, dir)
 
 method connect*(
     s: Switch, address: MultiAddress, allowUnknownPeerId = false
@@ -188,6 +229,24 @@ method dial*(
 
   s.dialer.dial(peerId, addrs, protos, forceDial)
 
+method dial*(
+    s: Switch, peerInfo: PeerInfo, protos: seq[string], forceDial = false
+): Future[Stream] {.
+    base, async: (raises: [DialFailedError, CancelledError], raw: true)
+.} =
+  ## Connects to a peer described by `peerInfo` and opens a stream with `protos`
+
+  s.dial(peerInfo.peerId, peerInfo.addrs, protos, forceDial)
+
+method dial*(
+    s, other: Switch, protos: seq[string], forceDial = false
+): Future[Stream] {.
+    base, async: (raises: [DialFailedError, CancelledError], raw: true)
+.} =
+  ## Connects to another switch and opens a stream with the specified `protos`
+
+  s.dial(other.peerInfo, protos, forceDial)
+
 proc dial*(
     s: Switch, peerId: PeerId, addrs: seq[MultiAddress], proto: string
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
@@ -196,31 +255,42 @@ proc dial*(
 
   dial(s, peerId, addrs, @[proto])
 
-proc add*(
-    s: Switch, service: Service
-) {.deprecated: "externally created services should not be added to Switch".} =
-  if service.isNil:
-    return
+proc dial*(
+    s: Switch, peerInfo: PeerInfo, proto: string, forceDial = false
+): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to a peer described by `peerInfo` and opens a stream with `proto`
 
-  s.services.add(service)
+  dial(s, peerInfo.peerId, peerInfo.addrs, @[proto], forceDial)
+
+proc dial*(
+    s, other: Switch, proto: string, forceDial = false
+): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
+  ## Connects to another switch and opens a stream with the specified `proto`
+
+  dial(s, other.peerInfo, proto, forceDial)
+
+const
+  MissingHandlerCause* = "Protocol has to define a handle method or proc"
+  MissingCodecCause* = "Protocol has to define a codec string"
 
 proc tryMount*[T: LPProtocol](
     s: Switch, proto: T, matcher: Matcher = nil
-): Result[void, string] {.gcsafe, raises: [].} =
+): LPResult[void] {.gcsafe, raises: [].} =
   ## mount a protocol to the switch, or return why the protocol is invalid
 
   if proto.handler.isNil:
-    return err("Protocol has to define a handle method or proc")
+    return err(MissingHandlerCause)
 
   if proto.codecs.len == 0 or proto.codec.len == 0:
-    return err("Protocol has to define a codec string")
+    return err(MissingCodecCause)
 
   if s.started and not proto.started:
     return err("Protocol needs to be started when mounting to started Switch")
 
   s.ms.addHandler(proto, matcher)
-  s.peerInfo.protocols.add(proto.codec)
-  s.peerInfo.notifyObservers()
+  if not proto.unadvertised:
+    s.peerInfo.protocols.add(proto.codec)
+    s.peerInfo.notifyObservers()
   ok()
 
 proc mount*[T: LPProtocol](
@@ -239,11 +309,22 @@ proc unmount*(s: Switch, proto: LPProtocol): bool =
   s.peerInfo.notifyObservers()
   true
 
+proc setAdvertised*(s: Switch, codec: string, advertised: bool) =
+  ## Add or drop `codec` in the protocol list that identify sends.
+  if (codec in s.peerInfo.protocols) == advertised:
+    return
+
+  if advertised:
+    s.peerInfo.protocols.add(codec)
+  else:
+    s.peerInfo.protocols.keepItIf(it != codec)
+  s.peerInfo.notifyObservers()
+
 proc upgrader(
-    switch: Switch, trans: Transport, conn: RawConn
+    switch: Switch, trans: Transport, conn: RawConn, observer: string
 ) {.async: (raises: [CancelledError, UpgradeError]).} =
   try:
-    let muxed = await trans.upgrade(conn, Opt.none(PeerId))
+    let muxed = await trans.upgrade(conn, Opt.none(PeerId)).wait(IncomingUpgradeTimeout)
     (await switch.connManager.storeMuxer(muxed)).onErrorRaise(UpgradeError)
     await switch.peerStore.identify(muxed, conn.transportDir)
     await switch.connManager.triggerPeerEvents(
@@ -254,17 +335,22 @@ proc upgrader(
     raise e
   except CatchableError as e:
     raise newException(UpgradeError, "catchable error upgrader: " & e.msg, e)
+  finally:
+    # Identify and application callbacks must remain within the pending budget.
+    switch.pendingUpgrades.dec()
+    if observer.len > 0:
+      switch.pendingUpgradesBySource.withValue(observer, pending):
+        pending[].dec()
+        if pending[] == 0:
+          switch.pendingUpgradesBySource.del(observer)
 
 proc upgradeMonitor(
-    switch: Switch, trans: Transport, conn: RawConn, upgrades: AsyncSemaphore
+    switch: Switch, trans: Transport, conn: RawConn, observer: string
 ) {.async: (raises: []).} =
-  var semAcquired = false
   var upgradeSuccessful = false
   let deadlineFut = sleepAsync(UpgradeTimeout)
   try:
-    await upgrades.acquire().wait(deadlineFut)
-    semAcquired = true
-    await switch.upgrader(trans, conn).wait(deadlineFut)
+    await switch.upgrader(trans, conn, observer).wait(deadlineFut)
     trace "Incoming connection upgrade completed", conn
     upgradeSuccessful = true
   except CancelledError:
@@ -279,48 +365,51 @@ proc upgradeMonitor(
     deadlineFut.cancelSoon()
     if (not upgradeSuccessful) and (not isNil(conn)):
       await conn.close()
-    if semAcquired:
-      try:
-        upgrades.release()
-      except AsyncSemaphoreError:
-        raiseAssert "semaphore released without acquire"
 
 proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
   ## switch accept loop, ran for every transport
   ##
-  let upgrades = newAsyncSemaphore(ConcurrentUpgrades)
+  # Keep pending handshakes below inbound capacity when the cap allows it.
+  let pendingLimit =
+    min(ConcurrentUpgrades, max(1, s.connManager.maxConnections(Direction.In) div 2))
 
   info "Transport connection acceptance started", addresses = transport.addrs
 
   while transport.running:
     var conn: RawConn
     try:
-      conn =
-        try:
-          await transport.accept()
-        except CancelledError as exc:
-          raise exc
-        except CatchableError as exc:
-          raise
-            newException(CatchableError, "failed to accept connection: " & exc.msg, exc)
-      if isNil(conn):
-        # A nil connection means that we might have hit a
-        # file-handle limit (or another non-fatal error),
-        # we can get one on the next try
-        trace "Transport connection acceptance returned no connection",
-          addresses = transport.addrs
-        await sleepAsync(AcceptRetryDelay)
-        continue
+      conn = await transport.accept()
 
-      let slot = s.connManager.tryGetIncomingSlot().valueOr:
-        debug "Incoming connection limit reached", conn
+      var observer = ""
+      conn.observedAddr.ifValue(address):
+        address.getIp().ifValue(ip):
+          case ip.family
+          of IpAddressFamily.IPv4:
+            observer = $ip.address_v4
+          of IpAddressFamily.IPv6:
+            # Rotating addresses within an IPv6 /56 must not bypass admission.
+            observer = $ip.address_v6[0 .. 6]
+      # Without an IP, only the global pending budget applies.
+      let slot =
+        if s.pendingUpgrades >= pendingLimit or (
+          observer.len > 0 and
+          s.pendingUpgradesBySource.getOrDefault(observer) >= MaxPendingUpgradesPerSource
+        ):
+          Opt.none(ConnectionSlot)
+        else:
+          s.connManager.tryGetIncomingSlot()
+      if slot.isNone:
+        debug "Incoming connection or pending upgrade limit reached", conn
         s.rejectedConnCloseFuts.trackFut(conn.close())
         s.connManager.triggerTrim()
         if s.rejectedConnCloseFuts.len >= MaxRejectedConnectionCloses:
           discard await one(s.rejectedConnCloseFuts)
         continue
 
-      slot.trackConnection(conn)
+      slot.get().trackConnection(conn)
+      s.pendingUpgrades.inc()
+      if observer.len > 0:
+        s.pendingUpgradesBySource.mgetOrPut(observer, 0).inc()
 
       # set the direction of this bottom level transport
       # in order to be able to consume this information in gossipsub if required
@@ -328,7 +417,7 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
       conn.transportDir = Direction.In
 
       trace "Transport connection accepted", conn
-      s.upgradeFuts.trackFut(s.upgradeMonitor(transport, conn, upgrades))
+      s.upgradeFuts.trackFut(s.upgradeMonitor(transport, conn, observer))
     except CancelledError:
       return
     except CatchableError as exc:
@@ -338,6 +427,8 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
       return
 
 when defined(libp2p_testing):
+  const PendingUpgradesPerSourceForTesting* = MaxPendingUpgradesPerSource
+
   proc acceptFuts*(s: Switch): seq[Future[void]] =
     s.acceptFuts
 
@@ -416,6 +507,12 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
   # start services and transports without await to prevent any
   # issues when one needs another to start first.
   var startFuts: seq[Future[void]]
+
+  # the transport loop drains listenAddrs, so a retry after a failed start needs them back
+  let listenAddrs = s.peerInfo.listenAddrs
+  defer:
+    if not s.started:
+      s.peerInfo.listenAddrs = listenAddrs
 
   for service in s.services:
     startFuts.add(service.start(s))

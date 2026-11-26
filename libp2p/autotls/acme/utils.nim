@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import base64, strutils, json
+import base64, strformat, strutils, json
 import chronos/apps/http/httpclient, json_serialization
 import nimcrypto/sha2
 import ../../transports/tls/certificate_ffi
@@ -12,26 +12,26 @@ func header*(
     table: HttpTable, key: string
 ): Result[string, LPResultError] {.raises: [].} =
   if not table.contains(key):
-    return err("key " & key & " not present in headers")
+    return err(key, "key not present in headers")
   ok(table.getString(key))
 
 func tryGetStr*(node: JsonNode, key: string): Result[string, LPResultError] =
   let field = node{key}
   if field.isNil() or field.kind != JString:
-    return err("missing string field: " & key)
+    return err(key, "missing string field")
   ok(field.getStr())
 
 proc tryTo*[T](node: JsonNode, _: typedesc[T]): Result[T, LPResultError] =
   try:
     ok(node.to(T))
   except CatchableError as e:
-    err(e, "failed to decode " & $T)
+    err(e, fmt"failed to decode {$T}")
 
 func tryParseEnum*[T: enum](s: string): Result[T, LPResultError] =
   for v in T:
     if $v == s:
       return ok(v)
-  err("invalid " & $T & ": " & s)
+  err(s, fmt"invalid {$T}")
 
 proc base64UrlEncode*(data: seq[byte]): string =
   ## Encodes data using base64url (RFC 4648 §5) — no padding, URL-safe
@@ -68,13 +68,13 @@ proc createCSR*(
     domain: string, certKeyPair: RsaPrivateKey
 ): Result[string, LPResultError] =
   let rawSeckey = certKeyPair.getBytes().valueOr:
-    return err("Failed to get RSA private key bytes (DER)")
+    return err(error, "Failed to get RSA private key bytes (DER)")
   let certKey = cert_new_key_t(rawSeckey).valueOr:
-    return err("Failed to convert key pair to cert_key_t")
+    return err(error, "Failed to convert key pair to cert_key_t")
   defer:
     cert_free_key(certKey)
 
   let derCSR = cert_signing_req(domain, certKey).valueOr:
-    return err("Failed to create CSR")
+    return err(error, "Failed to create CSR")
 
   ok(base64UrlEncode(derCSR))

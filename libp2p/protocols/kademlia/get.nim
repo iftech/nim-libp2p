@@ -6,50 +6,59 @@ import chronos, chronicles, results
 import ../../[peerid, switch, multihash]
 import ../../utils/future
 import ../protocol
-import ./[protobuf, types, find, put, rpc, kademlia_metrics]
+import ./[protobuf, types, find, put, rpc, kademlia_metrics, local_record]
 
 logScope:
   topics = "libp2p kademlia"
 
+const
+  NoPeerReplied* = "No peer replied"
+  NoValidRecords* = "No valid records found"
+
 proc dispatchGetVal*(
-    kad: KadDHT, peer: PeerId, key: Key
+    kad: KadDHT, peer: PeerId, key: RecordKey
 ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
-  let msg = Message(msgType: Opt.some(MessageType.getValue), key: Opt.some(key))
+  let msg = Message(msgType: Opt.some(MessageType.getValue), key: Opt.some(key.toKey()))
   await kad.dispatchRpc(peer, msg)
 
 proc bestValidRecord(
-    kad: KadDHT, key: Key, received: ReceivedTable, quorum: int
+    kad: KadDHT, key: RecordKey, received: ReceivedTable
 ): LPResult[EntryRecord] =
   var validRecords: seq[EntryRecord]
   for r in received.values():
     let record = r.valueOr:
       continue
-    if kad.config.validator.isValid(key, record):
-      validRecords.add(record)
+    validRecords.add(record)
 
-  if validRecords.len() < quorum:
-    return err(
-      "Not enough valid records to achieve quorum, needed " & $quorum & " got " &
-        $validRecords.len()
-    )
+  if validRecords.len() == 0:
+    return err(NoValidRecords)
 
   let selectedIdx = kad.config.selector.select(key, validRecords).valueOr:
-    return err("Could not select best value")
+    return err(error, "Could not select best value")
 
   ok(validRecords[selectedIdx])
 
 proc getValue*(
-    kad: KadDHT, key: Key, quorumOverride: Opt[int] = Opt.none(int)
+    kad: KadDHT, key: RecordKey, quorumOverride: Opt[int] = Opt.none(int)
 ): Future[LPResult[EntryRecord]] {.async: (raises: [CancelledError]), gcsafe.} =
+  ## Quorum counts valid records for early stopping. An exhausted search returns
+  ## the best valid record, else `NoPeerReplied` or `NoValidRecords`.
+  # Some entries have passed validation; None entries are kept for repair.
   let received = ReceivedTable()
+  var
+    validCount = 0
+    replied = 0
 
   # if locally present and not expired, include our own copy
-  kad.dataTable.get(key).ifValue(localRecord):
-    if not localRecord.isExpired(kad.config.recordExpirationInterval):
+  let local = kad.getLocalRecord(key).valueOr:
+    warn "Get-value: local record read failed", err = error
+    Opt.none(EntryRecord)
+  local.ifValue(localRecord):
+    if kad.config.validator.isValid(key, localRecord):
       received[kad.switch.peerInfo.peerId] = Opt.some(localRecord)
+      validCount.inc()
     else:
-      kad.dataTable.del(key)
-      trace "Local record expired on read", key = key
+      received[kad.switch.peerInfo.peerId] = Opt.none(EntryRecord)
 
   let quorum = quorumOverride.valueOr:
     kad.config.quorum
@@ -57,12 +66,12 @@ proc getValue*(
   let onReply = proc(
       peer: PeerId, msgOpt: Opt[Message], state: LookupState
   ): Future[void] {.async: (raises: []), gcsafe.} =
-    if not received.hasKey(peer) and received.len >= kad.config.limits.maxReceivedSize:
-      trace "GetValue: ReceivedTable cap reached, dropping reply",
-        peer = peer, cap = kad.config.limits.maxReceivedSize
-      return
+    replied.inc()
 
-    received[peer] = Opt.none(EntryRecord)
+    if received.getOrDefault(peer).isSome():
+      return
+    if received.len < kad.config.limits.maxReceivedSize:
+      received[peer] = Opt.none(EntryRecord)
 
     let reply = msgOpt.valueOr:
       trace "Empty reply"
@@ -72,7 +81,7 @@ proc getValue*(
       trace "Get-value reply has no record", messageType = "getValue"
       return
 
-    if record.key.isNone or record.key.get() != key:
+    if record.key != key.toKey():
       trace "GetValue returned record with mismatched key",
         expected = key, got = record.key
       return
@@ -91,20 +100,43 @@ proc getValue*(
         reply = reply
       Timestamp.now()
 
-    received[peer] = Opt.some(EntryRecord(value: value, time: time))
+    let entry = EntryRecord(value: value, time: time)
+    if not kad.config.validator.isValid(key, entry):
+      trace "GetValue dropped: record failed validation", peer
+      return
+
+    if not received.hasKey(peer) and received.len >= kad.config.limits.maxReceivedSize:
+      var replacePeer = Opt.none(PeerId)
+      for p, r in received:
+        if r.isNone():
+          replacePeer = Opt.some(p)
+          break
+      let p = replacePeer.valueOr:
+        trace "GetValue: ReceivedTable cap reached, dropping reply",
+          peer = peer, cap = kad.config.limits.maxReceivedSize
+        return
+      received.del(p)
+
+    received[peer] = Opt.some(entry)
+    validCount.inc()
 
   let quorumReached = proc(state: LookupState): bool {.gcsafe.} =
-    received.len >= quorum
+    validCount > 0 and validCount >= quorum
 
-  discard await kad.iterativeLookup(key, dispatchGetVal, onReply, quorumReached)
+  let dispatch = proc(
+      kad: KadDHT, peer: PeerId, target: Key
+  ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
+    await kad.dispatchGetVal(peer, key)
 
-  let best = ?kad.bestValidRecord(key, received, quorum)
+  discard await kad.iterativeLookup(key.toKey(), dispatch, onReply, quorumReached)
 
-  # insert value to our localtable
-  if kad.canStoreLocalRecord(key):
-    kad.dataTable.insert(key, best.value, Timestamp.now())
-  else:
-    debug "GetValue: local record limit reached", key = key, current = kad.dataTable.len
+  let best = kad.bestValidRecord(key, received).valueOr:
+    if replied == 0 and error == NoValidRecords:
+      return err(NoPeerReplied)
+    return err(error)
+
+  discard
+    kad.putBestLocalRecord(key, EntryRecord(value: best.value, time: Timestamp.now()))
 
   # update peers that
   # - don't have best value
@@ -132,16 +164,10 @@ method handleGetValue*(
       reason = "missingKey", messageType = "getValue", stream
     return
 
-  # Evict the entry eagerly if it has expired so the response below treats it as
-  # absent and sends the standard "no record found" response.
-  var entryRecordOpt = kad.dataTable.get(key)
-  entryRecordOpt.ifValue(record):
-    if record.isExpired(kad.config.recordExpirationInterval):
-      trace "Record expired, dropping", key = key
-      kad.dataTable.del(key)
-      entryRecordOpt = Opt.none(EntryRecord)
-
-  let entryRecord = entryRecordOpt.valueOr:
+  let local = kad.getLocalRecord(key).valueOr:
+    warn "Get-value request: local record read failed", err = error, stream
+    Opt.none(EntryRecord)
+  let entryRecord = local.valueOr:
     let response = Message(
       msgType: Opt.some(MessageType.getValue),
       key: Opt.some(key),

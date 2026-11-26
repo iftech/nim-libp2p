@@ -53,7 +53,7 @@ proc trySecure*(
     else:
       await MultistreamSelect.tryHandle(conn, self.secureManagers.mapIt(it.codec))
   let codec = negotiated.valueOr:
-    return err($error)
+    return err(error)
   if codec.len == 0:
     return err("Unable to negotiate a secure channel")
 

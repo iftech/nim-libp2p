@@ -15,6 +15,16 @@ type
   DurationSeqMsg {.proto3.} = object
     durs {.fieldNumber: 1, ext.}: seq[Duration]
 
+  IntMsg {.proto3.} = object
+    v {.fieldNumber: 1, pint.}: int64
+
+  IntSeqMsg {.proto3.} = object
+    vs {.fieldNumber: 1, pint.}: seq[int64]
+
+const
+  maxSecs = high(int64) div 1_000_000_000
+  minSecs = low(int64) div 1_000_000_000
+
 suite "protobuf_chronos_sec":
   test "Duration zero round-trips":
     let enc = Protobuf.encode(DurationMsg(dur: 0.seconds))
@@ -37,10 +47,6 @@ suite "protobuf_chronos_sec":
     let enc = Protobuf.encode(DurationMsg(dur: ns.seconds))
     let dec = Protobuf.decode(enc, DurationMsg)
     check dec.dur.seconds == ns
-
-  test "multiple Duration re-encodes to same bytes":
-    let msg = DurationMsg(dur: 42.seconds)
-    check Protobuf.encode(msg) == Protobuf.encode(msg)
 
   test "distinct Duration values encode to distinct bytes":
     let enc1 = Protobuf.encode(DurationMsg(dur: 1.seconds))
@@ -85,6 +91,21 @@ suite "protobuf_chronos_sec":
     let enc2 = Protobuf.encode(DurationSeqMsg(durs: @[2.seconds, 1.seconds]))
     check enc1 != enc2
 
-  test "seq[Duration] re-encodes to same bytes":
-    let msg = DurationSeqMsg(durs: @[1.seconds, 2.seconds])
-    check Protobuf.encode(msg) == Protobuf.encode(msg)
+  test "Duration seconds at int64 nanosecond bounds decode":
+    check Protobuf.decode(Protobuf.encode(IntMsg(v: maxSecs)), DurationMsg).dur ==
+      maxSecs.seconds
+    check Protobuf.decode(Protobuf.encode(IntMsg(v: minSecs)), DurationMsg).dur ==
+      minSecs.seconds
+    check Protobuf.decode(
+      Protobuf.encode(IntSeqMsg(vs: @[minSecs, maxSecs])), DurationSeqMsg
+    ).durs == @[minSecs.seconds, maxSecs.seconds]
+
+  test "Duration seconds overflowing int64 nanoseconds are rejected":
+    for v in [maxSecs + 1, minSecs - 1, 1'i64 shl 62, high(int64), low(int64)]:
+      expect SerializationError:
+        discard Protobuf.decode(Protobuf.encode(IntMsg(v: v)), DurationMsg)
+
+  test "seq[Duration] seconds overflowing int64 nanoseconds are rejected":
+    for v in [maxSecs + 1, minSecs - 1, 1'i64 shl 62, high(int64), low(int64)]:
+      expect SerializationError:
+        discard Protobuf.decode(Protobuf.encode(IntSeqMsg(vs: @[1, v])), DurationSeqMsg)

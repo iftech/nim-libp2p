@@ -60,11 +60,11 @@ proc sendChallenge*(
   let payload = %*{"value": keyAuth, "addresses": strMultiaddresses}
 
   # drop a bearer we already know to be expired so we re-authenticate
-  # instead of looping on `PeerIDAuthError("Bearer expired")`
-  if self.bearer.isSome():
-    let cached = self.bearer.get()
-    if cached.expires.isSome() and cached.expires.get() <= now():
-      self.bearer = Opt.none(BearerToken)
+  # instead of looping on `PeerIDAuthError(BearerExpiredCause)`
+  self.bearer.ifValue(cached):
+    cached.expires.ifValue(expiry):
+      if expiry <= now():
+        self.bearer = Opt.none(BearerToken)
 
   trace "Sending challenge to AutoTLS broker", registrationURL = $self.registrationURL
   var (bearer, response) = await self.peerIdAuthClient.send(

@@ -1,7 +1,6 @@
 name: Coverage
 
 on:
-  # On push to common branches, this computes the coverage that PRs will use for diff
   push:
     branches:
       - master
@@ -17,10 +16,10 @@ permissions:
   contents: read
 
 jobs:
-  codecov:
-    name: Run coverage and upload to codecov
+  coverage:
+    name: Run coverage
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 65
     env:
       NIMBLE_COMMIT: aa8e6ea09ecac774b6fad42552569ce07bef37ec # v0.24.1
       CICOV: YES
@@ -36,7 +35,7 @@ jobs:
           os: linux-gcc-14
           cpu: amd64
           shell: bash
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Use gcc 14
         run: |
@@ -51,7 +50,7 @@ jobs:
           os: linux-gcc-14
           cpu: amd64
           cc: gcc
-          nim_ref: v2.2.10
+          nim_ref: v2.2.14
 
       - name: Setup deps
         run: make setup
@@ -65,7 +64,7 @@ jobs:
       - name: Build test_all
         run: |
           NIMFLAGS="--nimcache:nimcache/test_all --lineDir:on --passC:-fprofile-arcs --passC:-ftest-coverage --passL:-fprofile-arcs --passL:-ftest-coverage --threads:on --skipUserCfg"
-          NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=INFO"
+          NIMFLAGS="$NIMFLAGS -d:chronicles_log_level=INFO -d:libp2p_testing_slow"
           nim c $NIMFLAGS ./tests/test_all
 
       - name: Run tests
@@ -83,9 +82,5 @@ jobs:
             --omit-lines '^\s*(proc|func|method|iterator|template)\b([^=]*|.*=\s*(#.*)?)$' \
             --omit-lines '^\s*[\)\]\}]+\s*$'
 
-      - name: Upload coverage to codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage/coverage.f.info
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Require at least 90% line coverage
+        run: lcov --summary coverage/coverage.f.info --fail-under-lines 90

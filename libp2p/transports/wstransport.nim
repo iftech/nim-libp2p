@@ -6,7 +6,8 @@
 {.push raises: [].}
 
 import ../logging
-import std/[sequtils]
+import std/[sequtils, strformat]
+from times import format
 import chronos, chronicles, metrics, stew/byteutils
 import ../results
 import
@@ -142,6 +143,7 @@ type WsTransport* = ref object of Transport
   connections: array[Direction, seq[WsStream]]
   connectionCleanupFuts: seq[Future[void]]
   acceptLoop: Future[void]
+  autotlsUpdateLoop: Future[void]
   handshakeFuts: seq[Future[void]]
   acceptResults: AsyncQueue[RawConn]
   acceptSem: AsyncSemaphore
@@ -149,6 +151,7 @@ type WsTransport* = ref object of Transport
   tlsPrivateKey*: TLSPrivateKey
   tlsCertificate*: TLSCertificate
   autotls: Opt[AutotlsService]
+  manualCredentials: bool
   tlsFlags: set[TLSFlags]
   flags: set[ServerFlags]
   headersTimeout: Duration
@@ -161,7 +164,7 @@ type HostHeaderHook = ref object of Hook
 
 proc hostHeaderHook(host: string): Hook =
   let hook = HostHeaderHook(host: host)
-  hook.append = proc(ctx: Hook, headers: var HttpTable): LPResult[void] =
+  hook.append = proc(ctx: Hook, headers: var HttpTable): Result[void, string] =
     headers.set("Host", HostHeaderHook(ctx).host)
     ok()
   hook
@@ -176,6 +179,10 @@ proc getSni(address: MultiAddress): string =
   let value = address.getProtocolArgument(multiCodec("sni")).valueOr:
     return ""
   string.fromBytes(value)
+
+func hasControlChar(s: string): bool =
+  ## A CR or LF in a Host header value would start a new header line.
+  s.anyIt(it in {'\x00' .. '\x1F', '\x7F'})
 
 proc secure*(self: WsTransport): bool =
   not (isNil(self.tlsPrivateKey) or isNil(self.tlsCertificate))
@@ -367,8 +374,7 @@ proc listen(
         else:
           HttpServer.create(addrsTa[i], headersTimeout = self.headersTimeout)
       except TransportOsError as e:
-        return
-          err("WsTransport.start failed to listen on " & $addrsTa[i] & ". " & e.msg)
+        return err(e, fmt"WsTransport.start failed to listen on {addrsTa[i]}")
     self.httpservers &= httpserver
 
     let codec =
@@ -402,11 +408,40 @@ proc loadAutotlsCertificate(
   defer:
     certFut.cancelSoon()
   try:
-    return ok(await certFut.wait(deadlineFut))
+    return await certFut.wait(deadlineFut)
   except AsyncTimeoutError:
     return err("autotls certificate was not available before the certificate deadline")
-  except AutoTLSError as e:
-    return err("failed to load autotls certificate: " & e.msg)
+
+proc updateAutotlsCertificate(
+    self: WsTransport, autotls: AutotlsService
+) {.async: (raises: [CancelledError]).} =
+  let subscription = autotls.subscribeCertificateUpdates()
+  defer:
+    subscription.unsubscribe()
+    if self.running:
+      warn "AutoTLS certificate update loop stopped while transport is running",
+        serviceRunning = autotls.isRunning
+
+  proc install(cert: AutotlsCert) =
+    self.tlsCertificate = cert.cert
+    self.tlsPrivateKey = cert.privkey
+    for server in self.httpservers:
+      if server.secure:
+        server.tlsCertificate = cert.cert
+        server.tlsPrivateKey = cert.privkey
+    info "Installed AutoTLS certificate in WebSocket transport",
+      expiry = cert.expiry.format("yyyy-MM-dd'T'HH:mm:ss'.'fffzzz"),
+      secureServers = self.httpservers.countIt(it.secure)
+
+  # Apply the current certificate after subscribing, so a renewal completed
+  # while the transport was starting is installed even if no event was seen.
+  (await autotls.getCertWhenReady()).ifValue(currentCert):
+    install(currentCert)
+
+  while self.running and autotls.isRunning:
+    let certificates = await subscription.waitUpdates()
+    for cert in certificates:
+      install(cert)
 
 method start*(
     self: WsTransport, addrs: seq[MultiAddress]
@@ -418,22 +453,24 @@ method start*(
 
   let addrsTa = self.toTransportAddress(addrs).valueOrRaise(TransportStartError)
 
-  if not self.secure and addrs.anyIt(WSS.match(it)):
-    if self.autotls.isNone():
-      raise newException(
-        TransportStartError,
-        "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
-      )
-
+  let hasWss = addrs.anyIt(WSS.match(it))
+  # AutoTLS credentials are retained after a stop, so `secure` cannot tell us
+  # whether credentials were supplied by the caller on subsequent starts.
+  let usingAutotls = self.autotls.isSome() and not self.manualCredentials and hasWss
+  if usingAutotls:
     let autotlsCert = (await loadAutotlsCertificate(self.autotls.get())).valueOr:
-      raise newException(
+      raise error.toException(
         TransportStartError,
-        "Unable to start WebSocket transport: failed to load autotls certificate. " &
-          $error,
+        "Unable to start WebSocket transport: failed to load autotls certificate",
       )
 
     self.tlsCertificate = autotlsCert.cert
     self.tlsPrivateKey = autotlsCert.privkey
+  elif not self.secure and hasWss:
+    raise newException(
+      TransportStartError,
+      "Unable to start WebSocket transport: WSS requires TLS credentials or AutoTLS",
+    )
 
   self.wsserver = WSServer.new(factories = self.factories, rng = websockRng(self.rng))
 
@@ -448,6 +485,8 @@ method start*(
 
   await procCall Transport(self).start(resolvedAddrs)
   self.acceptLoop = self.wsAcceptDispatcher()
+  if usingAutotls:
+    self.autotlsUpdateLoop = self.updateAutotlsCertificate(self.autotls.get())
 
   info "WebSocket transport started", addresses = self.addrs
 
@@ -466,6 +505,8 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
     var toWait: seq[Future[void]]
     if not self.acceptLoop.isNil:
       toWait.add(self.acceptLoop.cancelAndWait())
+    if not self.autotlsUpdateLoop.isNil:
+      toWait.add(self.autotlsUpdateLoop.cancelAndWait())
 
     for fut in self.handshakeFuts:
       toWait.add(fut.cancelAndWait())
@@ -488,6 +529,7 @@ method stop*(self: WsTransport) {.async: (raises: []).} =
     self.handshakeFuts = @[]
     self.connectionCleanupFuts = @[]
     self.acceptLoop = nil
+    self.autotlsUpdateLoop = nil
     if wasRunning:
       info "WebSocket transport stopped", addresses = self.addrs
   except CatchableError as e:
@@ -543,9 +585,9 @@ method dial*(
 
   let secure = WSS.match(address)
   let initAddress = address.initTAddress().valueOr:
-    raise newException(
+    raise error.toException(
       transport.TransportDialError,
-      "WsTransport.dial called with unsupported address " & $address & ". " & error,
+      "WsTransport.dial called with unsupported address " & $address,
     )
   let
     sni = address.getSni()
@@ -560,6 +602,11 @@ method dial*(
         @[hostHeaderHook(httpHostname)]
       else:
         @[]
+  if httpHostname.hasControlChar() or serverName.hasControlChar():
+    raise newException(
+      transport.TransportDialError,
+      "WsTransport.dial called with a control character in the hostname",
+    )
   trace "Creating websocket",
     address = initAddress,
     secure = secure,
@@ -588,9 +635,9 @@ method dial*(
 
   let conn = self.connHandler(session, secure, Direction.Out).valueOr:
     safeClose(session)
-    raise newException(
+    raise error.toException(
       transport.TransportDialError,
-      "WsTransport.dial failed to read connection addresses. " & error,
+      "WsTransport.dial failed to read connection addresses",
     )
   conn
 
@@ -622,6 +669,7 @@ proc new*(
     tlsPrivateKey: tlsPrivateKey,
     tlsCertificate: tlsCertificate,
     autotls: autotls,
+    manualCredentials: not (isNil(tlsPrivateKey) or isNil(tlsCertificate)),
     tlsFlags: tlsFlags,
     flags: flags,
     factories: @factories,
@@ -654,3 +702,12 @@ proc new*(
     headersTimeout = headersTimeout,
     concurrentAccepts = concurrentAccepts,
   )
+
+when defined(libp2p_testing):
+  proc serverTlsCredentials*(
+      self: WsTransport
+  ): seq[tuple[key: TLSPrivateKey, cert: TLSCertificate]] =
+    ## TLS credentials installed in the currently running secure HTTP servers.
+    for server in self.httpservers:
+      if server.secure:
+        result.add((key: server.tlsPrivateKey, cert: server.tlsCertificate))

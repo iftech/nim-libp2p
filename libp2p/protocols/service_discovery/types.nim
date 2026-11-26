@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[sequtils, sets, tables, hashes, net]
+import std/[math, sequtils, sets, tables, hashes, net]
 import chronicles, chronos, results, stew/byteutils
 import nimcrypto/sha2
 import
@@ -21,7 +21,6 @@ const
   DefaultSelfSPRRereshTime* = 10.minutes
 
   ExtendedServiceDiscoveryCodec* = "/logos/service-discovery/1.0.0"
-  ServiceDiscoveryMaxMsgSize* = 4096
 
   Default_K_register* = 3
   Default_K_lookup* = 5
@@ -40,6 +39,14 @@ const
   Default_DialBackoffBase* = 30.secs
   Default_DialBackoffMax* = 30.minutes
   Default_MaxDialFailures* = 5
+
+  AdFramingSize = 8 ## field tag plus length varint around one ad
+  CloserPeerBudget = 1024 ## peer id plus MaxPeerAddrs typical addresses
+  ReturnSlotSize = MaxXPRSize + AdFramingSize + CloserPeerBudget
+    ## one returned ad plus one closer peer
+  ServiceDiscoveryMaxMsgSize* = nextPowerOfTwo(Default_F_return * ReturnSlotSize)
+    ## a GET_ADS reply of Default_F_return ads and closer peers must fit
+  MaxFReturn* = ServiceDiscoveryMaxMsgSize div ReturnSlotSize
 
 type
   ServiceId* = Key
@@ -76,6 +83,7 @@ type
     timestampService*: Table[ServiceId, Moment]
     boundIp*: Table[string, Moment]
     timestampIp*: Table[string, Moment]
+    lastPruneSecond*: int64
 
   AdvertiseTask* = ref object
     fut*: Future[void]
@@ -233,7 +241,7 @@ proc new*(T: typedesc[Registrar], advertCacheCap: uint64 = Default_C): T =
 proc new*(T: typedesc[Advertiser]): T =
   T(
     running: initHashSet[AdvertiseTask](),
-    seqNo: nowUnixSeconds().uint64,
+    seqNo: UnixTimestamp.now().uint64,
     providedAdverts: initTable[ServiceId, ProvidedAdvert](),
   )
 
@@ -243,7 +251,7 @@ proc toKey*(service: ServiceInfo): Key =
 proc init*(
     T: typedesc[ExtendedPeerRecord],
     peerInfo: PeerInfo,
-    seqNo: uint64 = nowUnixSeconds().uint64,
+    seqNo: uint64 = UnixTimestamp.now().uint64,
     services: seq[ServiceInfo] = @[],
 ): T =
   T(
@@ -268,13 +276,13 @@ proc boundXpr*(key: Key, value: Value): Opt[SignedExtendedPeerRecord] =
 
 type ExtEntryValidator* = ref object of EntryValidator
 method isValid*(
-    self: ExtEntryValidator, key: Key, record: EntryRecord
+    self: ExtEntryValidator, key: RecordKey, record: EntryRecord
 ): bool {.raises: [], gcsafe.} =
-  boundXpr(key, record.value).isSome()
+  boundXpr(key.toKey(), record.value).isSome()
 
 type ExtEntrySelector* = ref object of EntrySelector
 method select*(
-    self: ExtEntrySelector, key: Key, records: seq[EntryRecord]
+    self: ExtEntrySelector, key: RecordKey, records: seq[EntryRecord]
 ): LPResult[int] {.raises: [], gcsafe.} =
   if records.len == 0:
     return err("No records to choose from")
@@ -308,7 +316,7 @@ proc record*(disco: ServiceDiscovery): LPResult[SignedExtendedPeerRecord] =
   let peerRecord = ExtendedPeerRecord.init(
     peerId = peerInfo.peerId,
     addresses = filteredAddresses,
-    seqNo = nowUnixSeconds().uint64,
+    seqNo = UnixTimestamp.now().uint64,
     services = disco.services.toSeq(),
   )
 

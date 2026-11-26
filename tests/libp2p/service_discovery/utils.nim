@@ -12,7 +12,6 @@ import
     multiaddress,
     peerid,
     peerinfo,
-    protobuf/minprotobuf,
     protocols/kademlia,
     protocols/kademlia/protobuf,
     protocols/service_discovery,
@@ -49,7 +48,7 @@ proc randomKey*(): PrivateKey =
   PrivateKey.random(rng()).get()
 
 proc makePeerInfo*(
-    peerId: PeerId = randomPeerId(), addrs: seq[MultiAddress] = @[]
+    peerId: PeerId = PeerId.random(), addrs: seq[MultiAddress] = @[]
 ): PeerInfo =
   PeerInfo(peerId: peerId, addrs: addrs)
 
@@ -83,7 +82,7 @@ proc makeAdvertisement*(
     serviceId: string = $1,
     privateKey: PrivateKey = PrivateKey.random(rng()).get(),
     addrs: seq[MultiAddress] = @[],
-    seqNo: uint64 = nowUnixSeconds().uint64,
+    seqNo: uint64 = UnixTimestamp.now().uint64,
 ): Advertisement =
   let peerId = PeerId.init(privateKey).get()
   let extRecord = ExtendedPeerRecord(
@@ -106,16 +105,6 @@ proc makeOversizedAdvertisement*(
   )
   SignedExtendedPeerRecord.init(privateKey, extRecord).get()
 
-const UnknownEnvelopeField = 15 ## no `Envelope` field carries this number
-
-proc padAdvertisement*(advert: seq[byte], paddingBytes: int): seq[byte] =
-  ## Grows the encoded record with a field the decoder skips, so only its
-  ## incoming length reveals the padding.
-  var pb = initProtoBuffer()
-  pb.write(UnknownEnvelopeField, newSeq[byte](paddingBytes))
-  pb.finish()
-  advert & pb.buffer
-
 proc createSwitch*(
     privateKey: Opt[PrivateKey] = Opt.none(PrivateKey),
     addresses: seq[MultiAddress] = @[TcpAutoAddress()],
@@ -127,7 +116,6 @@ proc testKadDHTConfig(): KadDHTConfig =
     ExtEntryValidator(),
     ExtEntrySelector(),
     timeout = 3.secs,
-    cleanupProvidersInterval = 100.millis,
     providerExpirationInterval = 1.secs,
     republishProvidedKeysInterval = 50.millis,
     disableBootstrapping = true, # component tests wire up their own topology explicitly
@@ -195,11 +183,11 @@ proc hasPeerInMainTable*(disco: ServiceDiscovery, peerId: PeerId): bool =
 
 proc populateRoutingTable*(disco: ServiceDiscovery, count: int) =
   for i in 0 ..< count:
-    discard disco.rtable.insert(randomPeerId())
+    discard disco.rtable.insert(PeerId.random())
 
 proc populateAdvertisementTable*(disco: ServiceDiscovery, serviceId: ServiceId) =
   for i in 0 ..< disco.discoConfig.kRegister:
-    discard disco.rtable.insert(randomPeerId())
+    discard disco.rtable.insert(PeerId.random())
   discard disco.rtManager.addService(
     serviceId, disco.rtable, disco.config.replication, disco.discoConfig.bucketsCount,
     Interest,
@@ -257,7 +245,10 @@ proc acceptAd*(
   disco.acceptAdvertisement(now, serviceId, adv, ad, advertiserIps)
 
 proc registerAd*(
-    disco: ServiceDiscovery, serviceId: ServiceId, ad: Advertisement
+    disco: ServiceDiscovery,
+    serviceId: ServiceId,
+    ad: Advertisement,
+    connectionIps: seq[IpAddress] = @[],
 ): RegisterMessage =
   let inMsg = Message(
     msgType: MessageType.register,
@@ -270,7 +261,7 @@ proc registerAd*(
       )
     ),
   )
-  disco.registration(ad.data.peerId, inMsg).register.get()
+  disco.registration(ad.data.peerId, inMsg, connectionIps).register.get()
 
 proc seedAd*(
     reg: Registrar,

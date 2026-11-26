@@ -96,6 +96,22 @@ proc manageBackedOff(
   self.backingOff.del(pid)
   self.peerAvailable.fire()
 
+proc waitReservationOrPeer*(
+    reservations: seq[Future[void]], peerAvailable: AsyncEvent
+) {.async: (raises: [CancelledError]).} =
+  ## Waits for a reservation to finish or `peerAvailable` to fire, then drops both waits.
+  # `or` does not cancel the loser, and a pending `one()` keeps a callback on each reservation
+  let
+    anyReservation = one(reservations)
+    peerWait = peerAvailable.wait()
+  try:
+    await anyReservation or peerWait
+  except ValueError:
+    raiseAssert "innerRun waits only with reservations"
+  finally:
+    anyReservation.cancelSoon()
+    peerWait.cancelSoon()
+
 proc innerRun(
     self: AutoRelayService, switch: Switch
 ) {.async: (raises: [CancelledError]).} =
@@ -143,10 +159,7 @@ proc innerRun(
       self.relayPeers[relayPid] = self.reserveAndUpdate(relayPid, switch)
 
     if self.relayPeers.len() > 0:
-      try:
-        await one(toSeq(self.relayPeers.values())) or self.peerAvailable.wait()
-      except ValueError:
-        raiseAssert "checked with relayPeers.len()"
+      await waitReservationOrPeer(toSeq(self.relayPeers.values()), self.peerAvailable)
     else:
       await self.peerAvailable.wait()
 

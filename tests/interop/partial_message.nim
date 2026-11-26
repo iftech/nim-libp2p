@@ -79,7 +79,7 @@ proc partialMessageInteropTest*(
       requestFulfilled.complete(false)
       return
 
-    if rpc.partsMetadata.isNone or rpc.partsMetadata.get() != expectedMetadata:
+    if rpc.partsMetadata != expectedMetadata:
       error "parts metadata does not match"
       requestFulfilled.complete(false)
       return

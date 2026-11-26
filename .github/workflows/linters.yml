@@ -22,7 +22,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 2  # In PR, has extra merge commit: ^1 = PR, ^2 = base
+          # The log audit needs the recorded PR base, which may predate the merge parents.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Check NPH formatting
@@ -45,8 +46,10 @@ jobs:
       - name: Check Nimble lock versions
         run: python3 tools/check-nimble-lock.py
 
-      - name: Audit Chronicle logs
-        run: python3 tools/audit_logs.py
+      - name: Run nim-lint checks
+        uses: iftech/nim-lint@1.0.0
+        with:
+          config: linter.nim
 
       - name: Check License Header
         uses: apache/skywalking-eyes/header@v0.8.0

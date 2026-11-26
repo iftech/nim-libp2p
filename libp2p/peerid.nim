@@ -19,13 +19,25 @@ import
   ./multicodec,
   ./multibase,
   ./multihash,
-  ./vbuffer,
-  ./protobuf/minprotobuf
+  ./vbuffer
 import ./cid
 
 export results, opt, shortlog, collections
 
-const maxInlineKeyLength* = 42
+const
+  maxInlineKeyLength* = 42
+  identityMultihashHeaderLength = 2
+    # Single-byte identity codec and digest length (at most 42).
+  peerIdCidHeaderLength = 2 # Single-byte CIDv1 version and libp2p-key codec.
+  multibasePrefixLength = 1
+  base16CharsPerByte = 2
+  maxPeerIdLength* = identityMultihashHeaderLength + maxInlineKeyLength
+  maxPeerIdTextLength =
+    multibasePrefixLength +
+    base16CharsPerByte * (peerIdCidHeaderLength + maxPeerIdLength)
+
+static:
+  doAssert maxInlineKeyLength < 128, "inline key length must fit in one varint byte"
 
 const
   ShortPeerIdPrefixLength = 6
@@ -112,8 +124,10 @@ template hash*(pid: PeerId): Hash =
   hash(pid.data)
 
 func validate*(pid: PeerId): bool =
-  ## Validate check if ``pid`` is empty or not.
-  len(pid.data) > 0 and MultiHash.validate(pid.data)
+  ## Check the multihash encoding and key-derived size limit.
+  len(pid.data) > 0 and len(pid.data) <= maxPeerIdLength and MultiHash.validate(
+    pid.data
+  )
 
 func hasPublicKey*(pid: PeerId): bool =
   ## Returns ``true`` if ``pid`` is small enough to hold public key inside.
@@ -189,7 +203,7 @@ proc init*(pid: var PeerId, data: string): bool =
   ## ``libp2p-key`` multibase text.
   ##
   ## Returns ``true`` if peer was successfully initialiazed.
-  if len(data) == 0:
+  if len(data) == 0 or len(data) > maxPeerIdTextLength:
     return false
   if data.startsWith("1") or data.startsWith("Qm"):
     initLegacy(pid, data)
@@ -260,35 +274,15 @@ proc random*(t: typedesc[PeerId], count: uint, rng: Rng): Result[seq[PeerId], cs
 
 func match*(pid: PeerId, pubkey: PublicKey): bool =
   ## Returns ``true`` if ``pid`` matches public key ``pubkey``.
-  PeerId.init(pubkey) == Result[PeerId, cstring].ok(pid)
+  PeerId.init(pubkey).containsValue(pid)
 
 func match*(pid: PeerId, seckey: PrivateKey): bool =
   ## Returns ``true`` if ``pid`` matches private key ``seckey``.
-  PeerId.init(seckey) == Result[PeerId, cstring].ok(pid)
-
-## Serialization/Deserialization helpers
+  PeerId.init(seckey).containsValue(pid)
 
 func write*(vb: var VBuffer, pid: PeerId) =
   ## Write PeerId value ``peerid`` to buffer ``vb``.
   vb.writeSeq(pid.data)
-
-func write*(pb: var ProtoBuffer, field: int, pid: PeerId) =
-  ## Write PeerId value ``peerid`` to object ``pb`` using ProtoBuf's encoding.
-  write(pb, field, pid.data)
-
-func getField*(pb: ProtoBuffer, field: int, pid: var PeerId): ProtoResult[bool] =
-  ## Read ``PeerId`` from ProtoBuf's message and validate it
-  var buffer: seq[byte]
-  let res = ?pb.getField(field, buffer)
-  if not (res):
-    ok(false)
-  else:
-    var peerId: PeerId
-    if peerId.init(buffer):
-      pid = peerId
-      ok(true)
-    else:
-      err(ProtoError.IncorrectBlob)
 
 ## protobuf_serialization extension
 
