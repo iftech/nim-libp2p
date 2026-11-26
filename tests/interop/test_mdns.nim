@@ -37,6 +37,23 @@ suite "mDNS interoperability":
     require outcome.isErr
     check outcome.error == "mDNS discovery timed out; discovered 1 of 2 peers"
 
+  asyncTest "a timed-out wait leaves discovery available to other waits":
+    let
+      discovery = MdnsDiscovery.new(1).get()
+      local = PeerId.random()
+      remote = PeerId.random()
+      pending = discovery.waitForPeers(10.seconds)
+
+    check (await discovery.waitForPeers(0.milliseconds)).isErr
+    let timedOut = await discovery.waitForPeers(20.milliseconds)
+    require timedOut.isErr
+    let retry = discovery.waitForPeers(10.seconds)
+    discovery.observe(local, remote)
+    check:
+      (await pending).isOk
+      (await retry).isOk
+      (await discovery.waitForPeers(0.milliseconds)).isOk
+
   test "invalid expected peer count returns an error":
     check:
       runMdnsInterop(@[], 1.seconds).isErr

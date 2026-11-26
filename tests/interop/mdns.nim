@@ -37,7 +37,9 @@ proc observe*(discovery: ref MdnsDiscovery, local, remote: PeerId) =
 proc waitForPeers*(
     discovery: ref MdnsDiscovery, timeout: Duration
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
-  if not await discovery.completed.withTimeout(timeout):
+  # A timed-out or cancelled waiter must leave shared discovery state intact.
+  if not discovery.completed.finished() and
+      (timeout.isZero() or not await discovery.completed.join().withTimeout(timeout)):
     return err(
       "mDNS discovery timed out; discovered " & $discovery.peers.len & " of " &
         $discovery.expected & " peers"
