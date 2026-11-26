@@ -402,6 +402,7 @@ proc handleIHave*(
 proc handleIDontWant*(
     g: GossipSub, peer: PubSubPeer, iDontWants: seq[ControlIWant]
 ): int =
+  ## Returns the encoded bytes saved by cancelling matching queued relays.
   var savedBytes = 0
   for dontWant in iDontWants:
     for messageId in dontWant.messageIDs:
