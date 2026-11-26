@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import chronos, tables, results, strutils, stew/byteutils, sequtils
 import ../../../../libp2p/peerid
 import
@@ -15,6 +16,11 @@ import
 import ../../../tools/[unittest, crypto]
 import ./my_partial_message
 import ../converters
+
+privateAccess(PartialMessageExtension)
+
+proc hasGroup(ext: PartialMessageExtension, topic: string, groupId: GroupId): bool =
+  ext.groupState.hasKey(TopicGroupKey.new(topic, groupId))
 
 proc isPartialTopic(topic: string): bool =
   # convention: in this test file, topics that have "partial" in their name will be considered
@@ -775,9 +781,9 @@ suite "GossipSub Extensions :: Partial Message Extension":
       ext.sendGroupMetadata(p, topic, "g-" & $i)
 
     # all groups are accepted; the global limit is enforced lazily on heartbeat
-    check ext.trackedGroups == 10
+    check ext.groupState.len == 10
     ext.onHeartbeat()
-    check ext.trackedGroups == 3
+    check ext.groupState.len == 3
 
   test "heartbeat trims least-recently-used groups first":
     const topic = "partial-topic"
@@ -798,11 +804,11 @@ suite "GossipSub Extensions :: Partial Message Extension":
 
     ext.sendGroupMetadata(p1, topic, "g-1") # refresh g-1, making g-2 the oldest
     ext.sendGroupMetadata(p3, topic, "g-3") # fresh group, total now exceeds limit
-    check ext.trackedGroups == 3
+    check ext.groupState.len == 3
 
     ext.onHeartbeat() # trims down to 2, evicting the least-recently-used g-2
     check:
-      ext.trackedGroups == 2
+      ext.groupState.len == 2
       ext.hasGroup(topic, "g-1".toBytes)
       ext.hasGroup(topic, "g-3".toBytes)
       not ext.hasGroup(topic, "g-2".toBytes)
@@ -820,12 +826,12 @@ suite "GossipSub Extensions :: Partial Message Extension":
       ext.sendGroupMetadata(peerId, topic, "g-" & $i)
 
     # single peer cannot exceed its own budget despite global budget remaining
-    check ext.trackedGroups == 2
+    check ext.groupState.len == 2
 
     # a different peer still has its own budget
     let otherPeer = PeerId.random()
     ext.sendGroupMetadata(otherPeer, topic, "other")
-    check ext.trackedGroups == 3
+    check ext.groupState.len == 3
 
   test "removing a peer frees its group budget":
     const topic = "partial-topic"
@@ -838,14 +844,14 @@ suite "GossipSub Extensions :: Partial Message Extension":
 
     ext.sendGroupMetadata(peerId, topic, "g-1")
     ext.sendGroupMetadata(peerId, topic, "g-2") # rejected, peer at budget
-    check ext.trackedGroups == 1
+    check ext.groupState.len == 1
 
     # removal evicts the empty group the peer created instead of orphaning it
     ext.onRemovePeer(peerId)
-    check ext.trackedGroups == 0
+    check ext.groupState.len == 0
 
     ext.sendGroupMetadata(peerId, topic, "g-3") # budget reclaimed
-    check ext.trackedGroups == 1
+    check ext.groupState.len == 1
 
   test "heartbeat eviction frees group budget":
     const topic = "partial-topic"
@@ -857,14 +863,14 @@ suite "GossipSub Extensions :: Partial Message Extension":
     var ext = PartialMessageExtension.new(cfg)
 
     ext.sendGroupMetadata(peerId, topic, "g-1")
-    check ext.trackedGroups == 1
+    check ext.groupState.len == 1
 
     ext.sendGroupMetadata(peerId, topic, "g-2") # at capacity, rejected
-    check ext.trackedGroups == 1
+    check ext.groupState.len == 1
 
     # heartbeat reclaims the expired group, freeing both global and per-peer budget
     ext.onHeartbeat()
-    check ext.trackedGroups == 0
+    check ext.groupState.len == 0
 
     ext.sendGroupMetadata(peerId, topic, "g-3")
-    check ext.trackedGroups == 1
+    check ext.groupState.len == 1

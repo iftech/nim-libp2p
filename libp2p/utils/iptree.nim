@@ -9,8 +9,8 @@ type
     left*, right*: IpTreeNode
 
   IpTree* = ref object
-    root*: IpTreeNode ## IPv4 tree root: a 32-level binary tree.
-    root6*: IpTreeNode ## IPv6 tree root: a 128-level binary tree.
+    root: IpTreeNode ## IPv4 tree root: a 32-level binary tree.
+    root6: IpTreeNode ## IPv6 tree root: a 128-level binary tree.
 
 proc new*(T: typedesc[IpTree]): T =
   T(root: IpTreeNode(counter: 0), root6: IpTreeNode(counter: 0))

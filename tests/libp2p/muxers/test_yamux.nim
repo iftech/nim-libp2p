@@ -3,9 +3,12 @@
 
 {.used.}
 
+import std/importutils
 import sugar
 import ../../../libp2p/[stream/bridgestream, muxers/yamux/yamux, utils/future]
 import ../../tools/unittest
+
+privateAccess(YamuxChannel)
 
 include ../../../libp2p/muxers/yamux/yamux
 
@@ -185,7 +188,7 @@ suite "Yamux":
       var numberOfRead = 0
       const newWindow = 20
       yamuxb.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
-        YamuxChannel(stream).setMaxRecvWindow(newWindow)
+        YamuxChannel(stream).maxRecvWindow = newWindow
         try:
           var buffer: array[YamuxDefaultWindowSize, byte]
           while (await stream.readOnce(addr buffer[0], YamuxDefaultWindowSize)) > 0:

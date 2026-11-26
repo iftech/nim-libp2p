@@ -49,7 +49,7 @@ type
   PushSendFut = Future[void].Raising([CancelledError])
 
   IdentifyPusher* = ref object of Service
-    identifyPush*: IdentifyPush
+    identifyPush: IdentifyPush
     pushPeers: HashSet[PeerId]
     started: bool
     ongoingSend: seq[PushSendFut]

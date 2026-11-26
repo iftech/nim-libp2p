@@ -33,6 +33,8 @@ import
   ../tools/
     [unittest, trackers, futures, crypto, sync, switch_builder, multiaddress, lifecycle]
 
+privateAccess(Switch)
+
 const TestCodec = "/test/proto/1.0.0"
 
 type TestProto = ref object of LPProtocol
@@ -772,7 +774,6 @@ suite "Switch":
     await allFuturesRaising(switches.mapIt(it.stop()))
 
   asyncTest "an opt-in outbound reserve leaves room for repair dials":
-    privateAccess(Switch)
     let server = makeStandardSwitchBuilder(TcpAutoAddress)
       .withMaxConnections(3, outboundReserve = 1)
       .build()
@@ -1261,8 +1262,7 @@ suite "Switch":
       switch.transports[0].upgrader.secureManagers[0] of Noise
 
   asyncTest "accept loop handles more peers than the pending upgrade budget":
-    privateAccess(Switch)
-    const BatchSize = PendingUpgradesPerSourceForTesting
+    const BatchSize = MaxPendingUpgradesPerSource
     const NumPeers = 85
     let server = makeStandardSwitchBuilder(TcpAutoAddress)
       .withConnectionLimits(ConnectionLimits.maxTotal(NumPeers))

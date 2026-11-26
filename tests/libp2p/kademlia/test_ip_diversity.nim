@@ -3,11 +3,14 @@
 
 {.used.}
 
+import std/importutils
 import std/[sequtils, tables]
 import results
 import ../../../libp2p/[protocols/kademlia, switch, peerid, peerstore]
 import ../../tools/[unittest, multiaddress]
 import ./utils.nim
+
+privateAccess(LookupState)
 
 proc peerIdInBucket(kad: KadDHT, bucket: int): PeerId =
   ## A draw lands in `bucket` with probability ~2^-(bucket+1), so keep drawing.

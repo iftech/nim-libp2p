@@ -61,9 +61,6 @@ func init*(
 func init*(T: type AutoModePolicy, config: AutoModeConfig, isServer: bool): T =
   T(config: config, isServer: isServer)
 
-func autoModeConfig*(p: AutoModePolicy): AutoModeConfig =
-  p.config
-
 func restarted*(p: AutoModePolicy, isServer: bool): AutoModePolicy =
   AutoModePolicy.init(p.config, isServer)
 

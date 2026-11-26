@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import ../../../../libp2p/peerid
 import
   ../../../../libp2p/protocols/pubsub/[
@@ -13,6 +14,8 @@ import
   ]
 import ../../../tools/[unittest, crypto]
 import ../converters
+
+privateAccess(PreambleExtension)
 
 const largeMsgLen = preambleMessageSizeThreshold
 const smallMsgLen = preambleMessageSizeThreshold - 1

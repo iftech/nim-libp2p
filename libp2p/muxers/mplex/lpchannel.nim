@@ -47,13 +47,13 @@ type LPChannel* = ref object of BufferStream
   conn*: RawConn # wrapped connection used to for writing
   initiator*: bool # initiated remotely or locally flag
   isOpen*: bool # has channel been opened
-  closedLocal*: bool # has channel been closed locally
+  closedLocal: bool # has channel been closed locally
   remoteReset*: bool # has channel been remotely reset
-  localReset*: bool # has channel been reset locally
-  msgCode*: MessageType # cached in/out message code
-  closeCode*: MessageType # cached in/out close code
-  resetCode*: MessageType # cached in/out reset code
-  writes*: int # In-flight writes
+  localReset: bool # has channel been reset locally
+  msgCode: MessageType # cached in/out message code
+  closeCode: MessageType # cached in/out close code
+  resetCode: MessageType # cached in/out reset code
+  writes: int # In-flight writes
   resetMessageFut*: Future[void]
   cleanupFut*: Future[void]
   handlerFut*: Future[void]

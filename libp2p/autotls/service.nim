@@ -670,5 +670,3 @@ method stop*(
 when defined(libp2p_testing):
   export installCertificate, issueCertificate, ValidatedAutotlsState, validate
 
-  func ipAddress*(config: AutotlsConfig): Opt[IpAddress] =
-    config.ipAddress

@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import strformat, random, sequtils, chronos, nimcrypto/utils, stew/byteutils
 import
   ../../../libp2p/[
@@ -20,6 +21,8 @@ import
     varint,
   ]
 import ../../tools/[unittest, trackers, futures, bufferstream, compare, multiaddress]
+
+privateAccess(LPChannel)
 
 proc noopWriteHandler(
     data: sink seq[byte]
