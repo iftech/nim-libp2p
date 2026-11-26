@@ -9,7 +9,7 @@ import
   ../../libp2p/
     [address_manager, crypto/crypto, multiaddress, multicodec, peerinfo, switch]
 import ../../libp2p/services/natservice
-import ../tools/[unittest, crypto, switch_builder, multiaddress, lifecycle]
+import ../tools/[unittest, crypto, switch_builder, multiaddress, lifecycle, futures]
 
 const VerifyInterval = 10.milliseconds
 
@@ -518,6 +518,22 @@ suite "AddressManager verification":
     manager.add(second, AddrSource.Upnp)
     manager.update(second, AddrState.Confirmed)
     check manager.reachability() == NetworkReachability.Reachable
+
+  asyncTest "one Confirmed and one Unreachable address still summarise as Reachable":
+    let
+      manager = makeManager()
+      confirmed = ma("/ip4/1.2.3.4/tcp/1")
+      unreachable = ma("/ip4/5.6.7.8/tcp/1")
+
+    startAndDeferStop(manager)
+    manager.add(confirmed, AddrSource.Listen)
+    manager.add(unreachable, AddrSource.Upnp)
+    manager.update(confirmed, AddrState.Confirmed)
+    manager.update(unreachable, AddrState.Unreachable)
+
+    check:
+      manager.reachability() == NetworkReachability.Reachable
+      manager.confirmedAddrs() == @[confirmed]
 
   asyncTest "a verify run which changes the summary fires the handler once":
     let
@@ -1066,7 +1082,7 @@ suite "AddressManager address mapper":
     ) {.async: (raises: [CancelledError]).} =
       handlerStarted.fire()
       try:
-        await newAsyncEvent().wait()
+        await waitForCancellation()
       except CancelledError as exc:
         handlerCancelled.fire()
         raise exc

@@ -1,0 +1,6 @@
+# Used by BuildKit instead of the root .dockerignore when building .oss-scanner/Dockerfile,
+# so the scanner image gets the whole source tree (cbind/, examples/, tools/ included).
+**/nimbledeps
+**/nimcache
+**/nimble.paths
+build/

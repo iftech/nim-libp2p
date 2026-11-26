@@ -3,6 +3,7 @@
 
 import sequtils, chronos
 import ../../libp2p/nameresolving/[nameresolver, mockresolver]
+import ./futures
 
 export mockresolver
 
@@ -19,7 +20,7 @@ type StallingResolver* = ref object of NameResolver
 
 proc stall(self: StallingResolver) {.async: (raises: [CancelledError]).} =
   try:
-    await sleepAsync(1.hours)
+    await waitForCancellation()
   except CancelledError as e:
     self.cancelled = true
     raise e

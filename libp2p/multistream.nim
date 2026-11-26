@@ -86,7 +86,6 @@ proc confirm(s: OptimisticStream) {.async: (raises: [CancelledError, LPStreamErr
   if response != s.protocol:
     raise newException(LPStreamError, "Optimistic multistream protocol rejected")
   s.confirmed = true
-  s.stream.protocol = s.protocol
 
 method closeImpl(s: OptimisticStream) {.async: (raises: []).} =
   if not s.confirmed and not s.stream.closed:
@@ -138,6 +137,7 @@ proc selectOptimistic*(
     _: MultistreamSelect | type MultistreamSelect, stream: Stream, proto: string
 ): Future[Stream] {.async: (raises: [CancelledError, LPStreamError]).} =
   ## Propose one nonempty protocol without waiting for acknowledgement.
+  ## Both streams expose the proposed protocol before acknowledgement.
   ## Use only the returned stream thereafter. Writes may precede acceptance;
   ## the first read validates negotiation and resets the stream on rejection,
   ## malformed responses, EOF, or cancellation. There is no protocol fallback.
@@ -152,6 +152,7 @@ proc selectOptimistic*(
   except LPStreamError as exc:
     await stream.reset()
     raise exc
+  stream.protocol = proto
   let selected = OptimisticStream(
     stream: stream,
     protocol: proto,

@@ -14,11 +14,7 @@ suite "KadDHT - Get Providers":
     checkTrackers()
 
   asyncTest "Get providers uses iterative lookup":
-    let kads = setupKadSwitches(
-      4,
-      cleanupProvidersInterval = 1.seconds(),
-      republishProvidedKeysInterval = 1.seconds(),
-    )
+    let kads = setupKadSwitches(4, republishProvidedKeysInterval = 1.seconds())
     startAndDeferStop(kads)
 
     # topology: kads[0] <-> kads[1] <-> kads[2] <-> kads[3]
@@ -57,9 +53,8 @@ suite "KadDHT - Get Providers":
 
   asyncTest "Get providers updates routing table with closerPeers when no providers are returned":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
@@ -80,9 +75,8 @@ suite "KadDHT - Get Providers":
 
   asyncTest "Get providers updates routing table with closerPeers (with providers)":
     # kads[2] <---> kads[0] (hub) <---> kads[1]
-    let kads = setupKadSwitches(
-      3, PermissiveValidator(), CandSelector(), @[], 1.seconds, 1.seconds
-    )
+    let kads =
+      setupKadSwitches(3, PermissiveValidator(), CandSelector(), @[], 1.seconds)
     startAndDeferStop(kads)
 
     await connectHub(kads[0], kads[1 ..^ 1])
@@ -141,7 +135,7 @@ suite "KadDHT - Get Providers":
 
     await connect(kads[0], kads[1])
 
-    let key = @[1.byte, 2, 3, 4, 5]
+    let key = MultiHash.digest("sha2-256", @[1.byte, 2, 3, 4, 5]).get().toKey()
 
     # kads[0] (the querying node) is a provider for the key
     kads[0].markProvided(key)
@@ -180,25 +174,28 @@ suite "KadDHT - Get Providers":
       providers.containsPeer(kads[3])
 
   asyncTest "Get providers filters out invalid provider IDs":
-    let kads = setupKadSwitches(3)
-    startAndDeferStop(kads)
+    let key = Key.fromBytes(@[1.byte, 2, 3, 4, 5])
+    let querier = setupKad()
+    let provider = setupKad()
+    # The store refuses a malformed peer ID, so only a peer reply can carry one.
+    let replier = setupMockKad(
+      getProvidersResponse = Opt.some(
+        Message(
+          msgType: MessageType.getProviders,
+          key: Opt.some(key),
+          providerPeers: @[provider.toPeer(), Peer(id: @[1.byte, 1, 1])],
+        )
+      )
+    )
+    startAndDeferStop(@[querier, provider, replier])
 
-    await connect(kads[0], kads[1])
+    await connect(querier, replier)
 
-    let key = @[1.byte, 2, 3, 4, 5]
+    let providers = await querier.getProviders(key)
 
-    # kads[1] has both valid and invalid providers
-    kads[1].seedProvider(key, kads[2].toPeer())
-    # Invalid provider with malformed peer ID bytes
-    kads[1].seedProvider(key, Peer(id: @[1.byte, 1, 1]))
-
-    # kads[0] queries - should filter out invalid provider and return only valid one
-    let providers = await kads[0].getProviders(key)
-
-    # Only the valid provider should be returned
     check:
       providers.len() == 1
-      providers.containsPeer(kads[2])
+      providers.containsPeer(provider)
 
   asyncTest "Get providers terminates early when sufficient providers found":
     # Use small replication value; beta must stay <= replication
@@ -275,7 +272,7 @@ suite "KadDHT - Get Providers":
 
     await connectChain(kads)
 
-    let key = @[1.byte, 2, 3, 4, 5]
+    let key = MultiHash.digest("sha2-256", @[1.byte, 2, 3, 4, 5]).get().toKey()
 
     # kads[1 .. 4] are providers
     for kad in kads[1 .. 4]:

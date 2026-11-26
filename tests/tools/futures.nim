@@ -3,6 +3,10 @@
 
 import chronos/futures, chronos, sequtils
 
+template waitForCancellation*(): untyped =
+  ## Return a future that remains pending until it is cancelled.
+  newAsyncEvent().wait()
+
 proc allFuturesRaising*(
     args: varargs[FutureBase]
 ): Future[void].Raising([CatchableError]) =

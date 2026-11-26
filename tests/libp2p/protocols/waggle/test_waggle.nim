@@ -3,9 +3,12 @@
 
 {.used.}
 
-import std/[sequtils, sets]
+import std/[importutils, sequtils, sets]
 import chronos
-import ../../../../libp2p/[protocols/waggle, stream/bufferstream, muxers/muxer, varint]
+import ./utils
+import
+  ../../../../libp2p/[protocols/waggle/state, stream/bufferstream, muxers/muxer, varint]
+import ../../../../libp2p/protocols/waggle {.all.}
 import ../../../tools/[unittest, crypto, bufferstream]
 
 const topic = @[byte 0, 255, 1]
@@ -90,6 +93,8 @@ proc ignorePieces(
   discard
 
 suite "Waggle direct streams":
+  const objectId = @[byte 42]
+
   var
     waggle: Waggle
     streams: seq[TestStream]
@@ -128,6 +133,17 @@ suite "Waggle direct streams":
     # The next read after the handshake observes admission without a polling timer.
     while stream.peerId notin waggle.subscribers(t):
       discard await stream.readRequests.popFirst()
+
+  proc registeredSession(): Future[TopicSession] {.async.} =
+    ## A ready inbound `topic` session on a newly registered connection.
+    privateAccess(Waggle)
+    privateAccess(TopicSession)
+    let connection = openStream()
+    doAssert waggle.addConnection(Muxer(connection: connection)).get()
+    let stream = openStream(connection.peerId, wrapped = connection)
+    discard handle(stream)
+    await handshake(stream)
+    return waggle.streams.filterIt(it.stream == Stream(stream))[0]
 
   setup:
     waggle = Waggle.new()
@@ -592,13 +608,7 @@ suite "Waggle direct streams":
         events.add(event),
     )
     let connection = openStream()
-    let running = Future[void].Raising([]).init(
-        "waggle-test-connection", {FutureFlag.OwnCancelSchedule}
-      )
-    defer:
-      if not running.finished():
-        running.complete()
-    let muxer = Muxer(connection: connection, handler: running)
+    let muxer = Muxer(connection: connection)
     let first = openStream(connection.peerId, wrapped = connection)
     let firstHandling = handle(first)
     await handshake(first)
@@ -643,7 +653,6 @@ suite "Waggle direct streams":
       it.peerId == connection.peerId and it.connectionId == opened[0].connectionId
     )
     await connection.close()
-    running.complete()
     await acceptedHandling
     check accepted.closed
     check waggle.subscribers(topic).len == 0
@@ -661,13 +670,7 @@ suite "Waggle direct streams":
           inc failures
     )
     let connection = openStream()
-    let running = Future[void].Raising([]).init(
-        "waggle-test-failing-connection", {FutureFlag.OwnCancelSchedule}
-      )
-    defer:
-      if not running.finished():
-        running.complete()
-    let muxer = FailingMuxer(connection: connection, handler: running)
+    let muxer = FailingMuxer(connection: connection)
     check waggle.addConnection(muxer).get()
     check waggle.subscribe(topic).get().added
     check failures == 0
@@ -690,13 +693,7 @@ suite "Waggle direct streams":
           subscribed.complete(event)
     )
     let connection = openStream()
-    let running = Future[void].Raising([]).init(
-        "waggle-test-live-connection", {FutureFlag.OwnCancelSchedule}
-      )
-    defer:
-      if not running.finished():
-        running.complete()
-    let muxer = Muxer(connection: connection, handler: running)
+    let muxer = Muxer(connection: connection)
     var previousId: ConnectionId
     for cycle in 0 .. 1:
       if cycle > 0:
@@ -721,8 +718,49 @@ suite "Waggle direct streams":
         stream.wasResetLocally
         waggle.subscribers(topic).len == 0
         not connection.closed
-        not running.finished()
         events[^1].kind == WaggleEventKind.Unsubscribed
         events[^1].connectionId == opened.connectionId
         events[^1].topicId == topic
     check events.len == 4
+
+  asyncTest "an update sends nothing to a known peer over forwardFanout while an unknown peer gets our metadata":
+    const
+      firstPiece = 0b001
+      allPieces = 0b011
+    privateAccess(Waggle)
+    privateAccess(TopicSession)
+    privateAccess(WaggleConnection)
+    var config = WaggleConfig().defaultTopicConfig
+    config.forwardFanout = 1
+    check waggle.setTopicConfig(topic, config).isOk
+    var known: seq[TopicSession]
+    for _ in 0 ..< 2:
+      known.add(await registeredSession())
+    let unknown = await registeredSession()
+    # piece 0 is cached, as by a publish made before these peers subscribed
+    check waggle.state.store(topic, BitShard(id: objectId, have: firstPiece)).isOk
+    # the known peers hold piece 0 too, so no reply carries our metadata to them
+    for session in known:
+      let action = waggle.state.received(
+        topic,
+        session.link.id,
+        session.stream.peerId,
+        ObjectPieces(objectId: objectId, piecesMetadata: Opt.some(@[byte firstPiece])),
+      )
+      check action.get().reply.isNone
+
+    check:
+      # one known peer is forwarded piece 1, the unknown peer is sent our metadata
+      waggle.publish(topic, BitShard(id: objectId, have: allPieces)).get() == 2
+      # the other known peer gets nothing, not even our metadata
+      known.mapIt(toSeq(it.queue)).concat() ==
+        @[
+          ObjectPieces(
+            objectId: objectId,
+            piecesMetadata: Opt.some(@[byte allPieces]),
+            pieces: Opt.some(@[byte 0b010]),
+          )
+        ]
+      # the unknown peer gets our metadata through discovery
+      toSeq(unknown.queue) ==
+        @[ObjectPieces(objectId: objectId, piecesMetadata: Opt.some(@[byte allPieces]))]

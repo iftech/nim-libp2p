@@ -224,6 +224,7 @@ task test, "Run the config unit tests, the C FFI tests and the examples":
   exec sanRunEnv(san) & outBin
   let b = setupCBuild()
   b.buildAndRunC("tests/ffi_contract.c")
+  b.buildAndRunC("tests/release_resets.c")
   setupCBuild(OverflowTestCapacity, "../build/overflow").buildAndRunC(
     "tests/event_overflow.c"
   )

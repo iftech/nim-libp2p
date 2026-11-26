@@ -319,16 +319,17 @@ proc handleStreamV1(
     await sendStatus(stream, StatusV1.MalformedMessage)
     return ok()
 
+  let servesHop = cl.canHop and cl.isCircuitRelayV1
   case typ
   of RelayType.Hop:
-    if cl.canHop:
+    if servesHop:
       await cl.handleHop(stream, msg)
     else:
       await sendStatus(stream, StatusV1.HopCantSpeakRelay)
   of RelayType.Stop:
     await cl.handleStop(stream, msg)
   of RelayType.CanHop:
-    if cl.canHop:
+    if servesHop:
       await sendStatus(stream, StatusV1.Success)
     else:
       await sendStatus(stream, StatusV1.HopCantSpeakRelay)
