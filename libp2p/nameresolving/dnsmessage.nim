@@ -20,10 +20,12 @@ const
   MaxPacketSize = int(uint16.high) # DNS over TCP uses a two-byte length.
   DnsUdpPayloadSize* = 1232 # Fits the IPv6 minimum MTU without fragmentation.
   MaxNameJumps = 16 # compression pointers followed before we give up
-  HeaderSize = 12
+  HeaderSize* = 12
+  DnsQuestionFieldsLen = 6 # QTYPE, QCLASS and name encoding overhead.
+  EDnsLen = 11 # Empty OPT record, including the root owner name.
   CompressionMask = 0xC0'u8
   QrMask = 0x8000'u16 # header flags: QR bit (1 = response)
-  TcMask = 0x0200'u16 # header flags: truncated response
+  TruncMask = 0x0200'u16 # header flags: truncated response
   RcodeMask = 0x000F'u16
   ResponseFlags = 0x8400'u16 # QR + AA
   ClassIn = 0x0001'u16
@@ -398,7 +400,7 @@ proc encodeQuery*(
     id: uint16, name: string, kind: DnsRecordKind, edns = true
 ): seq[byte] {.raises: [ValueError].} =
   ## Builds a recursive query, optionally advertising EDNS for larger UDP answers.
-  var query = newSeqOfCap[byte](HeaderSize + name.len + 6 + 11)
+  var query = newSeqOfCap[byte](HeaderSize + name.len + DnsQuestionFieldsLen + EDnsLen)
 
   query.add(toBytesBE(id)) # id
   query.add([0x01'u8, 0x00'u8]) # flags: rd=1 (recursion desired)
@@ -488,7 +490,7 @@ proc parseAnswers*(
     raiseErr("DNS response id does not match the query")
   if not header.isResponse():
     raiseErr("DNS message is not a response")
-  if (header.flags and TcMask) != 0:
+  if (header.flags and TruncMask) != 0:
     raise newException(DnsTruncatedError, "Truncated DNS response")
   if (header.flags and RcodeMask) in {1'u16, 4'u16}:
     raise newException(DnsEdnsRejectedError, "DNS server rejected query format")

@@ -32,7 +32,7 @@ proc getTcpDnsResponse(
     var length: array[2, byte]
     await sock.readExactly(addr length[0], length.len)
     let size = fromBytesBE(uint16, length).int
-    if size < 12:
+    if size < HeaderSize:
       raise newException(ValueError, "DNS response shorter than header")
     var response = newSeq[byte](size)
     await sock.readExactly(addr response[0], response.len)
@@ -65,7 +65,7 @@ proc getUdpDnsResponse(
     except AsyncTimeoutError as e:
       raise newException(IOError, "DNS server timeout: " & e.msg, e)
 
-    return sock.getMessage()
+    sock.getMessage()
   finally:
     await sock.closeWait()
 
@@ -81,8 +81,9 @@ proc getDnsResponse(
     try:
       return parseAnswers(response, queryId)
     except DnsEdnsRejectedError as e:
-      if not edns:
-        raise e
+      if edns:
+        continue
+      raise e
     except DnsTruncatedError:
       try:
         return await getTcpDnsResponse(dnsServer, query, queryId).wait(5.seconds)
