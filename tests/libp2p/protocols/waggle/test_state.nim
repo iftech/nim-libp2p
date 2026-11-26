@@ -251,3 +251,43 @@ suite "Waggle reconciliation state":
       )
       .get()
     check state.peerView(topic, 1, @[byte 1]) == (true, true)
+
+  test "topic admission reclaims expired snapshots and peer views":
+    let state = WaggleState.new(2, 1, 10.seconds)
+    let peer = PeerId.random()
+    let now = Moment.now()
+    let other = @[byte 2]
+    discard state.store(topic, BitShard(id: @[byte 1], have: 1), now).get()
+    state.prepare(topic, 1, peer, @[byte 1], now = now).get().get().commit()
+    check state.reserveTopic(other, now + 9.seconds).isErr
+    check state.reserveTopic(other, now + 10.seconds).isOk
+
+  test "live peer views prevent reclamation after the snapshot expires":
+    let state = WaggleState.new(2, 1, 10.seconds)
+    let peer = PeerId.random()
+    let now = Moment.now()
+    discard state.store(topic, BitShard(id: @[byte 1], have: 1), now).get()
+    discard state
+      .received(
+        topic,
+        1,
+        peer,
+        ObjectPieces(objectId: @[byte 1], piecesMetadata: Opt.some(@[byte 1])),
+        now + 5.seconds,
+      )
+      .get()
+    check state.reserveTopic(@[byte 2], now + 10.seconds).isErr
+    check state.reserveTopic(@[byte 2], now + 15.seconds).isOk
+
+  test "empty reserved topics keep capacity until explicitly removed":
+    let state = WaggleState.new(2, 1, 10.seconds)
+    let now = Moment.now()
+    let snapshot = BitShard(id: @[byte 1], have: 1)
+    check state.reserveTopic(topic, now).isOk
+    check state.store(@[byte 2], snapshot, now + 10.seconds).isErr
+    check state.store(topic, snapshot, now + 10.seconds).isOk
+    check state.removeObject(topic, snapshot.objectId())
+    check state.reserveTopic(@[byte 2], now + 20.seconds).isErr
+    check state.reserveTopic(topic, now + 20.seconds).isOk
+    state.removeTopic(topic)
+    check state.reserveTopic(@[byte 2], now + 20.seconds).isOk
