@@ -3,7 +3,7 @@
         bench_dial bench_kad_find_closest \
         bench_dial bench_pubsub_queues \
         setup lock gen_multicodec format clean-nim \
-        lint semlint
+        lint
 
 NIM_VERSION  ?= 2.2.14
 NPH_VERSION  ?= 0.7.0
@@ -177,10 +177,6 @@ clean-nim:
 	[ ! -d tests/nimbledeps ] || rm -rf tests/nimbledeps
 	rm nimble.paths tests/nimble.paths 2>/dev/null || true
 
-semlint: ARGS = -s $(PATHS)
-semlint: lint
-
 lint:
-	nimble list -i 2>/dev/null | grep -qx lint || \
-		nimble setup --requires:"lint==1.1.0"
-	nim r -d:release linter.nim $(ARGS)
+	nimble setup --requires:"lint == 1.1.1"
+	git ls-files --modified --others --exclude-standard '*.nim' | xargs nim r -d:release linter.nim --semantic --verbose
