@@ -26,6 +26,9 @@ const
   addIfList = 29.cint
   unicastIf = 31.cint
 
+const WSAENOPROTOOPT = 10042
+  ## The requested socket option is unsupported at the specified protocol level.
+
 type MulticastTtl* = cint
 
 template toSocketHandle*(fd: untyped): winlean.SocketHandle =
@@ -57,7 +60,7 @@ proc bindToInterface*(
   let filterStatus = setSocketOption(socket, level, ifList, enabled)
   if filterStatus != 0:
     let error = socketLastError()
-    if error.int == 10042: # WSAENOPROTOOPT
+    if error.int == WSAENOPROTOOPT:
       return ok(false)
     return err(error)
   var receiveIndex = index

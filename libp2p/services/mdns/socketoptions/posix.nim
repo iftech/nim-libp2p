@@ -83,13 +83,16 @@ proc bindToInterface*(
     # Bind the socket so both multicast and unicast retain ingress.
     # SO_BINDTOIFINDEX pins reception as well as transmission. Unlike changing
     # an existing binding, the initial binding needs no privilege on Linux 5.7+.
-    const soBindToIfIndex = cint(62)
-    var interfaceIndex = cint(index)
+    const soBindToIfIndex = 62.cint
+    var interfaceIndex = index.cint
     let status =
       setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
     if status != 0:
       let error = socketLastError()
-      if error.int in [int(ENOPROTOOPT), int(EPERM), int(EACCES)]:
+      # ENOPROTOOPT: the socket option is unsupported at this protocol level.
+      # EPERM: the operation is not permitted.
+      # EACCES: permission is denied.
+      if error.int in [ENOPROTOOPT.int, EPERM.int, EACCES.int]:
         return ok(false)
       return err(error)
     ok(true)
