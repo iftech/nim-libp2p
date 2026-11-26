@@ -13,7 +13,6 @@
 ## Usage:
 ##   nim c -r interop_listen.nim [port]   (default 9998)
 
-import std/[os, strutils]
 import chronos
 import stew/byteutils
 import ./interop_common
@@ -23,7 +22,6 @@ import
     transports/transport,
     transports/tcptransport,
     multiaddress,
-    peerinfo,
     peerid,
     crypto/crypto,
     crypto/rng,
@@ -32,22 +30,26 @@ import
   ]
 
 proc main() {.async.} =
-  let port =
-    if paramCount() >= 1: parseInt(paramStr(1))
-    else: 9998
-
   let
+    port = portFromArgs("usage: interop_listen [port]")
     rng = newRng()
     privKey = PrivateKey.random(Ed25519, rng).get()
     noiseHFS = NoiseHFS.new(rng, privKey)
     transport = TcpTransport.new(upgrade = Upgrade())
-    listenMa = MultiAddress.init("/ip4/127.0.0.1/tcp/" & $port).get()
+    listenMa = MultiAddress.init("/ip4/127.0.0.1/tcp/" & $port).valueOr:
+      raise newException(ValueError, "invalid listen address: " & $error)
 
   emit("LOCAL " & $PeerId.init(privKey).get())
   await transport.start(@[listenMa])
   emit("READY " & $port)
 
-  let conn = await transport.accept()
+  # accept() returns nil for a connection that went away before it could be
+  # handed over (a runner probing the port for readiness does exactly that):
+  # keep waiting for the real dialer.
+  var conn = await transport.accept()
+  while conn.isNil:
+    conn = await transport.accept()
+
   let sconn = await noiseHFS.secure(conn, Opt.none(PeerId))
   emit("PEER " & $sconn.peerId)
 
@@ -68,6 +70,6 @@ proc main() {.async.} =
 
 try:
   waitFor(main())
-except CatchableError as exc:
-  stderr.writeLine("ERROR " & exc.msg)
+except CatchableError as e:
+  stderr.writeLine("ERROR " & e.msg)
   quit(1)

@@ -17,7 +17,6 @@
 ## Usage:
 ##   nim c -r interop_dial.nim [port]   (default port 9998)
 
-import std/[os, strutils]
 import chronos
 import stew/byteutils
 import ./interop_common
@@ -27,10 +26,10 @@ import
     transports/transport,
     transports/tcptransport,
     multiaddress,
-    peerinfo,
     peerid,
     crypto/crypto,
     crypto/rng,
+    protocols/secure/noise,
     protocols/secure/noisehfs,
     upgrademngrs/upgrade,
   ]
@@ -40,17 +39,8 @@ const
   PeerCloseTimeout = 5.seconds
 
 proc main() {.async.} =
-  var port = 9998
-  if paramCount() == 1:
-    let arg = paramStr(1)
-    if arg.len > 0 and arg.allCharsInSet(Digits):
-      port = parseInt(arg)
-    else:
-      quit("usage: interop_dial [port]", 1)
-  elif paramCount() > 1:
-    quit("usage: interop_dial [port]", 1)
-
   let
+    port = portFromArgs("usage: interop_dial [port]")
     rng = newRng()
     # Ed25519, not the crypto module's default ECDSA: several peer libp2p
     # implementations (e.g. py-libp2p as of this writing) only implement
@@ -58,7 +48,8 @@ proc main() {.async.} =
     privKey = PrivateKey.random(Ed25519, rng).get()
     noiseHFS = NoiseHFS.new(rng, privKey)
     transport = TcpTransport.new(upgrade = Upgrade())
-    remoteMa = MultiAddress.init("/ip4/127.0.0.1/tcp/" & $port).get()
+    remoteMa = MultiAddress.init("/ip4/127.0.0.1/tcp/" & $port).valueOr:
+      raise newException(ValueError, "invalid dial address: " & $error)
 
   emit("LOCAL " & $PeerId.init(privKey).get())
   stderr.writeLine("DIALING port " & $port)
@@ -80,18 +71,26 @@ proc main() {.async.} =
 
   # Wait for the peer to close rather than tearing down straight away: an
   # abortive close can discard the frame just written before the peer reads it.
+  # The wait is expected to end with the peer closing (cleanly, or by
+  # resetting the socket) or with the timeout. A frame that arrives but
+  # fails the transport cipher is a real interop failure, and cancellation
+  # is not ours to swallow: both reach the top-level ERROR path instead.
   try:
     discard await sconn.readMessage().wait(PeerCloseTimeout)
-  except CatchableError:
+  except CancelledError as e:
+    raise e
+  except NoiseError as e:
+    raise e
+  except AsyncTimeoutError:
+    discard
+  except LPStreamError:
     discard
 
   await sconn.close()
   await conn.close()
   # No transport.stop() here: this transport is dial-only and was never
-  # start()ed, so stop() would take the "already stopped" cleanup path,
-  # which only re-closes connections we already closed above and logs a
-  # warning through chronicles - straight to stdout by default, corrupting
-  # the stdout contract for no benefit.
+  # start()ed, so stop() would only take the "already stopped" cleanup path
+  # and re-close the connections closed above.
 
   # INTEROP_OK must be the very last thing this process prints: emit it only
   # once the peer-close wait and both closes above have completed without
@@ -101,6 +100,6 @@ proc main() {.async.} =
 
 try:
   waitFor(main())
-except CatchableError as exc:
-  stderr.writeLine("ERROR " & exc.msg)
+except CatchableError as e:
+  stderr.writeLine("ERROR " & e.msg)
   quit(1)

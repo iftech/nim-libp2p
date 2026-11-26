@@ -31,8 +31,9 @@ RECV <line>
 INTEROP_OK            (last line, exit 0)
 ```
 
-Anything else goes to stderr. Any failure prints `ERROR <msg>` to stderr and
-exits 1. Cross-implementation orchestration - running the 4x4 matrix against
+Anything else goes to stderr, including the library's Chronicles logs
+(`config.nims` in this directory redirects them). Any failure prints
+`ERROR <msg>` to stderr and exits 1. The port must be in 1..65535. Cross-implementation orchestration - running the 4x4 matrix against
 JS, Python and Rust - lives in the neutral matrix runner, not in this repo:
 <https://github.com/paschal533/pq-noise-artifacts/tree/main/interop>.
 
