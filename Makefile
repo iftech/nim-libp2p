@@ -179,4 +179,6 @@ clean-nim:
 
 lint:
 	nimble setup --requires:"lint == 1.1.1"
-	git ls-files --modified --others --exclude-standard '*.nim' | xargs nim r -d:release linter.nim --semantic --verbose
+	{ git diff HEAD --name-only --diff-filter=ACMR -z -- '*.nim'; \
+	  git ls-files --others --exclude-standard -z -- '*.nim'; } | \
+	  sort -zu | xargs -0 -r nim r -d:release linter.nim --semantic
