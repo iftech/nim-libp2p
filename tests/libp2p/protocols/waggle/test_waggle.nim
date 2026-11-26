@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[importutils, sequtils, sets]
+import std/[importutils, sequtils, sets, tables]
 import chronos
 import ./utils
 import
@@ -65,6 +65,14 @@ method newStream(
 ): Future[MuxedStream] {.async: (raises: [CancelledError, LPStreamError, MuxerError]).} =
   raise newException(MuxerError, "opening failed")
 
+type TestStreamMuxer = ref object of Muxer
+  stream: TestStream ## the stream every `newStream` returns
+
+method newStream(
+    m: TestStreamMuxer, name: string = "", lazy: bool = false
+): Future[MuxedStream] {.async: (raises: [CancelledError, LPStreamError, MuxerError]).} =
+  return m.stream
+
 method readOnce(
     s: TestStream, pbytes: pointer, nbytes: int
 ): Future[int] {.async: (raises: [CancelledError, LPStreamError]).} =
@@ -93,7 +101,9 @@ proc ignorePieces(
   discard
 
 suite "Waggle direct streams":
-  const objectId = @[byte 42]
+  const
+    objectId = @[byte 42]
+    firstPiece = 0b001
 
   var
     waggle: Waggle
@@ -134,16 +144,40 @@ suite "Waggle direct streams":
     while stream.peerId notin waggle.subscribers(t):
       discard await stream.readRequests.popFirst()
 
-  proc registeredSession(): Future[TopicSession] {.async.} =
-    ## A ready inbound `topic` session on a newly registered connection.
-    privateAccess(Waggle)
-    privateAccess(TopicSession)
+  proc recordEvents(): ref seq[WaggleEvent] =
+    let events = new seq[WaggleEvent]
+    waggle = Waggle.new(
+      onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+        events[].add(event)
+    )
+    events
+
+  proc registeredConnection(): TestStream =
     let connection = openStream()
     doAssert waggle.addConnection(Muxer(connection: connection)).get()
+    connection
+
+  proc inboundSubscription(): Future[TopicSession] {.async.} =
+    privateAccess(Waggle)
+    privateAccess(TopicSession)
+    let connection = registeredConnection()
     let stream = openStream(connection.peerId, wrapped = connection)
     discard handle(stream)
     await handshake(stream)
     return waggle.streams.filterIt(it.stream == Stream(stream))[0]
+
+  proc outboundSubscription(): Future[TestStream] {.async.} =
+    let connection = openStream()
+    let stream = openStream(connection.peerId, wrapped = connection)
+    let muxer = TestStreamMuxer(connection: connection, stream: stream)
+    doAssert waggle.addConnection(muxer).get()
+    discard waggle.subscribe(topic).get()
+    # the peer echoes the node's multistream header and Waggle codec
+    for _ in 0 ..< 2:
+      await stream.pushData(await stream.writes.popFirst())
+    # the node sends its TopicSubscription, then waits for frames
+    discard await stream.writes.popFirst()
+    return stream
 
   setup:
     waggle = Waggle.new()
@@ -724,9 +758,7 @@ suite "Waggle direct streams":
     check events.len == 4
 
   asyncTest "an update sends nothing to a known peer over forwardFanout while an unknown peer gets our metadata":
-    const
-      firstPiece = 0b001
-      allPieces = 0b011
+    const allPieces = 0b011
     privateAccess(Waggle)
     privateAccess(TopicSession)
     privateAccess(WaggleConnection)
@@ -735,8 +767,8 @@ suite "Waggle direct streams":
     check waggle.setTopicConfig(topic, config).isOk
     var known: seq[TopicSession]
     for _ in 0 ..< 2:
-      known.add(await registeredSession())
-    let unknown = await registeredSession()
+      known.add(await inboundSubscription())
+    let unknown = await inboundSubscription()
     # piece 0 is cached, as by a publish made before these peers subscribed
     check waggle.state.store(topic, BitShard(id: objectId, have: firstPiece)).isOk
     # the known peers hold piece 0 too, so no reply carries our metadata to them
@@ -764,3 +796,70 @@ suite "Waggle direct streams":
       # the unknown peer gets our metadata through discovery
       toSeq(unknown.queue) ==
         @[ObjectPieces(objectId: objectId, piecesMetadata: Opt.some(@[byte allPieces]))]
+
+  asyncTest "a message handled after unsubscribe is dropped":
+    privateAccess(Waggle)
+    privateAccess(WaggleState)
+    let events = recordEvents()
+    let stream = await outboundSubscription()
+
+    # pushData only schedules the receiver, and unsubscribe removes the topic before
+    # its first await, so the receiver handles this message after the topic is gone
+    await stream.pushData(
+      frame(
+        ObjectPieces(objectId: objectId, piecesMetadata: Opt.some(@[byte firstPiece])).encode()
+      )
+    )
+    check:
+      await waggle.unsubscribe(topic)
+      # the message raises no event
+      events[].len == 0
+      # the message creates no state for the unsubscribed topic
+      not waggle.state.topics.hasKey(topic)
+
+  asyncTest "a stream reset before its handshake is reported as invalid data":
+    # TODO: iftech/nim-libp2p#3539
+    let events = recordEvents()
+    let connection = registeredConnection()
+    let stream = openStream(connection.peerId, wrapped = connection)
+    let handling = handle(stream)
+
+    # the remote resets the stream before it sends its TopicSubscription
+    let remoteReset = newLPStreamResetError()
+    stream.readFailure = remoteReset
+    await stream.pushEof()
+    await handling
+    check:
+      events[].len == 1
+      events[][0].kind == WaggleEventKind.InvalidData
+      events[][0].peerId == connection.peerId
+      events[][0].reason == remoteReset.msg
+
+  asyncTest "a stream arriving after stop is refused with no event":
+    let events = recordEvents()
+    let connection = registeredConnection()
+    # stop unregisters the connection
+    await waggle.stop()
+
+    # the stopped Waggle refuses the peer's stream before reading its TopicSubscription
+    let stream = openStream(connection.peerId, wrapped = connection)
+    await handle(stream)
+    check:
+      stream.wasResetLocally
+      # events require a registered connection, so the refusal raises none
+      events[].len == 0
+
+  asyncTest "a stream without its TopicSubscription does not count as a duplicate":
+    const emptyTopic: seq[byte] = @[]
+    let pending = openStream()
+    discard handle(pending)
+    # pending's session exists, and its topic id stays empty until its
+    # TopicSubscription arrives
+    discard await pending.readRequests.popFirst()
+
+    # only ready sessions count as duplicates, so the same peer's subscription to
+    # the empty topic is accepted
+    let stream = openStream(pending.peerId)
+    discard handle(stream)
+    await handshake(stream, emptyTopic)
+    check waggle.subscribers(emptyTopic) == @[stream.peerId]
