@@ -6,7 +6,8 @@
 import std/[sequtils, strutils]
 import chronos
 import stew/endians2
-import ../../libp2p/nameresolving/[dnsresolver, dnsmessage]
+import ../../libp2p/nameresolving/dnsresolver {.all.}
+import ../../libp2p/nameresolving/dnsmessage
 import ../tools/[unittest, crypto]
 import ./suite_name_resolver
 
@@ -97,9 +98,8 @@ proc checkTcpFallback(reply: TcpReply, rejectEdns = false) {.async.} =
   var client: StreamTransport
   try:
     client = await tcp.accept()
-    var length: array[2, byte]
-    await client.readExactly(addr length[0], length.len)
-    var query = newSeq[byte](fromBytesBE(uint16, length).int)
+    let size = await client.readSize()
+    var query = newSeq[byte](size)
     await client.readExactly(addr query[0], query.len)
     check query == udpQuery
     if rejectEdns:
@@ -112,9 +112,9 @@ proc checkTcpFallback(reply: TcpReply, rejectEdns = false) {.async.} =
       # Split both the prefix and payload to exercise stream framing.
       let frame = @(toBytesBE(response.len.uint16)) & response
       discard await client.write(frame[0 .. 0])
-      await sleepAsync(1.milliseconds)
+      await stepsAsync(1)
       discard await client.write(frame[1 .. 100])
-      await sleepAsync(1.milliseconds)
+      await stepsAsync(1)
       discard await client.write(frame[101 .. ^1])
       check (await resolution) == newSeqWith(10, repeat("a", 200))
     of ShortLength:
@@ -160,7 +160,8 @@ suite "DNS large responses":
     ) {.async: (raises: []).} =
       try:
         let response = txtResponse(transport.getMessage(), 3)
-        doAssert response.len > 512 and response.len <= DnsUdpPayloadSize
+        doAssert response.len > LegacyDnsUdpPayloadSize and
+          response.len <= DnsUdpPayloadSize
         await transport.sendTo(address, response)
       except CancelledError, TransportError, ValueError:
         raiseAssert "Unexpected DNS fixture error: " & getCurrentExceptionMsg()
@@ -179,7 +180,7 @@ suite "DNS large responses":
     ) {.async: (raises: []).} =
       try:
         let response = txtResponse(transport.getMessage(), 30)
-        doAssert response.len > 4096
+        doAssert response.len > DnsUdpPayloadSize
         await transport.sendTo(address, response)
       except CancelledError, TransportError, ValueError:
         raiseAssert "Unexpected DNS fixture error: " & getCurrentExceptionMsg()

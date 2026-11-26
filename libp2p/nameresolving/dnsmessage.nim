@@ -18,6 +18,7 @@ const
   MaxLabelLength = 63 # RFC 1035, section 2.3.4
   MaxNameLength = 255 # RFC 1035, section 3.1
   MaxPacketSize = int(uint16.high) # DNS over TCP uses a two-byte length.
+  LegacyDnsUdpPayloadSize* = 512 # RFC 1035, section 4.2.1
   DnsUdpPayloadSize* = 1232 # Fits the IPv6 minimum MTU without fragmentation.
   MaxNameJumps = 16 # compression pointers followed before we give up
   HeaderSize* = 12
@@ -481,7 +482,7 @@ proc parseAnswers*(
   if data.len < HeaderSize:
     raiseErr("DNS response shorter than header")
   if data.len > MaxPacketSize:
-    raiseErr("DNS response exceeds 65535 bytes")
+    raiseErr("DNS response exceeds " & $MaxPacketSize & " bytes")
 
   var r = DnsReader(data: @data, pos: 0)
   let header = r.readHeader()

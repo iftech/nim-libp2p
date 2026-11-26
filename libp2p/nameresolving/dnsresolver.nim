@@ -14,9 +14,23 @@ import ../crypto/rng, ../utils/future
 logScope:
   topics = "libp2p name-resolution"
 
+const
+  UdpBufSize = int(uint16.high)
+  DnsTimeout = 5.seconds
+
 type DnsResolver* = ref object of NameResolver
   nameServers*: seq[TransportAddress]
   rng: Rng
+
+proc readSize(
+    sock: StreamTransport
+): Future[int] {.async: (raises: [CancelledError, TransportError, ValueError]).} =
+  var length: array[2, byte]
+  await sock.readExactly(addr length[0], length.len)
+  let size = fromBytesBE(uint16, length).int
+  if size < HeaderSize:
+    raise newException(ValueError, "DNS response shorter than header")
+  return size
 
 proc getTcpDnsResponse(
     dnsServer: TransportAddress, query: seq[byte], queryId: uint16
@@ -29,11 +43,7 @@ proc getTcpDnsResponse(
     if (await sock.write(frame)) != frame.len:
       raise newException(TransportError, "Incomplete DNS query write")
 
-    var length: array[2, byte]
-    await sock.readExactly(addr length[0], length.len)
-    let size = fromBytesBE(uint16, length).int
-    if size < HeaderSize:
-      raise newException(ValueError, "DNS response shorter than header")
+    let size = await sock.readSize()
     var response = newSeq[byte](size)
     await sock.readExactly(addr response[0], response.len)
     return parseAnswers(response, queryId)
@@ -53,15 +63,15 @@ proc getUdpDnsResponse(
   # Receive complete datagrams even when a server ignores the advertised size.
   let sock =
     if dnsServer.family == AddressFamily.IPv6:
-      newDatagramTransport6(datagramDataReceived, bufSize = int(uint16.high))
+      newDatagramTransport6(datagramDataReceived, bufSize = UdpBufSize)
     else:
-      newDatagramTransport(datagramDataReceived, bufSize = int(uint16.high))
+      newDatagramTransport(datagramDataReceived, bufSize = UdpBufSize)
 
   try:
     await sock.sendTo(dnsServer, addr sendBuf[0], sendBuf.len)
 
     try:
-      await receivedDataFuture.wait(5.seconds) #unix default
+      await receivedDataFuture.wait(DnsTimeout)
     except AsyncTimeoutError as e:
       raise newException(IOError, "DNS server timeout: " & e.msg, e)
 
@@ -86,7 +96,7 @@ proc getDnsResponse(
       raise e
     except DnsTruncatedError:
       try:
-        return await getTcpDnsResponse(dnsServer, query, queryId).wait(5.seconds)
+        return await getTcpDnsResponse(dnsServer, query, queryId).wait(DnsTimeout)
       except AsyncTimeoutError as e:
         raise newException(IOError, "DNS TCP server timeout: " & e.msg, e)
 
