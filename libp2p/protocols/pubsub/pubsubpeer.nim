@@ -3,7 +3,7 @@
 
 {.push raises: [].}
 
-import std/[sequtils, tables, hashes, sets, deques, lists]
+import std/[sequtils, tables, hashes, sets, deques]
 import results
 import chronos, chronicles, nimcrypto/sha2, metrics
 import chronos/ratelimit
@@ -131,11 +131,15 @@ type
     relayedSaltedId: Opt[SaltedId]
       ## Id of the one relayed message this RPC carries, when it was not split.
 
+  RelaySlot = object
+    message: QueuedMessage
+    prev, next, nextWithId: int
+
   RelayQueue = object
-    messages: DoublyLinkedList[QueuedMessage]
-    count: int
-    # Each ID bucket follows FIFO order; cancellation removes the whole bucket.
-    byId: Table[SaltedId, Deque[DoublyLinkedNode[QueuedMessage]]]
+    # Links are slot indices + 1; zero means no entry. Freed slots are reused.
+    slots: seq[RelaySlot]
+    head, tail, free, count: int
+    byId: Table[SaltedId, tuple[head, tail: int]]
 
   RpcMessageQueue* = ref object
     # Tracks async tasks for sending high-priority peer-published messages.
@@ -242,29 +246,60 @@ func len(q: RelayQueue): int =
   q.count
 
 proc addLast(q: var RelayQueue, msg: sink QueuedMessage) =
-  let node = newDoublyLinkedNode(move(msg))
-  node.value.relayedSaltedId.ifValue(id):
-    q.byId.mgetOrPut(id).addLast(node)
-  q.messages.append(node)
+  let index =
+    if q.free != 0:
+      let index = q.free
+      q.free = q.slots[index - 1].next
+      q.slots[index - 1] = RelaySlot(message: move(msg), prev: q.tail)
+      index
+    else:
+      q.slots.add(RelaySlot(message: move(msg), prev: q.tail))
+      q.slots.len
+  if q.tail == 0:
+    q.head = index
+  else:
+    q.slots[q.tail - 1].next = index
+  q.tail = index
   inc q.count
 
-proc popFirst(q: var RelayQueue): QueuedMessage =
-  let node = q.messages.head
-  node.value.relayedSaltedId.ifValue(id):
-    q.byId.withValue(id, entries):
-      discard entries[].popFirst()
-      if entries[].len == 0:
-        q.byId.del(id)
-  q.messages.remove(node)
-  node.prev = nil
-  node.next = nil
-  dec q.count
+  q.slots[index - 1].message.relayedSaltedId.ifValue(id):
+    let entries = addr q.byId.mgetOrPut(id)
+    if entries[].tail == 0:
+      entries[].head = index
+    else:
+      q.slots[entries[].tail - 1].nextWithId = index
+    entries[].tail = index
 
-  move(node.value)
+proc remove(q: var RelayQueue, index: int): QueuedMessage =
+  let
+    prev = q.slots[index - 1].prev
+    next = q.slots[index - 1].next
+  if prev == 0:
+    q.head = next
+  else:
+    q.slots[prev - 1].next = next
+  if next == 0:
+    q.tail = prev
+  else:
+    q.slots[next - 1].prev = prev
+  let message = move(q.slots[index - 1].message)
+  q.slots[index - 1].next = q.free
+  q.free = index
+  dec q.count
+  message
+
+proc popFirst(q: var RelayQueue): QueuedMessage =
+  let index = q.head
+  q.slots[index - 1].message.relayedSaltedId.ifValue(id):
+    # FIFO removal also removes the oldest entry in this ID's chain.
+    q.byId.withValue(id, entries):
+      entries[].head = q.slots[index - 1].nextWithId
+      if entries[].head == 0:
+        q.byId.del(id)
+  q.remove(index)
 
 proc clear(q: var RelayQueue) =
-  while q.count > 0:
-    discard q.popFirst()
+  q = default(RelayQueue)
 
 proc getAgent*(peer: PubSubPeer): string =
   return
@@ -937,20 +972,20 @@ func holdsIDontWant*(p: PubSubPeer, id: SaltedId): bool =
 proc cancelQueuedRelay*(p: PubSubPeer, id: SaltedId): int =
   ## Removes only queued relays matching this ID, preserving the remaining order.
   var savedBytes = 0
-  var entries: Deque[DoublyLinkedNode[QueuedMessage]]
+  var entries: tuple[head, tail: int]
   if not p.rpcmessagequeue.lowPriorityQueue.byId.pop(id, entries):
     return 0
-  for node in entries:
-    p.rpcmessagequeue.lowPriorityQueue.messages.remove(node)
-    node.prev = nil
-    node.next = nil
-    dec p.rpcmessagequeue.lowPriorityQueue.count
-    let messageBytes = node.value.data.len
+  var index = entries.head
+  while index != 0:
+    let next = p.rpcmessagequeue.lowPriorityQueue.slots[index - 1].nextWithId
+    let queued = p.rpcmessagequeue.lowPriorityQueue.remove(index)
+    let messageBytes = queued.data.len
     if not p.outboundQueue.release(Low, messageBytes, evictableBytes = messageBytes):
       return savedBytes
     savedBytes += messageBytes
     when defined(pubsubpeer_queue_metrics):
       libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
+    index = next
   savedBytes
 
 proc cancelQueuedRelays*(p: PubSubPeer, ids: HashSet[SaltedId]): int =

@@ -269,6 +269,38 @@ suite "Priority queue behavior":
     checkUntilTimeout:
       peer.queuedBytes() == 0
 
+  asyncTest "Reused relay slots preserve FIFO and same-ID chains":
+    let peer = createTestPeer(maxLow = 8)
+    let conn = peer.stallSendStream(stallCount = 1)
+    defer:
+      await peer.stopTasks()
+      await conn.close()
+    let
+      a = testSaltedId(1)
+      b = testSaltedId(2)
+      c = testSaltedId(3)
+    await peer.sendEncoded(@[0.byte], High)
+    for i, id in [a, b, a, c, b]:
+      await peer.sendEncoded(@[byte(i + 1)], Low, relayedSaltedId = Opt.some(id))
+    check peer.cancelQueuedRelay(b) == 2
+    await peer.sendEncoded(@[6.byte], Low, relayedSaltedId = Opt.some(c))
+    await peer.sendEncoded(@[7.byte], Low, relayedSaltedId = Opt.some(a))
+    check peer.cancelQueuedRelay(a) == 3
+    await peer.sendEncoded(@[8.byte], Low)
+    await peer.sendEncoded(@[9.byte], Low, relayedSaltedId = Opt.some(b))
+    await peer.sendEncoded(@[10.byte], Low, relayedSaltedId = Opt.some(c))
+    check peer.cancelQueuedRelay(c) == 3
+    check:
+      peer.queuedBytes(Low) == 2
+      peer.outboundQueue.evictableBytes[Low] == 2
+      peer.slowPeerPenalty == 0
+    conn.releasePendingWrites()
+    checkUntilTimeout:
+      conn.writes == @[@[0.byte], @[8.byte], @[9.byte]]
+    check peer.cancelQueuedRelay(b) == 0
+    await peer.stopTasks()
+    check peer.queuedBytes() == 0
+
   asyncTest "Cancellation only checks the supplied IDs":
     let peer = createTestPeer(maxLow = 4)
     let conn = peer.stallSendStream(stallCount = 1)
