@@ -3,6 +3,7 @@
 
 import std/net
 import chronos, chronicles, results
+import ../../utils/future
 import ../../[peerid, switch, multiaddress, extended_peer_record]
 import ../kademlia
 import ../kademlia/types
@@ -33,6 +34,12 @@ proc evictOnReset(disco: ServiceDiscovery, peerId: PeerId, e: ref CatchableError
   if tables > 0:
     trace "Evicted peer that reset a discovery request", peerId, tables, err = e.msg
 
+proc retireStream(stream: Stream) {.async: (raises: []), gcsafe.} =
+  ## Mplex frees a half-closed channel only after it reads the remote's EOF.
+  let finished = await noCancel stream.closeWithEOF().withTimeout(StreamRetireTimeout)
+  if not finished or not stream.atEof():
+    await stream.reset()
+
 proc send*(
     disco: ServiceDiscovery, peerId: PeerId, msg: Message
 ): Future[LPResult[Message]] {.async: (raises: [CancelledError]), gcsafe.} =
@@ -57,7 +64,7 @@ proc send*(
     # reply in the read buffer, which blocks the muxer for every other channel
     # on that connection. Only a reset drops it.
     if replyRead:
-      await noCancel stream.close()
+      disco.cleanups.trackFut(retireStream(stream))
     else:
       await noCancel stream.reset()
 
