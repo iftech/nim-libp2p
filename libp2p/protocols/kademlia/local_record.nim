@@ -6,13 +6,14 @@
 import chronicles
 import ../../results
 import ../../utils/opt
-import ./[key_value, protobuf, store, types]
+import ./[key_value, protobuf, store, types, kademlia_metrics]
 
 logScope:
   topics = "libp2p kademlia"
 
 proc getLocalRecord*(kad: KadDHT, key: RecordKey): LPResult[Opt[EntryRecord]] =
   let stored = kad.store.getValue(key, UnixTimestamp.now()).valueOr:
+    kad_store_errors.inc(labelValues = ["getValue"])
     return err(error, "local record read failed")
   let value = stored.valueOr:
     return ok(Opt.none(EntryRecord))
@@ -32,7 +33,8 @@ proc putLocalRecord(kad: KadDHT, key: RecordKey, record: EntryRecord): bool =
     expiresAt: now + kad.config.recordExpirationInterval.ceilSeconds(),
   )
   let stored = kad.store.putValue(value, now).valueOr:
-    warn "Local record not stored: store failed", err = error
+    kad_store_errors.inc(labelValues = ["putValue"])
+    debug "Local record not stored: store failed", err = error
     return false
   if not stored:
     debug "Local record not stored: store is full", key

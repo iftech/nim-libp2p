@@ -684,3 +684,29 @@ template kadStoreTestSuite*(
         store.delProvided(rest[0]).isOk()
 
       check store.listProvided(Opt.some(first[^1]), Unlimited) == rest[1 ..^ 1]
+
+  suite name & " stats":
+    test "stats counts the live values, providers and provided keys":
+      let store = factory(KadStoreLimits())
+      let key = Key.init([7'u8])
+
+      check:
+        store.putValue(storedValue(1), Now).get()
+        store.putValue(storedValue(2), Now).get()
+        store.addProvider(key, storedProvider(PeerId.random()), Now, Unlimited).isOk()
+        store.addProvided(pk1).get()
+
+      check store.stats(Now).get() ==
+        KadStoreStats(valueRecords: 2, providerRecords: 1, providedKeys: 1)
+
+    test "stats skips expired values and providers":
+      let store = factory(KadStoreLimits())
+      let key = Key.init([7'u8])
+
+      check:
+        store.putValue(storedValue(1, expiresAt = Now), Now - 1).get()
+        store
+          .addProvider(key, storedProvider(PeerId.random(), Now), Now - 1, Unlimited)
+          .isOk()
+
+      check store.stats(Now).get() == KadStoreStats()

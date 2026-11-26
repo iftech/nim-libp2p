@@ -3,7 +3,7 @@
 
 import std/[sequtils, tables]
 import chronos, chronicles, results
-import ../utils/[heartbeat, future]
+import ../utils/[heartbeat, future, opt]
 import ../logging
 import ../[peerid, switch, multihash]
 import ./protocol
@@ -281,11 +281,21 @@ proc waitBootstrap*(
     return done
   join(kad.bootstrapFut)
 
+proc updateStoreGauges*(kad: KadDHT) {.raises: [].} =
+  let stats = kad.store.stats().valueOr:
+    kad_store_errors.inc(labelValues = ["stats"])
+    debug "Failed to read store stats", err = error
+    return
+  kad_stored_value_records.set(stats.valueRecords.int64)
+  kad_stored_provider_records.set(stats.providerRecords.int64)
+  kad_provided_keys.set(stats.providedKeys.int64)
+
 proc maintainBuckets(kad: KadDHT) {.async: (raises: [CancelledError]).} =
   var timedOut = false
   var warnings: LogRateLimit
 
   heartbeat "Refreshing buckets", kad.config.bucketRefreshTime, sleepFirst = true:
+    kad.updateStoreGauges()
     let refresh = kad.refreshTable(kad.rtable, false)
     if not await refresh.withTimeout(kad.config.bucketRefreshTime):
       await noCancel refresh.cancelAndWait()
@@ -336,6 +346,7 @@ proc maintainMinPeers(kad: KadDHT) {.async.} =
 
   heartbeat "Checking routing table size",
     kad.config.fixLowPeersInterval, sleepFirst = true:
+    kad.updateStoreGauges()
     let peers = kad.rtable.peerCount()
     let lowPeers =
       not kad.config.disableBootstrapping and peers < kad.config.minRoutingTableSize

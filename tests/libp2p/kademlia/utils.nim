@@ -579,6 +579,11 @@ method putValue*(
 ): LPResult[bool] {.gcsafe, raises: [].} =
   store.inner.putValue(value, now)
 
+method stats*(
+    store: StubStore, now: UnixTimestamp
+): LPResult[KadStoreStats] {.gcsafe, raises: [].} =
+  store.inner.stats(now)
+
 proc setupStubKad*(store: StubStore): KadDHT =
   var config = testKadConfig()
   config.store = Opt.some(KadStore(store))

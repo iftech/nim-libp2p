@@ -30,6 +30,11 @@ type
     provider*: Provider
     expiresAt*: UnixTimestamp
 
+  KadStoreStats* = object ## The live entry counts of a store.
+    valueRecords*: int
+    providerRecords*: int
+    providedKeys*: int
+
   AddProviderOutcome* {.pure.} = enum
     added
     refreshed ## the provider was already stored for the key; ``expiresAt`` is updated
@@ -98,3 +103,9 @@ method listProvided*(
 ): LPResult[seq[ProvidedKey]] {.base, gcsafe, raises: [].} =
   ## Keyset paging in byte order. ``after`` is exclusive.
   raiseAssert "[KadStore.listProvided] abstract method not implemented!"
+
+method stats*(
+    store: KadStore, now = UnixTimestamp.now()
+): LPResult[KadStoreStats] {.base, gcsafe, raises: [].} =
+  ## Live counts for the metrics. A store that does not override it answers ``err``, so the gauges keep their value.
+  err("stats is not supported by this store")
