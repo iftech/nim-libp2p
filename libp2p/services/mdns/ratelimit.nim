@@ -29,8 +29,10 @@ proc get*(limits: ref InterfaceLimits, index: uint32): ref MulticastLimits =
 
 proc prune*(limits: ref InterfaceLimits, indices: openArray[uint32]) =
   var removed: seq[uint32]
-  for index in limits.entries.keys:
-    if index notin indices:
+  for index, entry in limits.entries.pairs:
+    # A reply holds this entry across an await and must finish on the live limiter.
+    if index notin indices and not entry.families[false].pending and
+        not entry.families[true].pending:
       removed.add(index)
   for index in removed:
     limits.entries.del(index)

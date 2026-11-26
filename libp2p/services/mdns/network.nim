@@ -158,7 +158,11 @@ proc membership4(
 
 proc configureMulticast(transport: DatagramTransport): LPResult[void] =
   let membershipStatus = restrictMulticastReception(toSocketHandle(transport.fd))
-  checkSocketOption(membershipStatus, "IPv4 multicast receive configuration")
+  if membershipStatus != 0:
+    # Restricting reception only avoids duplicate multicast delivery across sockets.
+    let code = socketLastError()
+    warn "IPv4 multicast receive configuration failed",
+      err = osErrorMsg(code), code = code.int
   var ttl = MulticastTtl(MdnsMulticastHopLimit)
   let status =
     setSocketOption(toSocketHandle(transport.fd), ipv4Protocol, ipv4MulticastTtl, ttl)
@@ -494,15 +498,16 @@ proc multicast*(
     # Snapshot both families before a queued send allows a refresh to run.
     let interfaces4 = network.interfaces4
     let interfaces6 = network.interfaces6
+    let targets = interfaces4 & interfaces6
     # Reserve every socket in both snapshots before the first send can yield.
-    for iface in interfaces4 & interfaces6:
+    for iface in targets:
       iface.acquireInterface()
     try:
       let sent4 = await multicastInterfaces(interfaces4, packet, MdnsDestination)
       let sent6 = await multicastInterfaces(interfaces6, packet, MdnsDestination6)
       return sent4 or sent6
     finally:
-      for iface in interfaces4 & interfaces6:
+      for iface in targets:
         iface.releaseInterface()
 
 proc reply*(

@@ -118,21 +118,40 @@ suite "mDNS discovery":
     check limits[1].acquire(false, now + MdnsResponseInterval)
     check limits[2].acquire(false, now + MdnsResponseInterval)
 
-  test "removed interface limits are discarded even with a pending reply":
+  test "removed interface limits survive pending replies and retain the throttle":
+    for ipv6 in [false, true]:
+      let
+        limits = newInterfaceLimits()
+        now = Moment.now()
+        original = limits.get(1)
+      check original[].acquire(ipv6, now)
+      limits.prune([])
+      let refreshed = limits.get(1)
+      check refreshed == original
+      check not refreshed[].acquire(ipv6, now + MdnsResponseInterval)
+      original[].finish(ipv6, true, now, MdnsResponseInterval)
+      limits.prune([1'u32])
+      check limits.get(1) == original
+      check not limits.get(1)[].acquire(ipv6, now)
+      check limits.get(1)[].acquire(ipv6, now + MdnsResponseInterval)
+
+  test "removed interface limits are pruned once both families are idle":
     let
       limits = newInterfaceLimits()
       now = Moment.now()
       old = limits.get(1)
       retained = limits.get(2)
     check old[].acquire(false, now)
-    check retained[].acquire(false, now)
+    check old[].acquire(true, now)
+    old[].finish(false, true, now, MdnsResponseInterval)
+    limits.prune([2'u32])
+    check limits.get(1) == old
+    old[].finish(true, false, now, MdnsResponseInterval)
     limits.prune([2'u32])
     let replacement = limits.get(1)
+    check replacement != old
     check replacement[].acquire(false, now)
-    old[].finish(false, true, now, MdnsResponseInterval)
-    replacement[].finish(false, false, now, MdnsResponseInterval)
-    check replacement[].acquire(false, now)
-    check not limits.get(2)[].acquire(false, now)
+    check limits.get(2) == retained
 
   test "DNS-SD records round trip and group peer addresses":
     let
