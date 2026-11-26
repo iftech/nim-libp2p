@@ -41,7 +41,11 @@ proc storedValue(b: byte, expiresAt = Later): StoredValue =
   )
 
 proc storedProvider(peerId: PeerId, expiresAt = Later): StoredProvider =
-  StoredProvider(provider: Peer(id: Opt.some(peerId.getBytes())), expiresAt: expiresAt)
+  StoredProvider(
+    provider: Peer(id: Opt.some(peerId.getBytes())),
+    expiresAt: expiresAt,
+    addrsExpireAt: expiresAt,
+  )
 
 func peerOf(p: StoredProvider): PeerId =
   PeerId.init(p.provider.id.get()).get()
@@ -406,7 +410,10 @@ template kadStoreTestSuite*(
       ]
       for c in cases:
         let res = store.addProvider(
-          key, StoredProvider(provider: c.provider, expiresAt: Later), Now, Unlimited
+          key,
+          StoredProvider(provider: c.provider, expiresAt: Later, addrsExpireAt: Later),
+          Now,
+          Unlimited,
         )
         check:
           res.isErr()

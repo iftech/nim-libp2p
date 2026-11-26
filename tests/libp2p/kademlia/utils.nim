@@ -110,6 +110,7 @@ proc testKadConfig*(
     retries: int = DefaultRetries,
     providerRejection: bool = false,
     providerExpirationInterval: Duration = 1.seconds,
+    providerAddrTTL: Duration = DefaultProviderAddrTTL,
     recordExpirationInterval: Duration = DefaultRecordExpirationInterval,
     republishRegionBits: Opt[int] = Opt.none(int),
     livenessGracePeriod: Duration = DefaultLivenessGracePeriod,
@@ -123,6 +124,7 @@ proc testKadConfig*(
     selector,
     timeout = timeout,
     providerExpirationInterval = providerExpirationInterval,
+    providerAddrTTL = providerAddrTTL,
     republishProvidedKeysInterval = republishProvidedKeysInterval,
     replication = replication,
     alpha = alpha,
@@ -329,8 +331,11 @@ proc seedProvider*(
     key: Key,
     provider: Provider,
     expiresAt: UnixTimestamp = UnixTimestamp.after(1.hours),
+    addrsExpireAt: UnixTimestamp = expiresAt,
 ) =
-  let stored = StoredProvider(provider: provider, expiresAt: expiresAt)
+  let stored = StoredProvider(
+    provider: provider, expiresAt: expiresAt, addrsExpireAt: addrsExpireAt
+  )
   let outcome = kad.store.addProvider(key, stored, UnixTimestamp.now(), high(int)).valueOr:
     raiseAssert "seedProvider: " & $error
   if outcome notin {AddProviderOutcome.added, AddProviderOutcome.refreshed}:

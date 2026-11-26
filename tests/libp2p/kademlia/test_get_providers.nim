@@ -197,6 +197,77 @@ suite "KadDHT - Get Providers":
       providers.len() == 1
       providers.containsPeer(provider)
 
+  asyncTest "Get providers serves addresses only before the address TTL":
+    let kads = setupKadSwitches(4, republishProvidedKeysInterval = chronos.hours(1))
+    startAndDeferStop(kads)
+
+    await connectChain(kads[0 .. 1])
+
+    let
+      key = @[1.byte, 2, 3, 4, 5]
+      stale = kads[2].toPeer()
+      fresh = kads[3].toPeer()
+    check:
+      stale.addrs.len > 0
+      fresh.addrs.len > 0
+    kads[1].seedProvider(key, stale, addrsExpireAt = UnixTimestamp.now() - 1)
+    kads[1].seedProvider(key, fresh)
+
+    let providers = (await kads[0].getProviders(key)).toSeq()
+
+    check providers.len == 2
+    for p in providers:
+      if p.id == stale.id:
+        check p.addrs.len == 0
+      else:
+        check:
+          p.id == fresh.id
+          p.addrs == fresh.addrs
+
+  asyncTest "An advertised provider keeps its addresses for the address TTL":
+    let key = @[1.byte, 2, 3, 4, 5]
+    for (ttl, shorter) in [(DefaultProviderAddrTTL, false), (1.seconds, true)]:
+      let kads = @[
+        setupKad(
+          testKadConfig(providerExpirationInterval = 30.seconds, providerAddrTTL = ttl)
+        ),
+        setupKad(),
+      ]
+      startAndDeferStop(kads)
+      await connect(kads[0], kads[1])
+      await kads[1].startProviding(key.toCid())
+      checkUntilTimeout:
+        kads[0].providerCount() == 1
+
+      let storedKey = key.toCid().toKey()
+      let stored = kads[0].store.getProviders(storedKey, UnixTimestamp.now(), 10).get()
+      require stored.len == 1
+      check (stored[0].addrsExpireAt < stored[0].expiresAt) == shorter
+
+  asyncTest "Get providers keeps the addresses when one reply has none":
+    let key = Key.fromBytes(@[1.byte, 2, 3, 4, 5])
+    let querier = setupKad()
+    let provider = setupKad()
+    let bare = Peer(id: provider.toPeer().id)
+    let reply = proc(peers: seq[Peer]): Opt[Message] =
+      Opt.some(
+        Message(
+          msgType: MessageType.getProviders, key: Opt.some(key), providerPeers: peers
+        )
+      )
+    let
+      bareReplier = setupMockKad(getProvidersResponse = reply(@[bare]))
+      fullReplier = setupMockKad(getProvidersResponse = reply(@[provider.toPeer()]))
+    startAndDeferStop(@[querier, provider, bareReplier, fullReplier])
+    await connect(querier, bareReplier)
+    await connect(querier, fullReplier)
+
+    let providers = (await querier.getProviders(key)).toSeq()
+
+    check:
+      providers.len == 1
+      providers[0].addrs == provider.toPeer().addrs
+
   asyncTest "Get providers terminates early when sufficient providers found":
     # Use small replication value; beta must stay <= replication
     let kads = setupKadSwitches(8, replication = 2, beta = 2)
