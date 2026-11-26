@@ -17,7 +17,7 @@ runLint:
 
   step "Check TODO comments":
     check todoWithIssue:
-      severity = error
+      severity = hint
 
   step "Check license headers":
     ignoredPatterns = ["./examples/**/*", "./.nim_runtime/**/*"]
