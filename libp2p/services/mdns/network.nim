@@ -270,18 +270,18 @@ proc receivingInterface(
   if remote.family == AddressFamily.IPv6 and remote.isLinkLocal():
     return iface
 
-  # A wildcard socket does not identify ingress. Only accept sources
-  # belonging to exactly one interface; overlapping subnets are ambiguous.
+  # Prefer a unique subnet match when its socket is available. Otherwise use
+  # the receiving socket as a best-effort association, including overlapping LANs.
   let matched = network.sourceInterfaceIndex(remote)
   if matched == 0:
-    return nil
+    return iface
 
   let interfaces =
     if remote.family == AddressFamily.IPv6: network.interfaces6 else: network.interfaces4
   for candidate in interfaces:
     if candidate.index == matched:
       return candidate
-  nil
+  iface
 
 proc receivedOn(network: MdnsNetwork, iface: ref MdnsInterface): DatagramCallback =
   proc received(

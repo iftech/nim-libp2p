@@ -97,7 +97,7 @@ proc new*(
 
   let limits = newInterfaceLimits()
   proc interfacesChanged(indices: seq[uint32]) {.gcsafe, raises: [].} =
-    limits.prune(indices)
+    limits.prune(indices, Moment.now())
 
   return T(
     onPeerFound: onPeerFound,

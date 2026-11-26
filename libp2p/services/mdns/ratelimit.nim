@@ -27,12 +27,13 @@ proc get*(limits: ref InterfaceLimits, index: uint32): ref MulticastLimits =
     limits.entries[index] = entry
   return entry
 
-proc prune*(limits: ref InterfaceLimits, indices: openArray[uint32]) =
+proc prune*(limits: ref InterfaceLimits, indices: openArray[uint32], now: Moment) =
   var removed: seq[uint32]
   for index, entry in limits.entries.pairs:
-    # A reply holds this entry across an await and must finish on the live limiter.
+    # Keep in-flight replies and cooldowns across transient interface/socket loss.
     if index notin indices and not entry.families[false].pending and
-        not entry.families[true].pending:
+        not entry.families[true].pending and now >= entry.families[false].nextResponse and
+        now >= entry.families[true].nextResponse:
       removed.add(index)
   for index in removed:
     limits.entries.del(index)
