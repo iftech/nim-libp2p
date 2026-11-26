@@ -283,14 +283,14 @@ suite "Waggle switch integration":
     check refused.reason == "Duplicate Waggle topic stream"
 
   asyncTest "a node whose own subscription fills its per-peer stream limit reports the peer's subscription as invalid data":
-    # TODO: iftech/nim-libp2p#NNNN
+    # TODO: iftech/nim-libp2p#3530
     let nodes =
       @[setupWaggleNode(WaggleConfig(maxStreamsPerPeer: 1)), setupWaggleNode()]
     startAndDeferStop(nodes)
     await connect(nodes[0], nodes[1])
     discard nodes[0].waggle.subscribe(topic).get()
 
-    # nodes[1]'s subscription is well-formed; only nodes[0]'s limit refuses it
+    # nodes[0] refuses nodes[1]'s stream at maxStreamsPerPeer before reading its TopicSubscription
     discard nodes[1].waggle.subscribe(topic).get()
     let refused = await nodes[0].waitForEvent(WaggleEventKind.InvalidData)
     check:
