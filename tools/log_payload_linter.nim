@@ -12,10 +12,10 @@
 ## using Chronicles' textline/textblock outputs. Disabled logs and uninstantiated
 ## generics cannot be checked. JSON output expands setProperty away and is not
 ## supported. The import-closure declaration fallback is not a visibility or
-## overload-resolution check. Repeated message/field pairs share attribution.
+## overload-resolution check. Expanded records are attributed to their source call.
 
 import std/[sets, tables]
-import compiler/[ast, types]
+import compiler/[ast, types, lineinfos]
 import lint
 
 type LogPayloadSettings* = object
@@ -100,8 +100,9 @@ proc runBoundedLogPayloads(
     visitedModules: HashSet[int]
     findings: seq[Finding]
     reported: HashSet[(int, int, string)]
-    sourceFields: seq[tuple[name, message: string, value: PNode]]
-    recordMessages: Table[int, string]
+    sourceFields: seq[tuple[name: string, value: PNode, call: TLineInfo]]
+    sourceCalls: HashSet[(int, int)]
+    recordCalls: Table[int, TLineInfo]
 
   proc recordSymbol(node: PNode): PSym =
     var value = node
@@ -117,6 +118,7 @@ proc runBoundedLogPayloads(
         symbolName(node[0]) in
         ["trace", "debug", "info", "notice", "warn", "error", "fatal"]:
       if node[1].kind in {nkStrLit .. nkTripleStrLit}:
+        sourceCalls.incl (int(node.info.line), int(node.info.col))
         for i in 2 ..< node.len:
           let field = node[i]
           if field.kind == nkExprEqExpr and field.len == 2:
@@ -131,9 +133,9 @@ proc runBoundedLogPayloads(
                 field[0].strVal
               else:
                 symbolName(field[0])
-            sourceFields.add (name, node[1].strVal, field[1])
+            sourceFields.add (name, field[1], node.info)
           elif field.kind == nkIdent:
-            sourceFields.add (symbolName(field), node[1].strVal, field)
+            sourceFields.add (symbolName(field), field, node.info)
     for child in node:
       collectFields(child)
 
@@ -169,9 +171,14 @@ proc runBoundedLogPayloads(
       if sameType(typ, candidate):
         return true
 
-  proc inspect(node: PNode) =
+  proc inspect(node: PNode, sourceCall = unknownLineInfo) =
     if node.isNil:
       return
+    let call =
+      if (int(node.info.line), int(node.info.col)) in sourceCalls:
+        node.info
+      else:
+        sourceCall
     # Template bodies are uninstantiated. Their actual expansions are checked
     # at their call sites; imported/generated locations cannot be reported as
     # positions in the selected source file.
@@ -181,8 +188,9 @@ proc runBoundedLogPayloads(
         symbolName(node[0]) == "initLogRecord" and
         node[4].kind in {nkStrLit .. nkTripleStrLit}:
       let record = recordSymbol(node[1])
-      if not record.isNil:
-        recordMessages[record.id] = node[4].strVal
+      if not record.isNil and not record.originatingModule.isNil and
+          call.fileIndex == record.originatingModule.info.fileIndex:
+        recordCalls[record.id] = call
     if node.kind in nkCallKinds and node.len >= 4 and node[0].kind == nkSym and
         node[0].sym.name.s == "setProperty":
       let
@@ -198,11 +206,11 @@ proc runBoundedLogPayloads(
           not boundedCall(value) and not hasFormatter(value.typ):
         let record = recordSymbol(node[1])
         if not record.isNil and not record.originatingModule.isNil and
-            sfMainModule in record.originatingModule.flags and
-            record.id in recordMessages:
+            sfMainModule in record.originatingModule.flags and record.id in recordCalls:
           for original in sourceFields:
             if original.name == field.strVal and
-                original.message == recordMessages[record.id]:
+                original.call.line == recordCalls[record.id].line and
+                original.call.col == recordCalls[record.id].col:
               let key = (
                 int(original.value.info.line),
                 int(original.value.info.col),
@@ -216,7 +224,7 @@ proc runBoundedLogPayloads(
                     "` must use shortLog or len, or implement formatIt"
                 )
     for child in node:
-      inspect(child)
+      inspect(child, call)
 
   if not typed.isNil:
     collectFields(ast)
