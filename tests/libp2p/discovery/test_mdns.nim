@@ -98,17 +98,22 @@ suite "mDNS discovery":
     check limits.acquire(true, now + MdnsResponseInterval)
 
   test "multicast response limits are independent per interface":
-    var limits: Table[uint32, MulticastLimits]
-    let now = Moment.now()
-    check limits.mgetOrPut(1, default(MulticastLimits)).acquire(false, now)
-    check not limits.mgetOrPut(1, default(MulticastLimits)).acquire(false, now)
-    check limits.mgetOrPut(2, default(MulticastLimits)).acquire(false, now)
-    limits[1].finish(false, true, now, MdnsResponseInterval)
-    limits[2].finish(false, true, now, MdnsResponseInterval)
-    check not limits[1].acquire(false, now)
-    check not limits[2].acquire(false, now)
-    check limits[1].acquire(false, now + MdnsResponseInterval)
-    check limits[2].acquire(false, now + MdnsResponseInterval)
+    for ipv6 in [false, true]:
+      let
+        limits = newInterfaceLimits()
+        now = Moment.now()
+        first = limits.get(1)
+        second = limits.get(2)
+
+      check first[].acquire(ipv6, now)
+      check not limits.get(1)[].acquire(ipv6, now)
+      check second[].acquire(ipv6, now)
+      first[].finish(ipv6, true, now, MdnsResponseInterval)
+      second[].finish(ipv6, true, now, MdnsResponseInterval)
+      check not first[].acquire(ipv6, now)
+      check not second[].acquire(ipv6, now)
+      check first[].acquire(ipv6, now + MdnsResponseInterval)
+      check second[].acquire(ipv6, now + MdnsResponseInterval)
 
   test "removed interface limits survive pending replies and retain the throttle":
     for ipv6 in [false, true]:
