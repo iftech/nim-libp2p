@@ -803,8 +803,8 @@ suite "Waggle direct streams":
     let events = recordEvents()
     let stream = await outboundSubscription()
 
-    # pushData only schedules the receiver, and unsubscribe removes the topic before
-    # its first await, so the receiver handles this message after the topic is gone
+    # pushData completes the receiver's pending read, which unsubscribe's cancel
+    # cannot interrupt, so the receiver handles this message after the topic is gone
     await stream.pushData(
       frame(
         ObjectPieces(objectId: objectId, piecesMetadata: Opt.some(@[byte firstPiece])).encode()
