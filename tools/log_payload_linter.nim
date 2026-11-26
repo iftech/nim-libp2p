@@ -197,7 +197,8 @@ proc runBoundedLogPayloads(
           value.typ.kind != tyError and not boundedType(value.typ, settings) and
           not boundedCall(value) and not hasFormatter(value.typ):
         let record = recordSymbol(node[1])
-        if not record.isNil and sfMainModule in record.originatingModule.flags and
+        if not record.isNil and not record.originatingModule.isNil and
+            sfMainModule in record.originatingModule.flags and
             record.id in recordMessages:
           for original in sourceFields:
             if original.name == field.strVal and
