@@ -1312,11 +1312,7 @@ proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
     libp2p_gossipsub_low_priority_queue_size.set(labelValues = [$p.peerId], value = 0)
 
 proc new(T: typedesc[RpcMessageQueue]): T =
-  return T(
-    sendPriorityQueue: initDeque[Future[void]](),
-    mediumPriorityQueue: initDeque[QueuedMessage](),
-    dataAvailableEvent: newAsyncEvent(),
-  )
+  return T(dataAvailableEvent: newAsyncEvent())
 
 proc new*(
     T: typedesc[PubSubPeer],
