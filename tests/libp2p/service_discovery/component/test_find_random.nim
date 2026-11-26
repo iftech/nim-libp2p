@@ -92,7 +92,7 @@ suite "Service Discovery Component - Find Random":
     let requestReceived = newFuture[void]("find-random-request-received")
     let handlerFinished = newFuture[void]("find-random-handler-finished")
     discos[1].handler = proc(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       defer:
         handlerFinished.completeOnce()

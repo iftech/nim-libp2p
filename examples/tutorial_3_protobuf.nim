@@ -101,7 +101,7 @@ type
 
 proc new(_: typedesc[MetricProto], cb: MetricCallback): MetricProto =
   var res: MetricProto
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       let
         metrics = await res.metricGetter()
@@ -112,7 +112,7 @@ proc new(_: typedesc[MetricProto], cb: MetricCallback): MetricProto =
     finally:
       await stream.close()
 
-  res = MetricProto.new(@["/metric-getter/1.0.0"], handle)
+  res = MetricProto.new(@[ProtoCodec("/metric-getter/1.0.0")], handle)
   res.metricGetter = cb
   return res
 

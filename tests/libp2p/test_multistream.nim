@@ -21,8 +21,12 @@ import ../tools/[unittest, sync, multiaddress, stream, bufferstream]
 
 {.push raises: [].}
 
-converter toStringSeq(s: string): seq[string] =
-  @[s]
+converter toCodecSeq(c: ProtoCodec): seq[ProtoCodec] =
+  @[c]
+
+const
+  TestProto1 = ProtoCodec("/test/proto1/1.0.0")
+  TestProto2 = ProtoCodec("/test/proto2/1.0.0")
 
 ## Mock stream for select test
 type TestSelectStream = ref object of Connection
@@ -188,12 +192,12 @@ proc newTestNaStream(na: NaHandler): TestNaStream =
   TestNaStream(na: na, step: 1)
 
 proc noReachHandler(
-    stream: Stream, proto: string
+    stream: Stream, proto: ProtoCodec
 ): Future[void] {.async: (raises: [CancelledError]).} =
   raiseAssert "must not be reached"
 
 suite "Multistream select":
-  const codecs = "/test/proto/1.0.0"
+  const codecs = ProtoCodec("/test/proto/1.0.0")
 
   teardown:
     checkTrackers()
@@ -209,7 +213,7 @@ suite "Multistream select":
     let stream = newTestSelectStream()
 
     proc testHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       check proto == codecs
       await stream.close()
@@ -222,7 +226,7 @@ suite "Multistream select":
     var firstCalls = 0
 
     proc firstHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       firstCalls += 1
       check proto == codecs
@@ -251,8 +255,8 @@ suite "Multistream select":
       done.complete()
 
     stream = Connection(newTestLsStream(testLsHandler))
-    ms.addHandler("/test/proto1/1.0.0", LPProtoHandler(noReachHandler))
-    ms.addHandler("/test/proto2/1.0.0", LPProtoHandler(noReachHandler))
+    ms.addHandler(TestProto1, LPProtoHandler(noReachHandler))
+    ms.addHandler(TestProto2, LPProtoHandler(noReachHandler))
 
     await ms.handle(stream)
     await done
@@ -269,14 +273,16 @@ suite "Multistream select":
 
     stream = newTestNaStream(testNaHandler)
 
-    ms.addHandler("/unabvailable/proto1/1.0.0", LPProtoHandler(noReachHandler))
+    ms.addHandler(
+      ProtoCodec("/unabvailable/proto1/1.0.0"), LPProtoHandler(noReachHandler)
+    )
 
     await ms.handle(stream)
 
   asyncTest "e2e - handle":
     var protocol: LPProtocol = new LPProtocol
     proc testHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       check proto == codecs
       try:
@@ -323,7 +329,7 @@ suite "Multistream select":
     # Try to start a new one, which should fail
     # Unblock them, check that we can open a new one
     proc testHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       try:
         handlersEntered.done()
@@ -394,8 +400,8 @@ suite "Multistream select":
 
   asyncTest "e2e - ls":
     let msListen = MultistreamSelect.new()
-    msListen.addHandler("/test/proto1/1.0.0", LPProtoHandler(noReachHandler))
-    msListen.addHandler("/test/proto2/1.0.0", LPProtoHandler(noReachHandler))
+    msListen.addHandler(TestProto1, LPProtoHandler(noReachHandler))
+    msListen.addHandler(TestProto2, LPProtoHandler(noReachHandler))
 
     let transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
     let listenFut = transport1.start(@[TcpAutoAddress])
@@ -417,7 +423,7 @@ suite "Multistream select":
     let stream = await transport2.dial(transport1.addrs[0])
 
     let ls = await msDial.list(stream)
-    let protos: seq[string] = @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
+    let protos: seq[ProtoCodec] = @[TestProto1, TestProto2]
 
     check ls == protos
 
@@ -429,7 +435,7 @@ suite "Multistream select":
 
   asyncTest "e2e - select one from a list with unsupported protos":
     proc testHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       check proto == codecs
       try:
@@ -454,7 +460,8 @@ suite "Multistream select":
     let transport2: TcpTransport = TcpTransport.new(upgrade = Upgrade())
     let stream = await transport2.dial(transport1.addrs[0])
 
-    check (await msDial.select(stream, @["/test/no/proto/1.0.0", codecs])) == codecs
+    check (await msDial.select(stream, @[ProtoCodec("/test/no/proto/1.0.0"), codecs])) ==
+      codecs
 
     let hello = string.fromBytes(await stream.readLp(1024))
     check hello == "Hello!"
@@ -465,7 +472,7 @@ suite "Multistream select":
     await transport1.stop()
 
 suite "Multistream :: stream limits":
-  const codecs = "/test/proto-stream-limits/1.0.0"
+  const codecs = ProtoCodec("/test/proto-stream-limits/1.0.0")
 
   teardown:
     checkTrackers()
@@ -488,7 +495,7 @@ suite "Multistream :: stream limits":
     # if handler finishes fast we would never reach limit - it would be a race otherwise.
 
     proc testHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       if entered != nil:
         entered.done()
@@ -523,7 +530,7 @@ suite "Multistream :: stream limits":
     proc connector(accepted = true) {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, protocol.codecs[0])) == accepted
+        (await msDial.select(stream, protocol.codec)) == accepted
       if not accepted:
         await stream.close()
         return
@@ -549,7 +556,7 @@ suite "Multistream :: stream limits":
     # dialers race on reserveIncoming and the third one may be the slot winner.
     let reserved = newWaitGroup(2)
     let protocol = LPProtocol.new(
-      @["/test/proto1/1.0.0", "/test/proto2/1.0.0"],
+      @[TestProto1, TestProto2],
       makeBlockedHandler(reserved),
       maxIncomingStreamsTotal = 2,
     )
@@ -562,7 +569,7 @@ suite "Multistream :: stream limits":
     let msDial = MultistreamSelect.new()
     let transport2 = TcpTransport.new(upgrade = Upgrade())
 
-    proc connector(proto: string, accepted = true): Future[void] {.async.} =
+    proc connector(proto: ProtoCodec, accepted = true): Future[void] {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
         (await msDial.select(stream, proto)) == accepted
@@ -573,12 +580,12 @@ suite "Multistream :: stream limits":
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
 
-    var d1 = connector("/test/proto1/1.0.0")
-    var d2 = connector("/test/proto2/1.0.0")
+    var d1 = connector(TestProto1)
+    var d2 = connector(TestProto2)
 
     await reserved.wait()
 
-    await connector("/test/proto1/1.0.0", accepted = false)
+    await connector(TestProto1, accepted = false)
 
     await @[d1, d2].cancelAndWait()
     await transport2.stop()
@@ -589,7 +596,7 @@ suite "Multistream :: stream limits":
     var handlerCount = 0
     var handlerResolved = newFuture[void]()
     proc testHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       handlerCount += 1
       try:
@@ -614,7 +621,7 @@ suite "Multistream :: stream limits":
     proc connector(): Future[void] {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, protocol.codecs[0])) == true
+        (await msDial.select(stream, protocol.codec)) == true
       check:
         string.fromBytes(await stream.readLp(1024)) == "Hello!"
       await stream.close()
@@ -652,7 +659,7 @@ suite "Multistream :: stream limits":
     proc connector(accepted = true): Future[void] {.async.} =
       let stream = await transport2.dial(transport1.addrs[0])
       check:
-        (await msDial.select(stream, protocol.codecs[0])) == accepted
+        (await msDial.select(stream, protocol.codec)) == accepted
       if not accepted:
         await stream.close()
         return
@@ -677,8 +684,9 @@ suite "Multistream :: stream limits":
     let (client, server) = bridgedConnections()
     let full = LPProtocol.new(codecs, makeBlockedHandler(), maxIncomingStreamsTotal = 1)
     check full.reserveIncoming(server.peerId)
-    let other =
-      LPProtocol.new("/test/other/1", makeBlockedHandler(), maxIncomingStreamsTotal = 1)
+    let other = LPProtocol.new(
+      ProtoCodec("/test/other/1"), makeBlockedHandler(), maxIncomingStreamsTotal = 1
+    )
     let ms = MultistreamSelect.new()
     ms.addHandler(full)
     ms.addHandler(other)
@@ -712,7 +720,7 @@ suite "Multistream :: stream limits":
       let ms = MultistreamSelect.new()
       ms.addHandler(protocol)
       let handling = ms.handle(server, active = true)
-      let proposal = codecs & "\n"
+      let proposal = $codecs & "\n"
       await server.pushData(@[byte proposal.len] & proposal.toBytes())
       await confirming
       if cancelWrite:
@@ -731,19 +739,19 @@ suite "Multistream :: stream limits":
       await client.close()
     await client.writeLp("\n")
     check string.fromBytes(await client.readLp(1024)) == "na\n"
-    await client.writeLp(codecs & "\n")
-    check string.fromBytes(await client.readLp(1024)) == codecs & "\n"
+    await client.writeLp($codecs & "\n")
+    check string.fromBytes(await client.readLp(1024)) == $codecs & "\n"
     check (await handling) == codecs
 
 suite "Multistream :: result API":
-  const codecs = "/test/proto/1.0.0"
+  const codecs = ProtoCodec("/test/proto/1.0.0")
 
   teardown:
     checkTrackers()
 
   proc selectAgainstHeader(
       header: string
-  ): Future[MultiStreamResult[string]] {.
+  ): Future[MultiStreamResult[ProtoCodec]] {.
       async: (raises: [CancelledError, LPStreamError])
   .} =
     let (client, server) = bridgedConnections()
@@ -771,7 +779,7 @@ suite "Multistream :: result API":
     defer:
       await client.close()
       await server.close()
-    await client.writeLp(codecs & "\n")
+    await client.writeLp($codecs & "\n")
     check (await handling).error == MultiStreamFailure.InvalidFirstMessage
 
   asyncTest "handle raises MultiStreamError with the failure text":
@@ -780,7 +788,7 @@ suite "Multistream :: result API":
     defer:
       await client.close()
       await server.close()
-    await client.writeLp(codecs & "\n")
+    await client.writeLp($codecs & "\n")
     try:
       discard await handling
       raiseAssert "handle must raise"
@@ -789,7 +797,7 @@ suite "Multistream :: result API":
 
 suite "Multistream :: optimistic selection":
   const
-    codec = "/test/optimistic/1.0.0"
+    codec = ProtoCodec("/test/optimistic/1.0.0")
     header = "/multistream/1.0.0\n"
 
   proc bufferedPair(closeTogether = true): (BridgeStream, BridgeStream) =
@@ -809,11 +817,11 @@ suite "Multistream :: optimistic selection":
     check client.protocol == codec
     await selected.writeLp("early payload")
     check string.fromBytes(await server.readLp(1024)) == header
-    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await server.readLp(1024)) == $codec & "\n"
     check string.fromBytes(await server.readLp(1024)) == "early payload"
     check selected.getWrapped() == client
     await server.writeLp(header)
-    await server.writeLp(codec & "\n")
+    await server.writeLp($codec & "\n")
     await server.writeLp("first")
     await server.writeLp("second")
     check string.fromBytes(await selected.readLp(1024)) == "first"
@@ -845,7 +853,7 @@ suite "Multistream :: optimistic selection":
       (@[header, "na\n"], "Optimistic multistream protocol rejected"),
       (@[header, "/wrong/protocol\n"], "Optimistic multistream protocol rejected"),
       (
-        @[header, codec],
+        @[header, $codec],
         "Optimistic multistream protocol negotiation failed: MultistreamSelect failed, malformed message",
       ),
       (
@@ -898,9 +906,9 @@ suite "Multistream :: optimistic selection":
     check not closing.finished()
 
     check string.fromBytes(await server.readLp(1024)) == header
-    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await server.readLp(1024)) == $codec & "\n"
     await server.writeLp(header)
-    await server.writeLp(codec & "\n")
+    await server.writeLp($codec & "\n")
     check string.fromBytes(await server.readLp(1024)) == "request"
 
     await closing
@@ -922,7 +930,7 @@ suite "Multistream :: optimistic selection":
       not closing.finished()
 
     await server.writeLp(header)
-    await server.writeLp(codec & "\n")
+    await server.writeLp($codec & "\n")
 
     await closing
     expect LPStreamEOFError:
@@ -943,10 +951,10 @@ suite "Multistream :: optimistic selection":
     let closing = selected.close()
 
     check string.fromBytes(await server.readLp(1024)) == header
-    check string.fromBytes(await server.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await server.readLp(1024)) == $codec & "\n"
     check string.fromBytes(await server.readLp(1024)) == "request"
     await server.writeLp(header)
-    await server.writeLp(codec & "\n")
+    await server.writeLp($codec & "\n")
     await server.writeLp("response")
 
     await closing

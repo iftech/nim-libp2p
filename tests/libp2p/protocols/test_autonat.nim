@@ -31,7 +31,7 @@ proc makeSwitch(): Switch =
 proc makeAutonatServicePrivate(): Switch =
   var autonatProtocol = new LPProtocol
   autonatProtocol.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     try:
       discard await stream.readLp(1024)

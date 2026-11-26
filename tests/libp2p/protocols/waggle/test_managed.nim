@@ -663,7 +663,7 @@ suite "Waggle managed dissemination":
     let handle = b.protocol.handler
     var corrupted = false
     proc corruptOnce(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       if not corrupted:
         corrupted = true
@@ -936,7 +936,7 @@ suite "Waggle managed dissemination":
       let a = await newNode()
       let b = await newNode()
       proc corrupt(
-          stream: Stream, proto: string
+          stream: Stream, proto: ProtoCodec
       ) {.async: (raises: [CancelledError]).} =
         try:
           try:

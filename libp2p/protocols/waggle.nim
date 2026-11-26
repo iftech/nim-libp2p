@@ -5,6 +5,7 @@
 
 {.push raises: [], gcsafe.}
 
+import ../protocodec
 import std/[sequtils, tables, sets, hashes]
 import chronos, chronicles
 import ./protocol, ./waggle/[messages, shard, state]
@@ -22,7 +23,7 @@ logScope:
   topics = "libp2p waggle"
 
 const
-  WaggleCodec* = "/waggle/1.0"
+  WaggleCodec* = ProtoCodec("/waggle/1.0")
   WaggleInvalidDataCause* = "Invalid Waggle data"
 
 type
@@ -295,7 +296,7 @@ proc new*(
     maxStreams: config.maxStreams,
     maxStreamsPerPeer: config.maxStreamsPerPeer,
   )
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     var session: TopicSession
     try:
       session = p.admit(stream, receiving = false).valueOr:

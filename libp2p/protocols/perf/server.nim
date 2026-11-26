@@ -19,7 +19,7 @@ type Perf* = ref object of LPProtocol
 proc new*(T: typedesc[Perf]): T =
   var p = T()
 
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       trace "Received benchmark performance check", stream
 

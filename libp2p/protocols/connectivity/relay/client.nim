@@ -361,14 +361,13 @@ proc new*(
     isCircuitRelayV1: circuitRelayV1,
   )
   proc dispatch(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
-    case proto
-    of RelayV1Codec:
+    if proto == RelayV1Codec:
       await cl.handleStreamV1(stream)
-    of RelayV2StopCodec:
+    elif proto == RelayV2StopCodec:
       await cl.handleStopStreamV2(stream)
-    of RelayV2HopCodec:
+    elif proto == RelayV2HopCodec:
       try:
         await cl.handleHopStreamV2(stream)
         ok()
@@ -378,7 +377,7 @@ proc new*(
       err(proto, "unexpected protocol")
 
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()

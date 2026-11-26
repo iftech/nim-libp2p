@@ -10,6 +10,7 @@ import
   protobuf_serialization/std/enums
 import ../../../[multiaddress, peerid]
 import ../../../errors
+import ../../../protocodec
 import ../../../utils/protobuf
 from ../autonat/types import NetworkReachability
 
@@ -26,12 +27,10 @@ const
   DialBackLpSize*: int = 1024
   # readLp needs to receive more than 4096 bytes (since it's a DialDataResponse) + overhead
   DialDataResponseLpSize*: int = 5000
+  AutonatV2DialRequestCodec* = ProtoCodec("/libp2p/autonat/2/dial-request")
+  AutonatV2DialBackCodec* = ProtoCodec("/libp2p/autonat/2/dial-back")
 
 type
-  AutonatV2Codec* {.pure.} = enum
-    DialRequest = "/libp2p/autonat/2/dial-request"
-    DialBack = "/libp2p/autonat/2/dial-back"
-
   AutonatV2Response* = object
     reachability*: NetworkReachability
     dialResp*: DialResponse

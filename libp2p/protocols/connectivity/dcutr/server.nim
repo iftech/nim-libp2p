@@ -25,7 +25,7 @@ proc new*(
     maxDialableAddrs = 8,
 ): T =
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     var peerDialableAddrs: seq[MultiAddress]
     try:

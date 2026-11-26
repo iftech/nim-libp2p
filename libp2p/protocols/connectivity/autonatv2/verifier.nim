@@ -47,7 +47,7 @@ proc selectPeer(self: AutonatV2Verifier, excluded: openArray[PeerId]): Opt[PeerI
   self.switch.rng.pickOne(
     self.switch.connectedPeers(Direction.Out).filterIt(
       it notin excluded and
-        $AutonatV2Codec.DialRequest in self.switch.peerStore[ProtoBook][it] and
+        AutonatV2DialRequestCodec in self.switch.peerStore[ProtoBook][it] and
         not self.switch.hasIncomingConn(it)
     )
   )

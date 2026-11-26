@@ -3,7 +3,7 @@
 
 {.used.}
 
-import ../../libp2p/multiaddress
+import ../../libp2p/[multiaddress, protocodec]
 import ../../libp2p/utils/[opt, shortlog]
 import ../tools/unittest
 
@@ -60,3 +60,13 @@ suite "Short log":
     check shortLog(addrs) ==
       "[/ip4/127.0.0.1/tcp/1, /ip4/127.0.0.1/tcp/2, /ip4/127.0.0.1/tcp/3, " &
       "/ip4/127.0.0.1/tcp/4, /ip4/127.0.0.1/tcp/5]...(+1 more)"
+
+  test "codec collections keep full codecs and bound the item count":
+    var codecs: seq[ProtoCodec]
+    for i in 1 .. 6:
+      codecs.add(ProtoCodec("/meshsub/1.0." & $i))
+
+    check shortLog(codecs[0]) == "/meshsub/1.0.1"
+    check shortLog(codecs) ==
+      "[/meshsub/1.0.1, /meshsub/1.0.2, /meshsub/1.0.3, /meshsub/1.0.4, " &
+      "/meshsub/1.0.5]...(+1 more)"

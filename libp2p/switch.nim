@@ -207,14 +207,14 @@ method connect*(
   s.dialer.connect(address, allowUnknownPeerId)
 
 method dial*(
-    s: Switch, peerId: PeerId, protos: seq[string]
+    s: Switch, peerId: PeerId, protos: seq[ProtoCodec]
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Open a stream to a connected peer with the specified `protos`
 
   s.dialer.dial(peerId, protos)
 
 proc dial*(
-    s: Switch, peerId: PeerId, proto: string
+    s: Switch, peerId: PeerId, proto: ProtoCodec
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Open a stream to a connected peer with the specified `proto`
 
@@ -224,7 +224,7 @@ method dial*(
     s: Switch,
     peerId: PeerId,
     addrs: seq[MultiAddress],
-    protos: seq[string],
+    protos: seq[ProtoCodec],
     forceDial = false,
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Connected to a peer and open a stream
@@ -233,7 +233,7 @@ method dial*(
   s.dialer.dial(peerId, addrs, protos, forceDial)
 
 method dial*(
-    s: Switch, peerInfo: PeerInfo, protos: seq[string], forceDial = false
+    s: Switch, peerInfo: PeerInfo, protos: seq[ProtoCodec], forceDial = false
 ): Future[Stream] {.
     base, async: (raises: [DialFailedError, CancelledError], raw: true)
 .} =
@@ -242,7 +242,7 @@ method dial*(
   s.dial(peerInfo.peerId, peerInfo.addrs, protos, forceDial)
 
 method dial*(
-    s, other: Switch, protos: seq[string], forceDial = false
+    s, other: Switch, protos: seq[ProtoCodec], forceDial = false
 ): Future[Stream] {.
     base, async: (raises: [DialFailedError, CancelledError], raw: true)
 .} =
@@ -251,7 +251,7 @@ method dial*(
   s.dial(other.peerInfo, protos, forceDial)
 
 proc dial*(
-    s: Switch, peerId: PeerId, addrs: seq[MultiAddress], proto: string
+    s: Switch, peerId: PeerId, addrs: seq[MultiAddress], proto: ProtoCodec
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Connected to a peer and open a stream
   ## with the specified `proto`
@@ -259,14 +259,14 @@ proc dial*(
   dial(s, peerId, addrs, @[proto])
 
 proc dial*(
-    s: Switch, peerInfo: PeerInfo, proto: string, forceDial = false
+    s: Switch, peerInfo: PeerInfo, proto: ProtoCodec, forceDial = false
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Connects to a peer described by `peerInfo` and opens a stream with `proto`
 
   dial(s, peerInfo.peerId, peerInfo.addrs, @[proto], forceDial)
 
 proc dial*(
-    s, other: Switch, proto: string, forceDial = false
+    s, other: Switch, proto: ProtoCodec, forceDial = false
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Connects to another switch and opens a stream with the specified `proto`
 
@@ -312,7 +312,7 @@ proc unmount*(s: Switch, proto: LPProtocol): bool =
   s.peerInfo.notifyObservers()
   true
 
-proc setAdvertised*(s: Switch, codec: string, advertised: bool) =
+proc setAdvertised*(s: Switch, codec: ProtoCodec, advertised: bool) =
   ## Add or drop `codec` in the protocol list that identify sends.
   if (codec in s.peerInfo.protocols) == advertised:
     return
@@ -543,6 +543,6 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
     peerId = s.peerInfo.peerId,
     listenAddresses = s.peerInfo.listenAddrs,
     announcedAddresses = s.peerInfo.addrs,
-    protocols = s.peerInfo.protocols, #nolint
+    protocols = s.peerInfo.protocols,
     transports = s.transports.len,
     services = s.services.len

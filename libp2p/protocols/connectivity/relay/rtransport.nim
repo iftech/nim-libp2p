@@ -104,10 +104,9 @@ proc tryDial*(
   var dialedConn: Stream = conn
   let dialed =
     try:
-      case conn.protocol
-      of RelayV1Codec:
+      if conn.protocol == RelayV1Codec:
         await self.client.tryDialPeerV1(conn, address.dstPeerId, @[])
-      of RelayV2HopCodec:
+      elif conn.protocol == RelayV2HopCodec:
         let rc = RelayConnection.new(conn, 0, 0)
         dialedConn = rc
         await self.client.tryDialPeerV2(rc, address.dstPeerId, @[])

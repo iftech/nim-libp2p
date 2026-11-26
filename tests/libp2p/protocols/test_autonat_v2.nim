@@ -79,7 +79,7 @@ template dialbackConnectionTest(transport, scenario: string) =
     elif scenario == "fresh outbound":
       await src.connect(backPeer)
     let back =
-      await backPeer.dialer.dial(src.peerInfo.peerId, @[$AutonatV2Codec.DialBack])
+      await backPeer.dialer.dial(src.peerInfo.peerId, @[AutonatV2DialBackCodec])
     defer:
       await back.close()
       if separatePeer:
@@ -92,7 +92,7 @@ template dialbackConnectionTest(transport, scenario: string) =
       return false
 
   proc handleRequest(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()
@@ -125,7 +125,7 @@ template dialbackConnectionTest(transport, scenario: string) =
 
   let verifier = LPProtocol()
   verifier.handler = handleRequest
-  verifier.codec = $AutonatV2Codec.DialRequest
+  verifier.codec = AutonatV2DialRequestCodec
   dst.mount(verifier)
   client.setup(src)
   src.mount(client)
@@ -511,7 +511,7 @@ suite "AutonatV2":
       await allFutures(src.stop(), dst.stop())
     await src.connect(dst)
     let stream =
-      await src.dialer.dial(dst.peerInfo.peerId, @[$AutonatV2Codec.DialRequest])
+      await src.dialer.dial(dst.peerInfo.peerId, @[AutonatV2DialRequestCodec])
     defer:
       await stream.close()
     await stream.writeLp(
@@ -535,7 +535,7 @@ suite "AutonatV2":
     defer:
       await allFutures(src.stop(), dst.stop())
     let stream =
-      await src.dialer.dial(dst.peerInfo.peerId, @[$AutonatV2Codec.DialRequest])
+      await src.dialer.dial(dst.peerInfo.peerId, @[AutonatV2DialRequestCodec])
     defer:
       await stream.close()
     let request = AutonatV2Msg(
@@ -569,7 +569,7 @@ suite "AutonatV2":
 
     # the server holds its only permit while it waits for dial data that never comes
     let holdingStream =
-      await src.dialer.dial(dst.peerInfo.peerId, @[$AutonatV2Codec.DialRequest])
+      await src.dialer.dial(dst.peerInfo.peerId, @[AutonatV2DialRequestCodec])
     defer:
       await holdingStream.close()
 

@@ -149,7 +149,7 @@ type
   ## payloads and the GossipSub codec for control RPCs. Custom topic writers
   ## reuse the stream until it closes or the topic is unsubscribed.
   CustomStreamCreationProc* = proc(
-    destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
+    destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: ProtoCodec
   ): Stream {.gcsafe, raises: [].}
 
   CustomPeerSelectionProc* = proc(
@@ -175,7 +175,7 @@ type
     extensionsState*: ExtensionsState
     getStream*: GetStream # callback to establish a new send stream
     onEvent*: OnEvent # Connectivity updates for peer
-    codec*: string # the protocol that this peer joined from
+    codec*: ProtoCodec # the protocol that this peer joined from
     recvStreams: seq[RecvStream]
     sendStream*: Stream # cached send stream
     connectedFut: Future[void]
@@ -529,7 +529,7 @@ proc connectOnce(
       else:
         Opt.none(MultiAddress)
 
-    if p.codec == "":
+    if not p.codec.isSet:
       # if codec was not know, it can be retrieved from newly established stream
       p.codec = newStream.protocol
 
@@ -1288,7 +1288,7 @@ proc new*(
     peerId: PeerId,
     getStream: GetStream,
     onEvent: OnEvent,
-    codec: string,
+    codec: ProtoCodec,
     maxMessageSize: int,
     handler: RPCHandler,
     maxHighPriorityQueueLen: int = DefaultMaxHighPriorityQueueLen,
@@ -1312,7 +1312,7 @@ proc new*(
     getStream: getStream,
     onEvent: onEvent,
     codec: codec,
-    protocolSupported: codec != "",
+    protocolSupported: codec.isSet,
     peerId: peerId,
     connectedFut: newFuture[void](),
     maxMessageSize: maxMessageSize,

@@ -639,7 +639,7 @@ method connect*(
   return muxed.connection.peerId
 
 proc negotiateStream*(
-    self: Dialer, stream: Stream, protos: seq[string]
+    self: Dialer, stream: Stream, protos: seq[ProtoCodec]
 ): Future[Stream] {.async: (raises: [CancelledError, LPError]).} =
   ## Negotiates one protocol from `protos` on an open stream.
   ##
@@ -661,7 +661,7 @@ proc negotiateStream*(
   trace "Protocol negotiation started", stream, protocols = protos
   let preferredProto =
     if self.peerStore.isNil:
-      Opt.none(string)
+      Opt.none(ProtoCodec)
     else:
       self.peerStore.firstSupportedProtocol(stream.peerId, protos)
 
@@ -679,7 +679,7 @@ proc negotiateStream*(
     if not protocol.reserveOutgoing(selectedStream.peerId):
       raise newException(
         DialFailedError,
-        "Outbound stream budget exceeded for protocol: " & selectedProto,
+        "Outbound stream budget exceeded for protocol: " & $selectedProto,
       )
 
     proc releaseOnClose() {.async: (raises: []).} =
@@ -721,7 +721,7 @@ proc tryDial*(
   mux.connection.observedAddr
 
 method dial*(
-    self: Dialer, peerId: PeerId, protos: seq[string]
+    self: Dialer, peerId: PeerId, protos: seq[ProtoCodec]
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError]).} =
   ## create a protocol stream over an
   ## existing connection
@@ -742,14 +742,14 @@ method dial*(
     raise exc
   except CatchableError as exc:
     trace "Protocol stream establishment failed",
-      err = exc.msg, peerId, protocols = protos #nolint
+      err = exc.msg, peerId, protocols = protos
     raise newException(DialFailedError, "failed dial existing: " & exc.msg)
 
 method dial*(
     self: Dialer,
     peerId: PeerId,
     addrs: seq[MultiAddress],
-    protos: seq[string],
+    protos: seq[ProtoCodec],
     forceDial = false,
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError]).} =
   ## create a protocol stream and establish
@@ -781,7 +781,7 @@ method dial*(
     raise exc
   except CatchableError as exc:
     debug "Protocol stream establishment failed",
-      err = exc.msg, peerId, protocols = protos, addresses = dialAddrs, conn #nolint
+      err = exc.msg, peerId, protocols = protos, addresses = dialAddrs, conn
     raise newException(
       DialFailedError,
       "failed new dial: peer_id=" & $peerId & " protos=" & $protos & " addrs=" &

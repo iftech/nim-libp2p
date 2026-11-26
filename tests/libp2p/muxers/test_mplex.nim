@@ -547,7 +547,7 @@ suite "Mplex":
         mplex.getStreams().len == 1
 
       let stream = LPChannel(mplex.getStreams()[0])
-      stream.protocol = "/test/1.0.0"
+      stream.protocol = ProtoCodec("/test/1.0.0")
       await conn.pushData(encodeMessage(0, MessageType.MsgOut, @[0'u8, 1, 2, 3, 4]))
 
       checkUntilTimeoutCustom(1.seconds, 10.millis):

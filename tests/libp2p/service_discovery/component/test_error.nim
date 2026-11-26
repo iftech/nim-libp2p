@@ -74,7 +74,7 @@ suite "Service Discovery Component - Error Handling":
     let received =
       Future[void].Raising([CancelledError]).init("service discovery request received")
     registrarNode.handler = proc(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       try:
         discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
@@ -220,7 +220,9 @@ suite "Service Discovery Component - Error Handling":
     let registrar = createSwitch()
     let oversizedReply = newSeq[byte](ServiceDiscoveryMaxMsgSize + 1)
 
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       defer:
         await stream.close()
       try:

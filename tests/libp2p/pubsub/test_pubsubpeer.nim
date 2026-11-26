@@ -46,6 +46,10 @@ proc getStream(d: FlakyDialer): GetStream =
       raise (ref GetStreamDialError)(msg: "unreachable")
     return d.stream
 
+const
+  OtherCodec = ProtoCodec("/other/1")
+  TestOtherCodec = ProtoCodec("/test/other/1")
+
 proc newPeer(
     getStream: GetStream, baseDelay, maxDelay: Duration, onEvent: OnEvent = nil
 ): PubSubPeer =
@@ -79,7 +83,7 @@ proc notifyRecvStream(p: PubSub): AsyncEvent =
   let opened = newAsyncEvent()
   let handler = p.handler
   p.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     p.handler = handler
     let handling = handler(stream, proto)
@@ -141,7 +145,7 @@ suite "PubSubPeer send stream":
     await received.wait()
     check gossip.peers[remoteId].hasRecvStream()
     # A stale snapshot must not override a negotiated inbound stream.
-    sw.peerStore[ProtoBook][remoteId] = @["/other/1"]
+    sw.peerStore[ProtoBook][remoteId] = @[OtherCodec]
     check gossip.peers[remoteId].connected
     await gossip.stop()
     sw.peerStore[ProtoBook][remoteId] = remoteGossip.codecs
@@ -170,7 +174,7 @@ suite "PubSubPeer send stream":
     peer.sendStreamRetryMaxDelay = 2.milliseconds
     gossip.subscribePeer(remoteId)
     await dialer.attemptReached.wait()
-    sw.peerStore.updatePeerInfo(IdentifyInfo(peerId: remoteId, protos: @["/other/1"]))
+    sw.peerStore.updatePeerInfo(IdentifyInfo(peerId: remoteId, protos: @[OtherCodec]))
     await sleepAsync(10.milliseconds)
     check:
       remoteId notin gossip.peers
@@ -269,7 +273,7 @@ suite "PubSubPeer send stream":
       PeerId.random(),
       dial,
       nil,
-      "",
+      UnsetProtoCodec,
       1024,
       voidPeerHandler,
       sendStreamRetryBaseDelay = 1.milliseconds,
@@ -337,7 +341,9 @@ suite "PubSubPeer send stream":
   asyncTest "budget rejection backs off and recovers when a slot is released":
     let remote = newPeer(nil, 50.milliseconds, 200.milliseconds)
     let admitted = Future[void].Raising([CancelledError]).init()
-    proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handler(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       if not admitted.finished:
         admitted.complete()
       await remote.handleRecvStream(stream)
@@ -348,7 +354,7 @@ suite "PubSubPeer send stream":
     let dialer = makeStandardSwitch(TcpAutoAddress)
     listener.mount(protocol)
     proc echoHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       try:
         for _ in 0 ..< 2:
@@ -356,14 +362,14 @@ suite "PubSubPeer send stream":
       except LPStreamError:
         discard
 
-    listener.mount(LPProtocol.new(@["/test/other/1"], echoHandler))
+    listener.mount(LPProtocol.new(@[TestOtherCodec], echoHandler))
     await listener.start()
     await dialer.start()
     defer:
       await dialer.stop()
       await listener.stop()
     let other = await dialer.dial(
-      listener.peerInfo.peerId, listener.peerInfo.addrs, "/test/other/1"
+      listener.peerInfo.peerId, listener.peerInfo.addrs, TestOtherCodec
     )
     # Complete optimistic negotiation so this idle stream does not block mplex reads.
     await other.writeLp(@[byte 41])

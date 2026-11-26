@@ -15,13 +15,15 @@ import
     peerinfo,
     crypto/crypto,
     protocols/protocol,
+    muxers/yamux/yamux,
+    muxers/mplex/mplex,
     protocols/secure/noise,
     protocols/secure/plaintext,
     protocols/secure/secure,
   ]
 import ../../tools/[unittest, crypto, futures, multiaddress, switch_builder]
 
-const TestCodec = "/test/proto/1.0.0"
+const TestCodec = ProtoCodec("/test/proto/1.0.0")
 
 type TestProto = ref object of LPProtocol
 
@@ -29,7 +31,7 @@ type TestProto = ref object of LPProtocol
 
 proc new(T: typedesc[TestProto]): T =
   let p = T()
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       let msg = string.fromBytes(await stream.readLp(1024))
       check "Hello!" == msg
@@ -62,9 +64,9 @@ suite "Noise":
 
   test "stream muxers use the registered Noise extension field":
     let
-      muxer = "/yamux/1.0.0"
+      muxer = YamuxCodec
       encoded = Protobuf.encode(NoiseExtensionsMsg(streamMuxers: @[muxer]))
-      expected = @[0x12'u8, 0x0C'u8] & muxer.toBytes()
+      expected = @[0x12'u8, 0x0C'u8] & ($muxer).toBytes()
 
     check encoded == expected
     check Protobuf.decode(expected, NoiseExtensionsMsg).streamMuxers == @[muxer]
@@ -264,8 +266,8 @@ suite "Noise":
     let
       initiatorMuxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
       responderMuxer = switch1.connManager.getConnections()[switch2.peerInfo.peerId][0]
-    check SecureConn(initiatorMuxer.connection).earlyMuxer == "/yamux/1.0.0"
-    check SecureConn(responderMuxer.connection).earlyMuxer == "/yamux/1.0.0"
+    check SecureConn(initiatorMuxer.connection).earlyMuxer == YamuxCodec
+    check SecureConn(responderMuxer.connection).earlyMuxer == YamuxCodec
 
     await allFuturesRaising(switch1.stop(), switch2.stop())
 
@@ -285,7 +287,7 @@ suite "Noise":
     check "Hello!" == msg
     await conn.close()
     let muxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
-    check SecureConn(muxer.connection).earlyMuxer == "/mplex/6.7.0"
+    check SecureConn(muxer.connection).earlyMuxer == MplexCodec
 
     await allFuturesRaising(switch1.stop(), switch2.stop())
 
@@ -307,8 +309,8 @@ suite "Noise":
     let
       initiatorMuxer = switch2.connManager.getConnections()[switch1.peerInfo.peerId][0]
       responderMuxer = switch1.connManager.getConnections()[switch2.peerInfo.peerId][0]
-    check SecureConn(initiatorMuxer.connection).earlyMuxer.len == 0
-    check SecureConn(responderMuxer.connection).earlyMuxer.len == 0
+    check not SecureConn(initiatorMuxer.connection).earlyMuxer.isSet
+    check not SecureConn(responderMuxer.connection).earlyMuxer.isSet
 
     await allFuturesRaising(switch1.stop(), switch2.stop())
 

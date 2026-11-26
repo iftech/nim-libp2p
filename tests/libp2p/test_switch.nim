@@ -35,7 +35,7 @@ import
 
 privateAccess(Switch)
 
-const TestCodec = "/test/proto/1.0.0"
+const TestCodec = ProtoCodec("/test/proto/1.0.0")
 
 type TestProto = ref object of LPProtocol
 
@@ -72,7 +72,9 @@ suite "Switch":
 
   asyncTest "e2e use switch dial proto string":
     let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         let msg = string.fromBytes(await stream.readLp(1024))
         check "Hello!" == msg
@@ -111,7 +113,9 @@ suite "Switch":
 
   asyncTest "e2e use switch dial proto string with custom matcher":
     let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         let msg = string.fromBytes(await stream.readLp(1024))
         check "Hello!" == msg
@@ -128,7 +132,7 @@ suite "Switch":
 
     let callProto = TestCodec & "/pew"
 
-    proc match(proto: string): bool {.gcsafe.} =
+    proc match(proto: ProtoCodec): bool {.gcsafe.} =
       return proto == callProto
 
     let switch1 = makeStandardSwitch()
@@ -154,7 +158,9 @@ suite "Switch":
     check not switch2.isConnected(switch1)
 
   asyncTest "e2e use connect then dial":
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         let msg = string.fromBytes(await stream.readLp(1024))
         check "Hello!" == msg
@@ -628,7 +634,9 @@ suite "Switch":
     let switch1 = makeStandardSwitch(TcpAutoAddress)
     let switch2 = makeStandardSwitch(TcpAutoAddress)
 
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       # Wait for the remote's dial to fully complete before disconnecting,
       # to avoid racing with multistream protocol negotiation completion
       # (the handler fires before the remote reads the protocol confirmation).
@@ -701,7 +709,9 @@ suite "Switch":
     await allFuturesRaising(transport.stop(), switch.stop())
 
   asyncTest "e2e calling closeWithEOF on the same stream should not assert":
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         discard await stream.readLp(100)
       except LPStreamError:
@@ -867,7 +877,9 @@ suite "Switch":
 
   asyncTest "e2e peer store":
     let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         let msg = string.fromBytes(await stream.readLp(1024))
         check "Hello!" == msg
@@ -916,7 +928,9 @@ suite "Switch":
 
   asyncTest "e2e LastSeenOutboundBook tracks outbound connections":
     let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         let msg = string.fromBytes(await stream.readLp(1024))
         check "Hello!" == msg
@@ -966,7 +980,9 @@ suite "Switch":
       # this randomly locks the Windows CI job
       skip()
     else:
-      proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      proc handle(
+          stream: Stream, proto: ProtoCodec
+      ) {.async: (raises: [CancelledError]).} =
         try:
           let msg = string.fromBytes(await stream.readLp(1024))
           check "Hello!" == msg
@@ -1119,7 +1135,9 @@ suite "Switch":
 
   asyncTest "mount unstarted protocol":
     let handleFinished = newWaitGroup(1)
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         check "test123" == string.fromBytes(await stream.readLp(1024))
         await stream.writeLp("test456")
@@ -1160,8 +1178,8 @@ suite "Switch":
     check switch.tryMount(noHandler).isOfError(MissingHandlerCause)
 
     let noCodec = LPProtocol.new(
-      @[""],
-      proc(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      @[UnsetProtoCodec],
+      proc(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
         discard,
     )
     check switch.tryMount(noCodec).isOfError(MissingCodecCause)
@@ -1318,9 +1336,9 @@ suite "Switch :: IdentifyPusher Service":
     await startConnectedPushers(switch1, switch2)
 
     # mount new protocol to switch2
-    let codecs = "/switch/protocol/1.0.0"
+    let codecs = ProtoCodec("/switch/protocol/1.0.0")
     proc dummyHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       await stream.close()
 

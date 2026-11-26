@@ -19,7 +19,7 @@ proc newQueuePeer*(
     maxMessageSize = 1024,
     getStream: GetStream = nil,
     onEvent: OnEvent = nil,
-    codec = "",
+    codec = UnsetProtoCodec,
 ): PubSubPeer =
   PubSubPeer.new(
     PeerId.random(),

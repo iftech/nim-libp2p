@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../../protocodec
 import std/[tables, deques, sequtils]
 import chronos, chronicles, metrics
 import ../../../results
@@ -15,7 +16,7 @@ import ../rpc/[messages, message, protobuf, topicrpc]
 export topicrpc, outboundqueue
 
 const
-  TopicStreamsCodec* = "/gsts/v0beta"
+  TopicStreamsCodec* = ProtoCodec("/gsts/v0beta")
   TopicStreamDialTimeout = 5.seconds
   TopicStreamHeaderTimeout = 1.seconds
 

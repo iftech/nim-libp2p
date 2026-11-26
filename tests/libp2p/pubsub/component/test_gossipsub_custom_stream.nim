@@ -37,7 +37,7 @@ suite "GossipSub Component - Custom Stream Support":
     nodes[0].customStreamCallbacks = Opt.some(
       CustomStreamCallbacks(
         customStreamCreationCB: proc(
-            destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
+            destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: ProtoCodec
         ): Stream =
           return dummyStream,
         customPeerSelectionCB: proc(
@@ -78,12 +78,12 @@ suite "GossipSub Component - Custom Stream Support":
       var
         customStream: Stream
         opened = 0
-        requestedCodec: string
+        requestedCodec: ProtoCodec
 
       nodes[0].customStreamCallbacks = Opt.some(
         CustomStreamCallbacks(
           customStreamCreationCB: proc(
-              destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
+              destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: ProtoCodec
           ): Stream =
             inc opened
             requestedCodec = codec
@@ -142,7 +142,7 @@ suite "GossipSub Component - Custom Stream Support":
     nodes[0].customStreamCallbacks = Opt.some(
       CustomStreamCallbacks(
         customStreamCreationCB: proc(
-            destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
+            destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: ProtoCodec
         ): Stream =
           inc opened
           return customStream

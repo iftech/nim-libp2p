@@ -79,7 +79,7 @@ suite "GossipSub Component - Topic streams violations and penalties":
     let controlOpened = newFuture[void]("controlStreamOpened")
     let controlProtocol = LPProtocol(codecs: @[GossipSubCodec_13])
     controlProtocol.handler = proc(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       controlOpened.completeOnce()
       await stream.join()

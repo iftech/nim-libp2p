@@ -29,7 +29,7 @@ suite "GossipSub Component - Topic streams lifecycle":
     let protocol = nodes[0].switch.ms.lookupProtocol(TopicStreamsCodec).get()
     let handleTopicStream = protocol.handler
     protocol.handler = proc(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       await handleTopicStream(stream, proto)
       readerDone.fire()
@@ -97,7 +97,7 @@ suite "GossipSub Component - Topic streams lifecycle":
     let protocol = nodes[1].switch.ms.lookupProtocol(TopicStreamsCodec).get()
     let handleTopicStream = protocol.handler
     protocol.handler = proc(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       await handleTopicStream(stream, proto)
       readerDone.fire()

@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../../protocodec
 import results, chronos, chronicles
 import
   protobuf_serialization,
@@ -17,7 +18,7 @@ logScope:
   topics = "libp2p autonat"
 
 const
-  AutonatCodec* = "/libp2p/autonat/1.0.0"
+  AutonatCodec* = ProtoCodec("/libp2p/autonat/1.0.0")
   AddressLimit* = 8
   DefaultMaxIncomingStreamsTotal* = 8
   DefaultMaxIncomingStreamsPerPeer* = 1

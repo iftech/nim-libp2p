@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../protocodec
 import std/[sets, hashes, tables, sequtils]
 import chronos, chronicles, metrics
 import
@@ -25,7 +26,7 @@ logScope:
   topics = "libp2p floodsub"
 
 const
-  FloodSubCodec* = "/floodsub/1.0.0"
+  FloodSubCodec* = ProtoCodec("/floodsub/1.0.0")
   FloodSubSeenMaxSize* = 1_000_000 # ~112 bytes per entry, so a ~120 MB ceiling
 
 type FloodSub* = ref object of PubSub
@@ -288,7 +289,10 @@ func validateOverheadRateLimit(f: FloodSub): Result[void, cstring] =
   ok()
 
 method getOrCreatePeer*(
-    f: FloodSub, peerId: PeerId, protosToDial: seq[string], protoNegotiated: string = ""
+    f: FloodSub,
+    peerId: PeerId,
+    protosToDial: seq[ProtoCodec],
+    protoNegotiated: ProtoCodec = UnsetProtoCodec,
 ): PubSubPeer =
   let peer = procCall PubSub(f).getOrCreatePeer(peerId, protosToDial, protoNegotiated)
   # a returning peer keeps its bucket, so a new stream is no way to refill it
@@ -305,7 +309,9 @@ method initPubSub*(f: FloodSub) {.raises: [InitializationError].} =
   f.seen = TimedCache[SaltedId].init(2.minutes, maxSize = FloodSubSeenMaxSize)
   f.rng.generate(f.seenSalt)
 
-  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handler(
+      stream: Stream, proto: ProtoCodec
+  ) {.async: (raises: [CancelledError]).} =
     try:
       await f.handleConn(stream, proto)
     except CancelledError as exc:

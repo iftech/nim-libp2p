@@ -9,7 +9,7 @@ import std/strformat
 from std/times import cpuTime
 import chronos
 import ../../libp2p/protocols/pubsub/pubsubpeer
-import ../../libp2p/peerid
+import ../../libp2p/[peerid, protocodec]
 import ../tools/crypto
 
 const
@@ -50,7 +50,7 @@ proc bench(stalled: bool) {.async.} =
     PeerId.random(rng()).expect("peer id"),
     getStream,
     nil,
-    "/meshsub/1.2.0",
+    ProtoCodec("/meshsub/1.2.0"),
     maxMessageSize = 65536,
     handler = handler,
   )

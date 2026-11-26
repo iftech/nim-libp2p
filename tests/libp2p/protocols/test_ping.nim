@@ -94,7 +94,7 @@ suite "Ping":
     type FakePing = ref object of LPProtocol
     let fakePingProto = FakePing()
     proc fakeHandle(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       try:
         var

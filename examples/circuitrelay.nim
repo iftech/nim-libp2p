@@ -24,11 +24,11 @@ proc createCircuitRelaySwitch(r: Relay): Switch =
 
 proc main() {.async.} =
   # Create a custom protocol
-  let customProtoCodec = "/test"
+  let customProtoCodec = ProtoCodec("/test")
   var proto = new LPProtocol
   proto.codec = customProtoCodec
   proto.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     try:
       var msg = string.fromBytes(await stream.readLp(1024))

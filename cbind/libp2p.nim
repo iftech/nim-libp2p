@@ -55,7 +55,7 @@ type LibP2P* = ref object
   kad: Opt[KadDHT]
   relayClient: Opt[RelayClient]
   topicHandlers: Table[string, TopicHandler]
-  customProtocols: Table[string, LPProtocol]
+  customProtocols: Table[ProtoCodec, LPProtocol]
   streams: StreamRegistry
   running: bool
 
@@ -689,9 +689,9 @@ proc libp2pDial*(
   # connection the caller did not open.
   let dialing =
     if multiaddresses.len == 0:
-      lib.switch.dial(peerId, req.proto)
+      lib.switch.dial(peerId, ProtoCodec(req.proto))
     else:
-      lib.switch.dial(peerId, multiaddresses, @[req.proto], req.forceDial)
+      lib.switch.dial(peerId, multiaddresses, @[ProtoCodec(req.proto)], req.forceDial)
   let stream =
     try:
       await dialing.wait(callTimeout(req.timeoutMs))
@@ -712,7 +712,7 @@ proc libp2pDialCircuitRelay*(
     return err(error)
   let stream =
     try:
-      await lib.switch.dial(dstPeerId, @[relayCircuitAddr], req.proto).wait(
+      await lib.switch.dial(dstPeerId, @[relayCircuitAddr], ProtoCodec(req.proto)).wait(
         callTimeout(req.timeoutMs)
       )
     except AsyncTimeoutError:
@@ -849,14 +849,15 @@ proc libp2pMountProtocol*(
   if lib.switch.isNil():
     return err("libp2p switch is not initialized")
 
+  let codec = ProtoCodec(proto)
   let peerInfo = lib.switch.peerInfo
-  if lib.customProtocols.hasKey(proto) or proto in peerInfo.protocols:
+  if lib.customProtocols.hasKey(codec) or codec in peerInfo.protocols:
     return err(proto, "protocol already mounted")
 
   # Capture the registry ref, not `lib`: a closure over `lib` stored back into `lib.customProtocols` would cycle and leak under `--mm:refc`.
   let streams = lib.streams
   proc handle(
-      stream: Stream, selectedProto: string
+      stream: Stream, selectedProto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     if streams.closed:
       return
@@ -871,7 +872,7 @@ proc libp2pMountProtocol*(
       discard streams.release(streamId)
     onIncomingStream(
       IncomingStreamEvent(
-        proto: selectedProto, streamId: streamId, peerId: $stream.peerId
+        proto: $selectedProto, streamId: streamId, peerId: $stream.peerId
       )
     )
     if not await releaseWaiter.withTimeout(StreamReleaseTimeoutMs.milliseconds):
@@ -879,7 +880,7 @@ proc libp2pMountProtocol*(
         streamId, peerId = shortLog(stream.peerId)
       await stream.reset()
 
-  let mountedProtocol = LPProtocol.new(codecs = @[proto], handler = handle)
+  let mountedProtocol = LPProtocol.new(codecs = @[codec], handler = handle)
   await mountedProtocol.start()
 
   try:
@@ -888,7 +889,7 @@ proc libp2pMountProtocol*(
     await mountedProtocol.stop()
     return err(e)
 
-  lib.customProtocols[proto] = mountedProtocol
+  lib.customProtocols[codec] = mountedProtocol
   ok(true)
 
 proc libp2pGossipsubPublish*(
@@ -1254,7 +1255,7 @@ proc libp2pPeerstoreGetPeerInfo*(
   try:
     var entry = PeerStoreEntryResponse(peerId: $pid)
     entry.addrs = peerStore[AddressBook][pid].mapIt($it)
-    entry.protocols = peerStore[ProtoBook][pid]
+    entry.protocols = peerStore[ProtoBook][pid].mapIt($it)
     if peerStore[KeyBook].contains(pid):
       entry.publicKey = peerStore[KeyBook][pid].getBytes().valueOr:
         seq[byte].default
@@ -1279,7 +1280,7 @@ proc libp2pPeerstoreAddPeer*(
   let peerStore = lib.switch.peerStore
   peerStore[AddressBook].extend(pid, addrs)
   if req.protocols.len > 0:
-    peerStore[ProtoBook].extend(pid, req.protocols)
+    peerStore[ProtoBook].extend(pid, req.protocols.mapIt(ProtoCodec(it)))
   ok(true)
 
 proc libp2pPeerstoreSetPeerAddresses*(
@@ -1301,7 +1302,7 @@ proc libp2pPeerstoreSetPeerProtocols*(
   ## Replaces the peer store's protocol list for `peerId`.
   let pid = PeerId.init(req.peerId).valueOr:
     return err(error)
-  lib.switch.peerStore[ProtoBook][pid] = req.protocols
+  lib.switch.peerStore[ProtoBook][pid] = req.protocols.mapIt(ProtoCodec(it))
   ok(true)
 
 proc libp2pPeerstoreDeletePeer*(

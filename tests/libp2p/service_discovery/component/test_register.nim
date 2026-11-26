@@ -22,7 +22,7 @@ type RegisterLog = ref object
 proc answerWait(registrar: ServiceDiscovery, ticket: Ticket): RegisterLog =
   let log = RegisterLog(second: newFuture[void]("second REGISTER"))
   registrar.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     let reply = kad_protobuf.Message(
       msgType: Opt.some(kad_protobuf.MessageType.register),

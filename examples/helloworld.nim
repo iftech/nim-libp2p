@@ -7,13 +7,13 @@ import libp2p
 ##
 # Create our custom protocol
 ##
-const TestCodec = "/test/proto/1.0.0" # custom protocol string identifier
+const TestCodec = ProtoCodec("/test/proto/1.0.0") # custom protocol string identifier
 
 type TestProto = ref object of LPProtocol # declare a custom protocol
 
 proc new(T: typedesc[TestProto]): T =
   # every incoming stream will be handled in this closure
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       echo "Got from remote - ", string.fromBytes(await stream.readLp(1024))
       await stream.writeLp("Roger p2p!")

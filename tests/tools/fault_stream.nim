@@ -114,13 +114,13 @@ method dial*(
     self: FaultSwitch,
     peerId: PeerId,
     addrs: seq[MultiAddress],
-    protos: seq[string],
+    protos: seq[ProtoCodec],
     forceDial = false,
 ): Future[Stream] {.async: (raises: [DialFailedError, CancelledError]).} =
   self.stream
 
 proc readThenReplyTillEof*(reply: seq[byte]): LPProtoHandler =
-  proc(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       while true:
         discard await stream.readLp(MaxRequestSize)
@@ -132,7 +132,7 @@ proc readThenReplyTillEof*(reply: seq[byte]): LPProtoHandler =
 
 proc readTillEof*(): LPProtoHandler =
   ## Read requests and answer none. EOF, a reset or a cancel ends the handler.
-  proc(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       while true:
         discard await stream.readLp(MaxRequestSize)

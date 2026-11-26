@@ -6,9 +6,9 @@
 import std/[hashes, oids, strformat]
 import results
 import chronicles, chronos, metrics
-import lpstream, ../multiaddress, ../peerinfo, ../errors
+import lpstream, ../multiaddress, ../peerinfo, ../errors, ../protocodec
 
-export lpstream, peerinfo, errors, results
+export lpstream, peerinfo, errors, results, protocodec
 
 logScope:
   topics = "libp2p connection"
@@ -28,7 +28,7 @@ type
     peerId*: PeerId
     observedAddr*: Opt[MultiAddress]
     localAddr*: Opt[MultiAddress]
-    protocol*: string # protocol used by the connection, used as metrics tag
+    protocol*: ProtoCodec # protocol used by the connection, used as metrics tag
     transportDir*: Direction # underlying transport (usually socket) direction
     openedAt*: Moment # initialization time of this layer; unwrap for transport age
     when defined(libp2p_agents_metrics):

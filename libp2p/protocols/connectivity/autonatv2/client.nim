@@ -77,7 +77,7 @@ proc new*(
 
   # handler for DialBack messages
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()
@@ -98,7 +98,7 @@ proc new*(
       trace "Stream closed by peer", err = exc.msg, peerId = stream.peerId
 
   client.handler = handleStream
-  client.codec = $AutonatV2Codec.DialBack
+  client.codec = AutonatV2DialBackCodec
   client
 
 proc setup*(self: AutonatV2Client, switch: Switch) =
@@ -175,7 +175,7 @@ proc trySendDialRequest*(
 
   var dialResp: DialResponse
   try:
-    let stream = await self.dialer.dial(pid, @[$AutonatV2Codec.DialRequest])
+    let stream = await self.dialer.dial(pid, @[AutonatV2DialRequestCodec])
     defer:
       await stream.close()
 

@@ -7,14 +7,16 @@ import chronos, stew/byteutils
 import ../../libp2p/[switch, peerinfo, peerstore, multiaddress, protocols/protocol]
 import ../tools/[unittest, multiaddress, switch_builder]
 
-const TestCodec = "/test/proto/1.0.0"
+const TestCodec = ProtoCodec("/test/proto/1.0.0")
 
 suite "Multistream - Component":
   teardown:
     checkTrackers()
 
   asyncTest "optimistic stream reads the response after a half-close":
-    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+    proc handle(
+        stream: Stream, proto: ProtoCodec
+    ) {.async: (raises: [CancelledError]).} =
       try:
         let request = string.fromBytes(await stream.readLp(1024))
         await stream.writeLp("re: " & request)

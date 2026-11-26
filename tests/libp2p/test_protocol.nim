@@ -8,29 +8,27 @@ import ../../libp2p/[peerid, protocols/protocol, stream/connection]
 import ../tools/[unittest, crypto, metrics_utils]
 
 proc handler(
-    stream: Stream, proto: string
+    stream: Stream, proto: ProtoCodec
 ): Future[void] {.async: (raises: [CancelledError]).} =
   discard
 
 proc rejectionCounterIn(proto: LPProtocol, scope: string): float64 =
-  metricValue(
-    libp2p_protocol_stream_cap_rejections_total, [proto.codecs[0], dirIn, scope]
-  )
+  metricValue(libp2p_protocol_stream_cap_rejections_total, [$proto.codec, dirIn, scope])
 
 proc rejectionCounterOut(proto: LPProtocol, scope: string): float64 =
   metricValue(
-    libp2p_protocol_stream_cap_rejections_total, [proto.codecs[0], dirOut, scope]
+    libp2p_protocol_stream_cap_rejections_total, [$proto.codec, dirOut, scope]
   )
 
 proc openGaugeIn(proto: LPProtocol): float64 =
-  metricValue(libp2p_protocol_streams_open, [proto.codecs[0], dirIn])
+  metricValue(libp2p_protocol_streams_open, [$proto.codec, dirIn])
 
 proc openGaugeOut(proto: LPProtocol): float64 =
-  metricValue(libp2p_protocol_streams_open, [proto.codecs[0], dirOut])
+  metricValue(libp2p_protocol_streams_open, [$proto.codec, dirOut])
 
-template clearGauges(codecs: seq[string]) =
-  libp2p_protocol_streams_open.set(0, labelValues = [codecs[0], dirIn])
-  libp2p_protocol_streams_open.set(0, labelValues = [codecs[0], dirOut])
+template clearGauges(codecs: seq[ProtoCodec]) =
+  libp2p_protocol_streams_open.set(0, labelValues = [$codecs[0], dirIn])
+  libp2p_protocol_streams_open.set(0, labelValues = [$codecs[0], dirOut])
 
 template assertNoLimits(p: LPProtocol) =
   # when there are no limits reserve and release will always succeed
@@ -70,7 +68,7 @@ template assertNoLimits(p: LPProtocol) =
   p.releaseOutgoing(peerId2)
 
 suite "LPProtocol stream budget":
-  const codecs = @["/test/1.0.0"]
+  const codecs = @[ProtoCodec("/test/1.0.0")]
   let
     peerId1 = PeerId.random()
     peerId2 = PeerId.random()
@@ -470,8 +468,8 @@ suite "LPProtocol stream budget":
       p.openGaugeOut() == 0
 
   test "different protocols have different gauge":
-    let p1 = LPProtocol.new(@["/proto-one/1.0.0"], handler)
-    let p2 = LPProtocol.new(@["/proto-two/1.0.0"], handler)
+    let p1 = LPProtocol.new(@[ProtoCodec("/proto-one/1.0.0")], handler)
+    let p2 = LPProtocol.new(@[ProtoCodec("/proto-two/1.0.0")], handler)
 
     check:
       p1.reserveOutgoing(peerId1)
@@ -490,8 +488,12 @@ suite "LPProtocol stream budget":
       p1.openGaugeOut() == 0 # protocol one gauge is unchanged
 
   test "different protocols have different rejection counter":
-    let p1 = LPProtocol.new(@["/proto-one/1.0.0"], handler, maxIncomingStreamsTotal = 1)
-    let p2 = LPProtocol.new(@["/proto-two/1.0.0"], handler, maxIncomingStreamsTotal = 1)
+    let p1 = LPProtocol.new(
+      @[ProtoCodec("/proto-one/1.0.0")], handler, maxIncomingStreamsTotal = 1
+    )
+    let p2 = LPProtocol.new(
+      @[ProtoCodec("/proto-two/1.0.0")], handler, maxIncomingStreamsTotal = 1
+    )
 
     check:
       p1.reserveIncoming(peerId1)
