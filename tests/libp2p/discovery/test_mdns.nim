@@ -140,6 +140,39 @@ suite "mDNS discovery":
       announcement = MdnsService.new().announcement(peer, FixtureInstance)
     check encodeMessage(announcement) == packet(AnnouncementHex)
 
+  test "rust-libp2p TXT name must match a live service PTR":
+    let
+      service = MdnsService.new()
+      id = PeerId.init(FixturePeerId).get()
+      local = PeerId.random()
+    var message = DnsMessage(
+      response: true,
+      answers: @[
+        DnsRecord(name: @ServiceLabels, kind: PTR, ttl: 120, target: @[FixtureInstance])
+      ],
+      additionals: @[
+        DnsRecord(
+          name: @[FixtureInstance.toUpperAscii()],
+          kind: TXT,
+          ttl: 120,
+          strings: @[DnsAddressPrefix & FixtureAddress & PeerIdSuffix & $id],
+        )
+      ],
+    )
+
+    check service.peers(parseMessage(encodeMessage(message)), local) ==
+      @[MdnsPeer(peerId: id, addrs: @[ma(FixtureAddress)])]
+    message.answers[0].target = @[PeerInstance]
+    check service.peers(message, local).len == 0
+    message.answers[0].target = @[FixtureInstance]
+    message.answers[0].ttl = 0
+    check service.peers(message, local).len == 0
+    message.answers[0].ttl = 120
+    message.answers[0].name = @["_other", "_udp", "local"]
+    check service.peers(message, local).len == 0
+    message.answers.setLen(0)
+    check service.peers(message, local).len == 0
+
   test "ignore unrelated services, queries, expired and invalid TXT entries":
     let
       service = MdnsService.new()
