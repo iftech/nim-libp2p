@@ -204,7 +204,7 @@ proc refreshInterfaces*(network: MdnsNetwork) =
           membership4(network.transport, address, true).isOk:
         current4.add(address)
       else:
-        debug "IPv4 mDNS multicast join failed", address = address
+        debug "IPv4 mDNS multicast join failed", address = address #nolint
   if not network.transport6.isNil:
     for index in network.interfaces6:
       if index notin wanted6:
@@ -249,7 +249,7 @@ proc multicast4(
         if await network.transport.sendPacket(packet, MdnsDestination):
           return true
       else:
-        debug "IPv4 mDNS multicast interface selection failed", address = address
+        debug "IPv4 mDNS multicast interface selection failed", address = address #nolint
 
 proc multicast6(
     network: MdnsNetwork, packet: seq[byte]

@@ -742,7 +742,7 @@ method dial*(
     raise exc
   except CatchableError as exc:
     trace "Protocol stream establishment failed",
-      err = exc.msg, peerId, protocols = protos
+      err = exc.msg, peerId, protocols = protos #nolint
     raise newException(DialFailedError, "failed dial existing: " & exc.msg)
 
 method dial*(
@@ -781,7 +781,7 @@ method dial*(
     raise exc
   except CatchableError as exc:
     debug "Protocol stream establishment failed",
-      err = exc.msg, peerId, protocols = protos, addresses = dialAddrs, conn
+      err = exc.msg, peerId, protocols = protos, addresses = dialAddrs, conn #nolint
     raise newException(
       DialFailedError,
       "failed new dial: peer_id=" & $peerId & " protos=" & $protos & " addrs=" &

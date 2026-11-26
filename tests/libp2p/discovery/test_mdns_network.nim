@@ -9,6 +9,7 @@ import ../../../libp2p/[multiaddress, results]
 import ../../../libp2p/utils/future
 import ../../../libp2p/services/mdns/network
 import ../../tools/[unittest, mdns_sender, multiaddress]
+import ./mdns_fixtures
 
 proc ignorePacket(
     packet: seq[byte], context: MdnsReplyContext
@@ -41,12 +42,13 @@ proc countingInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
   @[]
 
 proc cachedInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
-  const local = initTAddress("192.168.10.1:0")
   inc interfaceQueries
   if exposeInterfaces:
     @[
       NetworkInterface(
-        ifIndex: 1, state: StatusUp, addresses: @[InterfaceAddress.init(local, 24)]
+        ifIndex: 1,
+        state: StatusUp,
+        addresses: @[InterfaceAddress.init(LocalSubnet4, 24)],
       )
     ]
   else:
@@ -57,33 +59,33 @@ suite "mDNS network":
     checkTrackers()
 
   test "sender must belong to an active interface subnet":
-    const
-      Local4 = initTAddress("192.168.10.1:0")
-      Local6 = initTAddress("[fd12:3456::1]:0")
-      Down4 = initTAddress("10.2.0.1:0")
     proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
       @[
         NetworkInterface(
           ifIndex: 1,
           state: StatusUp,
-          addresses:
-            @[InterfaceAddress.init(Local4, 24), InterfaceAddress.init(Local6, 64)],
+          addresses: @[
+            InterfaceAddress.init(LocalSubnet4, 24),
+            InterfaceAddress.init(LocalSubnet6, 64),
+          ],
         ),
         NetworkInterface(
-          ifIndex: 2, state: StatusDown, addresses: @[InterfaceAddress.init(Down4, 16)]
+          ifIndex: 2,
+          state: StatusDown,
+          addresses: @[InterfaceAddress.init(DownInterface4, 16)],
         ),
       ]
 
     let network = MdnsNetwork.new(interfaceProvider = interfaces)
     network.refreshInterfaces()
     check:
-      network.isLocalAddress(initTAddress("192.168.10.42:5353"))
-      network.isLocalAddress(initTAddress("[fd12:3456::42]:5353"))
-      not network.isLocalAddress(initTAddress("192.168.11.42:5353"))
-      not network.isLocalAddress(initTAddress("10.2.0.42:5353"))
-      not network.isLocalAddress(initTAddress("[fd12:3457::42]:5353"))
-      not network.isLocalAddress(initTAddress("0.0.0.0:5353"))
-      not network.isLocalAddress(initTAddress("224.0.0.251:5353"))
+      network.isLocalAddress(SubnetPeer4)
+      network.isLocalAddress(SubnetPeer6)
+      not network.isLocalAddress(AdjacentSubnetPeer4)
+      not network.isLocalAddress(DownSubnetPeer4)
+      not network.isLocalAddress(AdjacentSubnetPeer6)
+      not network.isLocalAddress(WildcardMdns4)
+      not network.isLocalAddress(MulticastMdns4)
 
   test "source subnets are cached until interface refresh":
     interfaceQueries = 0
@@ -91,7 +93,7 @@ suite "mDNS network":
     let network = MdnsNetwork.new(interfaceProvider = cachedInterfaces)
     network.refreshInterfaces()
     exposeInterfaces = false
-    let remote = initTAddress("192.168.10.42:5353")
+    let remote = SubnetPeer4
     check:
       network.isLocalAddress(remote)
       network.isLocalAddress(remote)
@@ -102,28 +104,25 @@ suite "mDNS network":
       interfaceQueries == 2
 
   test "wildcard expansion uses the supplied interface provider":
-    const
-      Address4 = initTAddress("10.0.0.1:0")
-      Address6 = initTAddress("[fd00::1]:0")
     proc interfaces(
         family: AddressFamily
     ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
       case family
       of AddressFamily.IPv4:
-        @[InterfaceAddress.init(Address4, 24)]
+        @[InterfaceAddress.init(ExpansionInterface4, 24)]
       of AddressFamily.IPv6:
-        @[InterfaceAddress.init(Address6, 64)]
+        @[InterfaceAddress.init(ExpansionInterface6, 64)]
       else:
         @[]
 
     let network = MdnsNetwork.new(interfaces)
     check:
-      network.expandAddresses(@[ma("/ip4/0.0.0.0/tcp/4001")]) ==
-        @[ma("/ip4/10.0.0.1/tcp/4001")]
-      network.expandAddresses(@[ma("/ip6/::/udp/4001/quic-v1")]) ==
-        @[ma("/ip6/fd00::1/udp/4001/quic-v1"), ma("/ip4/10.0.0.1/udp/4001/quic-v1")]
-      network.expandAddresses(@[ma("/ip4/192.168.1.2/tcp/5000")]) ==
-        @[ma("/ip4/192.168.1.2/tcp/5000")]
+      network.expandAddresses(@[ma(WildcardAddress)]) == @[ma(AlternatePrivateAddress)]
+      network.expandAddresses(@[ma(WildcardQuic6Address)]) ==
+        @[ma(PrivateQuic6Address), ma(PrivateQuic4Address)]
+      network.expandAddresses(@[ma(AlternatePortAddress)]) == @[
+        ma(AlternatePortAddress)
+      ]
 
   test "wildcard expansion omits families with no interface addresses":
     proc interfaces(
@@ -132,9 +131,7 @@ suite "mDNS network":
       @[]
 
     let network = MdnsNetwork.new(interfaces)
-    check network.expandAddresses(
-      @[ma("/ip4/0.0.0.0/tcp/4001"), ma("/ip6/::/tcp/4001")]
-    ).len == 0
+    check network.expandAddresses(@[ma(WildcardAddress), ma(Wildcard6Address)]).len == 0
 
   asyncTest "closed networks reject sends and can be closed repeatedly":
     let network = MdnsNetwork.new()
@@ -210,7 +207,7 @@ suite "mDNS network":
     requireOpened(network, ignorePacket)
     # Unicast to a shared mDNS port can be delivered to another local
     # responder, particularly on Windows. Multicast reaches group members.
-    await sender.sendTo(initTAddress("224.0.0.251", Port(MdnsPort)), packet)
+    await sender.sendTo(MulticastMdns4, packet)
     check (await receivedReply) == response
     require contexts.len == 1
     check contexts[0].isLegacyQuery
@@ -257,7 +254,7 @@ suite "mDNS network":
       release.fire()
       await network.close()
 
-    let destination = initTAddress("224.0.0.251", Port(MdnsPort))
+    let destination = MulticastMdns4
     await sender.sendTo(destination, first)
     await firstEntered.wait()
     await sender.sendTo(destination, second)
