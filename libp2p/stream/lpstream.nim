@@ -324,7 +324,8 @@ proc closeWithEOF*(s: LPStream): Future[void] {.async: (raises: []).} =
   ##
   ## In particular, it must not be used when there is another concurrent read
   ## ongoing (which may be the case during cancellations)!
-  ##
+  ## This is best-effort cleanup: unexpected bytes, stream errors and cancellation
+  ## while waiting for EOF are not propagated to the caller.
 
   trace "Closing with EOF", stream = s
   if s.closedWithEOF:
