@@ -96,5 +96,8 @@ proc bindToInterface*(
         return ok(false)
       return err(error)
     ok(true)
+  elif defined(macosx):
+    # Interface pinning is unavailable here; callers must filter received packets.
+    ok(false)
   else:
     ok(false)
