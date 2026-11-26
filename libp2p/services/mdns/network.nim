@@ -24,6 +24,10 @@ const
   MdnsBindAddress6 = initTAddress("[::]:5353")
 
 type
+  MdnsLocalAddress = object
+    index: uint32
+    address: InterfaceAddress
+
   MdnsReplyContext* = object
     ## Identifies the receiving socket and sender. Valid only while that socket
     ## remains open; a context from an earlier open cannot be reused.
@@ -39,7 +43,7 @@ type
     transport6: DatagramTransport
     interfaces4: seq[array[4, byte]]
     interfaces6: seq[uint32]
-    localAddresses: seq[InterfaceAddress]
+    localAddresses: seq[MdnsLocalAddress]
     multicastLock4: AsyncLock
     refresher: Future[void].Raising([CancelledError])
     refreshInterval: Duration
@@ -85,10 +89,23 @@ proc isLocalAddress*(network: MdnsNetwork, remote: TransportAddress): bool =
   if remote.family notin {AddressFamily.IPv4, AddressFamily.IPv6} or
       remote.isUnspecified() or remote.isMulticast():
     return false
-  for address in network.localAddresses:
-    if address.host.family == remote.family and address.net.contains(remote):
+  for entry in network.localAddresses:
+    let address = entry.address
+    if address.net.mask.prefix > 0 and address.host.family == remote.family and
+        address.net.contains(remote):
       return true
   false
+
+proc sourceInterfaceIndex*(network: MdnsNetwork, remote: TransportAddress): uint32 =
+  ## Return the unique interface matching a source, or zero if none or ambiguous.
+  var matched = 0'u32
+  for entry in network.localAddresses:
+    if entry.address.net.mask.prefix > 0 and entry.address.host.family == remote.family and
+        entry.address.net.contains(remote):
+      if matched != 0 and matched != entry.index:
+        return 0
+      matched = entry.index
+  return matched
 
 proc isLocalSource*(network: MdnsNetwork, context: MdnsReplyContext): bool =
   network.isLocalAddress(context.remote)
@@ -174,15 +191,16 @@ proc refreshInterfaces*(network: MdnsNetwork) =
   ## Reconcile multicast memberships with the current network interfaces.
   var wanted4: seq[array[4, byte]]
   var wanted6: seq[uint32]
-  var localAddresses: seq[InterfaceAddress]
+  var localAddresses: seq[MdnsLocalAddress]
   for iface in network.interfaceProvider():
     if iface.ifIndex <= 0 or
         (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
       continue
     var has4 = false
     for address in iface.addresses:
-      if address.net.mask.prefix > 0:
-        localAddresses.add(address)
+      localAddresses.add(
+        MdnsLocalAddress(index: uint32(iface.ifIndex), address: address)
+      )
       case address.host.family
       of AddressFamily.IPv4:
         if not has4:

@@ -97,11 +97,42 @@ suite "mDNS network":
     check:
       network.isLocalAddress(remote)
       network.isLocalAddress(remote)
+      network.sourceInterfaceIndex(remote) == 1
+      network.sourceInterfaceIndex(remote) == 1
       interfaceQueries == 1
     network.refreshInterfaces()
     check:
       not network.isLocalAddress(remote)
+      network.sourceInterfaceIndex(remote) == 0
       interfaceQueries == 2
+
+  test "cached ingress matching rejects overlapping interfaces":
+    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      @[
+        NetworkInterface(
+          ifIndex: 1,
+          state: StatusUp,
+          addresses: @[
+            InterfaceAddress.init(LocalSubnet4, 24),
+            InterfaceAddress.init(LocalSubnet4, 16),
+            InterfaceAddress.init(LocalSubnet6, 64),
+            InterfaceAddress.init(LocalSubnet4, 0),
+          ],
+        ),
+        NetworkInterface(
+          ifIndex: 2,
+          state: StatusUp,
+          addresses: @[InterfaceAddress.init(OverlappingSubnet4, 24)],
+        ),
+      ]
+
+    let network = MdnsNetwork.new(interfaceProvider = interfaces)
+    network.refreshInterfaces()
+    check:
+      network.sourceInterfaceIndex(SubnetPeer4) == 0
+      network.sourceInterfaceIndex(AdjacentSubnetPeer4) == 1
+      network.sourceInterfaceIndex(SubnetPeer6) == 1
+      network.sourceInterfaceIndex(UnmatchedSubnetPeer4) == 0
 
   test "wildcard expansion uses the supplied interface provider":
     proc interfaces(

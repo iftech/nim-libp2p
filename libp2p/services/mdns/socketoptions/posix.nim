@@ -4,6 +4,10 @@
 {.push raises: [].}
 
 import std/[os, posix]
+import results
+import ./types
+
+export types
 
 const (
   ipv4AddMembership*, ipv4DropMembership*, ipv4MulticastTtl*, ipv4MulticastInterface*
@@ -56,3 +60,41 @@ proc setSocketOption*[T](
 
 proc socketLastError*(): OSErrorCode =
   osLastError()
+
+proc restrictMulticastReception*(socket: posix.SocketHandle): cint =
+  ## Restrict multicast reception to this socket's memberships where needed.
+  when defined(linux) or defined(android):
+    # Linux otherwise delivers traffic for memberships on other sockets.
+    const ipMulticastAll = 49.cint
+    var enabled = 0.cint
+    setSocketOption(socket, ipv4Protocol, ipMulticastAll, enabled)
+  else:
+    0
+
+proc bindToInterface*(
+    socket: posix.SocketHandle, index: uint32, ipv6: bool
+): InterfaceBindingResult =
+  ## Pin ingress to an interface, or report unavailable pinning or an OS error.
+  ## Index zero returns ok(false) without changing the socket.
+  if index == 0:
+    return ok(false)
+  when defined(linux) or defined(android):
+    # IPv6 membership checks do not distinguish the receiving interface.
+    # Bind the socket so both multicast and unicast retain ingress.
+    # SO_BINDTOIFINDEX pins reception as well as transmission. Unlike changing
+    # an existing binding, the initial binding needs no privilege on Linux 5.7+.
+    const soBindToIfIndex = 62.cint
+    var interfaceIndex = index.cint
+    let status =
+      setSocketOption(socket, posix.SOL_SOCKET, soBindToIfIndex, interfaceIndex)
+    if status != 0:
+      let error = socketLastError()
+      # ENOPROTOOPT: the socket option is unsupported at this protocol level.
+      # EPERM: the operation is not permitted.
+      # EACCES: permission is denied.
+      if error.int in [ENOPROTOOPT.int, EPERM.int, EACCES.int]:
+        return ok(false)
+      return err(error)
+    ok(true)
+  else:
+    ok(false)
