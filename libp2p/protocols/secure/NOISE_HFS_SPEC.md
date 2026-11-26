@@ -130,47 +130,54 @@ decapsulation is even attempted.
   `boringssl` dependency (`crypto/mlkem/mlkem.cc`), rather than pulling in a
   separate PQC library. This is the same ML-KEM-768 implementation shipped in
   Chrome's TLS stack.
+- `libp2p/protocols/secure/noisecommon.nim` - what `/noise` and NoiseHFS
+  share: `SymmetricState`/`CipherState`/`KeyPair`, handshake message
+  framing, the signed handshake payload with peer authentication, and the
+  secured connection type. Internal: `noise.nim` re-exports only what was
+  already public there.
 - `libp2p/protocols/secure/noisehfs.nim` - the `NoiseHFS` connection
-  encrypter. Reuses `noise.nim`'s `SymmetricState`/`CipherState`/`KeyPair`
-  and message framing unchanged (`readFrame`, `sendHSMessage`, `dh`,
-  `mixKey`, `mixHash`, `encryptAndHash`, `decryptAndHash`, `split`); only the
-  `e1`/`ekem1` token handling and the top-level connection encrypter are new.
+  encrypter. Only the `e1`/`ekem1` token handling and the top-level
+  connection encrypter are new.
 - `libp2p/builders.nim` - `SecureProtocol.NoiseHFS` and
   `SwitchBuilder.withNoiseHFS()`, so a switch can mount `NoiseHFS` alongside
   the default `Noise` and let multistream-select negotiate per peer.
 
+## Negotiation and downgrade
+
+When a switch mounts both protocols, NoiseHFS is proposed first, so two
+hybrid-capable peers use it and a classical-only peer still gets `/noise`.
+
+That fallback is not downgrade-protected. multistream-select runs in the
+clear before any handshake, and the protocol it selects is not bound into
+the Noise transcript, so an attacker who can modify traffic while the
+connection is being set up can make both peers settle on `/noise`. A node
+that must not open a classical session mounts NoiseHFS alone
+(`withNoiseHFS()` without `withNoise()`); it then fails to connect to
+classical-only peers instead of falling back.
+
 ## Interoperability status
 
-The suite is specified in libp2p/specs PR #727, a Stage 1A Working Draft
-opened by royzah on 2026-07-06 and still open. A separate and longer draft,
-libp2p/specs PR #716 by this implementation's author, was closed on
-2026-09-18 in favour of #727; its text remains readable at
-<https://github.com/paschal533/specs/tree/master/noise-pq>.
-
-This profile's wire format matches the other implementations of
-`Noise_XXhfs_25519+MLKEM768_ChaChaPoly_SHA256`: TypeScript
+The suite is specified in libp2p/specs PR #727, a Stage 1A Working Draft.
+The other implementations of the same profile are TypeScript
 (ChainSafe/js-libp2p-noise PR #665), Python (libp2p/py-libp2p PR #1310) and
-Rust (libp2p/rust-libp2p PR #6481, with the interop harness in
-royzah/rust-libp2p PR #1).
+Rust (libp2p/rust-libp2p PR #6481).
 
-This nim-libp2p implementation has been verified standalone (KEM round-trip,
-implicit-rejection behaviour, and a full two-node TCP handshake with peer
-authentication - see `tests/libp2p/protocols/test_noisehfs.nim`).
-
-Cross-implementation interop is verified by a bidirectional 4x4 matrix run on
-2026-09-17 with the neutral runner in `pq-noise-artifacts`: every ordered
-(listener, dialer) pairing of JS, Python, Nim and Rust, including Nim against
-itself, three repetitions each, **48 of 48 runs passed**. A run passes only if
-both harnesses exit 0 with `INTEROP_OK`, each side's `PEER` matches the other
-side's `LOCAL`, and each side decrypts the other's greeting, one encrypted
-transport message in each direction, so both `split()` cipher states are
-exercised. Nim was tested at `824cce0` with `interop/noise-pq/interop_listen`
-and `interop/noise-pq/interop_dial`. The runs were over loopback TCP on one
-machine, and the harnesses start the handshake directly, without
-multistream-select, so protocol id negotiation is not covered. Matrix, results
+Latest cross-implementation result: **48 of 48 runs passed** in a 4x4
+matrix on 2026-09-19, every ordered (listener, dialer) pairing of JS,
+Python, Nim and Rust, each against itself included, three runs each. A run
+passes only if both harnesses exit 0 with `INTEROP_OK`, each side's `PEER`
+matches the other side's `LOCAL`, and each side decrypts the other's
+greeting. Results, the exact commit of each implementation (`versions.txt`)
 and per-run logs:
 <https://github.com/paschal533/pq-noise-artifacts/tree/main/interop/results/20260919T223056Z>.
 
-The 2026-07-11 run against py-libp2p's listener, recorded in
-`interop/noise-pq/README.md`, predates the rename and covered the handshake
-only; the matrix supersedes it.
+Limits of that result:
+
+- It ran Nim at `b3f203d`, with `interop/noise-pq/interop_listen` and
+  `interop_dial`. Later commits on this branch are not covered until the
+  matrix is rerun.
+- The runs were over loopback TCP on one machine.
+- The harnesses start the handshake directly on TCP, without
+  multistream-select, so protocol id negotiation is not covered there. In
+  this repository it is covered Nim-to-Nim by
+  `tests/libp2p/protocols/test_noisehfs.nim`.
