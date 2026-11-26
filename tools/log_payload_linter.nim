@@ -84,9 +84,11 @@ proc boundedType(typ: PType, settings: LogPayloadSettings): bool =
 proc boundedCall(node: PNode): bool =
   ## Only the outer expression bounds a payload: len(x) is safe, but
   ## (len(x), x) and x & shortLog(y) still contain the raw payload.
-  if node.kind in {nkHiddenStdConv, nkHiddenSubConv, nkHiddenDeref, nkHiddenAddr, nkPar} and
+  if node.kind in {nkHiddenStdConv, nkHiddenSubConv, nkHiddenDeref, nkHiddenAddr} and
       node.len > 0:
     return boundedCall(node[^1])
+  if node.kind == nkPar and node.len == 1:
+    return boundedCall(node[0])
   node.kind in nkCallKinds and node.len > 0 and
     symbolName(node[0]) in ["shortLog", "len"]
 
