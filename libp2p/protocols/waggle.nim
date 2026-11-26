@@ -743,6 +743,7 @@ proc subscribe*(p: Waggle, topicId: TopicId): Result[SubscriptionAttempt, string
   let added = topicId notin p.topics
   if added and p.topics.len >= p.maxTopics:
     return err("Waggle topic subscription limit reached")
+  ?p.state.reserveTopic(topicId)
   p.topics.incl(topicId)
   let links = p.links
   var attempt = SubscriptionAttempt(added: added)
@@ -845,4 +846,6 @@ method stop*(p: Waggle) {.async: (raises: []).} =
   let tasks = move p.tasks
   await tasks.cancelAndWait()
   p.state = WaggleState.new(p.maxCachedObjects, p.maxTopics, p.objectLifetime)
+  for topic in p.topics:
+    p.state.reserveTopic(topic).expect("registered topics fit within maxTopics")
   await procCall LPProtocol(p).stop()

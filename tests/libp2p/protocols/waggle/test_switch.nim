@@ -130,13 +130,11 @@ suite "Waggle switch integration":
     let received = await nodes[1].waitForEvent(WaggleEventKind.Received)
     check received.message.objectId == laterId
 
-  asyncTest "a topic the node only publishes to keeps its state, so the topic-state limit refuses a topic subscribed later":
-    # TODO: iftech/nim-libp2p#3515
+  asyncTest "removing a published object frees capacity for a later subscription":
     const
       publishedTopic = @[byte 2]
       objectId = @[byte 1]
       piece = 0b001
-      topicStateLimitReached = "Waggle topic state limit reached"
     # the published topic fills nodes[0]'s topic-state limit
     let nodes = @[setupWaggleNode(WaggleConfig(maxTopics: 1)), setupWaggleNode()]
     startAndDeferStop(nodes)
@@ -148,27 +146,26 @@ suite "Waggle switch integration":
     let snapshot = BitShard(id: objectId, have: piece)
     check nodes[0].waggle.publish(publishedTopic, snapshot).get() == 1
     # wait for the delivery, so nodes[1]'s next event is nodes[0]'s subscription
-    discard await nodes[1].waitForEvent(WaggleEventKind.Received)
+    check (await nodes[1].events.popFirst()).kind == WaggleEventKind.Received
+    check nodes[0].waggle.subscribe(topic).isErr
     check:
       # unsubscribe returns false for a topic nodes[0] only publishes to
       not (await nodes[0].waggle.unsubscribe(publishedTopic))
-      # the topic's only object is gone, its state is not
+      # removing the only object makes the topic state reclaimable
       nodes[0].waggle.removeObject(publishedTopic, objectId)
 
     # nodes[0] subscribes to a new topic, and nodes[1] publishes on it
     check nodes[0].waggle.subscribe(topic).get().added
     await nodes[1].waitForSubscribers()
     check nodes[1].waggle.publish(topic, snapshot).get() == 1
-    let refused = await nodes[0].waitForEvent(WaggleEventKind.InvalidData)
+    let received = await nodes[0].events.popFirst()
     check:
-      # the message is blamed on nodes[1] instead of reaching nodes[0]'s application
-      refused.peerId == nodes[1].switch.peerInfo.peerId
-      refused.topicId == topic
-      refused.message.objectId == objectId
-      refused.reason == topicStateLimitReached
+      received.kind == WaggleEventKind.Received
+      received.peerId == nodes[1].switch.peerInfo.peerId
+      received.topicId == topic
+      received.message.objectId == objectId
       nodes[0].events.len == 0
-      # nodes[0] cannot publish on the new topic either
-      nodes[0].waggle.publish(topic, snapshot).error == topicStateLimitReached
+      nodes[0].waggle.publish(topic, snapshot).isOk
 
   asyncTest "unsubscribe frees a topic slot":
     const

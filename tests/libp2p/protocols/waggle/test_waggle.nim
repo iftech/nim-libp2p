@@ -158,6 +158,19 @@ suite "Waggle direct streams":
       await task.cancelAndWait()
     checkTrackers()
 
+  asyncTest "restart preserves capacity reserved for subscriptions":
+    privateAccess(Waggle)
+    waggle = Waggle.new(config = WaggleConfig(maxTopics: 1))
+    check waggle.subscribe(topic).get().added
+    await waggle.stop()
+    await waggle.start()
+    let snapshot = BitShard(id: @[byte 1], have: 1)
+    check waggle.state.store(@[byte 2], snapshot).isErr
+    check not waggle.subscribe(topic).get().added
+    check waggle.state.store(topic, snapshot).isOk
+    check await waggle.unsubscribe(topic)
+    check waggle.state.store(@[byte 2], snapshot).isOk
+
   asyncTest "send and subscribers isolate topics and ignore pending or closed streams":
     let stream = openStream()
     discard handle(stream)

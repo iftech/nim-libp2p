@@ -181,10 +181,16 @@ were closed by the stop.
 | Topic ID | 1024 bytes |
 | Streams and registered connections | 128 each |
 | Streams per peer | 16 |
-| Local topics and topic configurations | 64 each |
+| Topic states (including local subscriptions) and topic configurations | 64 each |
 | Cached objects per topic | 100 |
 | Remote object views per topic and connection | 100 |
 | Queued messages per connection, shared by its topic writers | 5000 |
+
+Subscriptions reserve a topic state until unsubscribe. Publishing without a local
+subscription also uses a topic state. When the state limit is reached, empty
+unsubscribed states are reclaimed, including states whose snapshots and peer
+views have expired. If all slots are still in use, `subscribe` or `publish`
+returns an error; a failed subscription leaves registration unchanged.
 
 Pending stream opens and incoming handshakes count against stream limits. An
 optional topic whitelist rejects disallowed local and remote subscriptions.

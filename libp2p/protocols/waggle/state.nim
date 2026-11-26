@@ -27,6 +27,7 @@ type
     expires: Moment
 
   TopicState = ref object
+    reserved: bool
     local: Table[ObjectId, CachedObject]
     remote: Table[ConnectionId, ObjectViews]
     nextExpiry: Moment
@@ -96,6 +97,24 @@ proc lookup[K, V](table: Table[K, V], key: K): Opt[V] =
     return Opt.some(found)
   return Opt.none(V)
 
+proc reclaimEmptyTopics(state: WaggleState, now: Moment) =
+  var empty: seq[TopicId]
+  for topic, cache in state.topics:
+    if cache.reserved:
+      continue
+    cache.expire(now, state.lifetime)
+    if cache.local.len > 0:
+      continue
+    var hasViews = false
+    for views in cache.remote.values:
+      if views.entries.len > 0:
+        hasViews = true
+        break
+    if not hasViews:
+      empty.add(topic)
+  for topic in empty:
+    state.topics.del(topic)
+
 proc topicState(
     state: WaggleState, topic: TopicId, now: Moment
 ): Result[TopicState, string] =
@@ -104,10 +123,20 @@ proc topicState(
     cache.expire(now, state.lifetime)
     return ok(cache)
   if state.topics.len >= state.maxTopics:
+    state.reclaimEmptyTopics(now)
+  if state.topics.len >= state.maxTopics:
     return err("Waggle topic state limit reached")
   let value = TopicState(nextExpiry: now + state.lifetime)
   state.topics[topic] = value
   ok(value)
+
+proc reserveTopic*(
+    state: WaggleState, topic: TopicId, now = Moment.now()
+): Result[void, string] =
+  ## Keep a subscribed topic's slot until removeTopic, even when its cache is empty.
+  let cache = ?state.topicState(topic, now)
+  cache.reserved = true
+  ok()
 
 proc view(
     state: WaggleState,
