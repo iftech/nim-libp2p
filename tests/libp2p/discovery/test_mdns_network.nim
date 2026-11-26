@@ -129,8 +129,11 @@ suite "mDNS network":
     let network = MdnsNetwork.new(interfaceProvider = interfaces)
     network.refreshInterfaces()
     for remote in [
-      WildcardMdns4, MulticastMdns4, initTAddress("[::]:5353"),
-      initTAddress("[ff02::fb]:5353"), default(TransportAddress),
+      WildcardMdns4,
+      MulticastMdns4,
+      initTAddress("[::]:5353"),
+      initTAddress("[ff02::fb]:5353"),
+      default(TransportAddress),
     ]:
       check:
         not network.isLocalAddress(remote)
