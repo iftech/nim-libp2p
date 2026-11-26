@@ -170,7 +170,7 @@ suite "Waggle switch integration":
       # nodes[0] cannot publish on the new topic either
       nodes[0].waggle.publish(topic, snapshot).error == topicStateLimitReached
 
-  asyncTest "unsubscribe removes a subscribed topic's state, so the topic-state limit has room for another topic":
+  asyncTest "unsubscribe frees a topic slot":
     const
       subscribedTopic = @[byte 2]
       objectId = @[byte 1]
@@ -282,7 +282,7 @@ suite "Waggle switch integration":
     let refused = await nodes[1].waitForEvent(WaggleEventKind.InvalidData)
     check refused.reason == "Duplicate Waggle topic stream"
 
-  asyncTest "a node whose own subscription fills its per-peer stream limit reports the peer's subscription as invalid data":
+  asyncTest "peer is wrongly reported as InvalidData when own streams fill the per-peer limit":
     # TODO: iftech/nim-libp2p#3530
     let nodes =
       @[setupWaggleNode(WaggleConfig(maxStreamsPerPeer: 1)), setupWaggleNode()]

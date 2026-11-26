@@ -391,7 +391,7 @@ suite "Waggle managed dissemination":
     check p.setTopicConfig(@[byte 2], config).isOk
     await p.stop()
 
-  test "subscribe errors on an oversized topic and a new topic beyond maxTopics, and reports a repeat subscribe at the limit as not added":
+  test "subscribe enforces topic size and maxTopics, but allows repeating an existing topic":
     const otherTopic = @[byte 2]
     let oversizedTopic = newSeq[byte](topic.len + 1)
     # topic fits maxTopicSize and fills maxTopics
