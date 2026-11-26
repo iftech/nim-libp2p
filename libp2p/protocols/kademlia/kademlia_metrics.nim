@@ -42,6 +42,12 @@ declarePublicCounter kad_provider_republish_keys, "provided keys republished"
 declarePublicGauge kad_network_size_estimate,
   "estimated network size from lookup closest-peer distances"
 
+# Store metrics
+declarePublicGauge kad_stored_value_records, "live value records in the store"
+declarePublicGauge kad_stored_provider_records, "live provider records in the store"
+declarePublicGauge kad_provided_keys, "keys this node provides"
+declarePublicCounter kad_store_errors, "failed store calls, by method", ["op"]
+
 # Mode metrics
 declarePublicGauge kad_server_mode,
   "number of Kad DHT instances serving inbound queries"

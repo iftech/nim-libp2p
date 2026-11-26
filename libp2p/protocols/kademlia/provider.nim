@@ -24,6 +24,7 @@ proc isProvided(kad: KadDHT, key: Key): bool =
   let provided = ProvidedKey.fromBytes(key.toBytes()).valueOr:
     return false
   kad.store.hasProvided(provided).valueOr:
+    kad_store_errors.inc(labelValues = ["hasProvided"])
     debug "Failed to read provided key", key, err = error
     false
 
@@ -285,6 +286,7 @@ proc startProviding*(kad: KadDHT, c: Cid) {.async: (raises: [CancelledError]).} 
     debug "Invalid cid, skipping advertisement", cid = c, err = error
     return
   let stored = kad.store.addProvided(provided).valueOr:
+    kad_store_errors.inc(labelValues = ["addProvided"])
     debug "Failed to store provided key", cid = c, err = error
     false
   if not stored:
@@ -298,10 +300,12 @@ proc stopProviding*(kad: KadDHT, c: Cid) {.raises: [].} =
     debug "Invalid cid, nothing to stop providing", cid = c, err = error
     return
   kad.store.delProvided(provided).isOkOr:
+    kad_store_errors.inc(labelValues = ["delProvided"])
     debug "Failed to delete provided key", cid = c, err = error
 
 proc listProvidedKeys(kad: KadDHT): seq[Key] =
   let provided = kad.store.listProvided(Opt.none(ProvidedKey), high(int)).valueOr:
+    kad_store_errors.inc(labelValues = ["listProvided"])
     debug "Failed to list provided keys", err = error
     return @[]
   var keys = newSeqOfCap[Key](provided.len)
@@ -435,6 +439,7 @@ method handleAddProvider*(
       expiresAt: UnixTimestamp.after(kad.config.providerExpirationInterval),
     )
     let outcome = kad.store.addProvider(msgKey, stored, now, maxPerKey).valueOr:
+      kad_store_errors.inc(labelValues = ["addProvider"])
       debug "Failed to store provider record", key = msgKey, err = error
       atCap = true
       continue
@@ -509,6 +514,7 @@ method handleGetProviders*(
     return
 
   let stored = kad.store.getProviders(msgKey, UnixTimestamp.now(), high(int)).valueOr:
+    kad_store_errors.inc(labelValues = ["getProviders"])
     debug "Failed to read provider records", key = msgKey, err = error
     @[]
   var providers = stored.mapIt(it.provider).toHashSet()
