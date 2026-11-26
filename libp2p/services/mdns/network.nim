@@ -6,11 +6,10 @@
 
 {.push raises: [].}
 
-import std/os
+import std/[os, sequtils]
 import chronos, chronicles
 import chronos/transports/osnet
 import ../../[address_manager, multiaddress, results]
-import ../../utils/lock
 
 import ./socketoptions
 
@@ -28,10 +27,23 @@ type
     index: uint32
     address: InterfaceAddress
 
-  MdnsReplyContext* = object
-    ## Identifies the receiving socket and sender. Valid only while that socket
-    ## remains open; a context from an earlier open cannot be reused.
+  MdnsWantedInterfaces = object
+    ipv4: seq[MdnsLocalAddress]
+    ipv6: seq[MdnsLocalAddress]
+    localAddresses: seq[MdnsLocalAddress]
+
+  MdnsInterface = object
     transport: DatagramTransport
+    address4: array[4, byte]
+    index: uint32
+    ingressPinned: bool
+    activeOperations: int
+    idle: AsyncEvent
+
+  MdnsReplyContext* = object
+    ## Identifies the receiving interface, socket and sender. A context becomes
+    ## invalid when its interface is removed or the network is closed.
+    iface: ref MdnsInterface
     remote: TransportAddress
 
   MdnsPacketReceived* = proc(
@@ -39,15 +51,16 @@ type
   ): Future[void].Raising([]) {.gcsafe, raises: [].}
 
   MdnsNetwork* = ref object
-    transport: DatagramTransport
-    transport6: DatagramTransport
-    interfaces4: seq[array[4, byte]]
-    interfaces6: seq[uint32]
+    opening: bool
+    opened: bool
+    ipv4Available: bool
+    ipv6Available: bool
+    interfaces4: seq[ref MdnsInterface]
+    interfaces6: seq[ref MdnsInterface]
+    retiring: seq[Future[void].Raising([])]
     localAddresses: seq[MdnsLocalAddress]
-    multicastLock4: AsyncLock
     refresher: Future[void].Raising([CancelledError])
     refreshInterval: Duration
-    multicastLock6: AsyncLock
     interfaceProvider: proc(): seq[NetworkInterface] {.gcsafe, raises: [].}
     addressProvider: NetworkInterfaceProvider
     onPacket: MdnsPacketReceived
@@ -67,8 +80,6 @@ proc new*(
     refreshInterval: Duration = MdnsInterfaceRefreshInterval,
 ): T =
   T(
-    multicastLock4: newAsyncLock(),
-    multicastLock6: newAsyncLock(),
     addressProvider: addressProvider,
     interfaceProvider: interfaceProvider,
     refreshInterval: refreshInterval,
@@ -76,7 +87,7 @@ proc new*(
   )
 
 func isOpen*(network: MdnsNetwork): bool =
-  not network.closing and (not network.transport.isNil or not network.transport6.isNil)
+  network.opened and not network.closing
 
 func isLegacyQuery*(context: MdnsReplyContext): bool =
   context.remote.port != Port(MdnsPort)
@@ -89,6 +100,10 @@ func matchesSource(entry: MdnsLocalAddress, remote: TransportAddress): bool =
     not remote.isUnspecified() and not remote.isMulticast() and
     entry.address.net.mask.prefix > 0 and entry.address.host.family == remote.family and
     entry.address.net.contains(remote)
+
+func interfaceIndex*(context: MdnsReplyContext): uint32 =
+  ## The interface on which the query arrived (zero for an empty context).
+  if context.iface.isNil: 0'u32 else: context.iface.index
 
 proc isLocalAddress*(network: MdnsNetwork, remote: TransportAddress): bool =
   ## Check whether the sender belongs to an active interface's subnet.
@@ -139,6 +154,12 @@ proc membership4(
   ok()
 
 proc configureMulticast(transport: DatagramTransport): LPResult[void] =
+  let membershipStatus = restrictMulticastReception(toSocketHandle(transport.fd))
+  if membershipStatus != 0:
+    # Restricting reception only avoids duplicate multicast delivery across sockets.
+    let code = socketLastError()
+    warn "IPv4 multicast receive configuration failed",
+      err = osErrorMsg(code), code = code.int
   var ttl = MulticastTtl(MdnsMulticastHopLimit)
   let status =
     setSocketOption(toSocketHandle(transport.fd), ipv4Protocol, ipv4MulticastTtl, ttl)
@@ -187,10 +208,155 @@ proc selectMulticastInterface6*(transport: DatagramTransport, index: uint32): bo
     toSocketHandle(transport.fd), ipv6Protocol, ipv6MulticastInterface, interfaceIndex
   ) == 0
 
-proc refreshInterfaces*(network: MdnsNetwork) =
-  ## Reconcile multicast memberships with the current network interfaces.
-  var wanted4: seq[array[4, byte]]
-  var wanted6: seq[uint32]
+proc configureMulticast(transport: DatagramTransport, ipv6: bool): LPResult[void] =
+  if ipv6:
+    configureMulticast6(transport)
+  else:
+    configureMulticast(transport)
+
+proc joinMulticast(iface: ref MdnsInterface, ipv6: bool): LPResult[void] =
+  if ipv6:
+    membership6(iface.transport, iface.index)
+  else:
+    membership4(iface.transport, iface.address4, true)
+
+proc selectMulticastInterface(iface: ref MdnsInterface, ipv6: bool): bool =
+  if ipv6:
+    selectMulticastInterface6(iface.transport, iface.index)
+  else:
+    selectMulticastInterface4(iface.transport, iface.address4)
+
+template trackOperation(network: MdnsNetwork, body: untyped) =
+  inc network.activeOperations
+  network.idle.clear()
+  try:
+    body
+  finally:
+    dec network.activeOperations
+    if network.activeOperations == 0:
+      network.idle.fire()
+
+template acquireInterface(iface: ref MdnsInterface) =
+  inc iface.activeOperations
+  iface.idle.clear()
+
+template releaseInterface(iface: ref MdnsInterface) =
+  dec iface.activeOperations
+  if iface.activeOperations == 0:
+    iface.idle.fire()
+
+proc closeInterface(iface: ref MdnsInterface) {.async: (raises: []).} =
+  await noCancel iface.transport.closeWait()
+  # The transport's callback captures iface, so release it after closing.
+  iface.transport = nil
+
+proc retire(iface: ref MdnsInterface) {.async: (raises: []).} =
+  # A send or handler may still hold this socket after an interface refresh.
+  while iface.activeOperations > 0:
+    await noCancel iface.idle.wait()
+  await iface.closeInterface()
+
+proc receivingInterface(
+    network: MdnsNetwork, iface: ref MdnsInterface, remote: TransportAddress
+): ref MdnsInterface =
+  if iface.ingressPinned:
+    return iface
+
+  # Link-local IPv6 subnets overlap on every link and cannot identify ingress.
+  # Use the receiving socket as a best-effort association in this fallback.
+  if remote.family == AddressFamily.IPv6 and remote.isLinkLocal():
+    return iface
+
+  # Prefer a unique subnet match when its socket is available. Otherwise use
+  # the receiving socket as a best-effort association, including overlapping LANs.
+  let matched = network.sourceInterfaceIndex(remote)
+  if matched == 0:
+    return iface
+
+  let interfaces =
+    if remote.family == AddressFamily.IPv6: network.interfaces6 else: network.interfaces4
+  for candidate in interfaces:
+    if candidate.index == matched:
+      return candidate
+  iface
+
+proc receivedOn(network: MdnsNetwork, iface: ref MdnsInterface): DatagramCallback =
+  proc received(
+      transport: DatagramTransport, remote: TransportAddress
+  ) {.async: (raises: []).} =
+    if not network.isOpen or
+        (iface notin network.interfaces4 and iface notin network.interfaces6):
+      return
+    try:
+      # Copy before the handler yields and Chronos reuses the receive buffer.
+      let packet = transport.getMessage()
+      let receiving = network.receivingInterface(iface, remote)
+      if receiving.isNil:
+        return
+      trackOperation network:
+        await network.onPacket(
+          packet, MdnsReplyContext(iface: receiving, remote: remote)
+        )
+    except TransportError:
+      debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
+
+  received
+
+proc newInterfaceTransport(
+    callback: DatagramCallback, ipv6: bool
+): DatagramTransport {.raises: [TransportError].} =
+  if ipv6:
+    newDatagramTransport6(
+      callback,
+      local = MdnsBindAddress6,
+      flags = {ReuseAddr, ReusePort},
+      bufSize = 9000,
+      dualstack = DualStackType.Disabled,
+    )
+  else:
+    newDatagramTransport(
+      callback, local = MdnsBindAddress, flags = {ReuseAddr, ReusePort}, bufSize = 9000
+    )
+
+proc openInterface(
+    network: MdnsNetwork, address4: array[4, byte], index: uint32, ipv6: bool
+): ref MdnsInterface =
+  let iface =
+    (ref MdnsInterface)(address4: address4, index: index, idle: newAsyncEvent())
+  try:
+    let callback = network.receivedOn(iface)
+    iface.transport = newInterfaceTransport(callback, ipv6)
+    let binding = bindToInterface(toSocketHandle(iface.transport.fd), index, ipv6)
+    if binding.isErr:
+      warn "mDNS receive interface selection failed",
+        interfaceIndex = index, err = osErrorMsg(binding.error)
+      network.retiring.add(iface.closeInterface())
+      return nil
+    iface.ingressPinned = binding.get()
+    let configured = configureMulticast(iface.transport, ipv6)
+    if configured.isOk:
+      let joined = joinMulticast(iface, ipv6)
+      if joined.isErr:
+        debug "mDNS multicast join failed",
+          interfaceIndex = index, ipv6 = ipv6, err = joined.error
+      let selected = selectMulticastInterface(iface, ipv6)
+      if not selected:
+        warn "mDNS multicast interface selection failed",
+          interfaceIndex = index, ipv6 = ipv6, err = osErrorMsg(socketLastError())
+      if joined.isOk and selected:
+        return iface
+    else:
+      warn "mDNS multicast configuration failed",
+        interfaceIndex = index, ipv6 = ipv6, err = configured.error
+    network.retiring.add(iface.closeInterface())
+  except TransportError as exc:
+    debug "mDNS interface unavailable",
+      interfaceIndex = index, ipv6 = ipv6, err = exc.msg
+  return nil
+
+proc wantedInterfaces(network: MdnsNetwork): MdnsWantedInterfaces =
+  var wanted4: seq[MdnsLocalAddress]
+  var wanted6: seq[MdnsLocalAddress]
   var localAddresses: seq[MdnsLocalAddress]
   for iface in network.interfaceProvider():
     if iface.ifIndex <= 0 or
@@ -204,37 +370,87 @@ proc refreshInterfaces*(network: MdnsNetwork) =
       case address.host.family
       of AddressFamily.IPv4:
         if not has4:
-          wanted4.add(address.host.address_v4)
+          wanted4.add(MdnsLocalAddress(index: uint32(iface.ifIndex), address: address))
           has4 = true
       of AddressFamily.IPv6:
-        if uint32(iface.ifIndex) notin wanted6:
-          wanted6.add(uint32(iface.ifIndex))
+        if not wanted6.anyIt(it.index == uint32(iface.ifIndex)):
+          wanted6.add(MdnsLocalAddress(index: uint32(iface.ifIndex), address: address))
       else:
         discard
-  var current4: seq[array[4, byte]]
-  var current6: seq[uint32]
-  if not network.transport.isNil:
-    for address in network.interfaces4:
-      if address notin wanted4:
-        discard membership4(network.transport, address, false)
-    for address in wanted4:
-      if address in network.interfaces4 or
-          membership4(network.transport, address, true).isOk:
-        current4.add(address)
-      else:
-        debug "IPv4 mDNS multicast join failed", address = address #nolint
-  if not network.transport6.isNil:
-    for index in network.interfaces6:
-      if index notin wanted6:
-        discard membership6(network.transport6, index, false)
-    for index in wanted6:
-      if index in network.interfaces6 or membership6(network.transport6, index).isOk:
-        current6.add(index)
-      else:
-        debug "IPv6 mDNS multicast join failed", interfaceIndex = index
+
+  return
+    MdnsWantedInterfaces(ipv4: wanted4, ipv6: wanted6, localAddresses: localAddresses)
+
+proc currentInterfaces4(
+    network: MdnsNetwork, wanted4: seq[MdnsLocalAddress]
+): seq[ref MdnsInterface] =
+  var current: seq[ref MdnsInterface]
+  if network.isOpen and network.ipv4Available:
+    for wanted in wanted4:
+      let address4 = wanted.address.host.address_v4
+      var found: ref MdnsInterface
+      for iface in network.interfaces4:
+        if iface.address4 == address4 and iface.index == wanted.index:
+          found = iface
+          break
+      if found.isNil:
+        found = network.openInterface(address4, wanted.index, false)
+      if not found.isNil:
+        current.add(found)
+  current
+
+proc currentInterfaces6(
+    network: MdnsNetwork, wanted6: seq[MdnsLocalAddress]
+): seq[ref MdnsInterface] =
+  var current: seq[ref MdnsInterface]
+  if network.isOpen and network.ipv6Available:
+    for wanted in wanted6:
+      var found: ref MdnsInterface
+      for iface in network.interfaces6:
+        if iface.index == wanted.index:
+          found = iface
+          break
+      if found.isNil:
+        found = network.openInterface(default(array[4, byte]), wanted.index, true)
+      if not found.isNil:
+        current.add(found)
+  current
+
+proc retireRemovedInterfaces(
+    network: MdnsNetwork, current4, current6: seq[ref MdnsInterface]
+) =
+  # Leave immediately, but drain in-flight operations before closing the socket.
+  for iface in network.interfaces4:
+    if iface notin current4:
+      discard membership4(iface.transport, iface.address4, false)
+      network.retiring.add(iface.retire())
+  for iface in network.interfaces6:
+    if iface notin current6:
+      discard membership6(iface.transport, iface.index, false)
+      network.retiring.add(iface.retire())
+
+proc refreshInterfacesImpl(network: MdnsNetwork): bool =
+  # Return whether eligible interfaces exist, even if their sockets fail to open.
+  if network.closing:
+    return false
+  let wanted = network.wantedInterfaces()
+  let current4 = network.currentInterfaces4(wanted.ipv4)
+  let current6 = network.currentInterfaces6(wanted.ipv6)
+  network.retireRemovedInterfaces(current4, current6)
   network.interfaces4 = current4
   network.interfaces6 = current6
-  network.localAddresses = localAddresses
+  network.localAddresses = wanted.localAddresses
+  var pending: seq[Future[void].Raising([])]
+  for closing in network.retiring:
+    if not closing.finished:
+      pending.add(closing)
+  network.retiring = pending
+  return wanted.ipv4.len > 0 or wanted.ipv6.len > 0
+
+proc refreshInterfaces*(network: MdnsNetwork) =
+  ## Each socket joins one interface, retaining the ingress interface for replies.
+  ## Its outgoing multicast interface stays fixed for its entire lifetime.
+  discard network.refreshInterfacesImpl()
 
 proc refreshLoop(network: MdnsNetwork) {.async: (raises: [CancelledError]).} =
   while true:
@@ -254,45 +470,15 @@ proc sendPacket(
     debug "mDNS send failed", err = getCurrentExceptionMsg()
   return false
 
-proc multicast4(
-    network: MdnsNetwork, packet: seq[byte]
+proc multicastInterfaces(
+    interfaces: seq[ref MdnsInterface], packet: seq[byte], destination: TransportAddress
 ): Future[bool] {.async: (raises: [CancelledError]).} =
-  if network.transport.isNil:
-    return false
-  withLock network.multicastLock4:
-    # A refresh can replace the interface list while a send is pending.
-    let interfaces = network.interfaces4
-    for address in interfaces:
-      if selectMulticastInterface4(network.transport, address):
-        if await network.transport.sendPacket(packet, MdnsDestination):
-          return true
-      else:
-        debug "IPv4 mDNS multicast interface selection failed", address = address #nolint
-
-proc multicast6(
-    network: MdnsNetwork, packet: seq[byte]
-): Future[bool] {.async: (raises: [CancelledError]).} =
-  if network.transport6.isNil:
-    return false
-  # The interface is a socket-wide option; keep it stable until the queued send finishes.
-  withLock network.multicastLock6:
-    let interfaces = network.interfaces6
-    for index in interfaces:
-      if selectMulticastInterface6(network.transport6, index):
-        if await network.transport6.sendPacket(packet, MdnsDestination6):
-          return true
-      else:
-        debug "IPv6 mDNS multicast interface selection failed", interfaceIndex = index
-
-template trackOperation(network: MdnsNetwork, body: untyped) =
-  inc network.activeOperations
-  network.idle.clear()
-  try:
-    body
-  finally:
-    dec network.activeOperations
-    if network.activeOperations == 0:
-      network.idle.fire()
+  var sent = false
+  for iface in interfaces:
+    # Keep sending after both successes and failures on earlier interfaces.
+    if await iface.transport.sendPacket(packet, destination):
+      sent = true
+  return sent
 
 proc multicast*(
     network: MdnsNetwork, packet: seq[byte]
@@ -300,26 +486,49 @@ proc multicast*(
   if not network.isOpen:
     return false
   trackOperation network:
-    let sent4 = await network.multicast4(packet)
-    let sent6 = await network.multicast6(packet)
-    return sent4 or sent6
+    # Snapshot both families before a queued send allows a refresh to run.
+    let interfaces4 = network.interfaces4
+    let interfaces6 = network.interfaces6
+    let targets = interfaces4 & interfaces6
+    # Reserve every socket in both snapshots before the first send can yield.
+    for iface in targets:
+      iface.acquireInterface()
+    try:
+      let sent4 = await multicastInterfaces(interfaces4, packet, MdnsDestination)
+      let sent6 = await multicastInterfaces(interfaces6, packet, MdnsDestination6)
+      return sent4 or sent6
+    finally:
+      for iface in targets:
+        iface.releaseInterface()
 
 proc reply*(
     network: MdnsNetwork, packet: seq[byte], context: MdnsReplyContext, unicast: bool
 ): Future[bool] {.async: (raises: [CancelledError]).} =
-  if not network.isOpen or context.transport.isNil or (
-    context.transport != network.transport and context.transport != network.transport6
+  if not network.isOpen or context.iface.isNil or (
+    context.iface notin network.interfaces4 and context.iface notin network.interfaces6
   ):
     return false
   trackOperation network:
-    if not unicast and context.remote.family == AddressFamily.IPv6:
-      return await network.multicast6(packet)
-    if not unicast:
-      return await network.multicast4(packet)
-    return await context.transport.sendPacket(packet, context.remote)
+    let destination =
+      if unicast:
+        context.remote
+      elif context.isIpv6:
+        MdnsDestination6
+      else:
+        MdnsDestination
+    context.iface.acquireInterface()
+    try:
+      return await context.iface.transport.sendPacket(packet, destination)
+    finally:
+      context.iface.releaseInterface()
 
 proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   network.closing = true
+  # Remove the interfaces before yielding, so refresh cannot retire a socket
+  # that shutdown is already closing. In-flight sends hold their own snapshots.
+  let closingInterfaces = network.interfaces4 & network.interfaces6
+  network.interfaces4.setLen(0)
+  network.interfaces6.setLen(0)
   if not network.refresher.isNil:
     await noCancel network.refresher.cancelAndWait()
     network.refresher = nil
@@ -327,14 +536,12 @@ proc closeImpl(network: MdnsNetwork) {.async: (raises: []).} =
   # closing their sockets. Chronos does not drain queued sends on close.
   if network.activeOperations > 0:
     await noCancel network.idle.wait()
-  if not network.transport.isNil:
-    await noCancel network.transport.closeWait()
-    network.transport = nil
-  if not network.transport6.isNil:
-    await noCancel network.transport6.closeWait()
-    network.transport6 = nil
-  network.interfaces4.setLen(0)
-  network.interfaces6.setLen(0)
+  for iface in closingInterfaces:
+    await noCancel iface.closeInterface()
+  for closing in network.retiring:
+    await noCancel closing
+  network.retiring.setLen(0)
+  network.opened = false
   network.localAddresses.setLen(0)
   network.onPacket = nil
   network.closing = false
@@ -350,61 +557,87 @@ proc open*(
     network: MdnsNetwork, onPacket: MdnsPacketReceived
 ): Future[LPResult[void]] {.async: (raises: []).} =
   ## Open either or both IP families. Repeated opens retain the first callback.
+  ## With eligible interfaces, at least one socket must open successfully.
+  ## Without interfaces, startup succeeds and waits for a later refresh.
+  ## Closing during startup aborts the open; reopen after that open completes.
   if network.closing:
     return err("mDNS network is closing")
+  if network.opening:
+    return err("mDNS network is opening")
   if network.isOpen:
     return ok()
   doAssert not onPacket.isNil, "mDNS packet callback must not be nil"
+  network.opening = true
+  defer:
+    network.opening = false
   network.closeFut = nil
   network.onPacket = onPacket
-  proc received(
+  proc ignoreDatagram(
       transport: DatagramTransport, remote: TransportAddress
   ) {.async: (raises: []).} =
-    if network.closing or
-        (transport != network.transport and transport != network.transport6):
-      return
-    try:
-      # Copy the datagram before the callback can yield and Chronos reuses it.
-      let packet = transport.getMessage()
-      trackOperation network:
-        await network.onPacket(
-          packet, MdnsReplyContext(transport: transport, remote: remote)
-        )
-    except TransportError:
-      debug "mDNS datagram ignored", err = getCurrentExceptionMsg()
+    discard
 
+  # Probe both families so opening with no interfaces still supports later
+  # refreshes. Interface binding is handled independently on each active socket.
+  # Use ephemeral ports so probes cannot consume live mDNS traffic while closing.
+  network.ipv4Available = false
+  network.ipv6Available = false
   try:
-    network.transport = newDatagramTransport(
-      received, local = MdnsBindAddress, flags = {ReuseAddr, ReusePort}, bufSize = 9000
+    let transport = newDatagramTransport(
+      ignoreDatagram,
+      local = initTAddress("0.0.0.0:0"),
+      flags = {ReuseAddr, ReusePort},
+      bufSize = 9000,
     )
-    let configured = configureMulticast(network.transport)
+    let configured = configureMulticast(transport)
+    network.ipv4Available = configured.isOk
     if configured.isErr:
       warn "IPv4 mDNS multicast configuration failed", err = configured.error
-      await network.transport.closeWait()
-      network.transport = nil
+    await transport.closeWait()
   except TransportError as exc:
     debug "IPv4 mDNS unavailable", err = exc.msg
-
   try:
-    network.transport6 = newDatagramTransport6(
-      received,
-      local = MdnsBindAddress6,
+    let transport = newDatagramTransport6(
+      ignoreDatagram,
+      local = initTAddress("[::]:0"),
       flags = {ReuseAddr, ReusePort},
       bufSize = 9000,
       dualstack = DualStackType.Disabled,
     )
-    let configured = configureMulticast6(network.transport6)
+    let configured = configureMulticast6(transport)
+    network.ipv6Available = configured.isOk
     if configured.isErr:
-      debug "IPv6 mDNS multicast configuration failed", err = configured.error
-      await network.transport6.closeWait()
-      network.transport6 = nil
+      warn "IPv6 mDNS multicast configuration failed", err = configured.error
+    await transport.closeWait()
   except TransportError as exc:
     debug "IPv6 mDNS unavailable", err = exc.msg
 
-  network.refreshInterfaces()
-
-  if network.transport.isNil and network.transport6.isNil:
+  # Probe cleanup yields, so close may already have cleared the callback and
+  # completed. Do not reopen sockets or retain its finished cleanup future.
+  if not network.closeFut.isNil:
+    network.onPacket = nil
+    return err("mDNS network closed while opening")
+  if not network.ipv4Available and not network.ipv6Available:
     network.onPacket = nil
     return err("Unable to start mDNS on IPv4 or IPv6")
+  network.opened = true
+  let hasInterfaces = network.refreshInterfacesImpl()
+  if hasInterfaces and network.interfaces4.len == 0 and network.interfaces6.len == 0:
+    await network.close()
+    return err("Unable to open mDNS sockets on any available interface")
   network.refresher = network.refreshLoop()
   return ok()
+
+func ipv4InterfaceIndices*(network: MdnsNetwork): seq[uint32] =
+  ## Interfaces with successfully configured IPv4 multicast sockets.
+  var indices: seq[uint32]
+  for iface in network.interfaces4:
+    indices.add(iface.index)
+  return indices
+
+func ipv4IngressPinned*(network: MdnsNetwork): bool =
+  ## Whether every configured IPv4 socket can identify its ingress interface.
+  for iface in network.interfaces4:
+    if not iface.ingressPinned:
+      return false
+  true
