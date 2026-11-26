@@ -222,7 +222,54 @@ suite "Priority queue behavior":
     checkUntilTimeout:
       conn.writes == @[highMsg, keptMsg]
 
-  asyncTest "An IDONTWANT in the peer history cancels a queued relay":
+  asyncTest "Cancelling repeated IDs preserves FIFO and frees queue capacity":
+    let peer = createTestPeer(maxLow = 5)
+    let conn = peer.stallSendStream(stallCount = 1)
+    defer:
+      await peer.stopTasks()
+      await conn.close()
+    await peer.sendEncoded(@[0.byte], High)
+    let id = testSaltedId(1)
+    for i in 1 .. 5:
+      await peer.sendEncoded(
+        @[i.byte],
+        Low,
+        relayedSaltedId = (if i mod 2 == 1: Opt.some(id)
+        else: Opt.none(SaltedId)),
+      )
+    check peer.cancelQueuedRelay(id) == 3
+    check peer.cancelQueuedRelay(id) == 0
+    await peer.sendEncoded(@[6.byte], Low, relayedSaltedId = Opt.some(id))
+    check peer.cancelQueuedRelay(id) == 1
+    check peer.slowPeerPenalty == 0
+    check peer.queuedBytes(Low) == 2
+    check peer.outboundQueue.evictableBytes[Low] == 2
+    conn.releasePendingWrites()
+    checkUntilTimeout:
+      conn.writes == @[@[0.byte], @[2.byte], @[4.byte]]
+    check peer.cancelQueuedRelay(id) == 0
+
+  asyncTest "Evicting a relay updates its ID bucket before cancellation":
+    let peer = createTestPeer(maxLow = 5, maxOutboundBytes = 16)
+    let conn = peer.stallSendStream(stallCount = 1)
+    defer:
+      await peer.stopTasks()
+      await conn.close()
+    let id = testSaltedId(1)
+    await peer.sendEncoded(@[0.byte], High)
+    for i in 1 .. 3:
+      await peer.sendEncoded(
+        @[i.byte, i.byte, i.byte], Low, relayedSaltedId = Opt.some(id)
+      )
+    await peer.sendEncoded(newSeq[byte](12), Medium)
+    check peer.queuedBytes(Low) == 3
+    check peer.cancelQueuedRelay(id) == 3
+    check peer.queuedBytes(Low) == 0
+    conn.releasePendingWrites()
+    checkUntilTimeout:
+      peer.queuedBytes() == 0
+
+  asyncTest "Cancellation only checks the supplied IDs":
     let peer = createTestPeer(maxLow = 4)
     let conn = peer.stallSendStream(stallCount = 1)
     defer:
@@ -249,7 +296,9 @@ suite "Priority queue behavior":
     peer.iDontWants[1].incl(unwantedId)
 
     let noDuplicates = initHashSet[SaltedId]()
-    check peer.cancelQueuedRelays(noDuplicates) == unwantedMsg.len
+    check peer.cancelQueuedRelays(noDuplicates) == 0
+    check peer.cancelQueuedRelay(testSaltedId(99)) == 0
+    check peer.cancelQueuedRelay(unwantedId) == unwantedMsg.len
     check peer.queuedBytes(Low) == 0
 
     conn.releasePendingWrites()

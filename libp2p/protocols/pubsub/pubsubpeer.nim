@@ -3,7 +3,7 @@
 
 {.push raises: [].}
 
-import std/[sequtils, tables, hashes, sets, deques]
+import std/[sequtils, tables, hashes, sets, deques, lists]
 import results
 import chronos, chronicles, nimcrypto/sha2, metrics
 import chronos/ratelimit
@@ -131,6 +131,12 @@ type
     relayedSaltedId: Opt[SaltedId]
       ## Id of the one relayed message this RPC carries, when it was not split.
 
+  RelayQueue = object
+    messages: DoublyLinkedList[QueuedMessage]
+    count: int
+    # Each ID bucket follows FIFO order; cancellation removes the whole bucket.
+    byId: Table[SaltedId, Deque[DoublyLinkedNode[QueuedMessage]]]
+
   RpcMessageQueue* = ref object
     # Tracks async tasks for sending high-priority peer-published messages.
     sendPriorityQueue: Deque[Future[void]]
@@ -139,7 +145,7 @@ type
     # Queue for local published messages
     mediumPriorityQueue: Deque[QueuedMessage]
     # Queue for lower-priority messages, like "IWANT" replies and relay messages.
-    lowPriorityQueue: Deque[QueuedMessage]
+    lowPriorityQueue: RelayQueue
     # Triggered when a message is added to medium or low queue.
     dataAvailableEvent: AsyncEvent
     # Task for processing non-priority message queue.
@@ -231,6 +237,34 @@ when defined(libp2p_agents_metrics):
       #TODO the sendStream is setup before identify,
       #so we have to read the parents short agent..
       p.sendStream.getWrapped().shortAgent
+
+func len(q: RelayQueue): int =
+  q.count
+
+proc addLast(q: var RelayQueue, msg: sink QueuedMessage) =
+  let node = newDoublyLinkedNode(move(msg))
+  node.value.relayedSaltedId.ifValue(id):
+    q.byId.mgetOrPut(id).addLast(node)
+  q.messages.append(node)
+  inc q.count
+
+proc popFirst(q: var RelayQueue): QueuedMessage =
+  let node = q.messages.head
+  node.value.relayedSaltedId.ifValue(id):
+    q.byId.withValue(id, entries):
+      discard entries[].popFirst()
+      if entries[].len == 0:
+        q.byId.del(id)
+  q.messages.remove(node)
+  node.prev = nil
+  node.next = nil
+  dec q.count
+
+  move(node.value)
+
+proc clear(q: var RelayQueue) =
+  while q.count > 0:
+    discard q.popFirst()
 
 proc getAgent*(peer: PubSubPeer): string =
   return
@@ -900,29 +934,27 @@ func holdsIDontWant*(p: PubSubPeer, id: SaltedId): bool =
 
   false
 
-proc cancelQueuedRelays*(p: PubSubPeer, duplicates: HashSet[SaltedId]): int =
-  ## Drops every queued relay the peer already holds and counts the saved bytes.
-  var savedBytes = 0
-
-  for _ in 0 ..< p.rpcmessagequeue.lowPriorityQueue.len:
-    let queued = p.rpcmessagequeue.lowPriorityQueue.popFirst()
-
-    var cancel = false
-    queued.relayedSaltedId.ifValue(id):
-      cancel = id in duplicates or p.holdsIDontWant(id)
-
-    if not cancel:
-      p.rpcmessagequeue.lowPriorityQueue.addLast(queued)
-      continue
-
-    let messageBytes = queued.data.len
+proc cancelQueuedRelay*(p: PubSubPeer, id: SaltedId): int =
+  ## Removes only queued relays matching this ID, preserving the remaining order.
+  var entries: Deque[DoublyLinkedNode[QueuedMessage]]
+  if not p.rpcmessagequeue.lowPriorityQueue.byId.pop(id, entries):
+    return 0
+  for node in entries:
+    p.rpcmessagequeue.lowPriorityQueue.messages.remove(node)
+    node.prev = nil
+    node.next = nil
+    dec p.rpcmessagequeue.lowPriorityQueue.count
+    let messageBytes = node.value.data.len
     if not p.outboundQueue.release(Low, messageBytes, evictableBytes = messageBytes):
-      return savedBytes
-    savedBytes += messageBytes
+      return
+    result += messageBytes
     when defined(pubsubpeer_queue_metrics):
       libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
 
-  savedBytes
+proc cancelQueuedRelays*(p: PubSubPeer, ids: HashSet[SaltedId]): int =
+  ## Counts encoded bytes removed for the supplied IDs.
+  for id in ids:
+    result += p.cancelQueuedRelay(id)
 
 proc admitMessage(
     p: PubSubPeer, priority: MessagePriority, messageBytes: int, promoteOnEmpty = true
@@ -1279,7 +1311,6 @@ proc new(T: typedesc[RpcMessageQueue]): T =
   return T(
     sendPriorityQueue: initDeque[Future[void]](),
     mediumPriorityQueue: initDeque[QueuedMessage](),
-    lowPriorityQueue: initDeque[QueuedMessage](),
     dataAvailableEvent: newAsyncEvent(),
   )
 
