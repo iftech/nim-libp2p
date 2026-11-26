@@ -120,7 +120,13 @@ proc runBoundedLogPayloads(
         for i in 2 ..< node.len:
           let field = node[i]
           if field.kind == nkExprEqExpr and field.len == 2:
-            sourceFields.add (symbolName(field[0]), node[1].strVal, field[1])
+            let name =
+              case field[0].kind
+              of nkAccQuoted:
+                if field[0].len == 1: symbolName(field[0][0]) else: ""
+              of nkStrLit .. nkTripleStrLit: field[0].strVal
+              else: symbolName(field[0])
+            sourceFields.add (name, node[1].strVal, field[1])
           elif field.kind == nkIdent:
             sourceFields.add (symbolName(field), node[1].strVal, field)
     for child in node:
