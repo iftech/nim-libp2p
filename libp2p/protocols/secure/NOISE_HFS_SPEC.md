@@ -163,19 +163,22 @@ The other implementations of the same profile are TypeScript
 Rust (libp2p/rust-libp2p PR #6481).
 
 Latest cross-implementation result: **48 of 48 runs passed** in a 4x4
-matrix on 2026-09-19, every ordered (listener, dialer) pairing of JS,
+matrix on 2026-11-27, every ordered (listener, dialer) pairing of JS,
 Python, Nim and Rust, each against itself included, three runs each. A run
 passes only if both harnesses exit 0 with `INTEROP_OK`, each side's `PEER`
 matches the other side's `LOCAL`, and each side decrypts the other's
 greeting. Results, the exact commit of each implementation (`versions.txt`)
 and per-run logs:
-<https://github.com/paschal533/pq-noise-artifacts/tree/main/interop/results/20260919T223056Z>.
+<https://github.com/paschal533/pq-noise-artifacts/tree/main/interop/results/20261127T092835Z>.
 
 Limits of that result:
 
-- It ran Nim at `b3f203d`, with `interop/noise-pq/interop_listen` and
-  `interop_dial`. Later commits on this branch are not covered until the
-  matrix is rerun.
+- It ran Nim at `71ed7f2`, with `interop/noise-pq/interop_listen` and
+  `interop_dial`, JS at `14ecadd`, Python at `48394af` and Rust at `bdd417e`
+  (the harness branch royzah/rust-libp2p PR #1, not the head of rust-libp2p
+  PR #6481). Later commits are not covered until the matrix is rerun.
+- Those two programs pass no muxer list, so the early muxer field that a
+  `SwitchBuilder`-built NoiseHFS sends was not part of the run.
 - The runs were over loopback TCP on one machine.
 - The harnesses start the handshake directly on TCP, without
   multistream-select, so protocol id negotiation is not covered there. In
