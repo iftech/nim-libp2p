@@ -218,6 +218,66 @@ jobs:
           ./go-peer/peer &
           ./nim-peer/src/peer
 
+  run-mdns-interop:
+    name: Run mDNS interoperability tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      NIM_VERSION: 2.2.14
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.98.1
+
+      - name: Set up Nim
+        uses: "./.github/actions/install_nim"
+        with:
+          os: linux
+          cpu: amd64
+          shell: bash
+          nim_ref: v${{ env.NIM_VERSION }}
+
+      - name: Build the Rust peer
+        working-directory: interop/mdns/rust-peer
+        run: cargo build --locked
+
+      - name: Build the Nim peer
+        run: |
+          nimble --noLockfile --requires:"nim == $NIM_VERSION" --resolver:minver -l setup -y
+          nim c -d:chronicles_log_level=DEBUG interop/mdns/nim-peer/src/peer.nim
+
+      - name: Run Rust and Nim together
+        working-directory: interop/mdns
+        run: |
+          pids=()
+          cleanup() {
+            for pid in "${pids[@]}"; do
+              kill "$pid" 2>/dev/null || true
+            done
+            for pid in "${pids[@]}"; do
+              wait "$pid" 2>/dev/null || true
+            done
+          }
+          trap cleanup EXIT
+
+          expected_peers=2
+          for ((i = 0; i < expected_peers; i++)); do
+            ./rust-peer/target/debug/mdns-interop-peer &
+            pids+=("$!")
+          done
+          # Nim verifies discovery of the Rust peers, and each Rust peer verifies discovery of Nim.
+          ./nim-peer/src/peer "$expected_peers"
+          rust_status=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || rust_status=1
+          done
+          exit "$rust_status"
+
   run-waggle-interop:
     name: Run Waggle interoperability tests
     runs-on: ubuntu-22.04

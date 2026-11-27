@@ -313,7 +313,7 @@ suite "mDNS network":
         check network.ipv4InterfaceIndices().len > 0
 
   asyncTest "refresh joins and leaves interfaces after startup":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
     exposeInterfaces = false
     requireOpened(network, ignorePacket)
@@ -458,7 +458,7 @@ suite "mDNS network":
     check network.isOpen
 
   asyncTest "close waits for queued multicast sends":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new()
     requireOpened(network, ignorePacket)
     defer:
@@ -473,7 +473,7 @@ suite "mDNS network":
       not network.isOpen
 
   asyncTest "refreshing interfaces while a multicast send is queued":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
     exposeInterfaces = true
     requireOpened(network, ignorePacket)
@@ -487,7 +487,7 @@ suite "mDNS network":
     check not (await network.multicast(@[7'u8, 8, 9]))
 
   asyncTest "cancelling a queued multicast send keeps its packet alive":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new()
     requireOpened(network, ignorePacket)
     defer:
@@ -563,7 +563,7 @@ suite "mDNS network":
         check not (await network.reply(query, context, unicast = false))
 
   asyncTest "multicast sends bytes and replies through a multicast context":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let
       network = MdnsNetwork.new()
       packet = @[9'u8, 8, 7]

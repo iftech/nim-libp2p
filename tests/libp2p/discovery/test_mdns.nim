@@ -132,6 +132,39 @@ suite "mDNS discovery":
       announcement = MdnsService.new().announcement(peer, FixtureInstance)
     check encodeMessage(announcement) == packet(AnnouncementHex)
 
+  test "rust-libp2p TXT name must match a live service PTR":
+    let
+      service = MdnsService.new()
+      id = PeerId.init(FixturePeerId).get()
+      local = PeerId.random()
+    var message = DnsMessage(
+      response: true,
+      answers: @[
+        DnsRecord(name: @ServiceLabels, kind: PTR, ttl: 120, target: @[FixtureInstance])
+      ],
+      additionals: @[
+        DnsRecord(
+          name: @[FixtureInstance.toUpperAscii()],
+          kind: TXT,
+          ttl: 120,
+          strings: @[DnsAddressPrefix & FixtureAddress & PeerIdSuffix & $id],
+        )
+      ],
+    )
+
+    check service.peers(parseMessage(encodeMessage(message)), local) ==
+      @[MdnsPeer(peerId: id, addrs: @[ma(FixtureAddress)])]
+    message.answers[0].target = @[PeerInstance]
+    check service.peers(message, local).len == 0
+    message.answers[0].target = @[FixtureInstance]
+    message.answers[0].ttl = 0
+    check service.peers(message, local).len == 0
+    message.answers[0].ttl = 120
+    message.answers[0].name = @["_other", "_udp", "local"]
+    check service.peers(message, local).len == 0
+    message.answers.setLen(0)
+    check service.peers(message, local).len == 0
+
   test "ignore unrelated services, queries, expired and invalid TXT entries":
     let
       service = MdnsService.new()
@@ -288,6 +321,7 @@ suite "mDNS discovery":
   test "record TTL covers two query intervals":
     let peer = PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)])
     for (interval, ttl) in [
+      (10.seconds, 120'u32),
       (MdnsDefaultQueryInterval, 120'u32),
       (5.minutes, 600'u32),
       (5.minutes + 1.milliseconds, 602'u32),
@@ -406,7 +440,7 @@ suite "mDNS discovery":
       responses.values.toSeq.foldl(a + b, 0) > previousTotal
 
   asyncTest "advertise after ephemeral transport addresses are bound":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     proc interfaces(
         family: AddressFamily
     ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
@@ -694,7 +728,7 @@ suite "mDNS discovery":
     check foundCount == 1
 
   asyncTest "two services discover each other over multicast":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let
       address = ma(PrivateAddress)
       first = Switch(
