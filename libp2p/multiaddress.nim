@@ -894,7 +894,7 @@ proc init*(
         res.data.writeSeq(value)
         # the cap covers the headers too, so the address decodes back
         if res.data.buffer.len > MaxMultiAddressLen:
-          return err("multiaddress: Address is too long!")
+          return err("multiaddress: Address is too long")
         res.data.finish()
         ok(res)
     of Marker:
@@ -970,7 +970,7 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     return err("multiaddress: Invalid MultiAddress, must start with `/`")
   # text is at most ~4x the binary form (/ip4/255.255.255.255 is 20 chars for 5 bytes)
   if len(value) > 4 * MaxMultiAddressLen:
-    return err("multiaddress: Address is too long!")
+    return err("multiaddress: Address is too long")
 
   var
     trimmed = value.trimRight('/')
@@ -988,7 +988,7 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     # counted first: a Path component ends the loop
     inc components
     if components > MaxMultiAddressParts:
-      return err("multiaddress: Too many components!")
+      return err("multiaddress: Too many components")
 
     if proto.kind in {Fixed, Length, Path}:
       if isNil(proto.coder.stringToBuffer):
@@ -1021,7 +1021,7 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
       offset += 1
 
   if res.data.buffer.len > MaxMultiAddressLen:
-    return err("multiaddress: Address is too long!")
+    return err("multiaddress: Address is too long")
   res.data.finish()
   ok(res)
 
