@@ -3,7 +3,7 @@
 {.used.}
 
 from std/times import getTime, toUnix
-import chronos, results
+import chronos, results, std/sequtils
 import
   ../../../../libp2p/[
     extended_peer_record,
@@ -15,6 +15,7 @@ import
     protocols/service_discovery/connection,
     protocols/service_discovery/dial_backoff,
     protocols/service_discovery/types,
+    muxers/mplex/lpchannel,
     stream/connection,
     switch,
   ]
@@ -249,6 +250,85 @@ suite "Service Discovery Component - Error Handling":
       reply.isErr()
       disco.dialFailures.len == 0
       not disco.dialBackedOff(registrarId, registrar.peerInfo.addrs)
+
+  asyncTest "successful send frees the mplex client channel before the retire timeout":
+    const
+      ClientAndServerChannels = 2'u64
+      DeadlineMargin = 1.seconds
+      ChannelFreeDeadline = StreamRetireTimeout - DeadlineMargin
+    let disco = setupServiceDiscoveryNode()
+    let registrar = createSwitch()
+    let reply = kad_protobuf.Message(msgType: kad_protobuf.MessageType.getAds)
+
+    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      defer:
+        await stream.closeWithEOF()
+      try:
+        discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
+        await stream.writeLp(reply.encode())
+      except LPStreamError as e:
+        raiseAssert "unexpected stream error: " & e.msg
+
+    registrar.mount(LPProtocol.new(@[ExtendedServiceDiscoveryCodec], handle))
+    startAndDeferStop(@[disco])
+    await registrar.start()
+    defer:
+      await registrar.stop()
+
+    let registrarId = registrar.peerInfo.peerId
+    disco.switch.peerStore[AddressBook].set(
+      registrarId, registrar.peerInfo.addrs, AddressConfidence.Low
+    )
+
+    let response = await disco.send(
+      registrarId, kad_protobuf.Message(msgType: kad_protobuf.MessageType.getAds)
+    )
+    check response.isOk()
+
+    # The deadline is below the reset fallback, so only the EOF path passes.
+    checkUntilTimeoutCustom(ChannelFreeDeadline, 50.milliseconds):
+      getTrackerCounter(LPChannelTrackerName).opened >= ClientAndServerChannels
+      getTrackerCounter(LPChannelTrackerName).opened ==
+        getTrackerCounter(LPChannelTrackerName).closed
+
+  asyncTest "send returns and stop waits when the peer leaves its stream open":
+    let disco = setupServiceDiscoveryNode()
+    let registrar = createSwitch()
+    let reply = kad_protobuf.Message(msgType: kad_protobuf.MessageType.getAds)
+
+    proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      defer:
+        await stream.reset()
+      try:
+        discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
+        await stream.writeLp(reply.encode())
+        await sleepAsync(StreamRetireTimeout * 2)
+      except LPStreamError as e:
+        raiseAssert "unexpected stream error: " & e.msg
+
+    registrar.mount(LPProtocol.new(@[ExtendedServiceDiscoveryCodec], handle))
+    await disco.start()
+    await registrar.start()
+    defer:
+      await registrar.stop()
+
+    let registrarId = registrar.peerInfo.peerId
+    disco.switch.peerStore[AddressBook].set(
+      registrarId, registrar.peerInfo.addrs, AddressConfidence.Low
+    )
+
+    let started = Moment.now()
+    let response = await disco.send(
+      registrarId, kad_protobuf.Message(msgType: kad_protobuf.MessageType.getAds)
+    )
+    check:
+      response.isOk()
+      Moment.now() - started < StreamRetireTimeout
+      disco.cleanups.len == 1
+
+    let cleanups = disco.cleanups
+    await disco.stop()
+    check cleanups.allIt(it.finished())
 
   asyncTest "REGISTER with non-32-byte key returns Rejected":
     # Spec calls for rejection on bad key length.
