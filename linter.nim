@@ -4,6 +4,7 @@
 import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
+import tools/forbidden_call_linter
 
 runLint:
   sources = ["."]
@@ -34,6 +35,15 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
+
+  # Tests use short timeouts to assert that something does not happen.
+  step "Check chronos timeouts":
+    ignoredPatterns = ["./tests/**/*"]
+    check forbiddenCall:
+      severity = hint
+      settings:
+        minArgs = 1
+        literalOnly = true
 
   step "Semantic checks":
     ignoredPatterns = ["./**/*"]
