@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .build();
 
     eprintln!("Rust mDNS peer {}", swarm.local_peer_id());
-    tokio::time::timeout(Duration::from_secs(70), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         let mut unidentified_dials = HashMap::new();
         let mut dialed_peers = HashSet::new();
         let mut nim_peer = None;
