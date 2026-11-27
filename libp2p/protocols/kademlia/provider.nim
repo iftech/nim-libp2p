@@ -396,7 +396,6 @@ proc sendAddProviderResponse(
 
 func capAddrs(peer: Peer): Peer =
   var capped = peer
-  capped.addrs = peer.addrs.filterIt(it.bytes().len <= MaxProviderAddrLen)
   if capped.addrs.len > MaxProviderAddrs:
     capped.addrs.setLen(MaxProviderAddrs)
   capped
