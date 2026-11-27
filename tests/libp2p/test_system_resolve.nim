@@ -33,10 +33,11 @@ proc gatedLookup(
 proc installGate(
     resolver: SystemResolver, entered, release: ThreadSignalPtr
 ): ptr LookupGate =
-  result = cast[ptr LookupGate](allocShared0(sizeof(LookupGate)))
-  result[].entered = entered
-  result[].release = release
-  resolver.setLookup(gatedLookup, result)
+  let gate = cast[ptr LookupGate](allocShared0(sizeof(LookupGate)))
+  gate[].entered = entered
+  gate[].release = release
+  resolver.setLookup(gatedLookup, gate)
+  gate
 
 proc fixedLookup(
     address: string, port: Port, domain: Domain, context: pointer
