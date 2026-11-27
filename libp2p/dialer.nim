@@ -437,9 +437,13 @@ proc tryDialAndUpgrade(
 
   let mux =
     if self.dialRanking:
-      await self.dialRanked(peerId, dialAddrs, dir, deadline, forceDial, reach, bypassBackoff)
+      await self.dialRanked(
+        peerId, dialAddrs, dir, deadline, forceDial, reach, bypassBackoff
+      )
     else:
-      await self.dialInOrder(peerId, dialAddrs, dir, deadline, forceDial, reach, bypassBackoff)
+      await self.dialInOrder(
+        peerId, dialAddrs, dir, deadline, forceDial, reach, bypassBackoff
+      )
   if not mux.isNil:
     outcome = "connected"
     return ok(mux)
@@ -458,7 +462,11 @@ proc dialAndUpgrade*(
     bypassBackoff = false,
 ): Future[Muxer] {.async: (raises: [CancelledError]).} =
   ## Dial the addresses, sharing one `deadline`. Nil when all of them fail.
-  (await self.tryDialAndUpgrade(peerId, addrs, dir, deadline, forceDial, reach, bypassBackoff)).valueOr:
+  (
+    await self.tryDialAndUpgrade(
+      peerId, addrs, dir, deadline, forceDial, reach, bypassBackoff
+    )
+  ).valueOr:
     nil
 
 proc tryReusingConnection(self: Dialer, peerId: PeerId): Opt[Muxer] =
@@ -554,8 +562,13 @@ proc establishConnection(
   let muxed =
     try:
       await self.dialAndUpgrade(
-        peerId, dialAddrs, dir, Moment.now() + self.dialTimeout, forceDial, reach,
-        bypassBackoff
+        peerId,
+        dialAddrs,
+        dir,
+        Moment.now() + self.dialTimeout,
+        forceDial,
+        reach,
+        bypassBackoff,
       )
     except CancelledError as e:
       slot.release()
@@ -595,15 +608,18 @@ proc internalConnect(
   # serialize on. Sharing one lock for all of them would make an unreachable
   # address block every other address dial.
   let pid = peerId.valueOr:
-    return
-      await self.establishConnection(peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff)
+    return await self.establishConnection(
+      peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff
+    )
 
   # Ensure there's only one in-flight attempt per peer
   let dialLock = await self.acquireDialLock(pid)
   defer:
     self.releaseDialLock(pid, dialLock)
 
-  await self.establishConnection(peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff)
+  await self.establishConnection(
+    peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff
+  )
 
 method connect*(
     self: Dialer,
@@ -621,7 +637,11 @@ method connect*(
   if self.connManager.connCount(peerId) > 0 and reuseConnection:
     return
 
-  (await self.internalConnect(Opt.some(peerId), addrs, forceDial, reuseConnection, dir, bypassBackoff)).isOkOr:
+  (
+    await self.internalConnect(
+      Opt.some(peerId), addrs, forceDial, reuseConnection, dir, bypassBackoff
+    )
+  ).isOkOr:
     raise error.toException(
       DialFailedError, "failed connect: peer_id=" & $peerId & " addrs=" & $addrs
     )

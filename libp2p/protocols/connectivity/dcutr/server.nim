@@ -103,8 +103,11 @@ proc new*(
         addresses = peerDialableAddrs, connectTimeout
       let dialFuts = peerDialableAddrs.mapIt(
         switch.connect(
-          stream.peerId, @[it], reuseConnection = false, dir = Direction.Out,
-          bypassBackoff = true
+          stream.peerId,
+          @[it],
+          reuseConnection = false,
+          dir = Direction.Out,
+          bypassBackoff = true,
         )
       )
       var futs = dialFuts

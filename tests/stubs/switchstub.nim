@@ -33,9 +33,13 @@ method connect*(
     bypassBackoff = false,
 ) {.async: (raises: [DialFailedError, CancelledError]).} =
   if (self.connectStub != nil):
-    await self.connectStub(self, peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff)
+    await self.connectStub(
+      self, peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff
+    )
   else:
-    await self.switch.connect(peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff)
+    await self.switch.connect(
+      peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff
+    )
 
 proc new*(
     T: typedesc[SwitchStub], switch: Switch, connectStub: connectStubType = nil
