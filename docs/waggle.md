@@ -140,9 +140,12 @@ observer updates continue even when `gossipFanout` is zero, and may carry no
 payload. Receiving a message also triggers metadata advertisements to other
 subscribers. There is no periodic heartbeat.
 
-Publishing an unchanged snapshot can retry rejected transmissions or seed newly
-connected subscribers. Peer state advances only after a message enters its
-queue; advertising metadata alone does not mark omitted pieces as delivered.
+Publishing an unchanged snapshot can retry transmissions rejected by the local
+queue or seed newly connected subscribers. Once queued, pieces are optimistically
+treated as delivered; unchanged republication does not guarantee resending pieces
+rejected by the remote application. Applications can express requests in metadata
+and use their metadata update and action methods to select those pieces again.
+Advertising metadata alone does not mark omitted pieces as delivered.
 Each connection has its own subscriptions and peer state, including when several
 connections belong to the same peer.
 
