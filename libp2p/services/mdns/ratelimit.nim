@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
+{.push raises: [].}
+
 import chronos
+import std/tables
 
 type
   MulticastLimit = object
@@ -10,6 +13,33 @@ type
 
   MulticastLimits* = object
     families: array[bool, MulticastLimit]
+
+  InterfaceLimits* = object
+    entries: Table[uint32, ref MulticastLimits]
+
+proc newInterfaceLimits*(): ref InterfaceLimits =
+  new(InterfaceLimits)
+
+proc get*(limits: ref InterfaceLimits, index: uint32): ref MulticastLimits =
+  var entry = limits.entries.getOrDefault(index)
+  if entry.isNil:
+    entry = new(MulticastLimits)
+    limits.entries[index] = entry
+  return entry
+
+proc prune*(limits: ref InterfaceLimits, indices: openArray[uint32], now: Moment) =
+  var removed: seq[uint32]
+  for index, entry in limits.entries.pairs:
+    # Keep in-flight replies and cooldowns across transient interface/socket loss.
+    if index notin indices and not entry.families[false].pending and
+        not entry.families[true].pending and now >= entry.families[false].nextResponse and
+        now >= entry.families[true].nextResponse:
+      removed.add(index)
+  for index in removed:
+    limits.entries.del(index)
+
+proc clear*(limits: ref InterfaceLimits) =
+  limits.entries.clear()
 
 proc acquire*(limits: var MulticastLimits, ipv6: bool, now: Moment): bool =
   if limits.families[ipv6].pending or now < limits.families[ipv6].nextResponse:

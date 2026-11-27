@@ -5,6 +5,7 @@ import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
 import tools/license_linter
+import tools/code_style_linter
 
 runLint:
   sources = ["."]
@@ -44,6 +45,11 @@ runLint:
         license = """# SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 """
+
+  step "Check code style":
+    ignoredPatterns = ["./tools/**/*"]
+    check implicitResult:
+      severity = hint
 
   step "Semantic checks":
     ignoredPatterns = ["./**/*"]

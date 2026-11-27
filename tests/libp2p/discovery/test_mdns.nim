@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[sequtils, strutils]
+import std/[sequtils, strutils, tables]
 import chronos
 import chronos/transports/osnet
 import ../../../libp2p/[switch, peerinfo, peerstore, utils/future]
@@ -97,6 +97,78 @@ suite "mDNS discovery":
     check limits.acquire(false, now + MdnsResponseInterval)
     check limits.acquire(true, now + MdnsResponseInterval)
 
+  test "multicast response limits are independent per interface":
+    for ipv6 in [false, true]:
+      let
+        limits = newInterfaceLimits()
+        now = Moment.now()
+        first = limits.get(1)
+        second = limits.get(2)
+
+      check first[].acquire(ipv6, now)
+      check not limits.get(1)[].acquire(ipv6, now)
+      check second[].acquire(ipv6, now)
+      first[].finish(ipv6, true, now, MdnsResponseInterval)
+      second[].finish(ipv6, true, now, MdnsResponseInterval)
+      check not first[].acquire(ipv6, now)
+      check not second[].acquire(ipv6, now)
+      check first[].acquire(ipv6, now + MdnsResponseInterval)
+      check second[].acquire(ipv6, now + MdnsResponseInterval)
+
+  test "removed interface limits survive pending replies and retain the throttle":
+    for ipv6 in [false, true]:
+      let
+        limits = newInterfaceLimits()
+        now = Moment.now()
+        original = limits.get(1)
+      check original[].acquire(ipv6, now)
+      limits.prune([], now)
+      let refreshed = limits.get(1)
+      check refreshed == original
+      check not refreshed[].acquire(ipv6, now + MdnsResponseInterval)
+      original[].finish(ipv6, true, now, MdnsResponseInterval)
+      limits.prune([1'u32], now)
+      check limits.get(1) == original
+      check not limits.get(1)[].acquire(ipv6, now)
+      check limits.get(1)[].acquire(ipv6, now + MdnsResponseInterval)
+
+  test "removed interface limits are pruned once idle and cooldowns expire":
+    let
+      limits = newInterfaceLimits()
+      now = Moment.now()
+      old = limits.get(1)
+      retained = limits.get(2)
+    check old[].acquire(false, now)
+    check old[].acquire(true, now)
+    old[].finish(false, true, now, MdnsResponseInterval)
+    limits.prune([2'u32], now)
+    check limits.get(1) == old
+    old[].finish(true, false, now, MdnsResponseInterval)
+    limits.prune([2'u32], now)
+    check limits.get(1) == old
+    limits.prune([2'u32], now + MdnsResponseInterval)
+    let replacement = limits.get(1)
+    check replacement != old
+    check replacement[].acquire(false, now)
+    check limits.get(2) == retained
+
+  test "removed interface cooldowns survive refresh failures for either family":
+    for ipv6 in [false, true]:
+      let
+        limits = newInterfaceLimits()
+        now = Moment.now()
+        original = limits.get(1)
+      check original[].acquire(ipv6, now)
+      original[].finish(ipv6, true, now, MdnsResponseInterval)
+      limits.prune([], now)
+      limits.prune([], now + MdnsResponseInterval - 1.milliseconds)
+      let recovered = limits.get(1)
+      check recovered == original
+      check not recovered[].acquire(ipv6, now + MdnsResponseInterval - 1.milliseconds)
+      limits.prune([1'u32], now + MdnsResponseInterval)
+      check limits.get(1) == original
+      check recovered[].acquire(ipv6, now + MdnsResponseInterval)
+
   test "DNS-SD records round trip and group peer addresses":
     let
       service = MdnsService.new()
@@ -131,6 +203,39 @@ suite "mDNS discovery":
       )
       announcement = MdnsService.new().announcement(peer, FixtureInstance)
     check encodeMessage(announcement) == packet(AnnouncementHex)
+
+  test "rust-libp2p TXT name must match a live service PTR":
+    let
+      service = MdnsService.new()
+      id = PeerId.init(FixturePeerId).get()
+      local = PeerId.random()
+    var message = DnsMessage(
+      response: true,
+      answers: @[
+        DnsRecord(name: @ServiceLabels, kind: PTR, ttl: 120, target: @[FixtureInstance])
+      ],
+      additionals: @[
+        DnsRecord(
+          name: @[FixtureInstance.toUpperAscii()],
+          kind: TXT,
+          ttl: 120,
+          strings: @[DnsAddressPrefix & FixtureAddress & PeerIdSuffix & $id],
+        )
+      ],
+    )
+
+    check service.peers(parseMessage(encodeMessage(message)), local) ==
+      @[MdnsPeer(peerId: id, addrs: @[ma(FixtureAddress)])]
+    message.answers[0].target = @[PeerInstance]
+    check service.peers(message, local).len == 0
+    message.answers[0].target = @[FixtureInstance]
+    message.answers[0].ttl = 0
+    check service.peers(message, local).len == 0
+    message.answers[0].ttl = 120
+    message.answers[0].name = @["_other", "_udp", "local"]
+    check service.peers(message, local).len == 0
+    message.answers.setLen(0)
+    check service.peers(message, local).len == 0
 
   test "ignore unrelated services, queries, expired and invalid TXT entries":
     let
@@ -288,6 +393,7 @@ suite "mDNS discovery":
   test "record TTL covers two query intervals":
     let peer = PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)])
     for (interval, ttl) in [
+      (10.seconds, 120'u32),
       (MdnsDefaultQueryInterval, 120'u32),
       (5.minutes, 600'u32),
       (5.minutes + 1.milliseconds, 602'u32),
@@ -342,7 +448,7 @@ suite "mDNS discovery":
       service.peers(responses[0], PeerId.random()) ==
         @[MdnsPeer(peerId: local.peerInfo.peerId, addrs: @[address])]
 
-  asyncTest "multicast query responses are rate limited":
+  asyncTest "multicast query responses are rate limited independently per interface":
     let
       local = Switch(
         peerInfo: PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)]),
@@ -352,7 +458,8 @@ suite "mDNS discovery":
       service = MdnsService.new()
       listener = MdnsNetwork.new()
       query = DnsMessage(questions: @[DnsQuestion(name: @ServiceLabels, kind: PTR)])
-    var responses = 0
+    var responses: Table[uint32, int]
+
     var unicastResponses = 0
     proc received(
         packet: seq[byte], context: MdnsReplyContext
@@ -363,7 +470,7 @@ suite "mDNS discovery":
             service.peers(message, PeerId.random()).anyIt(
               it.peerId == local.peerInfo.peerId
             ):
-          inc responses
+          responses.mgetOrPut(context.interfaceIndex, 0).inc
       except ValueError:
         raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
@@ -377,7 +484,7 @@ suite "mDNS discovery":
         raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
     # Bind explicitly so Chronos receives the unicast replies on this socket.
-    let sender = newMulticastSender(receivedUnicast)
+    let sender = newMdnsTestSender(receivedUnicast)
     defer:
       await sender.closeWait()
       await listener.close()
@@ -385,26 +492,40 @@ suite "mDNS discovery":
     requireStarted(service, local)
     let opened = await listener.open(received)
     require opened.isOk
-    # Let the initial announcement finish before counting query responses.
+
+    let configured = listener.ipv4InterfaceIndices()
+    if configured.len == 0 or not listener.ipv4IngressPinned():
+      checkpoint "No IPv4 multicast interface is configured or ingress cannot be pinned"
+      skip()
+      return
+
+    # Allow the initial multicast announcement to arrive before clearing the
+    # counters; network delivery is not bounded by an event-loop step.
     await sleepAsync(200.milliseconds)
-    responses = 0
+    responses.clear()
     for i in 0 ..< 5:
       check await listener.multicast(encodeMessage(query))
     checkUntilTimeout:
-      responses > 0
+      configured.allIt(it in responses)
     for i in 0 ..< 2:
       await sender.sendMulticast(query)
     checkUntilTimeout:
       unicastResponses >= 2
-    # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
+    # A response sent on another interface on the same LAN can also arrive
+    # here, so each ingress may see one copy per sending interface.
+    # The actual response interval must elapse before the next query.
     await sleepAsync(MdnsResponseInterval)
-    check responses == 1
+    for index in configured:
+      check index in responses
+    for count in responses.values:
+      check count <= configured.len
+    let previousTotal = responses.values.toSeq.foldl(a + b, 0)
     check await listener.multicast(encodeMessage(query))
     checkUntilTimeout:
-      responses >= 2
+      responses.values.toSeq.foldl(a + b, 0) > previousTotal
 
   asyncTest "advertise after ephemeral transport addresses are bound":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     proc interfaces(
         family: AddressFamily
     ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
@@ -692,7 +813,7 @@ suite "mDNS discovery":
     check foundCount == 1
 
   asyncTest "two services discover each other over multicast":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let
       address = ma(PrivateAddress)
       first = Switch(

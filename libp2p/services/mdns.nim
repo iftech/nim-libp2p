@@ -3,7 +3,7 @@
 
 {.push raises: [].}
 
-import std/[strutils, tables, net, sequtils]
+import std/[strutils, tables, net, sequtils, sets]
 import chronos, chronicles
 import ../[switch, peerinfo, peerstore, multicodec, address_manager, results, wire]
 import ../peeraddrpolicy
@@ -17,7 +17,7 @@ export network.MdnsPort
 const
   MdnsServiceName* = "_p2p._udp"
   MdnsDefaultQueryInterval* = 60.seconds
-  MdnsMinQueryInterval* = 60.seconds
+  MdnsMinQueryInterval* = 10.seconds
   MdnsMaxQueryInterval* = (int64(high(uint32)) div 2).seconds
   MdnsResponseInterval* = 1.seconds
   MdnsDefaultMaxPendingCallbacks* = 10
@@ -46,7 +46,7 @@ type
     owner: Switch
     advertisement: DnsMessage
     advertisementBytes: seq[byte]
-    multicastLimits: MulticastLimits
+    multicastLimits: ref InterfaceLimits
 
 logScope:
   topics = "libp2p mdns"
@@ -95,12 +95,18 @@ proc new*(
     except ValueError as exc:
       raiseAssert "Invalid mDNS service name: " & exc.msg
 
+  let limits = newInterfaceLimits()
+  proc interfacesChanged(indices: seq[uint32]) {.gcsafe, raises: [].} =
+    limits.prune(indices, Moment.now())
+
   return T(
     onPeerFound: onPeerFound,
     serviceName: name,
     interval: queryInterval,
     maxPendingCallbacks: maxPendingCallbacks,
-    network: MdnsNetwork.new(networkInterfaceProvider),
+    network:
+      MdnsNetwork.new(networkInterfaceProvider, onInterfacesChanged = interfacesChanged),
+    multicastLimits: limits,
   )
 
 proc suitable(address: MultiAddress): bool =
@@ -199,12 +205,26 @@ proc peers*(service: MdnsService, message: DnsMessage, self: PeerId): seq[MdnsPe
   ## peer ID. mDNS is unauthenticated.
   if not message.response:
     return @[]
+  # rust-libp2p uses single-label TXT owners. A live PTR for this service
+  # associates those names with the service in the same response.
+  var shortInstances: HashSet[string]
+  for record in message.answers:
+    if record.kind == PTR and record.ttl > 0 and record.target.len == 1 and
+        sameName(record.name, service.serviceName):
+      shortInstances.incl(record.target[0].toLowerAscii())
+
   var grouped: Table[PeerId, seq[MultiAddress]]
   proc collect(records: openArray[DnsRecord]) =
     for record in records:
-      if record.kind != TXT or record.ttl == 0 or
-          record.name.len != service.serviceName.len + 1 or
-          not sameName(record.name[1 .. ^1], service.serviceName):
+      if record.kind != TXT or record.ttl == 0:
+        continue
+      let matchesService =
+        if record.name.len == 1:
+          record.name[0].toLowerAscii() in shortInstances
+        else:
+          record.name.len == service.serviceName.len + 1 and
+            sameName(record.name[1 .. ^1], service.serviceName)
+      if not matchesService:
         continue
       for text in record.strings:
         if not text.startsWith("dnsaddr="):
@@ -343,7 +363,9 @@ proc handleQuery(
     return
 
   let ipv6 = context.isIpv6
-  if not service.multicastLimits.acquire(ipv6, Moment.now()):
+  let index = context.interfaceIndex
+  let limits = service.multicastLimits.get(index)
+  if not limits[].acquire(ipv6, Moment.now()):
     return
 
   var sent = false
@@ -352,7 +374,7 @@ proc handleQuery(
     sent =
       await noCancel service.network.reply(service.advertisementBytes, context, false)
   finally:
-    service.multicastLimits.finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
+    limits[].finish(ipv6, sent, Moment.now(), MdnsResponseInterval)
 
 proc received(
     service: MdnsService, switch: Switch, datagram: seq[byte], context: MdnsReplyContext
@@ -426,5 +448,5 @@ method stop*(
   service.owner = nil
   service.advertisement = default(DnsMessage)
   service.advertisementBytes.setLen(0)
-  service.multicastLimits = default(MulticastLimits)
+  service.multicastLimits.clear()
   info "mDNS discovery stopped"
