@@ -8,7 +8,8 @@ import
     protocols/kademlia, switch, builders, cid, multicodec, multihash, stream/connection
   ]
 import ../../../libp2p/protocols/kademlia/memory_store
-import ../../tools/[crypto, unittest, switch_builder, multiaddress]
+import ../../../libp2p/varint
+import ../../tools/[crypto, unittest, switch_builder, multiaddress, bufferstream]
 import std/importutils
 import ./mock_kademlia
 
@@ -337,16 +338,17 @@ proc seedProvider*(
   if outcome notin {AddProviderOutcome.added, AddProviderOutcome.refreshed}:
     raiseAssert "seedProvider: " & $outcome
 
-proc backdateExpiry*(kad: KadDHT) =
+proc backdateExpiry*(kad: KadDHT, by: Duration = 1.secs) =
   ## Expiry has one-second resolution, so a same-second refresh must beat an older record.
+  let seconds = by.seconds().int
   let providers = kad.mem().providers
   for stored in providers.byKey.mvalues():
     for p in stored.mvalues():
-      p.expiresAt -= 1
+      p.expiresAt -= seconds
   var slots: seq[typeof(providers.expiries[0])]
   while providers.expiries.len > 0:
     var slot = providers.expiries.pop()
-    slot.expiresAt -= 1
+    slot.expiresAt -= seconds
     slots.add(slot)
   for slot in slots:
     providers.expiries.push(slot)
@@ -590,3 +592,30 @@ proc mountedKad*(switch: Switch): Opt[KadDHT] {.raises: [].} =
     if KadCodec in handler.protos and handler.protocol of KadDHT:
       return Opt.some(KadDHT(handler.protocol))
   Opt.none(KadDHT)
+
+type RecordingStream* = ref object
+  stream*: TestBufferStream
+  replies*: seq[seq[byte]]
+
+proc new*(T: typedesc[RecordingStream]): T =
+  let recording = T()
+  recording.stream = TestBufferStream.new(
+    proc(data: sink seq[byte]) {.async: (raises: [CancelledError, LPStreamError]).} =
+      recording.replies.add(data)
+  )
+  recording
+
+proc getMessage*(frame: openArray[byte]): Result[seq[byte], string] =
+  var prefixLen: int
+  var msgLen: uint64
+  if PB.getUVarint(frame, prefixLen, msgLen).isErr():
+    return err("invalid length prefix")
+  if msgLen != uint64(frame.len - prefixLen):
+    return err("length prefix " & $msgLen & " != payload " & $(frame.len - prefixLen))
+  ok(@frame[prefixLen ..^ 1])
+
+proc getReply*(frame: openArray[byte]): Result[Message, string] =
+  let payload = ?getMessage(frame)
+  let reply = Message.decode(payload).valueOr:
+    return err("decode: " & $error)
+  ok(reply)
