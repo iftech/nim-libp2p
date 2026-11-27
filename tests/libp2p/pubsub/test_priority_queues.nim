@@ -230,14 +230,15 @@ suite "Priority queue behavior":
       await conn.close()
     await peer.sendEncoded(@[0.byte], High)
     let id = testSaltedId(1)
-    for i in 1 .. 5:
+    const matchingRelays = 3
+    for i in 1 .. matchingRelays * 2 - 1:
       await peer.sendEncoded(
         @[i.byte],
         Low,
         relayedSaltedId = (if i mod 2 == 1: Opt.some(id)
         else: Opt.none(SaltedId)),
       )
-    check peer.cancelQueuedRelay(id) == 3
+    check peer.cancelQueuedRelay(id) == matchingRelays
     check peer.cancelQueuedRelay(id) == 0
     await peer.sendEncoded(@[6.byte], Low, relayedSaltedId = Opt.some(id))
     check peer.cancelQueuedRelay(id) == 1
