@@ -7,6 +7,7 @@
 
 import chronos, results
 import ../../[multiaddress, peerid, switch]
+import ../../utils/moment
 import ./[protobuf, types, kademlia_metrics]
 
 proc countSent*[T](
@@ -42,8 +43,7 @@ proc dispatchRpc*(
     peer, addrs.valueOr(kad.dialAddrs(peer)), move encoded, kad.config.timeout
   )
   kad_message_duration_ms.observe(
-    float64((Moment.now() - started).nanoseconds) / 1_000_000.0,
-    labelValues = [$msgType],
+    Moment.since(started).toMilliseconds(), labelValues = [$msgType]
   )
   sendRes.countSent(msgType, sentBytes)
 

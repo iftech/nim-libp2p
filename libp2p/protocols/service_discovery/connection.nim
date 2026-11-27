@@ -4,6 +4,7 @@
 import std/net
 import chronos, chronicles, results
 import ../../[peerid, switch, multiaddress, extended_peer_record]
+import ../../utils/moment
 import ../kademlia
 import ../kademlia/types
 import
@@ -83,8 +84,7 @@ proc send*(
       disco.evictOnReset(peerId, e)
       return err(e, "connection reading failed")
   cd_message_duration_ms.observe(
-    float64((Moment.now() - started).nanoseconds) / 1_000_000.0,
-    labelValues = [$msg.msgType],
+    Moment.since(started).toMilliseconds(), labelValues = [$msg.msgType]
   )
   replyRead = true
 

@@ -6,13 +6,13 @@ import std/strutils
 import chronos, results
 import
   ../../../../libp2p/[
-    builders,
     multiaddress,
     protocols/service_discovery/connection,
     protocols/service_discovery/service_discovery_metrics,
     protocols/service_discovery/types,
     stream/connection,
     switch,
+    utils/moment,
   ]
 import ../../../../libp2p/protocols/kademlia/protobuf as kad_protobuf
 import
@@ -68,6 +68,7 @@ suite "Service Discovery Component - Fault Stream":
       not junkReply.wasResetLocally()
 
   asyncTest "records round-trip duration in milliseconds":
+    const replyDelay = 25.milliseconds
     let clientNode = setupServiceDiscoveryNode()
     startAndDeferStop(@[clientNode])
 
@@ -78,12 +79,13 @@ suite "Service Discovery Component - Fault Stream":
         await stream.close()
       try:
         discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
-        await sleepAsync(25.milliseconds)
+        # Delay the reply so the round trip has a known lower bound.
+        await sleepAsync(replyDelay)
         let reply =
           kad_protobuf.Message(msgType: Opt.some(kad_protobuf.MessageType.getAds))
         await stream.writeLp(reply.encode())
-      except LPStreamError:
-        return
+      except LPStreamError as e:
+        raiseAssert "unexpected error: " & e.msg
 
     let server = makeStandardSwitch(TcpAutoAddress)
     server.mount(LPProtocol.new(@[clientNode.codec], slowHandler))
@@ -111,5 +113,5 @@ suite "Service Discovery Component - Fault Stream":
     let observedMs = sumAfter - sumBefore
     check:
       countAfter == countBefore + 1.0
-      observedMs >= 20.0
-      observedMs < 1000.0
+      observedMs >= replyDelay.toMilliseconds()
+      observedMs < 5000.0

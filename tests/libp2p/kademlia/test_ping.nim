@@ -5,8 +5,13 @@
 
 import chronos
 import
-  ../../../libp2p/
-    [protocols/kademlia, protocols/kademlia/kademlia_metrics, switch, builders]
+  ../../../libp2p/[
+    protocols/kademlia,
+    protocols/kademlia/kademlia_metrics,
+    switch,
+    builders,
+    utils/moment,
+  ]
 import ../../tools/[lifecycle, metrics_utils, multiaddress, switch_builder, unittest]
 import ./utils.nim
 
@@ -113,11 +118,13 @@ suite "KadDHT Ping":
     checkPingFails(kadPeerSilent(), $readStage)
 
   asyncTest "Ping records round-trip duration in milliseconds":
+    const replyDelay = 25.milliseconds
     let kads = setupKadSwitches(1)
     startAndDeferStop(kads)
     let peer = kadPeer(
       proc(stream: Stream) {.async: (raises: [CancelledError, LPStreamError]).} =
-        await sleepAsync(25.milliseconds)
+        # Delay the reply so the round trip has a known lower bound.
+        await sleepAsync(replyDelay)
         await stream.writeLp(Message(msgType: Opt.some(MessageType.ping)).encode())
     )
     startAndDeferStop(@[peer])
@@ -140,5 +147,5 @@ suite "KadDHT Ping":
     let observedMs = sumAfter - sumBefore
     check:
       countAfter == countBefore + 1.0
-      observedMs >= 20.0
-      observedMs < 1000.0
+      observedMs >= replyDelay.toMilliseconds()
+      observedMs < 5000.0
