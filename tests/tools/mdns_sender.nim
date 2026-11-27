@@ -64,7 +64,12 @@ template newMdnsTestSender*(callback: DatagramCallback): DatagramTransport =
       return
     sender
 
-template requireMdnsMulticastRoute*(callback: DatagramCallback) =
+proc ignoreDatagram(
+    transport: DatagramTransport, remote: TransportAddress
+) {.async: (raises: []).} =
+  discard
+
+template requireMdnsMulticastRoute*(callback: DatagramCallback = ignoreDatagram) =
   when defined(macosx):
     block:
       let probe = newMdnsTestSender(callback)

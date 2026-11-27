@@ -438,7 +438,7 @@ suite "mDNS discovery":
       responses >= 2
 
   asyncTest "advertise after ephemeral transport addresses are bound":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     proc interfaces(
         family: AddressFamily
     ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
@@ -726,7 +726,7 @@ suite "mDNS discovery":
     check foundCount == 1
 
   asyncTest "two services discover each other over multicast":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let
       address = ma(PrivateAddress)
       first = Switch(

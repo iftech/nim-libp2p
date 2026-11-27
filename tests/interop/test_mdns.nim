@@ -5,7 +5,7 @@
 
 import chronos
 import ../../libp2p/[builders, multiaddress, peerid, results, switch]
-import ../tools/[crypto, unittest]
+import ../tools/[crypto, mdns_sender, unittest]
 import ./mdns
 
 suite "mDNS interoperability":
@@ -55,6 +55,7 @@ suite "mDNS interoperability":
       (await discovery.waitForPeers(0.milliseconds)).isOk
 
   asyncTest "interop node discovers two running mDNS peers":
+    requireMdnsMulticastRoute()
     proc newPeer(): Switch =
       SwitchBuilder
         .new()
