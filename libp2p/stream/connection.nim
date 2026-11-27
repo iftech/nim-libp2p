@@ -148,12 +148,13 @@ method getWrapped*(s: Connection): Connection {.base, gcsafe.} =
 
 proc getUnderlying*(s: Connection): Connection =
   ## Returns the innermost connection, stopping at a nil or self wrapper.
-  result = s
-  while result != nil:
-    let wrapped = result.getWrapped()
-    if wrapped == nil or wrapped == result:
+  var conn = s
+  while conn != nil:
+    let wrapped = conn.getWrapped()
+    if wrapped == nil or wrapped == conn:
       break
-    result = wrapped
+    conn = wrapped
+  conn
 
 when defined(libp2p_agents_metrics):
   proc setShortAgent*(s: Connection, shortAgent: string) =

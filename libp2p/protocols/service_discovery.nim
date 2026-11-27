@@ -234,6 +234,8 @@ method stop*(disco: ServiceDiscovery) {.async: (raises: []).} =
     await disco.localRegistrationLoop.cancelAndWait()
     disco.localRegistrationLoop = nil
 
+  await noCancel allFutures(move disco.cleanups)
+
   await procCall stop(KadDHT(disco))
 
 proc lookup*(

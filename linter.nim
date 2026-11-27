@@ -5,6 +5,7 @@ import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
 import tools/completed_cancel_linter
+import tools/code_style_linter
 
 runLint:
   sources = ["."]
@@ -38,6 +39,10 @@ runLint:
 
   step "Check future cancellation":
     check completedCancel:
+
+  step "Check code style":
+    ignoredPatterns = ["./tools/**/*"]
+    check implicitResult:
       severity = hint
 
   step "Semantic checks":
