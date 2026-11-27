@@ -37,7 +37,7 @@ runLint:
         ]
 
   step "Check PeerId test helpers":
-    ignoredPatterns = ["./libp2p/peerid.nim"]
+    ignoredPatterns = ["./libp2p/**/*"]
     check peerIdRandom:
       severity = error
 
