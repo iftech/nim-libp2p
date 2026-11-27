@@ -29,21 +29,23 @@ template requireOpened(network, callback: untyped) =
       checkpoint "mDNS network startup failed: " & $opened.error
     require opened.isOk
 
-type TestInterfaceProvider = ref object
+type TestInterfaceProvider = object
   current: seq[NetworkInterface]
   queries: int
 
-proc setInterfaces(provider: TestInterfaceProvider, interfaces: seq[NetworkInterface]) =
+proc setInterfaces(
+    provider: ref TestInterfaceProvider, interfaces: seq[NetworkInterface]
+) =
   provider.current = interfaces
 
 proc interfaces(
-    provider: TestInterfaceProvider
+    provider: ref TestInterfaceProvider
 ): proc(): seq[NetworkInterface] {.gcsafe, raises: [].} =
-  proc getInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+  proc queryInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
     inc provider.queries
     provider.current
 
-  getInterfaces
+  queryInterfaces
 
 proc ipv4Interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
   var interfaces: seq[NetworkInterface]
@@ -94,7 +96,7 @@ suite "mDNS network":
       not network.isLocalAddress(MulticastMdns4)
 
   test "source subnets are cached until interface refresh":
-    let provider = TestInterfaceProvider()
+    let provider = new TestInterfaceProvider
     provider.setInterfaces(
       @[
         NetworkInterface(
@@ -275,7 +277,7 @@ suite "mDNS network":
           network.ipv4InterfaceIndices().len == 0
           not (await network.multicast(@[1'u8]))
         # No-interface startup must still succeed while the port is occupied.
-        let emptyProvider = TestInterfaceProvider()
+        let emptyProvider = new TestInterfaceProvider
         let empty = MdnsNetwork.new(interfaceProvider = emptyProvider.interfaces)
         defer:
           await empty.close()
@@ -298,7 +300,7 @@ suite "mDNS network":
       if not blocker.isNil:
         defer:
           await blocker.closeWait()
-        let provider = TestInterfaceProvider()
+        let provider = new TestInterfaceProvider
         let network = MdnsNetwork.new(interfaceProvider = provider.interfaces)
         defer:
           await network.close()
@@ -316,7 +318,7 @@ suite "mDNS network":
     proc changed(indices: seq[uint32]) {.gcsafe, raises: [].} =
       refreshed = indices
 
-    let provider = TestInterfaceProvider()
+    let provider = new TestInterfaceProvider
     let network = MdnsNetwork.new(
       interfaceProvider = provider.interfaces, onInterfacesChanged = changed
     )
@@ -339,7 +341,7 @@ suite "mDNS network":
     check (await network.multicast(@[1'u8]))
 
   asyncTest "interfaces are refreshed periodically":
-    let provider = TestInterfaceProvider()
+    let provider = new TestInterfaceProvider
     let network = MdnsNetwork.new(
       interfaceProvider = provider.interfaces, refreshInterval = 10.milliseconds
     )
@@ -402,13 +404,11 @@ suite "mDNS network":
       not (await network.reply(response, default(MdnsReplyContext), unicast = true))
 
   asyncTest "close drains handlers and packets remain stable across receives":
-    var refreshCount = 0
-    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
-      inc refreshCount
-      getInterfaces()
+    let provider = new TestInterfaceProvider
+    provider.setInterfaces(getInterfaces())
 
     let
-      network = MdnsNetwork.new(interfaceProvider = interfaces)
+      network = MdnsNetwork.new(interfaceProvider = provider.interfaces)
       firstEntered = newAsyncEvent()
       secondEntered = newAsyncEvent()
       release = newAsyncEvent()
@@ -449,10 +449,10 @@ suite "mDNS network":
       not completed
       (await network.open(ignorePacket)).isErr
       not (await network.multicast(second))
-    let countBeforeRefresh = refreshCount
+    let countBeforeRefresh = provider.queries
     network.refreshInterfaces()
     network.refreshInterfaces()
-    check refreshCount == countBeforeRefresh
+    check provider.queries == countBeforeRefresh
     release.fire()
     await closing
     check:
@@ -479,7 +479,7 @@ suite "mDNS network":
 
   asyncTest "refreshing interfaces while a multicast send is queued":
     requireMdnsMulticastRoute()
-    let provider = TestInterfaceProvider()
+    let provider = new TestInterfaceProvider
     provider.setInterfaces(getInterfaces())
     let network = MdnsNetwork.new(interfaceProvider = provider.interfaces)
     requireOpened(network, ignorePacket)
