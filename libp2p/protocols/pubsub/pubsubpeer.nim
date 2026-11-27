@@ -131,6 +131,16 @@ type
     relayedSaltedId: Opt[SaltedId]
       ## Id of the one relayed message this RPC carries, when it was not split.
 
+  RelaySlot = object
+    message: QueuedMessage
+    prev, next, nextWithId: int
+
+  RelayQueue = object
+    # Links are slot indices + 1; zero means no entry. Freed slots are reused.
+    slots: seq[RelaySlot]
+    head, tail, free, count: int
+    byId: Table[SaltedId, tuple[head, tail: int]]
+
   RpcMessageQueue* = ref object
     # Tracks async tasks for sending high-priority peer-published messages.
     sendPriorityQueue: Deque[Future[void]]
@@ -139,7 +149,7 @@ type
     # Queue for local published messages
     mediumPriorityQueue: Deque[QueuedMessage]
     # Queue for lower-priority messages, like "IWANT" replies and relay messages.
-    lowPriorityQueue: Deque[QueuedMessage]
+    lowPriorityQueue: RelayQueue
     # Triggered when a message is added to medium or low queue.
     dataAvailableEvent: AsyncEvent
     # Task for processing non-priority message queue.
@@ -231,6 +241,65 @@ when defined(libp2p_agents_metrics):
       #TODO the sendStream is setup before identify,
       #so we have to read the parents short agent..
       p.sendStream.getWrapped().shortAgent
+
+func len(q: RelayQueue): int =
+  q.count
+
+proc addLast(q: var RelayQueue, msg: sink QueuedMessage) =
+  let index =
+    if q.free != 0:
+      let index = q.free
+      q.free = q.slots[index - 1].next
+      q.slots[index - 1] = RelaySlot(message: move(msg), prev: q.tail)
+      index
+    else:
+      q.slots.add(RelaySlot(message: move(msg), prev: q.tail))
+      q.slots.len
+  if q.tail == 0:
+    q.head = index
+  else:
+    q.slots[q.tail - 1].next = index
+  q.tail = index
+  inc q.count
+
+  q.slots[index - 1].message.relayedSaltedId.ifValue(id):
+    let entries = addr q.byId.mgetOrPut(id)
+    if entries[].tail == 0:
+      entries[].head = index
+    else:
+      q.slots[entries[].tail - 1].nextWithId = index
+    entries[].tail = index
+
+proc remove(q: var RelayQueue, index: int): QueuedMessage =
+  let
+    prev = q.slots[index - 1].prev
+    next = q.slots[index - 1].next
+  if prev == 0:
+    q.head = next
+  else:
+    q.slots[prev - 1].next = next
+  if next == 0:
+    q.tail = prev
+  else:
+    q.slots[next - 1].prev = prev
+  let message = move(q.slots[index - 1].message)
+  q.slots[index - 1].next = q.free
+  q.free = index
+  dec q.count
+  message
+
+proc popFirst(q: var RelayQueue): QueuedMessage =
+  let index = q.head
+  q.slots[index - 1].message.relayedSaltedId.ifValue(id):
+    # FIFO removal also removes the oldest entry in this ID's chain.
+    q.byId.withValue(id, entries):
+      entries[].head = q.slots[index - 1].nextWithId
+      if entries[].head == 0:
+        q.byId.del(id)
+  q.remove(index)
+
+proc clear(q: var RelayQueue) =
+  q = default(RelayQueue)
 
 proc getAgent*(peer: PubSubPeer): string =
   return
@@ -900,28 +969,30 @@ func holdsIDontWant*(p: PubSubPeer, id: SaltedId): bool =
 
   false
 
-proc cancelQueuedRelays*(p: PubSubPeer, duplicates: HashSet[SaltedId]): int =
-  ## Drops every queued relay the peer already holds and counts the saved bytes.
+proc cancelQueuedRelay*(p: PubSubPeer, id: SaltedId): int =
+  ## Removes only queued relays matching this ID, preserving the remaining order.
   var savedBytes = 0
-
-  for _ in 0 ..< p.rpcmessagequeue.lowPriorityQueue.len:
-    let queued = p.rpcmessagequeue.lowPriorityQueue.popFirst()
-
-    var cancel = false
-    queued.relayedSaltedId.ifValue(id):
-      cancel = id in duplicates or p.holdsIDontWant(id)
-
-    if not cancel:
-      p.rpcmessagequeue.lowPriorityQueue.addLast(queued)
-      continue
-
+  var entries: tuple[head, tail: int]
+  if not p.rpcmessagequeue.lowPriorityQueue.byId.pop(id, entries):
+    return 0
+  var index = entries.head
+  while index != 0:
+    let next = p.rpcmessagequeue.lowPriorityQueue.slots[index - 1].nextWithId
+    let queued = p.rpcmessagequeue.lowPriorityQueue.remove(index)
     let messageBytes = queued.data.len
     if not p.outboundQueue.release(Low, messageBytes, evictableBytes = messageBytes):
       return savedBytes
     savedBytes += messageBytes
     when defined(pubsubpeer_queue_metrics):
       libp2p_gossipsub_low_priority_queue_size.dec(labelValues = [$p.peerId])
+    index = next
+  savedBytes
 
+proc cancelQueuedRelays*(p: PubSubPeer, ids: HashSet[SaltedId]): int =
+  ## Counts encoded bytes removed for the supplied IDs.
+  var savedBytes = 0
+  for id in ids:
+    savedBytes += p.cancelQueuedRelay(id)
   savedBytes
 
 proc admitMessage(
@@ -1276,12 +1347,7 @@ proc stopTasks*(p: PubSubPeer) {.async: (raises: []).} =
     libp2p_gossipsub_low_priority_queue_size.set(labelValues = [$p.peerId], value = 0)
 
 proc new(T: typedesc[RpcMessageQueue]): T =
-  return T(
-    sendPriorityQueue: initDeque[Future[void]](),
-    mediumPriorityQueue: initDeque[QueuedMessage](),
-    lowPriorityQueue: initDeque[QueuedMessage](),
-    dataAvailableEvent: newAsyncEvent(),
-  )
+  return T(dataAvailableEvent: newAsyncEvent())
 
 proc new*(
     T: typedesc[PubSubPeer],

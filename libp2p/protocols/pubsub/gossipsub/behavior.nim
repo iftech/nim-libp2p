@@ -399,12 +399,19 @@ proc handleIHave*(
     g.rng.shuffle(res.messageIDs)
     return res
 
-proc handleIDontWant*(g: GossipSub, peer: PubSubPeer, iDontWants: seq[ControlIWant]) =
+proc handleIDontWant*(
+    g: GossipSub, peer: PubSubPeer, iDontWants: seq[ControlIWant]
+): int =
+  ## Returns the encoded bytes saved by cancelling matching queued relays.
+  var savedBytes = 0
   for dontWant in iDontWants:
     for messageId in dontWant.messageIDs:
       if peer.iDontWants[0].len >= IDontWantMaxCount:
         break
-      peer.iDontWants[0].incl(g.salt(messageId))
+      let id = g.salt(messageId)
+      if not peer.iDontWants[0].containsOrIncl(id):
+        savedBytes += peer.cancelQueuedRelay(id)
+  savedBytes
 
 proc handleIWant*(
     g: GossipSub, peer: PubSubPeer, iwants: seq[ControlIWant]

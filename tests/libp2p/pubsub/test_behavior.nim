@@ -553,7 +553,7 @@ suite "GossipSub Behavior":
     ]
 
     # When node handles iDontWants
-    gossipSub.handleIDontWant(peer, iDontWants)
+    check gossipSub.handleIDontWant(peer, iDontWants) == 0
 
     # Then it saves max IDontWantMaxCount messages in the history and the rest is dropped
     check:
