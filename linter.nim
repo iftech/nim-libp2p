@@ -40,6 +40,10 @@ runLint:
     ignoredPatterns = ["./examples/**/*", "./.nim_runtime/**/*"]
     check licenseHeader:
       severity = error
+      settings:
+        license = """# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright (c) Status Research & Development GmbH
+"""
 
   step "Semantic checks":
     ignoredPatterns = ["./**/*"]
