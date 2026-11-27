@@ -37,11 +37,6 @@ runLint:
           "encoded", "certificate", "ticket", "key",
         ]
 
-  step "Check PeerId test helpers":
-    ignoredPatterns = ["./libp2p/**/*"]
-    semCheck peerIdRandom:
-      severity = error
-
   step "Check code style":
     ignoredPatterns = ["./tools/**/*"]
     check implicitResult:
@@ -54,3 +49,5 @@ runLint:
       settings:
         ignoredTypes =
           @["Duration", "MultiAddress", "IpAddress", "GroupId", "RateLimit"]
+    semCheck peerIdRandom:
+      severity = error
