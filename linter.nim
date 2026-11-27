@@ -38,7 +38,7 @@ runLint:
 
   step "Check TODO issue references":
     check todoWithIssue:
-      severity = hint
+      severity = error
 
   step "Semantic checks":
     ignoredPatterns = ["./**/*"]
