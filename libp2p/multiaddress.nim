@@ -830,11 +830,7 @@ proc encode*(mbtype: typedesc[MultiBase], encoding: string, ma: MultiAddress): s
 
 const
   MaxMultiAddressLen* = 1024
-    ## Bytes in one address. Real ones stay far below; past it, one address
-    ## would cost a remote's whole message to process.
   MaxMultiAddressParts* = 32
-    ## Components in one address, for the same reason: a marker such as /ws is
-    ## two bytes, so the byte cap alone still admits ~500 components.
 
 proc validate*(ma: MultiAddress): bool =
   ## Returns ``true`` if MultiAddress ``ma`` is valid.
