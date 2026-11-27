@@ -18,9 +18,6 @@ import ../tools/[unittest, crypto, lifecycle, multiaddress, switch_builder]
 privateAccess(Switch)
 privateAccess(TcpTransport)
 
-const acceptCompletionTimeout =
-  when defined(libp2p_testing_slow): 15.seconds else: 5.seconds
-
 proc newStubAcceptSwitch(
     behavior: StubAcceptBehavior, withTcp = false, maxIn = 0, acceptLimit = 0
 ): (Switch, MemoryTransportStub) =
@@ -84,7 +81,8 @@ suite "Switch accept-loop failure handling":
     startAndDeferStop(@[server])
 
     # the loop calls accept, it raises, and the loop returns and is not respawned
-    await allFutures(server.acceptFuts[0]).wait(acceptCompletionTimeout)
+    checkUntilTimeout:
+      server.acceptFuts[0].finished
     check transport.acceptCalls == 1
 
     # yet the transport still reports running and its address stays advertised,
@@ -100,7 +98,8 @@ suite "Switch accept-loop failure handling":
     startAndDeferStop(@[server, client])
 
     # wait until the server's accept loop has given up
-    await allFutures(server.acceptFuts[0]).wait(acceptCompletionTimeout)
+    checkUntilTimeout:
+      server.acceptFuts[0].finished
 
     # the server still advertises its address
     check transport.addrs[0] in server.peerInfo.listenAddrs
@@ -160,7 +159,8 @@ suite "Switch accept-loop failure handling":
     startAndDeferStop(@[server, client])
 
     # the memory transport's accept loop has died
-    await allFutures(server.acceptFuts[0]).wait(acceptCompletionTimeout)
+    checkUntilTimeout:
+      server.acceptFuts[0].finished
 
     # but the TCP transport still accepts connections
     let tcpAddrs = server.peerInfo.addrs.filterIt(TCP.match(it))
