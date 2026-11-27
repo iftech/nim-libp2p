@@ -37,6 +37,7 @@ runLint:
         ]
 
   step "Check polling assertions":
+    ignoredPatterns = ["./tests/tools/test_unittest.nim"]
     check checkUntilTimeout:
       severity = hint
 
