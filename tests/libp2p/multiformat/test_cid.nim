@@ -5,6 +5,7 @@
 
 import std/sets
 import ../../../libp2p/[cid, multihash, multicodec]
+import ../../../libp2p/utils/shortlog
 import ../../tools/[unittest]
 
 suite "Content identifier CID test suite":
@@ -29,6 +30,11 @@ suite "Content identifier CID test suite":
       cid1.contentType().tryGet() == multiCodec("raw")
       cid1.mhash().tryGet().mcodec == multiCodec("sha2-256")
       hex(cid1) == chex
+
+  test "CID collection logging stays short":
+    let cid = Cid.init("zb2rhhFAEMepUBbGyP1k8tGfz7BSciKXP6GHuUeUsJBaK6cqG").get()
+    check shortLog(@[cid]) == "[" & shortLog(cid) & "]"
+    check shortLog(cid).len < ($cid).len
 
   test "Comparison test":
     var msg = "Hello World!"

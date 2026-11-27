@@ -6,9 +6,10 @@
 {.push raises: [].}
 {.used.}
 
-import tables, hashes
+import tables, hashes, chronicles
 import multibase, multicodec, multihash, vbuffer, varint, results
 import stew/base58
+import utils/shortlog
 
 export results
 
@@ -280,3 +281,9 @@ proc `$`*(cid: Cid): string =
     res.get("")
   else:
     ""
+
+func shortLog*(cid: Cid): string =
+  shortLog($cid)
+
+chronicles.formatIt(Cid):
+  shortLog(it)

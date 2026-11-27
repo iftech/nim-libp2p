@@ -828,13 +828,23 @@ proc encode*(mbtype: typedesc[MultiBase], encoding: string, ma: MultiAddress): s
   ## ``encoding``.
   MultiBase.encode(encoding, ma.data.buffer)
 
+const
+  MaxMultiAddressLen* = 1024
+  MaxMultiAddressParts* = 32
+
 proc validate*(ma: MultiAddress): bool =
   ## Returns ``true`` if MultiAddress ``ma`` is valid.
+  if ma.data.buffer.len > MaxMultiAddressLen:
+    return false
   var header: uint64
   var cursor = initCursor(ma)
+  var parts = 0
   while true:
     if cursor.isEmpty():
       break
+    inc parts
+    if parts > MaxMultiAddressParts:
+      return false
     if cursor.readVarint(header) == -1:
       return false
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
@@ -858,6 +868,8 @@ proc init*(
   if proto.kind == None:
     err("multiaddress: Protocol not found")
   else:
+    if len(value) > MaxMultiAddressLen:
+      return err("multiaddress: Address is too long")
     var res: MultiAddress
     # Pre-allocate: varint(protocol) ≈ maxSize(proto.mcodec) + value size + overhead
     res.data = initVBuffer(32 + len(value))
@@ -882,6 +894,9 @@ proc init*(
             return err("multiaddress: Invalid sni protocol value")
 
         res.data.writeSeq(value)
+        # the cap covers the headers too, so the address decodes back
+        if res.data.buffer.len > MaxMultiAddressLen:
+          return err("multiaddress: Address is too long")
         res.data.finish()
         ok(res)
     of Marker:
@@ -955,11 +970,15 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     return err("multiaddress: Address must not be empty!")
   if value[0] != '/':
     return err("multiaddress: Invalid MultiAddress, must start with `/`")
+  # Bound text parsing work independently of the encoded address limit.
+  if len(value) > 64 * MaxMultiAddressLen:
+    return err("multiaddress: Address is too long")
 
   var
     trimmed = value.trimRight('/')
     parts = trimmed.split('/')
     offset = 1
+    components = 0
     res: MultiAddress
   res.data = initVBuffer(len(trimmed))
 
@@ -968,6 +987,10 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     let proto = getProtocol(part)
     if proto.kind == None:
       return err(part, "multiaddress: Unsupported protocol")
+    # counted first: a Path component ends the loop
+    inc components
+    if components > MaxMultiAddressParts:
+      return err("multiaddress: Too many components")
 
     if proto.kind in {Fixed, Length, Path}:
       if isNil(proto.coder.stringToBuffer):
@@ -994,11 +1017,14 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
       res.data.write(proto.mcodec)
       if not proto.coder.stringToBuffer(path, res.data):
         return err(fmt"{part}/{path}", "multiaddress: Error encoding")
-      break
     elif proto.kind == Marker:
       res.data.write(proto.mcodec)
       offset += 1
 
+    if res.data.buffer.len > MaxMultiAddressLen:
+      return err("multiaddress: Address is too long")
+    if proto.kind == Path:
+      break
   res.data.finish()
   ok(res)
 
@@ -1008,6 +1034,8 @@ proc init*(
   ## Initialize MultiAddress with array of bytes ``data``.
   if len(data) == 0:
     err("multiaddress: Address must not be empty!")
+  elif len(data) > MaxMultiAddressLen:
+    err("multiaddress: Address is too long")
   else:
     var res: MultiAddress
     res.data = initVBuffer(data)
@@ -1108,11 +1136,8 @@ proc concat*(m1, m2: MultiAddress): MaResult[MultiAddress] =
     ok(res)
 
 proc append*(m1: var MultiAddress, m2: MultiAddress): MaResult[void] =
-  m1.data.buffer &= m2.data.buffer
-  if not m1.validate():
-    err("multiaddress: Incorrect MultiAddress!")
-  else:
-    ok()
+  m1 = ?concat(m1, m2)
+  ok()
 
 proc `&`*(m1, m2: MultiAddress): MultiAddress {.raises: [MaError].} =
   ## Concatenates two addresses ``m1`` and ``m2``, and returns result.

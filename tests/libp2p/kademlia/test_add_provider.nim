@@ -3,8 +3,7 @@
 
 {.used.}
 
-import
-  algorithm, chronos, metrics, results, sets, sequtils, strutils, tables, stew/byteutils
+import algorithm, chronos, metrics, results, sets, sequtils, tables, stew/byteutils
 import
   ../../../libp2p/[protocols/kademlia, switch, builders, multicodec, multihash, cid]
 import ../../../libp2p/protocols/kademlia/memory_store
@@ -494,7 +493,7 @@ suite "KadDHT - Add Provider":
       receiverKad.hasProvider(targetKey, senderKad.switch.peerInfo.peerId)
       receiverKad.providerAddrs(targetKey, senderKad.switch.peerInfo.peerId).len == 0
 
-  asyncTest "Add provider keeps at most MaxProviderAddrs short addresses":
+  asyncTest "Add provider keeps at most MaxProviderAddrs addresses":
     let kads = setupKadSwitches(2)
     startAndDeferStop(kads)
 
@@ -504,13 +503,12 @@ suite "KadDHT - Add Provider":
       await conn.close()
 
     let
-      longAddr = ma("/dns4/" & 'a'.repeat(MaxProviderAddrLen) & "/tcp/4001")
       shortAddrs = (0 ..< 1000).mapIt(
         ma("/ip4/10.0." & $(it div 256) & "." & $(it mod 256) & "/tcp/4001")
       )
       provider = Peer(
         id: kads[1].switch.peerInfo.peerId.getBytes(),
-        addrs: @[longAddr] & shortAddrs,
+        addrs: shortAddrs,
         connection: ConnectionStatus.connected,
       )
 
