@@ -282,23 +282,23 @@ proc addProvider*(kad: KadDHT, cid: Cid) {.async: (raises: [CancelledError]), gc
 
 proc startProviding*(kad: KadDHT, c: Cid) {.async: (raises: [CancelledError]).} =
   let provided = ProvidedKey.init(c).valueOr:
-    debug "Invalid cid, skipping advertisement", cid = c, err = error
+    debug "Invalid cid, skipping advertisement", cid = shortLog($c), err = error
     return
   let stored = kad.store.addProvided(provided).valueOr:
-    debug "Failed to store provided key", cid = c, err = error
+    debug "Failed to store provided key", cid = shortLog($c), err = error
     false
   if not stored:
-    debug "Provided key not recorded, skipping advertisement", cid = c
+    debug "Provided key not recorded, skipping advertisement", cid = shortLog($c)
     return
 
   await kad.addProvider(provided.toKey())
 
 proc stopProviding*(kad: KadDHT, c: Cid) {.raises: [].} =
   let provided = ProvidedKey.init(c).valueOr:
-    debug "Invalid cid, nothing to stop providing", cid = c, err = error
+    debug "Invalid cid, nothing to stop providing", cid = shortLog($c), err = error
     return
   kad.store.delProvided(provided).isOkOr:
-    debug "Failed to delete provided key", cid = c, err = error
+    debug "Failed to delete provided key", cid = shortLog($c), err = error
 
 proc listProvidedKeys(kad: KadDHT): seq[Key] =
   let provided = kad.store.listProvided(Opt.none(ProvidedKey), high(int)).valueOr:
