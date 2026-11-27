@@ -53,8 +53,6 @@ type
   MdnsNetwork* = ref object
     opening: bool
     opened: bool
-    ipv4Available: bool
-    ipv6Available: bool
     interfaces4: seq[ref MdnsInterface]
     interfaces6: seq[ref MdnsInterface]
     retiring: seq[Future[void].Raising([])]
@@ -385,7 +383,7 @@ proc currentInterfaces4(
     network: MdnsNetwork, wanted4: seq[MdnsLocalAddress]
 ): seq[ref MdnsInterface] =
   var current: seq[ref MdnsInterface]
-  if network.isOpen and network.ipv4Available:
+  if network.isOpen:
     for wanted in wanted4:
       let address4 = wanted.address.host.address_v4
       var found: ref MdnsInterface
@@ -403,7 +401,7 @@ proc currentInterfaces6(
     network: MdnsNetwork, wanted6: seq[MdnsLocalAddress]
 ): seq[ref MdnsInterface] =
   var current: seq[ref MdnsInterface]
-  if network.isOpen and network.ipv6Available:
+  if network.isOpen:
     for wanted in wanted6:
       var found: ref MdnsInterface
       for iface in network.interfaces6:
@@ -559,7 +557,6 @@ proc open*(
   ## Open either or both IP families. Repeated opens retain the first callback.
   ## With eligible interfaces, at least one socket must open successfully.
   ## Without interfaces, startup succeeds and waits for a later refresh.
-  ## Closing during startup aborts the open; reopen after that open completes.
   if network.closing:
     return err("mDNS network is closing")
   if network.opening:
@@ -572,54 +569,6 @@ proc open*(
     network.opening = false
   network.closeFut = nil
   network.onPacket = onPacket
-  proc ignoreDatagram(
-      transport: DatagramTransport, remote: TransportAddress
-  ) {.async: (raises: []).} =
-    discard
-
-  # Probe both families so opening with no interfaces still supports later
-  # refreshes. Interface binding is handled independently on each active socket.
-  # Use ephemeral ports so probes cannot consume live mDNS traffic while closing.
-  network.ipv4Available = false
-  network.ipv6Available = false
-  try:
-    let transport = newDatagramTransport(
-      ignoreDatagram,
-      local = initTAddress("0.0.0.0:0"),
-      flags = {ReuseAddr, ReusePort},
-      bufSize = 9000,
-    )
-    let configured = configureMulticast(transport)
-    network.ipv4Available = configured.isOk
-    if configured.isErr:
-      warn "IPv4 mDNS multicast configuration failed", err = configured.error
-    await transport.closeWait()
-  except TransportError as exc:
-    debug "IPv4 mDNS unavailable", err = exc.msg
-  try:
-    let transport = newDatagramTransport6(
-      ignoreDatagram,
-      local = initTAddress("[::]:0"),
-      flags = {ReuseAddr, ReusePort},
-      bufSize = 9000,
-      dualstack = DualStackType.Disabled,
-    )
-    let configured = configureMulticast6(transport)
-    network.ipv6Available = configured.isOk
-    if configured.isErr:
-      warn "IPv6 mDNS multicast configuration failed", err = configured.error
-    await transport.closeWait()
-  except TransportError as exc:
-    debug "IPv6 mDNS unavailable", err = exc.msg
-
-  # Probe cleanup yields, so close may already have cleared the callback and
-  # completed. Do not reopen sockets or retain its finished cleanup future.
-  if not network.closeFut.isNil:
-    network.onPacket = nil
-    return err("mDNS network closed while opening")
-  if not network.ipv4Available and not network.ipv6Available:
-    network.onPacket = nil
-    return err("Unable to start mDNS on IPv4 or IPv6")
   network.opened = true
   let hasInterfaces = network.refreshInterfacesImpl()
   if hasInterfaces and network.interfaces4.len == 0 and network.interfaces6.len == 0:

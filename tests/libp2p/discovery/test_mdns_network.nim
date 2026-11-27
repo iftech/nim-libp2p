@@ -286,33 +286,31 @@ suite "mDNS network":
         requireOpened(network, ignorePacket)
         check network.ipv4InterfaceIndices().len > 0
 
-  asyncTest "close during opening prevents startup and permits a later reopen":
-    requireMdnsMulticastRoute(ignoreDatagram)
-    let network = MdnsNetwork.new(interfaceProvider = countingInterfaces)
-    defer:
-      await network.close()
-    interfaceQueries = 0
-    let opening = network.open(ignorePacket)
-    require not opening.finished
-    let closing = network.close()
-    await closing
-    # A new open must not reset the close marker while the first is suspended.
-    check (await network.open(ignorePacket)).isErr
-    let opened = await opening
-    check:
-      opened.isErr
-      not network.isOpen
-      interfaceQueries == 0
-      network.ipv4InterfaceIndices().len == 0
-      not (await network.multicast(@[1'u8]))
-      cast[pointer](network.close()) == cast[pointer](closing)
-    await network.close()
-    requireOpened(network, ignorePacket)
-    check network.isOpen
-    let closingAgain = network.close()
-    check cast[pointer](closingAgain) != cast[pointer](closing)
-    await closingAgain
-    check not network.isOpen
+    asyncTest "refresh retries sockets after the port becomes available":
+      requireMdnsMulticastRoute(ignoreDatagram)
+      require ipv4Interfaces().len > 0
+      var blocker: DatagramTransport
+      try:
+        blocker =
+          newDatagramTransport(ignoreDatagram, local = WildcardMdns4, flags = {})
+      except TransportError:
+        checkpoint "Cannot exclusively reserve mDNS port for refresh test"
+        skip()
+      if not blocker.isNil:
+        defer:
+          await blocker.closeWait()
+        exposeInterfaces = false
+        let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
+        defer:
+          exposeInterfaces = false
+          await network.close()
+        requireOpened(network, ignorePacket)
+        exposeInterfaces = true
+        network.refreshInterfaces()
+        check network.ipv4InterfaceIndices().len == 0
+        await blocker.closeWait()
+        network.refreshInterfaces()
+        check network.ipv4InterfaceIndices().len > 0
 
   asyncTest "refresh joins and leaves interfaces after startup":
     requireMdnsMulticastRoute(ignoreDatagram)
