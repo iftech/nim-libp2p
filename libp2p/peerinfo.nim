@@ -6,6 +6,7 @@
 import std/[algorithm, sequtils]
 import pkg/[chronos, chronicles]
 import ./results
+import ./protocodec
 import
   peerid,
   multiaddress,
@@ -17,7 +18,9 @@ import
   utils/lock,
   utils/shortlog
 
-export peerid, multiaddress, crypto, routing_record, peeraddrpolicy, errors, results
+export
+  peerid, multiaddress, crypto, routing_record, peeraddrpolicy, errors, results,
+  protocodec
 
 logScope:
   topics = "libp2p peer-info"
@@ -55,7 +58,7 @@ type
     ## contains a list of procs that can be used to resolve the listen addresses into dialable addresses.
     addressPolicy*: PeerAddressPolicy
     ## applied after address mappers
-    protocols*: seq[string]
+    protocols*: seq[ProtoCodec]
     protoVersion*: string
     agentVersion*: string
     privateKey*: PrivateKey
@@ -217,7 +220,7 @@ proc tryNew*(
     p: typedesc[PeerInfo],
     key: PrivateKey,
     listenAddrs: openArray[MultiAddress] = [],
-    protocols: openArray[string] = [],
+    protocols: openArray[ProtoCodec] = [],
     protoVersion: string = "",
     agentVersion: string = "",
     addressMappers = newSeq[AddressMapper](),
@@ -247,7 +250,7 @@ proc new*(
     p: typedesc[PeerInfo],
     key: PrivateKey,
     listenAddrs: openArray[MultiAddress] = [],
-    protocols: openArray[string] = [],
+    protocols: openArray[ProtoCodec] = [],
     protoVersion: string = "",
     agentVersion: string = "",
     addressMappers = newSeq[AddressMapper](),

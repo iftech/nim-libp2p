@@ -13,7 +13,7 @@ import libp2p
 ## This is similar to the first tutorial, except we don't need to import the `Ping` protocol.
 ##
 ## Next, we'll declare our custom protocol
-const TestCodec = "/test/proto/1.0.0"
+const TestCodec = ProtoCodec("/test/proto/1.0.0")
 
 type TestProto = ref object of LPProtocol
 
@@ -26,7 +26,7 @@ type TestProto = ref object of LPProtocol
 
 proc new(T: typedesc[TestProto]): T =
   # every incoming stream will be handled in this closure
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     # Read up to 1024 bytes from this stream, and transform them into
     # a string
     try:

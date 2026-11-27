@@ -35,7 +35,7 @@ proc replaceIdentifyHandler(sw: Switch, handler: LPProtoHandler) =
 
 proc stallIdentify(sw: Switch) =
   ## Never answer identify, so only the identify budget can end the dial.
-  proc stall(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc stall(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     await stream.join()
 
   sw.replaceIdentifyHandler(stall)
@@ -43,7 +43,7 @@ proc stallIdentify(sw: Switch) =
 proc stallAfterIdentify(sw: Switch) =
   ## Answer identify, then hold the stream open so no EOF ever arrives.
   let pusher = IdentifyPush.new()
-  proc hold(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc hold(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       await pusher.push(sw.peerInfo, stream)
     except LPStreamError:
@@ -964,7 +964,7 @@ suite "Dialer":
   asyncTest "Cancelled negotiation resets its stream":
     let (stream, remote) = bridgedConnections()
     let dialer = Dialer.new(default(PeerId), nil, nil, @[], MultistreamSelect.new())
-    let negotiation = dialer.negotiateStream(stream, @["/test/1.0.0"])
+    let negotiation = dialer.negotiateStream(stream, @[ProtoCodec("/test/1.0.0")])
     defer:
       await stream.close()
       await remote.close()
@@ -976,7 +976,7 @@ suite "Dialer":
   asyncTest "Malformed negotiation resets its stream":
     let (stream, remote) = bridgedConnections()
     let dialer = Dialer.new(default(PeerId), nil, nil, @[], MultistreamSelect.new())
-    let negotiation = dialer.negotiateStream(stream, @["/test/1.0.0"])
+    let negotiation = dialer.negotiateStream(stream, @[ProtoCodec("/test/1.0.0")])
     defer:
       await stream.close()
       await remote.close()
@@ -988,7 +988,7 @@ suite "Dialer":
     check stream.wasResetLocally
 
   asyncTest "Known peer protocol uses optimistic negotiation":
-    const codec = "/test/optimistic/1.0.0"
+    const codec = ProtoCodec("/test/optimistic/1.0.0")
     let (stream, remote) = bridgedConnections()
     var selected: Stream
     defer:
@@ -1010,16 +1010,16 @@ suite "Dialer":
     check selected.getWrapped() == stream
     await selected.writeLp("early payload")
     check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
-    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await remote.readLp(1024)) == $codec & "\n"
     check string.fromBytes(await remote.readLp(1024)) == "early payload"
 
     await remote.writeLp("/multistream/1.0.0\n")
-    await remote.writeLp(codec & "\n")
+    await remote.writeLp($codec & "\n")
     await remote.writeLp("response")
     check string.fromBytes(await selected.readLp(1024)) == "response"
 
   asyncTest "Stale peer protocol fails on first read and resets the stream":
-    const codec = "/test/stale/1.0.0"
+    const codec = ProtoCodec("/test/stale/1.0.0")
     let (stream, remote) = bridgedConnections()
     var selected: Stream
     defer:
@@ -1038,7 +1038,7 @@ suite "Dialer":
 
     selected = await dialer.negotiateStream(stream, @[codec])
     check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
-    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await remote.readLp(1024)) == $codec & "\n"
 
     await remote.writeLp("/multistream/1.0.0\n")
     await remote.writeLp("na\n")
@@ -1047,10 +1047,10 @@ suite "Dialer":
     check stream.wasResetLocally
 
   asyncTest "Unknown peer protocol uses blocking negotiation":
-    const codec = "/test/blocking/1.0.0"
+    const codec = ProtoCodec("/test/blocking/1.0.0")
     let (stream, remote) = bridgedConnections()
     let peerStore = PeerStore.new(nil)
-    peerStore[ProtoBook][stream.peerId] = @["/test/other/1.0.0"]
+    peerStore[ProtoBook][stream.peerId] = @[ProtoCodec("/test/other/1.0.0")]
     let dialer =
       Dialer.new(default(PeerId), nil, peerStore, @[], MultistreamSelect.new())
 
@@ -1060,11 +1060,11 @@ suite "Dialer":
       await remote.close()
 
     check string.fromBytes(await remote.readLp(1024)) == "/multistream/1.0.0\n"
-    check string.fromBytes(await remote.readLp(1024)) == codec & "\n"
+    check string.fromBytes(await remote.readLp(1024)) == $codec & "\n"
     check not negotiation.finished()
 
     await remote.writeLp("/multistream/1.0.0\n")
-    await remote.writeLp(codec & "\n")
+    await remote.writeLp($codec & "\n")
     check (await negotiation) == stream
 
   asyncTest "tryDial raises DialFailedError when every dial fails":
@@ -1102,7 +1102,7 @@ suite "MuxedUpgrade":
       await conn.close()
       await remote.close()
     let upgrader = MuxedUpgrade.new(
-      @[], [Secure(codecs: @["/test/secure"])], MultistreamSelect.new()
+      @[], [Secure(codecs: @[ProtoCodec("/test/secure")])], MultistreamSelect.new()
     )
     let upgrading = upgrader.tryUpgrade(conn, Opt.none(PeerId))
 

@@ -26,7 +26,7 @@ type
 
   SecureConn* = ref object of Connection
     stream*: RawConn
-    earlyMuxer*: string
+    earlyMuxer*: ProtoCodec
     buf: ZeroQueue
     cleanupFut: Future[void]
 
@@ -149,10 +149,10 @@ proc handleConn(
 
   sconn
 
-proc new*(T: typedesc[Secure], codec: string): T =
+proc new*(T: typedesc[Secure], codec: ProtoCodec): T =
   let s = T(codecs: @[codec])
 
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     trace "Secure upgrade started", protocol = proto, stream
     try:
       # We don't need the result but we

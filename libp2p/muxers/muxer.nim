@@ -4,6 +4,7 @@
 {.push raises: [].}
 
 import chronos, chronicles
+import ../protocodec
 import ../stream/connection, ../errors
 
 logScope:
@@ -29,7 +30,7 @@ type
   # this wraps a creator proc that knows how to make muxers
   MuxerProvider* = object
     newMuxer*: MuxerConstructor
-    codec*: string
+    codec*: ProtoCodec
 
 func shortLog*(m: Muxer): auto =
   if m == nil:
@@ -60,7 +61,7 @@ method handle*(m: Muxer): Future[void] {.base, async: (raises: []).} =
   discard
 
 proc new*(
-    T: typedesc[MuxerProvider], creator: MuxerConstructor, codec: string
+    T: typedesc[MuxerProvider], creator: MuxerConstructor, codec: ProtoCodec
 ): T {.gcsafe.} =
   let muxerProvider = T(newMuxer: creator, codec: codec)
   muxerProvider

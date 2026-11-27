@@ -54,7 +54,7 @@ suite "RendezVous Errors":
       silentPeer = createSwitch()
 
     proc neverRespond(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       defer:
         await stream.close()

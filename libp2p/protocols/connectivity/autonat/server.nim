@@ -176,7 +176,7 @@ proc new*(
   )
 
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     try:
       let msg = AutonatMsg.decode(await stream.readLp(1024)).valueOrRaise(AutonatError)

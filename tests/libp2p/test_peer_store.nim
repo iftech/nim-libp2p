@@ -13,6 +13,7 @@ import
     multiaddress,
     peerid,
     peerstore,
+    protocodec,
     protocols/identify,
     routing_record,
     utils/opt,
@@ -35,14 +36,14 @@ suite "PeerStore":
       "/ip4/127.0.0.1/udp/1234/p2p/QmcgpsyWgH8Y8ajJz1Cu72KnS5uo2Aa2LpzU7kinSupNKC"
     multiaddr1 = ma(multiaddrStr1)
     storedMultiaddr1 = ma("/ip4/127.0.0.1/udp/1234")
-    testcodec1 = "/nim/libp2p/test/0.0.1-beta1"
+    testcodec1 = ProtoCodec("/nim/libp2p/test/0.0.1-beta1")
     # Peer 2
     keyPair2 = KeyPair.random(ECDSA, rng()).get()
     peerId2 = PeerId.init(keyPair2.seckey).get()
     multiaddrStr2 =
       "/ip4/0.0.0.0/tcp/1234/ipfs/QmcgpsyWgH8Y8ajJz1Cu72KnS5uo2Aa2LpzU7kinSupNKC"
     multiaddr2 = ma(multiaddrStr2)
-    testcodec2 = "/nim/libp2p/test/0.0.2-beta1"
+    testcodec2 = ProtoCodec("/nim/libp2p/test/0.0.2-beta1")
 
   proc makeSignedPeerRecord(
       privateKey: PrivateKey, peerId: PeerId, addrs: seq[MultiAddress], seqNo: uint64

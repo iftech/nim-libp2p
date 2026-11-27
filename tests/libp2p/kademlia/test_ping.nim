@@ -11,7 +11,7 @@ import ./utils.nim
 type Answer = proc(stream: Stream) {.async: (raises: [CancelledError, LPStreamError]).}
 
 proc kadPeer(answer: Answer): Switch =
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()
     try:

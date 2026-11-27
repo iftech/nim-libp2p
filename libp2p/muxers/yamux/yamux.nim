@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../protocodec
 import sequtils, std/[tables]
 import chronos, chronicles, metrics, stew/[endians2, byteutils, objects]
 import ../muxer, ../../stream/connection
@@ -14,7 +15,7 @@ logScope:
   topics = "libp2p yamux"
 
 const
-  YamuxCodec* = "/yamux/1.0.0"
+  YamuxCodec* = ProtoCodec("/yamux/1.0.0")
   YamuxVersion = 0.uint8
   YamuxDefaultWindowSize* = 256 * 1024
   MaxSendQueueSize = YamuxDefaultWindowSize
@@ -607,11 +608,11 @@ proc handleStream(m: Yamux, channel: YamuxChannel) {.async: (raises: []).} =
   trace "Yamux stream handler completed", channel = $channel
   doAssert(channel.isClosed, "connection not closed by handler!")
 
-func openStreamProtocols(m: Yamux): seq[string] =
+func openStreamProtocols(m: Yamux): seq[ProtoCodec] =
   ## Distinct negotiated protocols of the still-open streams, bounded for logs
-  var protocols: seq[string]
+  var protocols: seq[ProtoCodec]
   for channel in m.channels.values:
-    if channel.protocol.len > 0 and channel.protocol notin protocols:
+    if channel.protocol.isSet and channel.protocol notin protocols:
       protocols.add(channel.protocol)
       if protocols.len == ShortCollectionMax:
         break

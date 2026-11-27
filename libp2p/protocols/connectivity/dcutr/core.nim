@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../../protocodec
 import std/sequtils
 
 import chronos, chronicles
@@ -21,7 +22,7 @@ import
 
 export multiaddress
 
-const DcutrCodec* = "/libp2p/dcutr"
+const DcutrCodec* = ProtoCodec("/libp2p/dcutr")
 
 # Implements https://github.com/libp2p/specs/blob/master/relay/DCUtR.md#rpc-messages
 

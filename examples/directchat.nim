@@ -35,7 +35,7 @@ proc writeStdout(c: Chat, str: string) =
 ##
 # Chat Protocol
 ##
-const ChatCodec = "/nim-libp2p/chat/1.0.0"
+const ChatCodec = ProtoCodec("/nim-libp2p/chat/1.0.0")
 
 type ChatProto = ref object of LPProtocol
 
@@ -43,7 +43,7 @@ proc new(T: typedesc[ChatProto], c: Chat): T =
   let chatproto = T()
 
   # create handler for incoming stream
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       if c.connected and not c.stream.closed:
         c.writeStdout "a chat session is already in progress - refusing incoming peer!"

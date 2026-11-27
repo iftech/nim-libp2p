@@ -65,9 +65,9 @@ method stop(p: SlowStopProtocol) {.async: (raises: []).} =
 
 proc newSlowStopProtocol(): SlowStopProtocol =
   result = SlowStopProtocol(stopping: newAsyncEvent(), release: newAsyncEvent())
-  result.codec = "/test/slow-stop/1.0.0"
+  result.codec = ProtoCodec("/test/slow-stop/1.0.0")
   result.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     await stream.close()
 

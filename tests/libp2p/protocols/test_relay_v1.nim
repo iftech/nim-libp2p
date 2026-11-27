@@ -37,7 +37,7 @@ suite "Circuit Relay":
     checkTrackers()
 
   var
-    protos {.threadvar.}: seq[string]
+    protos {.threadvar.}: seq[ProtoCodec]
     customProto {.threadvar.}: LPProtocol
     maddr {.threadvar.}: MultiAddress
     src {.threadvar.}: Switch
@@ -78,7 +78,7 @@ suite "Circuit Relay":
       m.dstPeer == dst
 
   proc customHandler(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     try:
       check "line1" == string.fromBytes(await stream.readLp(1024))
@@ -92,7 +92,7 @@ suite "Circuit Relay":
 
   asyncSetup:
     # Create a custom prototype
-    protos = @["/customProto", RelayV1Codec]
+    protos = @[ProtoCodec("/customProto"), RelayV1Codec]
     customProto = new LPProtocol
     customProto.handler = customHandler
     customProto.codec = protos[0]

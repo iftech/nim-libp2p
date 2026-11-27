@@ -3,12 +3,13 @@
 
 {.push raises: [].}
 
-import std/[tables]
+import std/tables
 import chronos, results, metrics
 import ../stream/connection
+import ../protocodec
 import ../utils/opt
 
-export results
+export results, protocodec
 
 declareCounter(
   libp2p_protocol_stream_cap_rejections_total,
@@ -40,7 +41,7 @@ when defined(libp2p_testing):
     scopeTotal, scopePerPeer, dirIn, dirOut
 
 type
-  LPProtoHandler* = proc(stream: Stream, proto: string): Future[void] {.
+  LPProtoHandler* = proc(stream: Stream, proto: ProtoCodec): Future[void] {.
     async: (raises: [CancelledError])
   .}
     ## Handles an incoming stream for the lifetime of the returned future.
@@ -60,7 +61,7 @@ type
   LPProtocol* = ref object of RootObj
     started*: bool
     unadvertised*: bool ## when set, mounting keeps the codec out of identify
-    codecs*: seq[string]
+    codecs*: seq[ProtoCodec]
     handlerImpl: LPProtoHandler ## invoked by the protocol negotiator
     maxIncomingStreamsTotal: Opt[int]
     maxIncomingStreamsPerPeer: Opt[int]
@@ -75,17 +76,17 @@ method start*(p: LPProtocol) {.base, async: (raises: [CancelledError]).} =
 method stop*(p: LPProtocol) {.base, async: (raises: []).} =
   p.started = false
 
-func codec*(p: LPProtocol): string =
+func codec*(p: LPProtocol): ProtoCodec =
   doAssert(p.codecs.len > 0, "codecs sequence must not be empty")
   p.codecs[0]
 
-func `codec=`*(p: LPProtocol, codec: string) =
+func `codec=`*(p: LPProtocol, codec: ProtoCodec) =
   p.codecs.insert(codec, 0)
 
 template `handler`*(p: LPProtocol): LPProtoHandler =
   p.handlerImpl
 
-template `handler`*(p: LPProtocol, stream: Stream, proto: string): Future[void] =
+template `handler`*(p: LPProtocol, stream: Stream, proto: ProtoCodec): Future[void] =
   p.handlerImpl(stream, proto)
 
 func `handler=`*(p: LPProtocol, handler: LPProtoHandler) =
@@ -116,7 +117,7 @@ func setStreamLimits*(
 
 proc new*(
     T: type LPProtocol,
-    codecs: seq[string],
+    codecs: seq[ProtoCodec],
     handler: LPProtoHandler,
     maxIncomingStreamsTotal: Opt[int] | int = Opt.none(int),
     maxIncomingStreamsPerPeer: Opt[int] | int = Opt.none(int),
@@ -167,28 +168,28 @@ func canAcceptIncoming*(p: LPProtocol, peerId: PeerId): bool =
 proc reserveIncoming*(p: LPProtocol, peerId: PeerId): bool =
   let budget = p.streamBudget
   if budget.isNil:
-    libp2p_protocol_streams_open.inc(labelValues = [p.codec, dirIn])
-    libp2p_streams_opened.inc(labelValues = [p.codec, dirIn])
+    libp2p_protocol_streams_open.inc(labelValues = [$p.codec, dirIn])
+    libp2p_streams_opened.inc(labelValues = [$p.codec, dirIn])
     return true
 
   let (canAccept, scope) = p.budgetReason(peerId, Direction.In)
   if not canAccept:
     libp2p_protocol_stream_cap_rejections_total.inc(
-      labelValues = [p.codec, dirIn, scope]
+      labelValues = [$p.codec, dirIn, scope]
     )
     return false
 
   budget.totalIncoming.inc
   budget.perPeerIncoming.inc(peerId)
-  libp2p_protocol_streams_open.inc(labelValues = [p.codec, dirIn])
-  libp2p_streams_opened.inc(labelValues = [p.codec, dirIn])
+  libp2p_protocol_streams_open.inc(labelValues = [$p.codec, dirIn])
+  libp2p_streams_opened.inc(labelValues = [$p.codec, dirIn])
   return true
 
 proc releaseIncoming*(p: LPProtocol, peerId: PeerId) =
   let budget = p.streamBudget
   if budget.isNil:
-    libp2p_protocol_streams_open.dec(labelValues = [p.codec, dirIn])
-    libp2p_streams_closed.inc(labelValues = [p.codec, dirIn])
+    libp2p_protocol_streams_open.dec(labelValues = [$p.codec, dirIn])
+    libp2p_streams_closed.inc(labelValues = [$p.codec, dirIn])
     return
 
   let pb = budget.perPeerIncoming[peerId]
@@ -200,8 +201,8 @@ proc releaseIncoming*(p: LPProtocol, peerId: PeerId) =
     budget.perPeerIncoming.inc(peerId, -1)
 
   budget.totalIncoming.dec
-  libp2p_protocol_streams_open.dec(labelValues = [p.codec, dirIn])
-  libp2p_streams_closed.inc(labelValues = [p.codec, dirIn])
+  libp2p_protocol_streams_open.dec(labelValues = [$p.codec, dirIn])
+  libp2p_streams_closed.inc(labelValues = [$p.codec, dirIn])
 
 func canOpenOutgoing*(p: LPProtocol, peerId: PeerId): bool =
   ## Returns true if an outgoing stream to `peerId` is within all configured
@@ -212,28 +213,28 @@ func canOpenOutgoing*(p: LPProtocol, peerId: PeerId): bool =
 proc reserveOutgoing*(p: LPProtocol, peerId: PeerId): bool =
   let budget = p.streamBudget
   if budget.isNil:
-    libp2p_protocol_streams_open.inc(labelValues = [p.codec, dirOut])
-    libp2p_streams_opened.inc(labelValues = [p.codec, dirOut])
+    libp2p_protocol_streams_open.inc(labelValues = [$p.codec, dirOut])
+    libp2p_streams_opened.inc(labelValues = [$p.codec, dirOut])
     return true
 
   let (canAccept, scope) = p.budgetReason(peerId, Direction.Out)
   if not canAccept:
     libp2p_protocol_stream_cap_rejections_total.inc(
-      labelValues = [p.codec, dirOut, scope]
+      labelValues = [$p.codec, dirOut, scope]
     )
     return false
 
   budget.totalOutgoing.inc
   budget.perPeerOutgoing.inc(peerId)
-  libp2p_protocol_streams_open.inc(labelValues = [p.codec, dirOut])
-  libp2p_streams_opened.inc(labelValues = [p.codec, dirOut])
+  libp2p_protocol_streams_open.inc(labelValues = [$p.codec, dirOut])
+  libp2p_streams_opened.inc(labelValues = [$p.codec, dirOut])
   return true
 
 proc releaseOutgoing*(p: LPProtocol, peerId: PeerId) =
   let budget = p.streamBudget
   if budget.isNil:
-    libp2p_protocol_streams_open.dec(labelValues = [p.codec, dirOut])
-    libp2p_streams_closed.inc(labelValues = [p.codec, dirOut])
+    libp2p_protocol_streams_open.dec(labelValues = [$p.codec, dirOut])
+    libp2p_streams_closed.inc(labelValues = [$p.codec, dirOut])
     return
 
   let pb = budget.perPeerOutgoing[peerId]
@@ -245,5 +246,5 @@ proc releaseOutgoing*(p: LPProtocol, peerId: PeerId) =
     budget.perPeerOutgoing.inc(peerId, -1)
 
   budget.totalOutgoing.dec
-  libp2p_protocol_streams_open.dec(labelValues = [p.codec, dirOut])
-  libp2p_streams_closed.inc(labelValues = [p.codec, dirOut])
+  libp2p_protocol_streams_open.dec(labelValues = [$p.codec, dirOut])
+  libp2p_streams_closed.inc(labelValues = [$p.codec, dirOut])

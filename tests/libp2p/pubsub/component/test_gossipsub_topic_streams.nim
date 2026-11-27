@@ -155,7 +155,7 @@ suite "GossipSub Component - Topic streams":
     nodes[0].customStreamCallbacks = Opt.some(
       CustomStreamCallbacks(
         customStreamCreationCB: proc(
-            destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: string
+            destAddr: Opt[MultiAddress], destPeerId: PeerId, codec: ProtoCodec
         ): Stream =
           streamCreationCalled = true
           return customStream,

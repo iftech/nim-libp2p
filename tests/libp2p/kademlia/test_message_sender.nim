@@ -16,7 +16,7 @@ import
   ]
 
 const
-  TestCodec = "/test/kad-message-sender/1.0.0"
+  TestCodec = ProtoCodec("/test/kad-message-sender/1.0.0")
   MaxTestMsgSize = 4096
 
 type CountingEcho = ref object of LPProtocol
@@ -30,7 +30,7 @@ proc newCountingEcho(reply = true, closeAfter = 0): CountingEcho =
   let echoProto = CountingEcho(reply: reply, closeAfter: closeAfter)
   echoProto.codec = TestCodec
   echoProto.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     echoProto.streams.inc()
     echoProto.lastInbound = stream

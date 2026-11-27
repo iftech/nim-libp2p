@@ -5,6 +5,7 @@
 
 import std/strformat
 import chronos, results, chronicles
+import ../../protocodec
 import protobuf_serialization, protobuf_serialization/pkg/results
 import stew/[endians2, byteutils]
 import nimcrypto/[utils, sha2, hmac]
@@ -23,7 +24,7 @@ logScope:
 
 const
   # https://godoc.org/github.com/libp2p/go-libp2p-noise#pkg-constants
-  NoiseCodec* = "/noise"
+  NoiseCodec* = ProtoCodec("/noise")
 
   PayloadString = toBytes("noise-libp2p-static-key:")
 
@@ -69,7 +70,7 @@ type
     rs: Curve25519Key
 
   NoiseExtensionsMsg* {.proto2.} = object
-    streamMuxers* {.fieldNumber: 2.}: seq[string]
+    streamMuxers* {.fieldNumber: 2, ext.}: seq[ProtoCodec]
 
   Noise* = ref object of Secure
     rng: Rng
@@ -77,7 +78,7 @@ type
     localPublicKey: seq[byte]
     noiseKeys: KeyPair
     commonPrologue: seq[byte]
-    muxers: seq[string]
+    muxers: seq[ProtoCodec]
     outgoing: bool
 
   NoiseConnection* = ref object of SecureConn
@@ -108,7 +109,7 @@ Protobuf.serializerFor(
   [NoiseExtensionsMsg, NoiseHandshakePayloadMsg], withMetrics = true, domain = "noise"
 )
 
-func matchMuxers(local, remote: seq[string], initiator: bool): string =
+func matchMuxers(local, remote: seq[ProtoCodec], initiator: bool): ProtoCodec =
   let
     preferred = if initiator: local else: remote
     supported = if initiator: remote else: local
@@ -643,7 +644,7 @@ proc new*(
     privateKey: PrivateKey,
     outgoing: bool = true,
     commonPrologue: seq[byte] = @[],
-    muxers: seq[string] = @[],
+    muxers: seq[ProtoCodec] = @[],
 ): T =
   let pkBytes = privateKey
     .getPublicKey()

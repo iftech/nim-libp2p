@@ -198,7 +198,7 @@ proc forceNewConnection(
       DialBackConn(
         mux: mux,
         stream: await self.switch.dialer.negotiateStream(
-          await mux.newStream(), @[$AutonatV2Codec.DialBack]
+          await mux.newStream(), @[AutonatV2DialBackCodec]
         ),
       )
     )
@@ -323,7 +323,7 @@ proc new*(
   )
 
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()
@@ -352,5 +352,5 @@ proc new*(
       trace "Stream Error", err = exc.msg
 
   autonatV2.handler = handleStream
-  autonatV2.codec = $AutonatV2Codec.DialRequest
+  autonatV2.codec = AutonatV2DialRequestCodec
   autonatV2

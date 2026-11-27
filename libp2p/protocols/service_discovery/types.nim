@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
+import ../../protocodec
 import std/[math, sequtils, sets, tables, hashes, net]
 import chronicles, chronos, results, stew/byteutils
 import nimcrypto/sha2
@@ -20,7 +21,7 @@ export types
 const
   DefaultSelfSPRRereshTime* = 10.minutes
 
-  ExtendedServiceDiscoveryCodec* = "/logos/service-discovery/1.0.0"
+  ExtendedServiceDiscoveryCodec* = ProtoCodec("/logos/service-discovery/1.0.0")
 
   Default_K_register* = 3
   Default_K_lookup* = 5

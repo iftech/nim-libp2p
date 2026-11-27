@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
+import ../protocodec
 import std/[sequtils, tables]
 import chronos, chronicles, results
 import ../utils/[heartbeat, future]
@@ -17,13 +18,14 @@ import
 import ./kademlia/[kademlia_metrics, memory_store, netsize, probe_backoff, rpc, store]
 
 export
-  chronicles, routing_table, peer_registry, protobuf, types, find, get, put, keyspace,
-  provider, ping, kademlia_metrics, netsize, probe_backoff, ip_diversity, store
+  chronicles, protocodec, routing_table, peer_registry, protobuf, types, find, get, put,
+  keyspace, provider, ping, kademlia_metrics, netsize, probe_backoff, ip_diversity,
+  store
 
 logScope:
   topics = "libp2p kademlia"
 
-const KadCodec* = "/ipfs/kad/1.0.0"
+const KadCodec* = ProtoCodec("/ipfs/kad/1.0.0")
 
 proc peersPastGracePeriod(
     rtable: RoutingTable, gracePeriod: Duration
@@ -365,7 +367,7 @@ proc initKadBase*(
     config: KadDHTConfig,
     rng: Rng,
     isServer: bool,
-    codec: string,
+    codec: ProtoCodec,
     bootstrapNodes: seq[(PeerId, seq[MultiAddress])] = @[],
 ) {.raises: [].} =
   ## Set the shared fields and seed the table, so a constructor cannot miss one.
@@ -402,13 +404,13 @@ proc new*(
     config: KadDHTConfig = KadDHTConfig.new(),
     rng: Rng,
     isServer: bool = true,
-    codec: string = KadCodec,
+    codec: ProtoCodec = KadCodec,
 ): K {.raises: [].} =
   let kad = K()
   kad.initKadBase(switch, config, rng, isServer, codec, bootstrapNodes)
 
   kad.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     if kad.stopping or not kad.started or not kad.isServer:
       trace "Refusing inbound query while not serving", stream

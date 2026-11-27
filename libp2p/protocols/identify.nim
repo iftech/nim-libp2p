@@ -6,6 +6,7 @@
 
 {.push raises: [].}
 
+import ../protocodec
 import std/strutils
 import results, chronos, chronicles
 import protobuf_serialization, protobuf_serialization/pkg/results
@@ -26,8 +27,8 @@ logScope:
   topics = "libp2p identify"
 
 const
-  IdentifyCodec* = "/ipfs/id/1.0.0"
-  IdentifyPushCodec* = "/ipfs/id/push/1.0.0"
+  IdentifyCodec* = ProtoCodec("/ipfs/id/1.0.0")
+  IdentifyPushCodec* = ProtoCodec("/ipfs/id/push/1.0.0")
   ProtoVersion* = ""
   AgentVersion* = "nim-libp2p"
   identifyAddrsLogMax = 5
@@ -48,7 +49,7 @@ type
   IdentifyMsg {.proto2.} = object
     publicKey* {.fieldNumber: 1, ext.}: Opt[PublicKey]
     listenAddrs* {.fieldNumber: 2, ext.}: seq[MultiAddress]
-    protocols* {.fieldNumber: 3.}: seq[string]
+    protocols* {.fieldNumber: 3, ext.}: seq[ProtoCodec]
     observedAddr* {.fieldNumber: 4, ext.}: Opt[MultiAddress]
     protoVersion* {.fieldNumber: 5.}: Opt[string]
     agentVersion* {.fieldNumber: 6.}: Opt[string]
@@ -62,7 +63,7 @@ type
     observedAddr*: Opt[MultiAddress]
     protoVersion*: Opt[string]
     agentVersion*: Opt[string]
-    protos*: seq[string]
+    protos*: seq[ProtoCodec]
     signedPeerRecord*: Opt[Envelope]
 
   Identify* = ref object of LPProtocol
@@ -144,7 +145,7 @@ proc new*(
     sendSignedPeerRecord: sendSignedPeerRecord,
     addressManager: addressManager,
   )
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     trace "handling identify request", stream
 
     let msg = makeIdentifyMsg(p.peerInfo, stream.observedAddr, p.sendSignedPeerRecord)
@@ -213,7 +214,7 @@ proc new*(T: typedesc[IdentifyPush], handler: IdentifyPushHandler = nil): T =
   ## Create a IdentifyPush protocol. `handler` will be called every time
   ## a peer sends us new `PeerInfo`
   let p = T(identifyHandler: handler)
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     trace "handling identify push", stream
     defer:
       await stream.closeWithEOF()

@@ -5,6 +5,7 @@
 
 {.push raises: [].}
 
+import ../protocodec
 import chronos, chronicles
 import
   ../stream/connection, ../peerid, ../crypto/crypto, ../protocols/protocol, ../errors
@@ -15,7 +16,7 @@ logScope:
   topics = "libp2p ping"
 
 const
-  PingCodec* = "/ipfs/ping/1.0.0"
+  PingCodec* = ProtoCodec("/ipfs/ping/1.0.0")
   PingSize = 32
 
 type
@@ -31,7 +32,7 @@ type
 proc new*(T: typedesc[Ping], handler: PingHandler = nil, rng: Rng): T =
   doAssert not rng.isNil, "Rng is nil"
   let p = Ping(pinghandler: handler, rng: rng)
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     try:
       trace "handling ping", stream
       var buf: array[PingSize, byte]

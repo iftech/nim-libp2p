@@ -101,7 +101,7 @@ type
 
   KeyBook* = ref object of PeerBook[PublicKey]
 
-  ProtoBook* = ref object of SeqPeerBook[string]
+  ProtoBook* = ref object of SeqPeerBook[ProtoCodec]
   AgentBook* = ref object of PeerBook[string]
   LastSeenBook* = ref object of PeerBook[Opt[MultiAddress]]
   LastSeenOutboundBook* = ref object of PeerBook[Opt[MultiAddress]]
@@ -510,8 +510,8 @@ proc `[]`*[T](p: PeerStore, typ: type[T]): T =
   p.getOrCreateBook(typ)
 
 func firstSupportedProtocol*(
-    p: PeerStore, peerId: PeerId, protocols: openArray[string]
-): Opt[string] =
+    p: PeerStore, peerId: PeerId, protocols: openArray[ProtoCodec]
+): Opt[ProtoCodec] =
   ## Return the first requested protocol advertised by the peer without
   ## creating a protocol book or copying its entry.
   let name = getTypeName(ProtoBook)
@@ -520,7 +520,7 @@ func firstSupportedProtocol*(
       for protocol in protocols:
         if protocol in supportedPtr[]:
           return Opt.some(protocol)
-  Opt.none(string)
+  Opt.none(ProtoCodec)
 
 proc removeFromCleanupQueue(peerStore: PeerStore, peerId: PeerId) =
   let cleanupPos = peerStore.toClean.find(peerId)

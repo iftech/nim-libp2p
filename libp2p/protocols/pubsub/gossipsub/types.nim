@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../../protocodec
 import chronos
 import std/[tables, sets]
 import ".."/[floodsub, peertable, mcache, pubsubpeer]
@@ -16,10 +17,10 @@ export TopicStreamsConfig
 export RateLimit # downstream code names it through this module
 
 const
-  GossipSubCodec_13* = "/meshsub/1.3.0"
-  GossipSubCodec_12* = "/meshsub/1.2.0"
-  GossipSubCodec_11* = "/meshsub/1.1.0"
-  GossipSubCodec_10* = "/meshsub/1.0.0"
+  GossipSubCodec_13* = ProtoCodec("/meshsub/1.3.0")
+  GossipSubCodec_12* = ProtoCodec("/meshsub/1.2.0")
+  GossipSubCodec_11* = ProtoCodec("/meshsub/1.1.0")
+  GossipSubCodec_10* = ProtoCodec("/meshsub/1.0.0")
 
 # overlay parameters
 const

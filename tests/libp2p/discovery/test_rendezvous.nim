@@ -74,7 +74,7 @@ proc new*(
   )
 
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     try:
       let
@@ -99,7 +99,7 @@ proc new*(
       await stream.close()
 
   rdv.handler = handleStream
-  rdv.codec = "/cust-rendezvous/1.0.0"
+  rdv.codec = ProtoCodec("/cust-rendezvous/1.0.0")
 
   return rdv
 

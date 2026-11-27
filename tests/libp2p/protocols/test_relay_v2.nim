@@ -26,13 +26,18 @@ proc createSwitch(r: Relay = nil, useYamux: bool = false): Switch =
 
   return builder.build()
 
+const
+  AbcTestCodec = ProtoCodec("/abctest")
+  BcaTestCodec = ProtoCodec("/bcatest")
+  CabTestCodec = ProtoCodec("/cabtest")
+
 proc createMockRelay(expire: uint64): Switch =
   let
     mockRelay = createSwitch()
     hop = new LPProtocol
   hop.codec = RelayV2HopCodec
   hop.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()
@@ -382,7 +387,7 @@ suite "Circuit Relay V2":
       asyncTeardown:
         checkTrackers()
       var
-        customProtoCodec {.threadvar.}: string
+        customProtoCodec {.threadvar.}: ProtoCodec
         proto {.threadvar.}: LPProtocol
         ttl {.threadvar.}: int
         ldur {.threadvar.}: uint32
@@ -397,7 +402,7 @@ suite "Circuit Relay V2":
         stream {.threadvar.}: Stream
 
       asyncSetup:
-        customProtoCodec = "/test"
+        customProtoCodec = ProtoCodec("/test")
         proto = new LPProtocol
         proto.codec = customProtoCodec
         ttl = 60
@@ -411,7 +416,7 @@ suite "Circuit Relay V2":
 
       asyncTest "Connection succeed":
         proto.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           try:
             check:
@@ -461,7 +466,7 @@ suite "Circuit Relay V2":
       asyncTest "Connection duration exceeded":
         ldur = 3
         proto.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           try:
             check "wanna sleep?" == string.fromBytes(await stream.readLp(1024))
@@ -511,7 +516,7 @@ suite "Circuit Relay V2":
       asyncTest "Connection data exceeded":
         ldata = 1000
         proto.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           try:
             check "count me the better story you know" ==
@@ -576,7 +581,7 @@ suite "Circuit Relay V2":
       asyncTest "Reservation ttl expire during connection":
         ttl = 3
         proto.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           try:
             check:
@@ -635,7 +640,7 @@ suite "Circuit Relay V2":
         # dst reserve rel2
         # src try to connect with dst
         proto.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           await stream.reset()
 
@@ -680,9 +685,9 @@ suite "Circuit Relay V2":
           protoABC = new LPProtocol
           protoBCA = new LPProtocol
           protoCAB = new LPProtocol
-        protoABC.codec = "/abctest"
+        protoABC.codec = AbcTestCodec
         protoABC.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           try:
             check:
@@ -695,9 +700,9 @@ suite "Circuit Relay V2":
             raiseAssert "LPStreamError while handling connection"
           finally:
             await stream.close()
-        protoBCA.codec = "/bcatest"
+        protoBCA.codec = BcaTestCodec
         protoBCA.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           try:
             check:
@@ -710,9 +715,9 @@ suite "Circuit Relay V2":
             raiseAssert "LPStreamError while handling connection"
           finally:
             await stream.close()
-        protoCAB.codec = "/cabtest"
+        protoCAB.codec = CabTestCodec
         protoCAB.handler = proc(
-            stream: Stream, proto: string
+            stream: Stream, proto: ProtoCodec
         ) {.async: (raises: [CancelledError]).} =
           try:
             check:
@@ -769,11 +774,11 @@ suite "Circuit Relay V2":
         discard await clientB.reserve(switchA.peerInfo.peerId, switchA.peerInfo.addrs)
         discard await clientC.reserve(switchB.peerInfo.peerId, switchB.peerInfo.addrs)
         let connABC =
-          await switchA.dial(switchC.peerInfo.peerId, @[addrsABC], "/abctest")
+          await switchA.dial(switchC.peerInfo.peerId, @[addrsABC], AbcTestCodec)
         let connBCA =
-          await switchB.dial(switchA.peerInfo.peerId, @[addrsBCA], "/bcatest")
+          await switchB.dial(switchA.peerInfo.peerId, @[addrsBCA], BcaTestCodec)
         let connCAB =
-          await switchC.dial(switchB.peerInfo.peerId, @[addrsCAB], "/cabtest")
+          await switchC.dial(switchB.peerInfo.peerId, @[addrsCAB], CabTestCodec)
 
         await connABC.writeLp("testABC1")
         await connBCA.writeLp("testBCA1")

@@ -33,13 +33,17 @@ import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 type IdentifyMsgNoPubKey {.proto2.} = object
   protocols {.fieldNumber: 3.}: seq[string]
 
-const firstTestPort = 10000
+const
+  firstTestPort = 10000
+  Proto1Codec = ProtoCodec("/test/proto1/1.0.0")
+  Proto2Codec = ProtoCodec("/test/proto2/1.0.0")
+  NewProtocolCodec = ProtoCodec("/newprotocol/")
 
 proc addEntries(pi: PeerInfo, addrCount, protoCount: int) =
   for i in 0 ..< addrCount:
     pi.addrs.add(ma("/ip4/127.0.0.1/tcp/" & $(firstTestPort + i)))
   for i in 0 ..< protoCount:
-    pi.protocols.add("/p/" & $i)
+    pi.protocols.add(ProtoCodec("/p/" & $i))
 
 suite "Identify":
   teardown:
@@ -95,8 +99,7 @@ suite "Identify":
     asyncSetup:
       maddr = @[TcpWildcardAddress, TcpWildcardAddressIP6]
       remoteSecKey = PrivateKey.random(ECDSA, rng()).get()
-      remotePeerInfo =
-        PeerInfo.new(remoteSecKey, maddr, ["/test/proto1/1.0.0", "/test/proto2/1.0.0"])
+      remotePeerInfo = PeerInfo.new(remoteSecKey, maddr, [Proto1Codec, Proto2Codec])
 
       transport1 = TcpTransport.new(upgrade = Upgrade())
       transport2 = TcpTransport.new(upgrade = Upgrade())
@@ -133,7 +136,7 @@ suite "Identify":
       check id.addrs == maddr
       check id.protoVersion == ProtoVersion
       check id.agentVersion == AgentVersion
-      check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
+      check id.protos == @[Proto1Codec, Proto2Codec]
       check id.signedPeerRecord.isNone()
 
     asyncTest "custom agent and proto version":
@@ -157,16 +160,16 @@ suite "Identify":
       check id.addrs == maddr
       check id.protoVersion == customProtoVersion
       check id.agentVersion == customAgentVersion
-      check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
+      check id.protos == @[Proto1Codec, Proto2Codec]
       check id.signedPeerRecord.isNone()
 
     asyncTest "identify without publicKey falls back to remotePeerId":
       # A minimal peer (e.g. eth-p2p-z over QUIC) may omit the optional publicKey field.
       # The security handshake already authenticated the remote, so identify
       # must accept the message and fall back to remotePeerId instead of rejecting.
-      const testProtos = @["/test/proto1/1.0.0"]
+      const testProtos = @[$Proto1Codec]
       proc noPubKeyHandler(
-          stream: Stream, proto: string
+          stream: Stream, proto: ProtoCodec
       ) {.async: (raises: [CancelledError]).} =
         try:
           await stream.writeLp(
@@ -190,7 +193,7 @@ suite "Identify":
 
       check id.pubkey.isNone()
       check id.peerId == remotePeerInfo.peerId
-      check id.protos == testProtos
+      check id.protos == @[Proto1Codec]
 
     asyncTest "handle failed identify":
       msListen.addHandler(identifyProto1)
@@ -215,7 +218,7 @@ suite "Identify":
 
     asyncTest "tryIdentify reports a message that does not decode":
       proc truncatedHandler(
-          stream: Stream, proto: string
+          stream: Stream, proto: ProtoCodec
       ) {.async: (raises: [CancelledError]).} =
         try:
           await stream.writeLp(@[0x0a'u8, 0x05, 0x01])
@@ -254,7 +257,7 @@ suite "Identify":
       check id.addrs == maddr
       check id.protoVersion == ProtoVersion
       check id.agentVersion == AgentVersion
-      check id.protos == @["/test/proto1/1.0.0", "/test/proto2/1.0.0"]
+      check id.protos == @[Proto1Codec, Proto2Codec]
       check id.signedPeerRecord == remotePeerInfo.signedPeerRecord.envelope
 
   suite "handle push identify message":
@@ -334,7 +337,7 @@ suite "Identify":
       await switch2.stop()
 
     asyncTest "simple push identify":
-      switch2.peerInfo.protocols.add("/newprotocol/")
+      switch2.peerInfo.protocols.add(NewProtocolCodec)
       switch2.peerInfo.addrs.add(ma("/ip4/127.0.0.1/tcp/5555"))
 
       check:
@@ -355,7 +358,7 @@ suite "Identify":
       await closeAll()
 
     asyncTest "wrong peer id push identify":
-      switch2.peerInfo.protocols.add("/newprotocol/")
+      switch2.peerInfo.protocols.add(NewProtocolCodec)
       switch2.peerInfo.addrs.add(ma("/ip4/127.0.0.1/tcp/5555"))
 
       check:
@@ -490,7 +493,7 @@ suite "Identify":
       ms = MultistreamSelect.new()
 
     proc unusedHandler(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ): Future[void] {.async: (raises: [CancelledError]).} =
       discard
 

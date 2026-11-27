@@ -92,7 +92,7 @@ when defined(libp2p_expensive_metrics):
     labels = ["id", "topic"],
   )
 
-proc gossipExtensionsSupported(proto: string): bool =
+proc gossipExtensionsSupported(proto: ProtoCodec): bool =
   return proto == GossipSubCodec_13
 
 proc init*(
@@ -315,7 +315,7 @@ proc usesExtensions(g: GossipSub): bool =
 
 proc sendExtensionsControl(g: GossipSub, peer: PubSubPeer) =
   # Called from StreamOpened where codec is always set from the negotiated connection.
-  doAssert peer.codec != "", "sendExtensionsControl requires codec to be negotiated"
+  doAssert peer.codec.isSet, "sendExtensionsControl requires codec to be negotiated"
 
   if not gossipExtensionsSupported(peer.codec):
     return
@@ -1346,14 +1346,14 @@ method stop*(g: GossipSub): Future[void] {.async: (raw: true, raises: []).} =
 proc createTopicStreamProtocol(g: GossipSub): LPProtocol =
   let protocol = LPProtocol(codecs: @[TopicStreamsCodec])
   protocol.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     if not g.started or g.switch.isStopping:
       await stream.reset()
       return
     let peer = g.getOrCreatePeer(stream.peerId, @[GossipSubCodec_13])
     # An empty codec means control-stream protocol negotiation is still pending.
-    if peer.codec != "" and not gossipExtensionsSupported(peer.codec):
+    if peer.codec.isSet and not gossipExtensionsSupported(peer.codec):
       g.pendingTasks.trackFut(g.disconnectPeer(peer))
       await stream.reset()
       return
@@ -1363,7 +1363,9 @@ proc createTopicStreamProtocol(g: GossipSub): LPProtocol =
 method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
   procCall FloodSub(g).initPubSub()
 
-  proc handler(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handler(
+      stream: Stream, proto: ProtoCodec
+  ) {.async: (raises: [CancelledError]).} =
     try:
       await g.handleConn(stream, proto)
     except CancelledError as exc:
@@ -1410,8 +1412,8 @@ method initPubSub*(g: GossipSub) {.raises: [InitializationError].} =
 method getOrCreatePeer*(
     g: GossipSub,
     peerId: PeerId,
-    protosToDial: seq[string],
-    protoNegotiated: string = "",
+    protosToDial: seq[ProtoCodec],
+    protoNegotiated: ProtoCodec = UnsetProtoCodec,
 ): PubSubPeer =
   let peer = procCall PubSub(g).getOrCreatePeer(peerId, protosToDial, protoNegotiated)
   # a returning peer keeps its bucket, so a new stream is no way to refill it

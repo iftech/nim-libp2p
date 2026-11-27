@@ -55,7 +55,7 @@ type
   MessageSender* = ref object
     switch: Switch
     onDisconnect: ConnEventHandler
-    codec: string
+    codec: ProtoCodec
     maxMsgSize: int
     maxReuseFailures: int
     senders: Table[PeerId, PeerMessageSender]
@@ -172,7 +172,7 @@ proc stop*(ms: MessageSender) {.async: (raises: []), gcsafe.} =
 proc new*(
     T: typedesc[MessageSender],
     switch: Switch,
-    codec: string,
+    codec: ProtoCodec,
     maxMsgSize: int,
     maxReuseFailures: int = DefaultMaxStreamReuseFailures,
 ): T {.raises: [].} =

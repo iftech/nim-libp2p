@@ -190,8 +190,8 @@ method readOnce*(
         nbytes
     let bytes = await procCall BufferStream(s).readOnce(pbytes, toRead)
     when defined(libp2p_network_protocols_metrics):
-      if s.protocol.len > 0:
-        libp2p_protocols_bytes.inc(bytes.int64, labelValues = [s.protocol, "in"])
+      if s.protocol.isSet:
+        libp2p_protocols_bytes.inc(bytes.int64, labelValues = [$s.protocol, "in"])
 
     trace "readOnce", channel = s, bytes
     if bytes == 0:
@@ -252,10 +252,10 @@ proc completeWrite(
       await fut
 
     when defined(libp2p_network_protocols_metrics):
-      if s.protocol.len > 0:
+      if s.protocol.isSet:
         # This crashes on Nim 2.0.2 with `--mm:orc` during `nimble test`
         # https://github.com/status-im/nim-metrics/issues/79
-        libp2p_protocols_bytes.inc(msgLen.int64, labelValues = [s.protocol, "out"])
+        libp2p_protocols_bytes.inc(msgLen.int64, labelValues = [$s.protocol, "out"])
 
     s.activity = true
   except CancelledError as exc:

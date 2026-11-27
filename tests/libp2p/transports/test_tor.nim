@@ -155,13 +155,15 @@ suite "Tor transport":
     await client.stop()
 
   asyncTest "test start and dial usion onion3 and builder":
-    const TestCodec = "/test/proto/1.0.0" # custom protocol string identifier
+    const TestCodec = ProtoCodec("/test/proto/1.0.0") # custom protocol string identifier
 
     type TestProto = ref object of LPProtocol # declare a custom protocol
 
     proc new(T: typedesc[TestProto]): T =
       # every incoming connections will be in handled in this closure
-      proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+      proc handle(
+          stream: Stream, proto: ProtoCodec
+      ) {.async: (raises: [CancelledError]).} =
         try:
           var resp: array[6, byte]
           await stream.readExactly(addr resp, 6)

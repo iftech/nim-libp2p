@@ -3,16 +3,17 @@
 
 {.push raises: [].}
 
+import ../../protocodec
 import chronos
 import secure, ../../stream/connection
 
-const PlainTextCodec* = "/plaintext/1.0.0"
+const PlainTextCodec* = ProtoCodec("/plaintext/1.0.0")
 
 type PlainText* = ref object of Secure
 
 proc new*(T: typedesc[PlainText]): T =
   let p = T()
-  proc handle(stream: Stream, proto: string) {.async: (raises: [CancelledError]).} =
+  proc handle(stream: Stream, proto: ProtoCodec) {.async: (raises: [CancelledError]).} =
     ## plain text doesn't do anything
     discard
 

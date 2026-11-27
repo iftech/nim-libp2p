@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../../protocodec
 import chronos, chronicles
 import ./messages, ./relay_metrics, ../../../stream/connection
 
@@ -10,9 +11,9 @@ logScope:
   topics = "libp2p relay"
 
 const
-  RelayV1Codec* = "/libp2p/circuit/relay/0.1.0"
-  RelayV2HopCodec* = "/libp2p/circuit/relay/0.2.0/hop"
-  RelayV2StopCodec* = "/libp2p/circuit/relay/0.2.0/stop"
+  RelayV1Codec* = ProtoCodec("/libp2p/circuit/relay/0.1.0")
+  RelayV2HopCodec* = ProtoCodec("/libp2p/circuit/relay/0.2.0/hop")
+  RelayV2StopCodec* = ProtoCodec("/libp2p/circuit/relay/0.2.0/stop")
 
 proc sendStatus*(stream: Stream, code: StatusV1) {.async: (raises: [CancelledError]).} =
   trace "send relay/v1 status", status = $code & "(" & $ord(code) & ")"

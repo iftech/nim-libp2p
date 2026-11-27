@@ -20,7 +20,7 @@ proc new*(
 ): T =
   let autonatV2 = T(config: config)
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()
@@ -39,5 +39,5 @@ proc new*(
       discard
 
   autonatV2.handler = handleStream
-  autonatV2.codec = $AutonatV2Codec.DialRequest
+  autonatV2.codec = AutonatV2DialRequestCodec
   autonatV2

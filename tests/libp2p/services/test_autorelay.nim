@@ -191,7 +191,7 @@ suite "Autorelay":
 
     # the relay takes the reservation request and holds its response back
     relay.handler = proc(
-        stream: Stream, proto: string
+        stream: Stream, proto: ProtoCodec
     ) {.async: (raises: [CancelledError]).} =
       reservationRequested.completeOnce()
       await answerReservation.wait()

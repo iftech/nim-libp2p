@@ -409,19 +409,22 @@ method onPubSubPeerEvent*(
     discard
 
 method getOrCreatePeer*(
-    p: PubSub, peerId: PeerId, protosToDial: seq[string], protoNegotiated: string = ""
+    p: PubSub,
+    peerId: PeerId,
+    protosToDial: seq[ProtoCodec],
+    protoNegotiated: ProtoCodec = UnsetProtoCodec,
 ): PubSubPeer {.base, gcsafe.} =
   let supported =
-    protoNegotiated != "" or
+    protoNegotiated.isSet or
     p.switch.peerStore[ProtoBook][peerId].anyIt(it in protosToDial)
   p.peers.withValue(peerId, peer):
-    if peer[].codec == "":
+    if not peer[].codec.isSet:
       peer[].codec = protoNegotiated
     peer[].protocolSupported = peer[].protocolSupported or supported
     return peer[]
 
   let protos =
-    if protoNegotiated != "":
+    if protoNegotiated.isSet:
       @[protoNegotiated]
     else:
       protosToDial
@@ -571,7 +574,7 @@ method stop*(p: PubSub) {.async: (raises: []).} =
   p.peerStopFuts = @[]
 
 method handleConn*(
-    p: PubSub, stream: Stream, proto: string
+    p: PubSub, stream: Stream, proto: ProtoCodec
 ) {.base, async: (raises: [CancelledError]).} =
   ## handle incoming connections
   ##

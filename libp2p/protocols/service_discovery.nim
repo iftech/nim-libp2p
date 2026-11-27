@@ -77,7 +77,7 @@ proc new*(
     config: KadDHTConfig = KadDHTConfig.new(),
     rng: Rng,
     client: bool = false,
-    codec: string = ExtendedServiceDiscoveryCodec,
+    codec: ProtoCodec = ExtendedServiceDiscoveryCodec,
     services: seq[ServiceInfo] = @[],
     discoConfig: ServiceDiscoveryConfig = ServiceDiscoveryConfig.new(),
     xprPublishing: bool = true,
@@ -120,7 +120,7 @@ proc new*(
     disco.serviceBootstrapFuts.del(serviceId)
 
   disco.handler = proc(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     if disco.stopping or not disco.started or not disco.isServer:
       trace "Refusing inbound query while not serving", stream

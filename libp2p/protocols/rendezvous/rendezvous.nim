@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../protocodec
 import algorithm, tables, sequtils, strformat, sugar, sets
 import metrics except collect
 import chronos, chronicles, stew/[byteutils, objects]
@@ -29,7 +30,7 @@ declareGauge(libp2p_rendezvous_registered, "number of registered peers")
 declareGauge(libp2p_rendezvous_namespaces, "number of registered namespaces")
 
 const
-  RendezVousCodec* = "/rendezvous/1.0.0"
+  RendezVousCodec* = ProtoCodec("/rendezvous/1.0.0")
   # Default minimum TTL per libp2p spec
   MinimumDuration* = 2.hours
   # Lower validation limit to accommodate Waku requirements
@@ -614,7 +615,7 @@ proc new*(
   logScope:
     topics = "libp2p rendezvous"
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     defer:
       await stream.close()

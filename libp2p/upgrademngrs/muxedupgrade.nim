@@ -22,8 +22,8 @@ type MuxedUpgrade* = ref object of Upgrade
   streamHandler*: StreamHandler
   connManager*: Opt[ConnManager]
 
-func getMuxerByCodec(self: MuxedUpgrade, muxerName: string): Opt[MuxerProvider] =
-  if muxerName.len == 0 or muxerName == "na":
+func getMuxerByCodec(self: MuxedUpgrade, muxerName: ProtoCodec): Opt[MuxerProvider] =
+  if not muxerName.isSet or $muxerName == "na":
     return Opt.none(MuxerProvider)
   for m in self.muxers:
     if muxerName == m.codec:
@@ -40,7 +40,7 @@ proc mux(
     return err(MuxerRequired)
 
   var muxerName = secureConn.earlyMuxer
-  if muxerName.len == 0:
+  if not muxerName.isSet:
     let negotiated =
       case secureConn.dir
       of Direction.Out:
@@ -54,7 +54,7 @@ proc mux(
     return err(MuxerRequired)
 
   trace "Mux negotiation completed",
-    secureConn, protocol = muxerName, early = secureConn.earlyMuxer.len > 0
+    secureConn, protocol = muxerName, early = secureConn.earlyMuxer.isSet
 
   # create new muxer for connection
   let muxer = muxerProvider.newMuxer(secureConn)

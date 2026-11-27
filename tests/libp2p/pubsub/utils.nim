@@ -199,7 +199,7 @@ proc generateNodes*(
     maxMessageSize: int = 1024 * 1024,
     enablePX: bool = false,
     overheadRateLimit: Opt[RateLimit] = Opt.none(RateLimit),
-    codecs: seq[string] = @[],
+    codecs: seq[ProtoCodec] = @[],
     sendIDontWantOnPublish: bool = false,
     heartbeatInterval: Duration = TEST_GOSSIPSUB_HEARTBEAT_INTERVAL,
     floodPublish: bool = false,

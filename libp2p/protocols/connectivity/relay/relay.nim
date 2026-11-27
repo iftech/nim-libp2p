@@ -392,13 +392,12 @@ proc new*(
   )
 
   proc handleStream(
-      stream: Stream, proto: string
+      stream: Stream, proto: ProtoCodec
   ) {.async: (raises: [CancelledError]).} =
     try:
-      case proto
-      of RelayV2HopCodec:
+      if proto == RelayV2HopCodec:
         await r.handleHopStreamV2(stream)
-      of RelayV1Codec:
+      elif proto == RelayV1Codec:
         await r.handleStreamV1(stream)
     except CancelledError as exc:
       trace "cancelled relayv2 handler"
@@ -435,7 +434,7 @@ method start*(r: Relay): Future[void] {.async: (raises: [CancelledError], raw: t
     return fut
   r.reservationLoop = r.deletesReservation()
   r.started = true
-  info "Circuit relay service started", protocols = r.codecs #nolint
+  info "Circuit relay service started", protocols = r.codecs
   fut
 
 method stop*(r: Relay): Future[void] {.async: (raises: [], raw: true).} =

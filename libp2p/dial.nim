@@ -5,6 +5,7 @@
 
 import chronos
 import results
+import protocodec
 import peerid, stream/connection, transports/transport
 
 export results
@@ -35,7 +36,7 @@ method connect*(
   doAssert(false, "[Dial.connect] abstract method not implemented!")
 
 method dial*(
-    self: Dial, peerId: PeerId, protos: seq[string]
+    self: Dial, peerId: PeerId, protos: seq[ProtoCodec]
 ): Future[Stream] {.base, async: (raises: [DialFailedError, CancelledError]).} =
   ## create a protocol stream over an
   ## existing connection
@@ -47,7 +48,7 @@ method dial*(
     self: Dial,
     peerId: PeerId,
     addrs: seq[MultiAddress],
-    protos: seq[string],
+    protos: seq[ProtoCodec],
     forceDial = false,
 ): Future[Stream] {.base, async: (raises: [DialFailedError, CancelledError]).} =
   ## create a protocol stream and establish

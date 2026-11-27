@@ -3,6 +3,7 @@
 
 {.push raises: [].}
 
+import ../../protocodec
 import tables, sequtils, oids
 import chronos, chronicles, metrics
 import
@@ -20,7 +21,7 @@ logScope:
   topics = "libp2p mplex"
 
 const
-  MplexCodec* = "/mplex/6.7.0"
+  MplexCodec* = ProtoCodec("/mplex/6.7.0")
   MaxChannelCount = 200
   MaxBufferedBytes* = 4 * MaxMsgSize
     ## Maximum unread data across four fully decoded frames.
