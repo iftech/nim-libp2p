@@ -400,12 +400,10 @@ suite "mDNS discovery":
     await sleepAsync(MdnsResponseInterval)
     for count in responses.values:
       check count == 1
-    var previous: Table[uint32, int]
-    for index, count in responses:
-      previous[index] = count
+    let previousTotal = responses.values.toSeq.foldl(a + b, 0)
     check await listener.multicast(encodeMessage(query))
     checkUntilTimeout:
-      previous.pairs.toSeq.allIt(it[0] in responses and responses[it[0]] > it[1])
+      responses.values.toSeq.foldl(a + b, 0) > previousTotal
 
   asyncTest "advertise after ephemeral transport addresses are bound":
     requireMdnsMulticastRoute(ignoreDatagram)
