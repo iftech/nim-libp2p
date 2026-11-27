@@ -104,6 +104,8 @@ suite "Waggle direct streams":
   const
     objectId = @[byte 42]
     firstPiece = 0b001
+    emptyTopic: seq[byte] = @[]
+    otherTopic = @[byte 2]
 
   var
     waggle: Waggle
@@ -152,18 +154,19 @@ suite "Waggle direct streams":
     )
     events
 
-  proc registeredConnection(): TestStream =
-    let connection = openStream()
+  proc registeredConnection(peer: PeerId = PeerId.random()): TestStream =
+    let connection = openStream(peer)
     doAssert waggle.addConnection(Muxer(connection: connection)).get()
     connection
 
-  proc inboundSubscription(): Future[TopicSession] {.async.} =
+  proc inboundSubscription(
+      connection = registeredConnection(), t: seq[byte] = topic
+  ): Future[TopicSession] {.async.} =
     privateAccess(Waggle)
     privateAccess(TopicSession)
-    let connection = registeredConnection()
     let stream = openStream(connection.peerId, wrapped = connection)
     discard handle(stream)
-    await handshake(stream)
+    await handshake(stream, t)
     return waggle.streams.filterIt(it.stream == Stream(stream))[0]
 
   proc outboundSubscription(): Future[TestStream] {.async.} =
@@ -850,7 +853,6 @@ suite "Waggle direct streams":
       events[].len == 0
 
   asyncTest "a stream without its TopicSubscription does not count as a duplicate":
-    const emptyTopic: seq[byte] = @[]
     let pending = openStream()
     discard handle(pending)
     # pending's session exists, and its topic id stays empty until its
@@ -863,3 +865,203 @@ suite "Waggle direct streams":
     discard handle(stream)
     await handshake(stream, emptyTopic)
     check waggle.subscribers(emptyTopic) == @[stream.peerId]
+
+  asyncTest "send ignores the node's own subscription to the peer":
+    # the node subscribes to the peer, and the peer does not subscribe to the node
+    let stream = openStream()
+    discard receive(stream)
+    # the node's TopicSubscription
+    discard await stream.writes.popFirst()
+
+    check:
+      not (await waggle.send(stream.peerId, topic, ObjectPieces(objectId: objectId))).get()
+      # the node writes nothing after its TopicSubscription
+      stream.writes.empty()
+
+  asyncTest "send ignores a stream whose TopicSubscription has not arrived":
+    let pending = openStream()
+    discard handle(pending)
+    # pending's session exists, and its topic id stays empty until its
+    # TopicSubscription arrives
+    discard await pending.readRequests.popFirst()
+
+    check:
+      # the peer has subscribed to no topic yet, the empty topic included
+      not (
+        await waggle.send(pending.peerId, emptyTopic, ObjectPieces(objectId: objectId))
+      ).get()
+      pending.writes.empty()
+
+  asyncTest "a queued send returns false after the write fails while the peer is subscribed on another connection":
+    # TODO: iftech/nim-libp2p#3559
+    let events = newAsyncQueue[WaggleEvent]()
+    waggle = Waggle.new(
+      onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+        try:
+          events.addLastNoWait(event)
+        except AsyncQueueFullError:
+          raiseAssert "an unbounded queue is never full"
+    )
+    let peer = PeerId.random()
+    # the peer subscribes to topic on two connections
+    let first = openStream(peer, wrapped = registeredConnection(peer))
+    let second = openStream(peer, wrapped = registeredConnection(peer))
+    discard handle(first)
+    discard handle(second)
+    for stream in [first, second]:
+      await stream.pushData(frame(TopicSubscription(topicId: topic).encode()))
+      check (await events.popFirst()).kind == WaggleEventKind.Subscribed
+
+    let
+      started = newAsyncEvent()
+      release = newAsyncEvent()
+    # the first connection's write is held until released, then fails
+    first.writeHandler = proc(
+        data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, LPStreamError]).} =
+      started.fire()
+      await release.wait()
+      raise newException(LPStreamError, "write failed")
+
+    let msg = ObjectPieces(objectId: objectId)
+    # send picks the first connection's subscription, admitted first
+    let active = waggle.send(peer, topic, msg)
+    await started.wait()
+    # the queued send waits for the first connection's write lock
+    let queued = waggle.send(peer, topic, msg)
+    release.fire()
+
+    check:
+      (await active).isOfError("write failed")
+      # the failed write reset the first connection's stream, which the queued
+      # send then finds closed
+      not (await queued).get()
+      # the peer stays listed through its second connection, which got nothing
+      waggle.subscribers(topic) == @[peer]
+      second.writes.empty()
+
+  asyncTest "subscribe applies backpressure while its handler runs":
+    let
+      stream = openStream()
+      received = newAsyncQueue[ObjectPieces]()
+      release = newAsyncEvent()
+      messages = (1 .. 2).mapIt(ObjectPieces(objectId: @[byte it]))
+    proc onPieces(
+        peer: PeerId, t: seq[byte], msg: ObjectPieces
+    ) {.async: (raises: [CancelledError]).} =
+      await received.addLast(msg)
+      # the first message holds the handler until the test releases it
+      await release.wait()
+
+    discard receive(stream, handler = onPieces)
+    # the node's TopicSubscription
+    discard await stream.writes.popFirst()
+    await stream.pushData(messages.mapIt(frame(it.encode())).concat())
+    check:
+      (await received.popFirst()) == messages[0]
+      # the second frame is already buffered, and the node reads it only
+      # once the handler returns
+      received.empty()
+
+    release.fire()
+    check:
+      (await received.popFirst()) == messages[1]
+
+  test "subscribe raises an AssertionDefect for a nil handler before writing":
+    let stream = openStream()
+    expect AssertionDefect:
+      discard waggle.subscribe(stream, topic, nil)
+    # the node never sends its TopicSubscription
+    check stream.writes.empty()
+
+  asyncTest "queue limits exclude the active write":
+    privateAccess(Waggle)
+    privateAccess(WaggleConnection)
+    let connection = registeredConnection()
+    let stream = openStream(connection.peerId, wrapped = connection)
+    discard handle(stream)
+    await handshake(stream)
+    let
+      started = newAsyncEvent()
+      release = newAsyncEvent()
+    # every write to the subscriber is held
+    stream.writeHandler = proc(
+        data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, LPStreamError]).} =
+      started.fire()
+      await release.wait()
+
+    check waggle.publish(topic, BitShard(id: objectId, have: firstPiece)).get() == 1
+    # wait until the writer takes the message off the queue and writes it
+    await started.wait()
+    check:
+      # the message counts against neither limit while it is written
+      waggle.links[0].queued == 0
+      waggle.links[0].queuedBytes == 0
+
+  asyncTest "the queued message limit is per connection and shared by its topics":
+    privateAccess(TopicSession)
+    let shards = (1 .. 2).mapIt(BitShard(id: @[byte it], have: firstPiece))
+    waggle = Waggle.new(config = WaggleConfig(maxQueued: 1))
+    # the first connection's peer subscribes to two topics, the second's to one
+    let firstConnection = registeredConnection()
+    let first = await inboundSubscription(firstConnection)
+    discard await inboundSubscription(firstConnection, otherTopic)
+    let second = await inboundSubscription()
+
+    check:
+      # shards[0] fills the first connection's limit
+      waggle.publish(otherTopic, shards[0]).get() == 1
+      # shards[1] is queued on the second connection only
+      waggle.publish(topic, shards[1]).get() == 1
+      # the first connection's topics share its limit
+      first.queue.empty()
+      # the second connection's limit is its own
+      second.queue.toSeq().mapIt(it.objectId) == @[shards[1].id]
+
+  asyncTest "recursive failure events are dropped per connection and topic":
+    let
+      config = WaggleConfig(maxQueued: 1)
+      events = newAsyncQueue[WaggleEvent]()
+      peer = PeerId.random()
+      oversized = BitShard(id: newSeq[byte](config.maxMessageSize), have: firstPiece)
+    proc onEvent(event: WaggleEvent) {.gcsafe, raises: [].} =
+      try:
+        events.addLastNoWait(event)
+      except AsyncQueueFullError:
+        raiseAssert "an unbounded queue is never full"
+      if event.kind == WaggleEventKind.FullQueue:
+        # these publishes run inside the failure handler, so their failures are recursive
+        discard waggle.publish(topic, oversized)
+        discard waggle.publish(otherTopic, oversized)
+
+    waggle = Waggle.new(config = config, onEvent = onEvent)
+    proc subscribedConnectionId(
+        connection: TestStream, t: seq[byte]
+    ): Future[ConnectionId] {.async.} =
+      let stream = openStream(peer, wrapped = connection)
+      discard handle(stream)
+      await stream.pushData(frame(TopicSubscription(topicId: t).encode()))
+      return (await events.popFirst()).connectionId
+
+    let
+      connection = registeredConnection(peer)
+      otherConnection = registeredConnection(peer)
+      # the peer subscribes to topic on both connections and to otherTopic on connection
+      connectionId = await subscribedConnectionId(connection, topic)
+      otherConnectionId = await subscribedConnectionId(otherConnection, topic)
+    discard await subscribedConnectionId(connection, otherTopic)
+
+    check:
+      # fills connection's limit, which both its topics share
+      waggle.publish(otherTopic, BitShard(id: @[byte 1], have: firstPiece)).get() == 1
+      # connection is at its limit, so only otherConnection gets the shard
+      waggle.publish(topic, BitShard(id: objectId, have: firstPiece)).get() == 1
+      events.toSeq().mapIt((it.kind, it.connectionId, it.topicId)) ==
+        @[
+          # connection's failure on topic calls the handler
+          (WaggleEventKind.FullQueue, connectionId, topic),
+          # of the handler's failures, the one on connection and topic is dropped
+          (WaggleEventKind.OutgoingRejected, otherConnectionId, topic),
+          (WaggleEventKind.OutgoingRejected, connectionId, otherTopic),
+        ]
