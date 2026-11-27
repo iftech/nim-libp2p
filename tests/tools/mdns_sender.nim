@@ -71,5 +71,6 @@ template requireMdnsMulticastRoute*() =
           transport: DatagramTransport, remote: TransportAddress
       ) {.async: (raises: []).} =
         discard
+
       let probe = newMdnsTestSender(ignoreDatagram)
       await noCancel probe.closeWait()
