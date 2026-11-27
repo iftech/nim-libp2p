@@ -3,12 +3,14 @@
 
 {.used.}
 
-import chronos, std/sequtils
+import chronos, std/[importutils, sequtils]
 import ../../../libp2p/[switch, builders, address_manager]
 import ../../../libp2p/protocols/kademlia
 import ../../../libp2p/services/[natservice, reachabilityobservers]
 import ../../tools/[unittest, crypto, multiaddress, switch_builder]
 import ./utils.nim
+
+privateAccess(AutoModePolicy)
 
 const ImmediateAutoMode = AutoModeConfig.init(
   promotionWindow = ZeroDuration, demotionWindow = ZeroDuration, cooldown = ZeroDuration
@@ -101,7 +103,7 @@ suite "KadDHT Switch Builder":
       .withNAT(autonatConfig(AutonatV2))
       .withKademlia(mode = KadMode.Auto, autoMode = windows)
       .build()
-    check node.mountedKad().get().autoModePolicy.autoModeConfig == windows
+    check node.mountedKad().get().autoModePolicy.config == windows
 
   asyncTest "Auto mode starts serving once autonat reports the node reachable":
     let node = buildAutoKadSwitch()

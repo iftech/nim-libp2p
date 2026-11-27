@@ -20,8 +20,8 @@ type LookupState* = ref object
   kad: KadDHT
   rtable: RoutingTable
   target*: Key
-  shortlist*: Table[PeerId, XorDistance]
-  responded*: Table[PeerId, RespondedStatus]
+  shortlist: Table[PeerId, XorDistance]
+  responded: Table[PeerId, RespondedStatus]
   attempts*: Table[PeerId, int]
 
 type DispatchProc* = proc(

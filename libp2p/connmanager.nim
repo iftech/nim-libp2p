@@ -123,7 +123,7 @@ type
     readyWaiters: Table[PeerId, int]
     readyPeers: HashSet[PeerId]
     joinedPeers: HashSet[PeerId]
-    expectedConnectionsOverLimit*: Table[(PeerId, Direction), Future[Muxer]]
+    expectedConnectionsOverLimit: Table[(PeerId, Direction), Future[Muxer]]
     peerStore*: PeerStore
     watermark: Opt[WatermarkPolicy]
     connectedAt: Table[PeerId, Moment]

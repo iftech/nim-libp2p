@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import std/[tables, sequtils]
 from std/times import nil
 import chronos
@@ -17,6 +18,8 @@ import
     utils/opt,
   ]
 import ../tools/[unittest, crypto, multiaddress]
+
+privateAccess(PeerStore)
 
 type
   GenericBook[T] = ref object of PeerBook[T]

@@ -57,7 +57,7 @@ type
     users: int ## dials holding or waiting for `lock`
 
   Dialer* = ref object of Dial
-    localPeerId*: PeerId
+    localPeerId: PeerId
     connManager: ConnManager
     dialLocks: Table[PeerId, DialLock]
     dialTimeout: Duration

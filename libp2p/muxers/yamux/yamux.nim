@@ -332,9 +332,6 @@ proc gotDataFromRemote(
     libp2p_yamux_recv_queue.observe(channel.recvQueue.len.int64)
   await channel.updateRecvWindow()
 
-proc setMaxRecvWindow*(channel: YamuxChannel, maxRecvWindow: int) =
-  channel.maxRecvWindow = maxRecvWindow
-
 proc sendLoop(channel: YamuxChannel) {.async: (raises: []).} =
   if channel.isSending:
     return

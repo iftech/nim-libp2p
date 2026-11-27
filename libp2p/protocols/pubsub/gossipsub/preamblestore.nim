@@ -17,12 +17,12 @@ type
     sender*: PeerId
     startsAt*: Moment
     expiresAt*: Moment
-    deleted*: bool # tombstone marker
-    peerSet*: PeerSet
+    deleted: bool # tombstone marker
+    peerSet: PeerSet
 
   PreambleStore* = object
-    byId*: Table[MessageId, PreambleInfo]
-    heap*: HeapQueue[PreambleInfo]
+    byId: Table[MessageId, PreambleInfo]
+    heap: HeapQueue[PreambleInfo]
 
 proc `<`(a, b: PreambleInfo): bool =
   a.expiresAt < b.expiresAt

@@ -15,6 +15,9 @@ import ../../libp2p/transports/memorytransport except MemoryAutoAddress
 import ../stubs/transportstub
 import ../tools/[unittest, crypto, lifecycle, multiaddress, switch_builder]
 
+privateAccess(Switch)
+privateAccess(TcpTransport)
+
 proc newStubAcceptSwitch(
     behavior: StubAcceptBehavior, withTcp = false, maxIn = 0, acceptLimit = 0
 ): (Switch, MemoryTransportStub) =
@@ -105,7 +108,6 @@ suite "Switch accept-loop failure handling":
       await client.connect(server)
 
   asyncTest "TCP retries do not consume a slot and a one-slot switch recovers":
-    privateAccess(TcpTransport)
     let server = makeStandardSwitchBuilder(TcpAutoAddress).withMaxInOut(1, 8).build()
     let client = makeStandardSwitch(TcpAutoAddress)
     let transport = TcpTransport(server.transports[0])
@@ -166,7 +168,6 @@ suite "Switch accept-loop failure handling":
     check client.isConnected(server)
 
   asyncTest "accepts and registered upgrades drain before slow protocol teardown":
-    privateAccess(Switch)
     let
       server = makeStandardSwitch(MemoryAutoAddress())
       client = makeStandardSwitch(MemoryAutoAddress())
@@ -217,7 +218,6 @@ suite "Pending inbound upgrades":
     checkTrackers()
 
   asyncTest "one IP cannot fill inbound capacity or block outbound repair":
-    privateAccess(Switch)
     let server = makeStandardSwitch(TcpAutoAddress)
     let peer = makeStandardSwitch(TcpAutoAddress)
     startAndDeferStop(@[server, peer])
@@ -225,22 +225,21 @@ suite "Pending inbound upgrades":
     defer:
       for socket in sockets:
         await socket.closeWait()
-    for _ in 0 ..< PendingUpgradesPerSourceForTesting + 4:
+    for _ in 0 ..< MaxPendingUpgradesPerSource + 4:
       sockets.add(await wire.connect(server.peerInfo.addrs[0]))
     check (await sockets[^1].read().wait(1.seconds)).len == 0
     checkUntilTimeout:
-      server.pendingUpgrades == PendingUpgradesPerSourceForTesting
-      server.upgradeFuts.len == PendingUpgradesPerSourceForTesting
+      server.pendingUpgrades == MaxPendingUpgradesPerSource
+      server.upgradeFuts.len == MaxPendingUpgradesPerSource
       server.rejectedConnCloseFuts.allIt(it.finished)
     check server.connManager.availableSlots(Direction.In) ==
-      server.connManager.maxConnections(Direction.In) -
-      PendingUpgradesPerSourceForTesting
+      server.connManager.maxConnections(Direction.In) - MaxPendingUpgradesPerSource
     await server.connect(peer)
     check:
       server.isConnected(peer)
       server.connManager.availableSlots(Direction.Out) ==
-        server.connManager.maxConnections(Direction.Out) -
-        PendingUpgradesPerSourceForTesting - 1
+        server.connManager.maxConnections(Direction.Out) - MaxPendingUpgradesPerSource -
+        1
     for socket in sockets:
       await socket.closeWait()
     checkUntilTimeout:
@@ -253,9 +252,8 @@ suite "Pending inbound upgrades":
         server.connManager.maxConnections(Direction.In) - 2
 
   asyncTest "IPv6 address rotation within a /56 shares one pending budget":
-    privateAccess(Switch)
     var sources: seq[MultiAddress]
-    for i in 1 .. PendingUpgradesPerSourceForTesting:
+    for i in 1 .. MaxPendingUpgradesPerSource:
       sources.add(ma("/ip6/2001:db8:1234:5600::" & $i & "/tcp/1"))
     sources.add(ma("/ip6/2001:db8:1234:56ff::1/tcp/2"))
     sources.add(ma("/ip6/2001:db8:1234:5700::1/tcp/1"))
@@ -285,11 +283,10 @@ suite "Pending inbound upgrades":
       checkUntilTimeout:
         SourceAddressTransport(server.transports[0]).accepted == connections.len
     checkUntilTimeout:
-      server.pendingUpgrades == PendingUpgradesPerSourceForTesting + 1
+      server.pendingUpgrades == MaxPendingUpgradesPerSource + 1
       server.pendingUpgradesBySource.len == 2
     check server.connManager.availableSlots(Direction.In) ==
-      server.connManager.maxConnections(Direction.In) -
-      PendingUpgradesPerSourceForTesting - 1
+      server.connManager.maxConnections(Direction.In) - MaxPendingUpgradesPerSource - 1
     for conn in connections:
       await conn.close()
     checkUntilTimeout:
@@ -297,7 +294,6 @@ suite "Pending inbound upgrades":
       server.pendingUpgradesBySource.len == 0
 
   asyncTest "connections without an IP use only the global pending budget":
-    privateAccess(Switch)
     let server =
       makeStandardSwitchBuilder(MemoryAutoAddress()).withMaxInOut(20, 2).build()
     let peer = makeStandardSwitch(MemoryAutoAddress())
@@ -324,7 +320,6 @@ suite "Pending inbound upgrades":
       server.pendingUpgradesBySource.len == 0
 
   asyncTest "pending budget is shared across transports and leaves inbound capacity":
-    privateAccess(Switch)
     let server = makeStandardSwitchBuilder(@[MemoryAutoAddress(), TcpAutoAddress])
       .withMaxInOut(2, 2)
       .build()
@@ -346,7 +341,6 @@ suite "Pending inbound upgrades":
       server.connManager.availableSlots(Direction.In) == 1
 
   asyncTest "idle upgrades expire before the full upgrade deadline":
-    privateAccess(Switch)
     let server = makeStandardSwitch(TcpAutoAddress)
     startAndDeferStop(@[server])
     let socket = await wire.connect(server.peerInfo.addrs[0])
@@ -361,7 +355,6 @@ suite "Pending inbound upgrades":
         server.connManager.maxConnections(Direction.In)
 
   asyncTest "stop cancels pending upgrades and restart restores their budget":
-    privateAccess(Switch)
     let server = makeStandardSwitch(TcpAutoAddress)
     startAndDeferStop(@[server])
     let socket = await wire.connect(server.peerInfo.addrs[0])

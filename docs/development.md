@@ -91,6 +91,18 @@ nim c -r -d:path=mix tests/test_all.nim
 nim c -r tests/tools/test_multiaddress.nim
 ```
 
+Tests reach private code without making it public:
+
+- Private fields: call `privateAccess(Type)` from `std/importutils` in the test, at module level where possible. Narrow it to the suites or tests that need it when `Type` has a public getter or setter named like one of its private fields: `privateAccess` makes `obj.field = x` assign the field and skip the setter.
+- Private procs, constants, types and metrics: export them from the library module under the [`libp2p_testing`](compile_time_flags.md) flag, which `tests/config.nims` enables:
+
+  ```nim
+  when defined(libp2p_testing):
+    export parseCertTime
+  ```
+
+  `from libp2p/module {.all.} import symbol` in the test also works, without touching the library module.
+
 ## Formatting code
 
 nim-libp2p uses [nph](https://github.com/arnetheduck/nph) to format code.
