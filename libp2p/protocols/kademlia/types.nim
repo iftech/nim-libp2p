@@ -53,6 +53,8 @@ const
   DefaultProvidedKeyCapacity* = 500 # maximum number of provided keys to store at once
   DefaultRepublishInterval* = 10.minutes # same as bootstrap
   DefaultProviderExpirationInterval* = 48.hours
+  DefaultProviderAddrTTL* = 24.hours
+    # as go-libp2p: an older provider record is served as the peer id alone
   DefaultRecordExpirationInterval* = 24.hours
     # KV entries older than this are considered stale and will be evicted
 
@@ -559,6 +561,8 @@ type KadDHTConfig* = object
     ## The storage backend. ``none`` gives each node a ``MemoryKadStore`` with ``storeLimits``.
   republishProvidedKeysInterval*: chronos.Duration
   providerExpirationInterval*: chronos.Duration
+  providerAddrTTL*: chronos.Duration
+    ## How long a stored provider record keeps its addresses. Later replies carry the peer id alone.
   recordExpirationInterval*: chronos.Duration
   addressPolicy*: PeerAddressPolicy
   hideConnectionStatus*: bool
@@ -602,6 +606,7 @@ proc new*(
     storeLimits: KadStoreLimits = KadStoreLimits.new(),
     republishProvidedKeysInterval: chronos.Duration = DefaultRepublishInterval,
     providerExpirationInterval: chronos.Duration = DefaultProviderExpirationInterval,
+    providerAddrTTL: chronos.Duration = DefaultProviderAddrTTL,
     recordExpirationInterval: chronos.Duration = DefaultRecordExpirationInterval,
     addressPolicy: PeerAddressPolicy = defaultAddressPolicy,
     hideConnectionStatus: bool = true,
@@ -636,6 +641,7 @@ proc new*(
     "maxProviders must be > 0; use Opt.none(int) for unlimited"
   doAssert storeLimits.maxProvided.isNone or storeLimits.maxProvided.get() > 0,
     "maxProvided must be > 0; use Opt.none(int) for unlimited"
+  doAssert providerAddrTTL >= ZeroDuration, "providerAddrTTL must be >= 0"
   doAssert recordExpirationInterval > ZeroDuration,
     "recordExpirationInterval must be > 0"
   doAssert actualLimits.maxConcurrentRpcs > 0, "maxConcurrentRpcs must be > 0"
@@ -673,6 +679,7 @@ proc new*(
     store: store,
     republishProvidedKeysInterval: republishProvidedKeysInterval,
     providerExpirationInterval: providerExpirationInterval,
+    providerAddrTTL: providerAddrTTL,
     recordExpirationInterval: recordExpirationInterval,
     addressPolicy: addressPolicy,
     hideConnectionStatus: hideConnectionStatus,

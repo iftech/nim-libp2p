@@ -29,6 +29,8 @@ type
   StoredProvider* = object
     provider*: Provider
     expiresAt*: UnixTimestamp
+    addrsExpireAt*: UnixTimestamp
+      ## Past this time a reader serves the peer id without ``provider.addrs``. Zero means ``expiresAt``.
 
   AddProviderOutcome* {.pure.} = enum
     added

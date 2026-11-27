@@ -430,9 +430,11 @@ method handleAddProvider*(
   let now = UnixTimestamp.now()
   var atCap = false
   for peer in validPeers:
+    let expiresAt = UnixTimestamp.after(kad.config.providerExpirationInterval)
     let stored = StoredProvider(
       provider: peer,
-      expiresAt: UnixTimestamp.after(kad.config.providerExpirationInterval),
+      expiresAt: expiresAt,
+      addrsExpireAt: UnixTimestamp.after(kad.config.providerAddrTTL),
     )
     let outcome = kad.store.addProvider(msgKey, stored, now, maxPerKey).valueOr:
       debug "Failed to store provider record", key = msgKey, err = error
@@ -491,6 +493,8 @@ proc getProviders*(
       if PeerId.init(idraw).isErr:
         trace "Invalid peer id received", peerId = provider.id
         continue
+      if provider.addrs.len > 0:
+        allProviders.excl(provider)
       allProviders.incl(provider)
 
   let enoughProviders = proc(state: LookupState): bool {.gcsafe.} =
@@ -500,6 +504,13 @@ proc getProviders*(
 
   return allProviders
 
+func servedProvider(p: StoredProvider, now: UnixTimestamp): Peer =
+  var peer = p.provider
+  let addrsExpireAt = if p.addrsExpireAt == 0: p.expiresAt else: p.addrsExpireAt
+  if addrsExpireAt <= now:
+    peer.addrs = @[]
+  peer
+
 method handleGetProviders*(
     kad: KadDHT, stream: Stream, msg: Message
 ) {.base, async: (raises: [CancelledError]).} =
@@ -508,10 +519,11 @@ method handleGetProviders*(
       reason = "missingKey", messageType = "getProviders", stream
     return
 
-  let stored = kad.store.getProviders(msgKey, UnixTimestamp.now(), high(int)).valueOr:
+  let now = UnixTimestamp.now()
+  let stored = kad.store.getProviders(msgKey, now, high(int)).valueOr:
     debug "Failed to read provider records", key = msgKey, err = error
     @[]
-  var providers = stored.mapIt(it.provider).toHashSet()
+  var providers = stored.mapIt(it.servedProvider(now)).toHashSet()
 
   # check if we are providing the key as well
   if kad.isProvided(msgKey):
