@@ -57,7 +57,8 @@ proc new*(
             switch.peerInfo.addrs
           else:
             switch.peerInfo.listenAddrs.mapIt(switch.addressManager.externalAddrFor(it))
-      var ourDialableAddrs = getHolePunchableAddrs(ourAddrs)
+      let ourDialableAddrs =
+        getHolePunchableAddrs(ourAddrs).filterIt(not DNS.matchPartial(it))
       if ourDialableAddrs.len == 0:
         trace "Aborting Dcutr because the receiver has no supported dialable addresses",
           addresses = ourAddrs
@@ -102,7 +103,8 @@ proc new*(
         addresses = peerDialableAddrs, connectTimeout
       let dialFuts = peerDialableAddrs.mapIt(
         switch.connect(
-          stream.peerId, @[it], reuseConnection = false, dir = Direction.Out
+          stream.peerId, @[it], reuseConnection = false, dir = Direction.Out,
+          bypassBackoff = true
         )
       )
       var futs = dialFuts

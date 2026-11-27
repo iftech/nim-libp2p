@@ -20,6 +20,7 @@ type
     forceDial = false,
     reuseConnection = true,
     dir = Direction.Out,
+    bypassBackoff = false,
   ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).}
 
 method connect*(
@@ -29,11 +30,12 @@ method connect*(
     forceDial = false,
     reuseConnection = true,
     dir = Direction.Out,
+    bypassBackoff = false,
 ) {.async: (raises: [DialFailedError, CancelledError]).} =
   if (self.connectStub != nil):
-    await self.connectStub(self, peerId, addrs, forceDial, reuseConnection, dir)
+    await self.connectStub(self, peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff)
   else:
-    await self.switch.connect(peerId, addrs, forceDial, reuseConnection, dir)
+    await self.switch.connect(peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff)
 
 proc new*(
     T: typedesc[SwitchStub], switch: Switch, connectStub: connectStubType = nil

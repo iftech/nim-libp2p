@@ -60,6 +60,7 @@ proc waitDirectConnIdentified(
 
 suite "Dcutr":
   teardown:
+    relayClients.clear()
     checkTrackers()
 
   asyncTest "Connect msg Encode / Decode":
@@ -87,6 +88,13 @@ suite "Dcutr":
 
     check syncMsg == syncMsgDecoded
     check pb == hexToSeqByte(pbHexReference)
+
+  asyncTest "DCUtR initiator skips DNS-only addresses":
+    let switch = makeSwitch()
+    let synced = await DcutrClient.new().tryStartSync(
+      switch, switch.peerInfo.peerId, @[ma("/dns4/example.com/tcp/3456")]
+    )
+    check synced.isOk()
 
   asyncTest "DCUtR establishes a new connection":
     let behindNATSwitch = makeSwitch()
@@ -234,6 +242,7 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
       await sleepAsync(50.millis)
 
@@ -255,6 +264,7 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
       raise newException(DialFailedError, "error")
 
@@ -311,7 +321,9 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
+      check not forceDial and bypassBackoff
       await sleepAsync(50.millis)
 
     await ductrServerTest(connectProc)
@@ -324,7 +336,9 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
+      check not forceDial and bypassBackoff
       raise newException(DialFailedError, "error")
 
     await ductrServerTest(connectProc)

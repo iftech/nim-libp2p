@@ -172,10 +172,11 @@ method connect*(
     forceDial = false,
     reuseConnection = true,
     dir = Direction.Out,
+    bypassBackoff = false,
 ): Future[void] {.async: (raises: [DialFailedError, CancelledError], raw: true).} =
   ## Connects to a peer without opening a stream to it
 
-  s.dialer.connect(peerId, addrs, forceDial, reuseConnection, dir)
+  s.dialer.connect(peerId, addrs, forceDial, reuseConnection, dir, bypassBackoff)
 
 method connect*(
     s: Switch,
