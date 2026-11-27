@@ -255,7 +255,7 @@ suite "mDNS network":
     # prevents other sockets from sharing its port. Other platforms need their
     # own setup to reserve the port exclusively.
     asyncTest "startup reports an occupied port when interfaces exist":
-      requireMdnsMulticastRoute(ignoreDatagram)
+      requireMdnsMulticastRoute()
       require ipv4Interfaces().len > 0
       var blocker: DatagramTransport
       try:
@@ -287,7 +287,7 @@ suite "mDNS network":
         check network.ipv4InterfaceIndices().len > 0
 
     asyncTest "refresh retries sockets after the port becomes available":
-      requireMdnsMulticastRoute(ignoreDatagram)
+      requireMdnsMulticastRoute()
       require ipv4Interfaces().len > 0
       var blocker: DatagramTransport
       try:
@@ -509,7 +509,7 @@ suite "mDNS network":
     check not network.isOpen
 
   asyncTest "multicast replies return on their sending interface":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     var interfaces = ipv4Interfaces()
     block:
       proc provider(): seq[NetworkInterface] {.gcsafe, raises: [].} =
