@@ -33,11 +33,13 @@ static bool rejectsBadConfigs(void) {
   memset(cases, 0, sizeof(cases));
 
   cases[0].name = "service discovery setting without mount";
+  cases[0].cfg.transports = TRANSPORT_TCP;
   cases[0].cfg.serviceDiscovery.disableXprPublishing = true;
   snprintf(cases[0].want, sizeof(cases[0].want),
            "service discovery settings require serviceDiscovery.mount");
 
   cases[1].name = "gossipsub maxMessageSize above the limit";
+  cases[1].cfg.transports = TRANSPORT_TCP;
   cases[1].cfg.gossipsub.mount = true;
   cases[1].cfg.gossipsub.maxMessageSize = MAX_GOSSIPSUB_MESSAGE_SIZE + 1;
   snprintf(cases[1].want, sizeof(cases[1].want),
@@ -59,7 +61,7 @@ static bool rejectsDiscoBeforeStart(void) {
   cfg.serviceDiscovery.mount = true;
   cfg.addrs.data = &addrSlot;
   cfg.addrs.len = 1;
-  cfg.transport = TRANSPORT_TYPE_TCP;
+  cfg.transports = TRANSPORT_TCP;
   LibP2PCtx *ctx = await_create(&cfg, "disco node");
   if (!ctx)
     return false;

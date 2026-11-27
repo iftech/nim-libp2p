@@ -9,16 +9,12 @@
 ## the node builder never touches a raw string or ordinal again:
 ##
 ##   let cfg = ?config.parse()
-##   ... cfg.privKey, cfg.transport, cfg.bootstrapNodes ...
+##   ... cfg.privKey, cfg.tcp, cfg.quic (decoded from `transports`), cfg.bootstrapNodes ...
 ##
 ## The `{.ffi.}` types share this module with `genBindings()` on purpose: nim-ffi
 ## reads the object fields straight from the AST, and an exported field would
 ## leak its `*` into the generated field name. `include` (not `import`) keeps the
 ## fields unexported and the emitted bindings clean.
-
-type TransportType {.ffi.} = enum
-  Quic = "quic"
-  Tcp = "tcp"
 
 type MuxerType {.ffi.} = enum
   Mplex = "mplex"
@@ -71,7 +67,10 @@ type Libp2pConfig {.ffi.} = object
   dnsResolver: string ## DNS server address; empty uses the core defaults.
   addrs: seq[string] ## Listen multiaddresses for the switch.
   muxer: MuxerType ## Type of muxer used for TCP transports.
-  transport: TransportType ## Type of transport for selecting TCP or QUIC.
+  transports: int
+    ## OR of `TRANSPORT_TCP` and `TRANSPORT_QUIC`; at least one is required.
+  dialRanking: bool
+    ## Rank dial candidates so direct QUIC is tried before TCP, falling back to TCP.
   bootstrapNodes: seq[BootstrapNode]
     ## Peers to add to the peer store and Kad bootstrap set.
   privKey: seq[byte] ## Serialized private key; empty generates a fresh key.
@@ -118,22 +117,15 @@ type ParsedServiceDiscovery = object
   xprPublishing: bool
   config: types.ServiceDiscoveryConfig
 
-type ParsedTransport = object
-  ## The transport to build, plus the muxer it needs. A muxer is only used with
-  ## TCP, so the variant makes "no muxer for QUIC" unrepresentable rather than
-  ## carrying a meaningless default.
-  case kind: TransportType
-  of TransportType.Tcp:
-    muxer: MuxerType
-  of TransportType.Quic:
-    discard
-
 type ParsedConfig = object
   ## `Libp2pConfig` with every field validated and decoded once. Consumed by the
   ## node builder; carries no raw strings or ordinals.
   dnsServers: seq[TransportAddress]
   addrs: seq[MultiAddress]
-  transport: ParsedTransport
+  tcp: bool
+  quic: bool
+  muxer: MuxerType
+  dialRanking: bool
   privKey: Opt[PrivateKey]
   bootstrapNodes: seq[(PeerId, seq[MultiAddress])]
   maxConnections: int
@@ -184,6 +176,10 @@ proc parsePrivateKey(raw: seq[byte]): Result[Opt[PrivateKey], string] =
   ok(Opt.some(key))
 
 const
+  TransportTcp {.ffiConst.} = 1
+    ## Bit in `Libp2pConfig.transports`: mount TCP, with `muxer`.
+  TransportQuic {.ffiConst.} = 2 ## Bit in `Libp2pConfig.transports`: mount QUIC.
+  TransportMask = TransportTcp or TransportQuic
   MaxDurationMs = high(int64) div 1_000_000
     ## `chronos.milliseconds` scales to the nanoseconds a `Duration` holds.
   MaxGossipsubMessageSize {.ffiConst.} = 64 * 1024 * 1024
@@ -246,14 +242,6 @@ func parseGossipsub(cfg: GossipsubConfig): Result[ParsedGossipsub, string] =
       disconnectPeerAboveRateLimit: cfg.disconnectPeerAboveRateLimit,
     )
   )
-
-func parseTransportConfig(config: Libp2pConfig): ParsedTransport =
-  # A muxer is only used with TCP, so a QUIC config's `muxer` is ignored.
-  case config.transport
-  of TransportType.Quic:
-    ParsedTransport(kind: TransportType.Quic)
-  of TransportType.Tcp:
-    ParsedTransport(kind: TransportType.Tcp, muxer: config.muxer)
 
 func countEnabled(values: varargs[bool]): int =
   for value in values:
@@ -465,11 +453,21 @@ func parseServiceDiscovery(
   )
 
 proc parse(config: Libp2pConfig): Result[ParsedConfig, string] =
+  if config.transports == 0:
+    return err(
+      "no transport enabled: set transports to TRANSPORT_TCP, TRANSPORT_QUIC or both"
+    )
+  if (config.transports and not TransportMask) != 0:
+    return err("unknown transports bits: " & $config.transports)
+
   ok(
     ParsedConfig(
       dnsServers: ?resolveDnsServers(config.dnsResolver),
       addrs: ?parseMultiaddrs(config.addrs),
-      transport: parseTransportConfig(config),
+      tcp: (config.transports and TransportTcp) != 0,
+      quic: (config.transports and TransportQuic) != 0,
+      muxer: config.muxer,
+      dialRanking: config.dialRanking,
       privKey: ?parsePrivateKey(config.privKey),
       bootstrapNodes: ?parseBootstrapNodes(config.bootstrapNodes),
       maxConnections: config.maxConnections,

@@ -55,7 +55,7 @@ static LibP2PCtx *gossipsubNode(const char *listenAddr, const char *label) {
   cfg.addrs.data = &addrSlot;
   cfg.addrs.len = 1;
   cfg.muxer = MUXER_TYPE_MPLEX;
-  cfg.transport = TRANSPORT_TYPE_TCP;
+  cfg.transports = TRANSPORT_TCP;
   return await_create(&cfg, label);
 }
 

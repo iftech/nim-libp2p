@@ -132,7 +132,7 @@ static int create_node(LibP2PCtx **out_ctx) {
   config.addrs.data = listen_addrs;
   config.addrs.len = 1;
   config.dnsResolver = nimffi_str("");
-  config.transport = TRANSPORT_TYPE_TCP;
+  config.transports = TRANSPORT_TCP;
   config.muxer = MUXER_TYPE_YAMUX;
   config.maxConnections = 8;
   config.maxIn = 4;

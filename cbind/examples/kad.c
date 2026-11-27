@@ -93,7 +93,7 @@ static LibP2PCtx *kadNode(const char *listenAddr, const char *label,
   cfg.addrs.data = &addrSlot;
   cfg.addrs.len = 1;
   cfg.muxer = MUXER_TYPE_MPLEX;
-  cfg.transport = TRANSPORT_TYPE_TCP;
+  cfg.transports = TRANSPORT_TCP;
 
   NimFfiStr bootAddrs[MAX_ADDRS];
   BootstrapNode bootNode;
