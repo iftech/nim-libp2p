@@ -69,6 +69,81 @@ proc securedWith(dialer, listener: Switch): Future[string] {.async.} =
   let muxer = dialer.connManager.getConnections()[listener.peerInfo.peerId][0]
   SecureConn(muxer.connection).stream.protocol
 
+proc hsFrame(body: seq[byte]): seq[byte] =
+  ## A Noise handshake message as it goes on the wire: a 2-byte big-endian
+  ## length, then the body.
+  @[byte(body.len shr 8), byte(body.len and 0xff)] & body
+
+proc responderError(messageA: seq[byte]): Future[string] {.async.} =
+  ## Sends `messageA` to a NoiseHFS responder as the first handshake message
+  ## and returns the message of the error its handshake raises.
+  let
+    serverNoise = NoiseHFS.new(rng(), PrivateKey.random(ECDSA, rng()).get())
+    transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
+    transport2: TcpTransport = TcpTransport.new(upgrade = Upgrade())
+  await transport1.start(@[TcpWildcardAddress])
+
+  proc acceptHandler(): Future[string] {.async.} =
+    let conn = await transport1.accept()
+    try:
+      let sconn = await serverNoise.secure(conn, Opt.none(PeerId))
+      await sconn.close()
+      return "handshake completed"
+    except NoiseHFSHandshakeError as e:
+      return e.msg
+    finally:
+      await conn.close()
+
+  let
+    acceptFut = acceptHandler()
+    conn = await transport2.dial(transport1.addrs[0])
+  await conn.write(hsFrame(messageA))
+  let errorMsg = await acceptFut
+
+  await conn.close()
+  await transport1.stop()
+  await transport2.stop()
+  return errorMsg
+
+proc initiatorError(messageB: seq[byte]): Future[string] {.async.} =
+  ## Answers a NoiseHFS initiator's first handshake message with `messageB`
+  ## and returns the message of the error its handshake raises, or the type
+  ## name when the transport cipher rejects the message.
+  let
+    clientNoise = NoiseHFS.new(rng(), PrivateKey.random(ECDSA, rng()).get())
+    transport1: TcpTransport = TcpTransport.new(upgrade = Upgrade())
+    transport2: TcpTransport = TcpTransport.new(upgrade = Upgrade())
+  await transport1.start(@[TcpWildcardAddress])
+
+  proc acceptHandler() {.async.} =
+    let conn = await transport1.accept()
+    try:
+      var lenBytes: array[2, byte]
+      await conn.readExactly(addr lenBytes[0], lenBytes.len)
+      var messageA = newSeq[byte]((lenBytes[0].int shl 8) or lenBytes[1].int)
+      await conn.readExactly(addr messageA[0], messageA.len)
+      await conn.write(hsFrame(messageB))
+    finally:
+      await conn.close()
+
+  let
+    acceptFut = acceptHandler()
+    conn = await transport2.dial(transport1.addrs[0])
+  var errorMsg = "handshake completed"
+  try:
+    let sconn = await clientNoise.secure(conn, Opt.none(PeerId))
+    await sconn.close()
+  except NoiseHFSHandshakeError as e:
+    errorMsg = e.msg
+  except NoiseDecryptTagError:
+    errorMsg = "NoiseDecryptTagError"
+
+  await acceptFut
+  await conn.close()
+  await transport1.stop()
+  await transport2.stop()
+  return errorMsg
+
 suite "NoiseHFS":
   teardown:
     checkTrackers()
@@ -170,6 +245,44 @@ suite "NoiseHFS":
     await handlerWait
     await transport1.stop()
     await transport2.stop()
+
+  asyncTest "e2e: the responder rejects a malformed first message":
+    var e = newSeq[byte](32)
+    e[0] = 9 # the X25519 base point: a well-formed ephemeral key
+    # Every 12-bit coefficient is 0xFFF, above the ML-KEM modulus 3329: the
+    # right length for e1, but not a valid encapsulation key.
+    var badE1 = newSeq[byte](MLKEM768PublicKeyLen)
+    for b in badE1.mitems:
+      b = 0xff
+
+    let
+      shortE = await responderError(e[0 ..< 16])
+      missingE1 = await responderError(e)
+      shortE1 = await responderError(e & badE1[0 ..< 100])
+      invalidE1 = await responderError(e & badE1)
+
+    check:
+      shortE == "NoiseHFS e, expected more data"
+      missingE1 == "NoiseHFS e1, expected more data"
+      shortE1 == "NoiseHFS e1, expected more data"
+      invalidE1 == "NoiseHFS ekem1, invalid remote e1"
+
+  asyncTest "e2e: the initiator rejects a malformed second message":
+    var e = newSeq[byte](32)
+    e[0] = 9
+    const ekem1Len = MLKEM768CiphertextLen + 16 # ciphertext + ChaChaPoly tag
+
+    let
+      shortE = await initiatorError(e[0 ..< 16])
+      shortEkem1 = await initiatorError(e & newSeq[byte](ekem1Len - 1))
+      # The right length, but not encrypted under the handshake key: the
+      # AEAD tag check fails before the ciphertext reaches decapsulation.
+      forgedEkem1 = await initiatorError(e & newSeq[byte](ekem1Len + 48))
+
+    check:
+      shortE == "NoiseHFS e, expected more data"
+      shortEkem1 == "NoiseHFS ekem1, expected more data"
+      forgedEkem1 == "NoiseDecryptTagError"
 
   asyncTest "e2e: two hybrid switches negotiate NoiseHFS, whatever the builder order":
     for (dialerHfsFirst, listenerHfsFirst) in [
@@ -303,12 +416,17 @@ suite "MLKEM768":
       Json.encode(encapRes) == jsonMarker
       chroniclesFormatItIMPL(encapRes) == Redacted
 
-  test "a key pair works from an odd address":
-    # BoringSSL's key structs need 2-byte alignment. A key pair embedded
-    # after a single byte must still be usable.
+  test "a key pair embedded after a single byte keeps its alignment":
+    # BoringSSL's key structs hold uint16 coefficients and need 2-byte
+    # alignment. Nim must pad a key pair that follows a single byte to an
+    # even offset, and the key pair must work from there.
     type Shifted = object
       pad: byte
       keyPair: MLKEM768KeyPair
+
+    check:
+      alignof(MLKEM768KeyPair) >= 2
+      offsetOf(Shifted, keyPair) mod 2 == 0
 
     var shifted = Shifted(pad: 1, keyPair: mlkem768.generateKeyPair())
     let encapRes = mlkem768.encapsulate(shifted.keyPair.publicKey).valueOr:
