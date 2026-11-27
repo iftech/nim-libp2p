@@ -278,10 +278,12 @@ suite "Peer testing suite":
       not MultiHash.validate(padded)
       PeerId.init(padded).isErr()
 
-  test "Test PeerId.random() proc":
-    let randomPeer1 = PeerId.random()
-    check randomPeer1.validate()
+  test "Test PeerId.random(rng) proc":
+    # Exercise the public RNG-taking API, not the test helpers.
+    let randomPeer1 = PeerId.random(rng()) #nolint
+    require randomPeer1.isOk()
+    check randomPeer1.get().validate()
 
-    # generate a random peer with a new random seed
-    let randomPeer2 = PeerId.random()
-    check randomPeer2.validate()
+    let randomPeer2 = PeerId.random(rng()) #nolint
+    require randomPeer2.isOk()
+    check randomPeer2.get().validate()
