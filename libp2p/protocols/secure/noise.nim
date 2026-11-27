@@ -19,7 +19,8 @@ import secure, noisecommon, ../../crypto/[crypto, chacha20poly1305, curve25519]
 export noisecommon except
   KeyPair, CipherState, SymmetricState, HandshakeResult, HandshakeTimeout, genKeyPair,
   dh, hasKey, init, mixKey, mixHash, encryptAndHash, decryptAndHash, toHandshakeResult,
-  receiveHSMessage, sendHSMessage, encodeHandshakePayload, newNoiseConnection
+  receiveHSMessage, sendHSMessage, encodeHandshakePayload, newNoiseConnection, `$`,
+  writeValue
 
 when defined(libp2p_dump):
   import ../../utils/debug
