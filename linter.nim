@@ -4,6 +4,7 @@
 import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
+import tools/unittest2_linter
 
 runLint:
   sources = ["."]
@@ -34,6 +35,10 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
+
+  step "Check unittest2 usage":
+    check checkFalse:
+      severity = error
 
   step "Semantic checks":
     ignoredPatterns = ["./**/*"]
