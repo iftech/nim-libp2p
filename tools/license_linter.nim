@@ -10,7 +10,7 @@ import lint
 type HeaderSettings* = object
   license*: string
 
-proc runLicenseHeader(
+func runLicenseHeader(
     source: string, ast: PNode, settings: HeaderSettings
 ): seq[Finding] =
   if not source.startsWith(settings.license):
