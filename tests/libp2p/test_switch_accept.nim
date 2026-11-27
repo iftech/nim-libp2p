@@ -64,7 +64,7 @@ method stop(p: SlowStopProtocol) {.async: (raises: []).} =
   p.started = false
 
 proc newSlowStopProtocol(): SlowStopProtocol =
-  var protocol = SlowStopProtocol(stopping: newAsyncEvent(), release: newAsyncEvent())
+  let protocol = SlowStopProtocol(stopping: newAsyncEvent(), release: newAsyncEvent())
   protocol.codec = "/test/slow-stop/1.0.0"
   protocol.handler = proc(
       stream: Stream, proto: string

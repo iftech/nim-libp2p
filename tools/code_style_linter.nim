@@ -18,65 +18,98 @@ type ImplicitResultSettings* = object
 # --- AST helpers ----------------------------------------------------------
 
 proc isRoutine(node: PNode): bool =
-  ## True for the routine definitions that can have a `result`.
-  node.kind in {nkProcDef, nkFuncDef, nkMethodDef, nkConverterDef}
+  node.kind in {
+    nkProcDef, nkFuncDef, nkMethodDef, nkConverterDef, nkLambda, nkDo, nkMacroDef,
+    nkTemplateDef, nkIteratorDef,
+  }
 
 proc isResult(node: PNode): bool =
   node.kind == nkIdent and node.ident.s == "result"
 
-proc declaresResult(node: PNode): bool =
-  ## True when `node` is a `var`/`let`/`const` section declaring `result`.
-  if node.kind == nkStmtList:
-    for child in node.sons:
-      if declaresResult(child):
+proc bindsResult(node: PNode): bool =
+  case node.kind
+  of nkPragmaExpr:
+    node.len > 0 and bindsResult(node[0])
+  of nkPostfix:
+    node.len > 1 and bindsResult(node[1])
+  of nkIdentDefs, nkVarTuple:
+    for index in 0 ..< node.len - 2:
+      if bindsResult(node[index]):
         return true
-    return false
+    false
+  of nkConstDef:
+    node.len > 0 and bindsResult(node[0])
+  else:
+    isResult(node)
+
+proc declaresResult(node: PNode): bool =
   if node.kind notin {nkVarSection, nkLetSection, nkConstSection}:
     return false
-  for def in node.sons:
-    if def.kind in {nkIdentDefs, nkConstDef} and def.len > 0 and isResult(def[0]):
+  for definition in node.sons:
+    if bindsResult(definition):
       return true
   false
 
-proc usesResult(node: PNode): bool =
-  ## True when `node` uses `result`, excluding nested routine definitions.
+proc usesResult(node: PNode, shadowed = false): bool =
+  ## Nested routines own their result; block and loop bindings stay local.
   if node == nil or isRoutine(node):
     return false
   if isResult(node):
-    return true
+    return not shadowed
   if node.kind in {nkNone .. nkNilLit}:
     return false
-  for child in node.sons:
-    if usesResult(child):
+  case node.kind
+  of nkStmtList, nkStmtListExpr:
+    var localResult = shadowed
+    for child in node.sons:
+      if declaresResult(child):
+        localResult = true
+    for child in node.sons:
+      if usesResult(child, localResult):
+        return true
+  of nkDotExpr:
+    return node.len > 0 and usesResult(node[0], shadowed)
+  of nkExprEqExpr, nkExprColonExpr:
+    return node.len > 1 and usesResult(node[1], shadowed)
+  of nkIdentDefs, nkConstDef, nkVarTuple:
+    # Declaration names are bindings, but their types/initializers are expressions.
+    for index in max(0, node.len - 2) ..< node.len:
+      if usesResult(node[index], shadowed):
+        return true
+  of nkForStmt, nkParForStmt:
+    var loopResult = shadowed
+    for index in 0 ..< node.len - 2:
+      loopResult = loopResult or bindsResult(node[index])
+    if usesResult(node[^2], shadowed) or usesResult(node[^1], loopResult):
       return true
+  else:
+    for child in node.sons:
+      if usesResult(child, shadowed):
+        return true
   false
 
-proc body(node: PNode): PNode =
-  ## The body of a routine definition.
-  if node.len > 6:
-    node[6]
-  else:
-    nil
+proc hasResult(node: PNode): bool =
+  # Templates and iterators do not have an implicit return-value variable.
+  if node.kind in {nkTemplateDef, nkIteratorDef} or node.len <= 6:
+    return false
+  let params = node[3]
+  params.kind == nkFormalParams and params.len > 0 and params[0].kind != nkEmpty and
+    not (params[0].kind == nkIdent and params[0].ident.s == "void")
 
 # --- checks ---------------------------------------------------------------
 
 proc runImplicitResult(
     source: string, ast: PNode, s: ImplicitResultSettings
 ): seq[Finding] =
-  ## Reports a routine that uses `result` without declaring it.
-  ##
-  ## Check each routine independently: a nested routine's `result` is its own.
+  ## Check each value-returning routine independently, including macros.
   var findings: seq[Finding]
   var stack = @[ast]
   while stack.len > 0:
     let node = stack.pop()
     if node == nil:
       continue
-    if isRoutine(node):
-      let routineBody = body(node)
-      if routineBody != nil and not declaresResult(routineBody) and
-          usesResult(routineBody):
-        findings.add(node.toFinding("do not use implicit `result` variable"))
+    if isRoutine(node) and hasResult(node) and usesResult(node[6]):
+      findings.add(node.toFinding("do not use implicit `result` variable"))
     if node.kind in {nkNone .. nkNilLit}:
       continue
     for i in countdown(node.safeLen - 1, 0):
