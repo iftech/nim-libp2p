@@ -67,6 +67,7 @@ proc runImplicitResult(
   ##
   ## Routines are visited outermost first, and a routine's body is not
   ## searched for nested routines: a nested routine's `result` is its own.
+  var findings: seq[Finding]
   var stack = @[ast]
   while stack.len > 0:
     let node = stack.pop()
@@ -76,12 +77,13 @@ proc runImplicitResult(
       let routineBody = body(node)
       if routineBody != nil and not declaresResult(routineBody) and
           usesResult(routineBody):
-        result.add(node.toFinding("do not use implicit `result` variable"))
+        findings.add(node.toFinding("do not use implicit `result` variable"))
       continue
     if node.kind in {nkNone .. nkNilLit}:
       continue
     for i in countdown(node.safeLen - 1, 0):
       stack.add node[i]
+  findings
 
 # --- linter ---------------------------------------------------------------
 
