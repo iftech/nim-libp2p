@@ -828,13 +828,27 @@ proc encode*(mbtype: typedesc[MultiBase], encoding: string, ma: MultiAddress): s
   ## ``encoding``.
   MultiBase.encode(encoding, ma.data.buffer)
 
+const
+  MaxMultiAddressLen* = 1024
+    ## Bytes in one address. Real ones stay far below; past it, one address
+    ## would cost a remote's whole message to process.
+  MaxMultiAddressParts* = 32
+    ## Components in one address, for the same reason: a marker such as /ws is
+    ## two bytes, so the byte cap alone still admits ~500 components.
+
 proc validate*(ma: MultiAddress): bool =
   ## Returns ``true`` if MultiAddress ``ma`` is valid.
+  if ma.data.buffer.len > MaxMultiAddressLen:
+    return false
   var header: uint64
   var cursor = initCursor(ma)
+  var parts = 0
   while true:
     if cursor.isEmpty():
       break
+    inc parts
+    if parts > MaxMultiAddressParts:
+      return false
     if cursor.readVarint(header) == -1:
       return false
     let proto = CodeAddresses.getOrDefault(MultiCodec(header))
@@ -857,6 +871,8 @@ proc init*(
   let proto = CodeAddresses.getOrDefault(protocol)
   if proto.kind == None:
     err("multiaddress: Protocol not found")
+  elif len(value) > MaxMultiAddressLen:
+    err("multiaddress: Address is too long!")
   else:
     var res: MultiAddress
     # Pre-allocate: varint(protocol) ≈ maxSize(proto.mcodec) + value size + overhead
@@ -955,11 +971,15 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     return err("multiaddress: Address must not be empty!")
   if value[0] != '/':
     return err("multiaddress: Invalid MultiAddress, must start with `/`")
+  # text is at most ~4x the binary form (/ip4/255.255.255.255 is 20 chars for 5 bytes)
+  if len(value) > 4 * MaxMultiAddressLen:
+    return err("multiaddress: Address is too long!")
 
   var
     trimmed = value.trimRight('/')
     parts = trimmed.split('/')
     offset = 1
+    components = 0
     res: MultiAddress
   res.data = initVBuffer(len(trimmed))
 
@@ -998,7 +1018,12 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     elif proto.kind == Marker:
       res.data.write(proto.mcodec)
       offset += 1
+    inc components
+    if components > MaxMultiAddressParts:
+      return err("multiaddress: Too many components!")
 
+  if res.data.buffer.len > MaxMultiAddressLen:
+    return err("multiaddress: Address is too long!")
   res.data.finish()
   ok(res)
 

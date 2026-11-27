@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/net, stew/byteutils, chronos
+import std/[net, strutils], stew/byteutils, chronos
 import protobuf_serialization, protobuf_serialization/pkg/results
 import ../../../libp2p/[multicodec, multiaddress, peerid]
 import ../../tools/[unittest, multiaddress]
@@ -614,14 +614,42 @@ suite "MultiAddress IP utilities":
   test "long marker sequences preserve slice boundaries":
     var raw: seq[byte]
     let marker = MultiAddress.init("/ws").get().bytes()
-    for i in 0 ..< 4000:
+    for i in 0 ..< MaxMultiAddressParts:
       raw.add(marker)
     let address = MultiAddress.init(raw).get()
-    let middle = address[1000 ..< 3000].get()
-    check middle.bytes().len == 2000 * marker.len
-    check middle.len().get() == 2000
+    let middle = address[8 ..< 24].get()
+    check middle.bytes().len == 16 * marker.len
+    check middle.len().get() == 16
     check address[0 .. ^1].get() == address
     check address[^1 .. ^1].get().bytes() == marker
-    check address[0 .. 4000].isErr()
+    check address[0 .. MaxMultiAddressParts].isErr()
     check address[-1 .. 1].isErr()
     check address[2 .. 1].get().bytes().len == 0
+
+  test "an address past MaxMultiAddressParts components is refused everywhere":
+    let marker = MultiAddress.init("/ws").get()
+    var raw: seq[byte]
+    for i in 0 ..< MaxMultiAddressParts:
+      raw.add(marker.bytes())
+    var address = MultiAddress.init(raw).get()
+    check:
+      MultiAddress.init(raw & marker.bytes()).isErr()
+      MultiAddress.init($address & "/ws").isErr()
+      address.append(marker).isErr()
+      concat(MultiAddress.init(raw).get(), marker).isErr()
+
+  test "an address past MaxMultiAddressLen bytes is refused everywhere":
+    let longName = "a".repeat(250)
+    var text = ""
+    while text.len + longName.len + 6 <= MaxMultiAddressLen:
+      text &= "/dns4/" & longName
+    let fits = MultiAddress.init(text).get()
+    check:
+      fits.bytes().len <= MaxMultiAddressLen
+      MultiAddress.init(fits.bytes()).isOk()
+      MultiAddress.init(text & "/dns4/" & longName).isErr()
+      MultiAddress
+        .init(fits.bytes() & MultiAddress.init("/dns4/" & longName).get().bytes())
+        .isErr()
+      MultiAddress.init(multiCodec("dns4"), newSeq[byte](MaxMultiAddressLen + 1)).isErr()
+      MultiAddress.init("/" & "x".repeat(4 * MaxMultiAddressLen)).isErr()
