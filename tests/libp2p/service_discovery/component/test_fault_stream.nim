@@ -8,12 +8,16 @@ import
   ../../../../libp2p/[
     multiaddress,
     protocols/service_discovery/connection,
+    protocols/service_discovery/service_discovery_metrics,
     protocols/service_discovery/types,
     stream/connection,
     switch,
+    utils/moment,
   ]
 import ../../../../libp2p/protocols/kademlia/protobuf as kad_protobuf
-import ../../../tools/[fault_stream, unittest]
+import
+  ../../../tools/
+    [fault_stream, lifecycle, metrics_utils, multiaddress, switch_builder, unittest]
 import ../utils
 
 proc sendOver(
@@ -62,3 +66,52 @@ suite "Service Discovery Component - Fault Stream":
         "failed to decode message response"
       )
       not junkReply.wasResetLocally()
+
+  asyncTest "records round-trip duration in milliseconds":
+    const replyDelay = 25.milliseconds
+    let clientNode = setupServiceDiscoveryNode()
+    startAndDeferStop(@[clientNode])
+
+    proc slowHandler(
+        stream: Connection, proto: string
+    ) {.async: (raises: [CancelledError]).} =
+      defer:
+        await stream.close()
+      try:
+        discard await stream.readLp(ServiceDiscoveryMaxMsgSize)
+        # Delay the reply so the round trip has a known lower bound.
+        await sleepAsync(replyDelay)
+        let reply =
+          kad_protobuf.Message(msgType: Opt.some(kad_protobuf.MessageType.getAds))
+        await stream.writeLp(reply.encode())
+      except LPStreamError as e:
+        raiseAssert "unexpected error: " & e.msg
+
+    let server = makeStandardSwitch(TcpAutoAddress)
+    server.mount(LPProtocol.new(@[clientNode.codec], slowHandler))
+    startAndDeferStop(@[server])
+
+    let msgType = Opt.some(kad_protobuf.MessageType.getAds)
+    let label = $msgType
+    let countBefore =
+      metricValueByName(cd_message_duration_ms, "cd_message_duration_ms_count", [label])
+    let sumBefore =
+      metricValueByName(cd_message_duration_ms, "cd_message_duration_ms_sum", [label])
+
+    clientNode.switch.peerStore[AddressBook][server.peerInfo.peerId] =
+      server.peerInfo.addrs
+    let res = await clientNode.send(
+      server.peerInfo.peerId,
+      kad_protobuf.Message(msgType: msgType, key: makeServiceId()),
+    )
+    check res.isOk()
+
+    let countAfter =
+      metricValueByName(cd_message_duration_ms, "cd_message_duration_ms_count", [label])
+    let sumAfter =
+      metricValueByName(cd_message_duration_ms, "cd_message_duration_ms_sum", [label])
+    let observedMs = sumAfter - sumBefore
+    check:
+      countAfter == countBefore + 1.0
+      observedMs >= replyDelay.toMilliseconds()
+      observedMs < 5000.0
