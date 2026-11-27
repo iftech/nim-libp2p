@@ -203,8 +203,8 @@ type
     maxHighPriorityQueueLen*: int
     maxMediumPriorityQueueLen*: int
     maxLowPriorityQueueLen*: int
-    sendStreamRetryBaseDelay*: Duration
-    sendStreamRetryMaxDelay*: Duration
+    sendStreamRetryBaseDelay: Duration
+    sendStreamRetryMaxDelay: Duration
       ## Caps retry backoff and sets the stream lifetime required to reset it.
     protocolSupported*: bool
       ## Evidence from advertised protocols or inbound negotiation, not an optimistic open.

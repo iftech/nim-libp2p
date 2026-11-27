@@ -43,6 +43,13 @@ type
   LPProtoHandler* = proc(stream: Stream, proto: string): Future[void] {.
     async: (raises: [CancelledError])
   .}
+    ## Handles an incoming stream for the lifetime of the returned future.
+    ## When dispatched through Multistream, `close()` is called when the handler
+    ## returns or is cancelled; stream work must not outlive the handler.
+    ## Explicit closure may be needed for protocol sequencing, such as closing
+    ## the write side before reading a reply or waiting for EOF with `closeWithEOF()`.
+    ## Automatic closure does not wait for peer EOF on half-closed streams.
+    ## Handle protocol/I/O errors here and let cancellation propagate.
 
   StreamBudgetState = ref object
     totalIncoming: int

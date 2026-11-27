@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import std/sequtils
 import chronos
 import ./utils
@@ -14,6 +15,8 @@ import ../../../libp2p/protocols/identify
 import ../../../libp2p/protocols/pubsub/rpc/messages
 import ../../tools/[unittest, bufferstream, switch_builder, multiaddress]
 import ./extensions/extension_recording
+
+privateAccess(PubSubPeer)
 
 type
   FlakyDialer = ref object

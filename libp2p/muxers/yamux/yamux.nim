@@ -332,9 +332,6 @@ proc gotDataFromRemote(
     libp2p_yamux_recv_queue.observe(channel.recvQueue.len.int64)
   await channel.updateRecvWindow()
 
-proc setMaxRecvWindow*(channel: YamuxChannel, maxRecvWindow: int) =
-  channel.maxRecvWindow = maxRecvWindow
-
 proc sendLoop(channel: YamuxChannel) {.async: (raises: []).} =
   if channel.isSending:
     return
@@ -770,7 +767,7 @@ method handle*(m: Yamux) {.async: (raises: []).} =
       err,
       connectionAlreadyClosed = m.connection.closed,
       openStreams = m.channels.len,
-      protocols = m.openStreamProtocols()
+      protocols = m.openStreamProtocols() #nolint
     await m.close()
   trace "Yamux handler stopped"
 

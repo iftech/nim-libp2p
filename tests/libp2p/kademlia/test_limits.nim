@@ -3,12 +3,15 @@
 
 {.used.}
 
+import std/importutils
 import chronos, results, sequtils, tables
 import ../../../libp2p/[protocols/kademlia, switch, builders, multihash]
 import ../../../libp2p/utils/future
 import
   ../../tools/[bufferstream, lifecycle, multiaddress, stall_server, topology, unittest]
 import ./utils.nim
+
+privateAccess(LookupState)
 
 suite "KadDHT - Limits":
   teardown:

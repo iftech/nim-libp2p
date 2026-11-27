@@ -115,13 +115,13 @@ type
     books: Table[string, BasePeerBook]
     identify*: Identify
     capacity*: int
-    toClean*: seq[PeerId]
+    toClean: seq[PeerId]
     addressPolicy*: PeerAddressPolicy
       ## Gate on an inbound peer address: storage, redistribution, hole punch, lookup.
     allowUndialableAddrs*: bool ## Local test setups store a wildcard host too.
     addressTtls*: AddressConfidenceTtls ## Per-confidence TTLs for address expiry.
-    identifyCloseTimeout*: Duration ## Grace for the remote's EOF after identify.
-    pruneHandle*: Future[void]
+    identifyCloseTimeout: Duration ## Grace for the remote's EOF after identify.
+    pruneHandle: Future[void]
 
 func new*(
     Self: type PeerStore,

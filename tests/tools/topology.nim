@@ -47,7 +47,7 @@ proc connectStar*[T: Connectable](nodes: seq[T]) {.async.} =
   ## Creates a fully connected graph.
   mixin connect
   # Each dialer adds at most one pending inbound connection per listener.
-  const BatchSize = PendingUpgradesPerSourceForTesting
+  const BatchSize = MaxPendingUpgradesPerSource
   var futs: seq[Future[void]]
   for i, dialer in nodes:
     for j, listener in nodes:

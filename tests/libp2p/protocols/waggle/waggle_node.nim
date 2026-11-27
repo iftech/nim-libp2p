@@ -30,11 +30,18 @@ proc setupWaggleNodes*(count: int): seq[WaggleNode] =
     nodes.add(setupWaggleNode())
   return nodes
 
+proc waitForEvent*(
+    node: WaggleNode, kind: WaggleEventKind
+): Future[WaggleEvent] {.async.} =
+  ## Awaits `node`'s next event, which must be of `kind`.
+  let event = await node.events.popFirst()
+  doAssert event.kind == kind, $event.kind
+  return event
+
 proc waitForSubscribers*(node: WaggleNode, count = 1) {.async.} =
   ## Awaits the next `count` events, each a peer's subscription to `node`.
   for _ in 0 ..< count:
-    let event = await node.events.popFirst()
-    doAssert event.kind == WaggleEventKind.Subscribed, $event.kind
+    discard await node.waitForEvent(WaggleEventKind.Subscribed)
 
 proc connect*(dialer, target: WaggleNode) {.async.} =
   await dialer.switch.connect(target.switch)

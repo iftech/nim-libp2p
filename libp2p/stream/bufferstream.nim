@@ -22,7 +22,7 @@ type BufferStream* = ref object of Connection
   reading*: bool # is there an ongoing read? (only allow one)
   pendingRead: Future[seq[byte]] # queue pop owned by the active read
   pushedEof*: bool # eof marker has been put on readQueue
-  returnedEof*: bool # 0-byte readOnce has been completed
+  returnedEof: bool # 0-byte readOnce has been completed
 
 func shortLog*(s: BufferStream): auto =
   try:

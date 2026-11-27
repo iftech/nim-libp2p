@@ -3,6 +3,7 @@
 
 {.used.}
 
+import std/importutils
 import chronos, net, uri
 import chronos/apps/http/httpclient
 import
@@ -14,6 +15,8 @@ import
     wire,
   ]
 import ../../tools/[unittest, crypto]
+
+privateAccess(AutotlsConfig)
 
 suite "AutoTLS Configuration Tests":
   teardown:

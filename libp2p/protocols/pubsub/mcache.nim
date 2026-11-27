@@ -16,7 +16,7 @@ type
 
   MCache* = object of RootObj
     msgs*: Table[MessageId, Message]
-    history*: seq[seq[CacheEntry]]
+    history: seq[seq[CacheEntry]]
     pos*: int
     windowSize*: int
 

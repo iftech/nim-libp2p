@@ -2,12 +2,15 @@
 # Copyright (c) Status Research & Development GmbH
 {.used.}
 
+import std/importutils
 import std/sequtils
 import chronos
 import ../../../libp2p/[peerid, peerinfo, peerstore, multiaddress, protocols/kademlia]
 import ../../../libp2p/protocols/kademlia/[find, types]
 import ../../tools/[unittest, multiaddress]
 import ./utils
+
+privateAccess(LookupState)
 
 suite "Kademlia reply resource limits":
   teardown:

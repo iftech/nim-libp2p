@@ -50,6 +50,9 @@ const
   IncomingUpgradeTimeout* = 10.seconds
   MaxPendingUpgradesPerSource = 8
 
+when defined(libp2p_testing):
+  export MaxPendingUpgradesPerSource
+
 # a Switch built field by field, as TorSwitch and SwitchStub do, must copy it
 const MissingAddressManager = "switch has no AddressManager"
 
@@ -426,12 +429,6 @@ proc accept(s: Switch, transport: Transport) {.async: (raises: []).} =
         await conn.close()
       return
 
-when defined(libp2p_testing):
-  const PendingUpgradesPerSourceForTesting* = MaxPendingUpgradesPerSource
-
-  proc acceptFuts*(s: Switch): seq[Future[void]] =
-    s.acceptFuts
-
 proc isStopping*(s: Switch): bool =
   ## True from the beginning of shutdown until the next start.
   s.stopping
@@ -546,6 +543,6 @@ proc start*(s: Switch) {.async: (raises: [CancelledError, LPError]).} =
     peerId = s.peerInfo.peerId,
     listenAddresses = s.peerInfo.listenAddrs,
     announcedAddresses = s.peerInfo.addrs,
-    protocols = s.peerInfo.protocols,
+    protocols = s.peerInfo.protocols, #nolint
     transports = s.transports.len,
     services = s.services.len

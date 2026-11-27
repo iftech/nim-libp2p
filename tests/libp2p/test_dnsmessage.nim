@@ -28,7 +28,7 @@ const statusImAAAA =
   "\x06\x47\x00\x00\x10\x00\x00\x00\x00\x00\x00\xac\x43\x0a\xa1"
 
 proc toBytes(s: string): seq[byte] =
-  cast[seq[byte]](s)
+  s.mapIt(byte(it))
 
 suite "DNS message codec":
   test "encodeQuery builds a recursive A query":
@@ -37,9 +37,51 @@ suite "DNS message codec":
       q[0 .. 1] == @[0x12'u8, 0x34] # id
       q[2 .. 3] == @[0x01'u8, 0x00] # flags: rd=1
       q[4 .. 5] == @[0x00'u8, 0x01] # qdcount=1
-      q[6 .. 11] == @[0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x00] # an/ns/ar = 0
+      q[6 .. 11] == @[0x00'u8, 0x00, 0x00, 0x00, 0x00, 0x01] # an/ns = 0, ar = 1
       # question: labels "status"."im", root, qtype=A, qclass=IN
-      q[12 .. ^1] == "\x06status\x02im\x00\x00\x01\x00\x01".toBytes()
+      q[12 .. ^12] == "\x06status\x02im\x00\x00\x01\x00\x01".toBytes()
+
+  test "queries advertise an EDNS UDP payload size":
+    for kind in [A, AAAA, TXT]:
+      let q = encodeQuery(1, "example.test", kind)
+      check q[^11 .. ^1] == @[0'u8, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]
+      check parseMessage(q).questions[0].kind == kind
+
+  test "queries without EDNS omit OPT and preserve the question":
+    for kind in [A, AAAA, TXT]:
+      let edns = encodeQuery(1, "example.test", kind)
+      let legacy = encodeQuery(1, "example.test", kind, edns = false)
+      check legacy[10 .. 11] == @[0'u8, 0]
+      check legacy.len == edns.len - 11
+      check parseMessage(legacy).questions == parseMessage(edns).questions
+
+  test "query format errors are reported after validating the response header":
+    var response = @[0'u8, 1, 0x81, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+    for rcode in [1'u8, 4'u8]:
+      response[3] = rcode
+      expect DnsEdnsRejectedError:
+        discard parseAnswers(response, 1)
+      expectMsg ValueError, "DNS response id does not match the query":
+        discard parseAnswers(response, 0)
+    response[2] = 1
+    expectMsg ValueError, "DNS message is not a response":
+      discard parseAnswers(response, 1)
+
+  test "truncation is reported before parsing incomplete records":
+    var response = statusImA.toBytes()
+    response[2] = response[2] or 0x02'u8
+    response.setLen(12)
+    expect DnsTruncatedError:
+      discard parseAnswers(response, 0xaebf'u16)
+    expectMsg ValueError, "DNS response id does not match the query":
+      discard parseAnswers(response, 0)
+    response[2] = response[2] and 0x7f'u8
+    expectMsg ValueError, "DNS message is not a response":
+      discard parseAnswers(response, 0xaebf'u16)
+
+  test "parseAnswers rejects responses larger than the TCP length limit":
+    expect ValueError:
+      discard parseAnswers(newSeq[byte](65536), 0)
 
   test "encodeQuery rejects illegal names":
     expect ValueError:

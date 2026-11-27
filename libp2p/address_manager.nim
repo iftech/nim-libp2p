@@ -107,9 +107,6 @@ method verify*(
   ## The state a remote peer proves; `none` keeps the current one and concludes nothing.
   Opt.none(AddrState)
 
-func isStarted*(self: AddressManager): bool =
-  self.started
-
 proc isObservableIp(ip: IpAddress): bool =
   ## Loopback and private stay allowed: a peer on the same host or the same LAN
   ## does reach us there, and `PeerAddressPolicy` decides what is announced.
