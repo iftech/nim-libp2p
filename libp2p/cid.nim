@@ -282,5 +282,8 @@ proc `$`*(cid: Cid): string =
   else:
     ""
 
+func shortLog*(cid: Cid): string =
+  shortLog($cid)
+
 chronicles.formatIt(Cid):
-  shortLog($it)
+  shortLog(it)

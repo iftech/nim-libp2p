@@ -638,6 +638,8 @@ suite "MultiAddress IP utilities":
       MultiAddress.init($address & "/unix/tmp/sock").isErr()
       address.append(marker).isErr()
       concat(MultiAddress.init(raw).get(), marker).isErr()
+    check address.bytes() == raw
+    check address.validate()
 
   test "an address past MaxMultiAddressLen bytes is refused everywhere":
     let longName = "a".repeat(250)
@@ -658,6 +660,9 @@ suite "MultiAddress IP utilities":
         .init(multiCodec("dns4"), "a".repeat(MaxMultiAddressLen).toBytes())
         .isErr()
       MultiAddress.init("/" & "x".repeat(4 * MaxMultiAddressLen)).isErr()
+    var address = fits
+    check address.append(MultiAddress.init("/dns4/" & longName).get()).isErr()
+    check address == fits
 
   test "a single component that fills MaxMultiAddressLen decodes back":
     # a two-byte length header and a one-byte protocol header leave the rest
