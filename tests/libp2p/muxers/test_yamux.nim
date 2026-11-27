@@ -79,6 +79,29 @@ suite "Yamux":
       check (await streamA.readLp(100)) == fromHex("5678")
       await streamA.close()
 
+    asyncTest "Data after the stream handler returned resets the stream":
+      mSetup()
+
+      let handlerDone = newFuture[void]()
+      var channelB: YamuxChannel
+      yamuxb.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
+        channelB = YamuxChannel(stream)
+        await stream.close()
+        handlerDone.complete()
+
+      let streamA = await yamuxa.newStream()
+      await streamA.write(fromHex("00"))
+      check await handlerDone.withTimeout(1.seconds)
+      await channelB.handlerFut
+      check yamuxb.channels.len == 1
+
+      await streamA.write(fromHex("01"))
+
+      check await channelB.closedRemotely.wait().withTimeout(1.seconds)
+      check channelB.isReset
+      check channelB.recvQueue.len <= 1
+      await streamA.close()
+
     asyncTest "Continuing read after close":
       mSetup()
       let

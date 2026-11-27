@@ -187,6 +187,12 @@ method handle*(m: Mplex) {.async: (raises: []).} =
           # All the errors are handled inside `handleStream()` procedure.
           channel.handlerFut = m.handleStream(channel)
       of MessageType.MsgIn, MessageType.MsgOut:
+        if not channel.handlerFut.isNil() and channel.handlerFut.finished():
+          # The handler owned the stream and returned: nobody will read this.
+          trace "Mplex data after the stream handler returned, resetting",
+            muxer = m, channel
+          await channel.reset()
+          continue
         if channel.protocol.len == 0:
           let bufferedBytes = m.bufferedBytes()
           if data.len > m.maxBufferedBytes or

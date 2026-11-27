@@ -532,6 +532,41 @@ suite "Mplex":
       await mplex.close()
       await handleFut
 
+    asyncTest "resets a stream that receives data after its handler returned":
+      let
+        handlerDone = newFuture[void]()
+        resetSent = newFuture[void]()
+      proc resetWriteHandler(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        if data == encodeMessage(0, MessageType.ResetIn, @[]):
+          resetSent.complete()
+
+      let
+        conn = TestBufferStream.new(resetWriteHandler)
+        mplex = Mplex.new(conn)
+      var stream: LPChannel
+
+      mplex.streamHandler = proc(s: MuxedStream) {.async: (raises: []).} =
+        stream = LPChannel(s)
+        await s.close()
+        handlerDone.complete()
+
+      let handleFut = mplex.handle()
+      await conn.pushData(encodeMessage(0, MessageType.New, @[]))
+      check await handlerDone.withTimeout(1.seconds)
+      await stream.handlerFut
+      check mplex.getStreams().len == 1
+      stream.protocol = "/test/1.0.0"
+      await conn.pushData(encodeMessage(0, MessageType.MsgOut, newSeq[byte](1024)))
+
+      check await resetSent.withTimeout(1.seconds)
+      check stream.localReset
+      check stream.len == 0
+
+      await mplex.close()
+      await handleFut
+
     asyncTest "does not limit negotiated stream buffers":
       let
         conn = TestBufferStream.new(noopWriteHandler)
