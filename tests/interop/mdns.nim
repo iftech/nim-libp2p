@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright (c) Status Research & Development GmbH
 
-import std/[sets, strutils]
+import std/sets
 import chronos, chronicles
 import ../../libp2p/[builders, multiaddress, peerid, results, switch]
 import ../../libp2p/services/mdns
@@ -46,7 +46,7 @@ proc waitForPeers*(
     )
   return ok()
 
-proc mdnsInteropTest(
+proc mdnsInteropTest*(
     expectedPeers: int, timeout: Duration
 ): Future[LPResult[void]] {.async: (raises: [CancelledError]).} =
   let
@@ -77,18 +77,3 @@ proc mdnsInteropTest(
     await noCancel node.stop()
 
   return await discovery.waitForPeers(timeout)
-
-proc runMdnsInterop*(args: seq[string], timeout: Duration): LPResult[void] =
-  if args.len != 1:
-    return err("usage: peer EXPECTED_PEERS")
-
-  let expected =
-    try:
-      parseInt(args[0])
-    except ValueError:
-      return err("expected peer count must be a positive integer")
-
-  try:
-    waitFor mdnsInteropTest(expected, timeout)
-  except CancelledError:
-    err("mDNS interoperability test cancelled")

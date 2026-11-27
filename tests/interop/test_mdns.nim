@@ -4,7 +4,7 @@
 {.used.}
 
 import chronos
-import ../../libp2p/[peerid, results]
+import ../../libp2p/[builders, multiaddress, peerid, results, switch]
 import ../tools/[crypto, unittest]
 import ./mdns
 
@@ -54,9 +54,28 @@ suite "mDNS interoperability":
       (await retry).isOk
       (await discovery.waitForPeers(0.milliseconds)).isOk
 
-  test "invalid expected peer count returns an error":
-    check:
-      runMdnsInterop(@[], 1.seconds).isErr
-      runMdnsInterop(@["0"], 1.seconds).isErr
-      runMdnsInterop(@["-1"], 1.seconds).isErr
-      runMdnsInterop(@["abc"], 1.seconds).isErr
+  asyncTest "interop node discovers two running mDNS peers":
+    proc newPeer(): Switch =
+      SwitchBuilder
+        .new()
+        .withAddress(MultiAddress.init("/ip4/0.0.0.0/tcp/0").get())
+        .withTcpTransport()
+        .withYamux()
+        .withNoise()
+        .withMdns()
+        .build()
+
+    let
+      first = newPeer()
+      second = newPeer()
+
+    await first.start()
+    await second.start()
+    defer:
+      await first.stop()
+      await second.stop()
+
+    let outcome = await mdnsInteropTest(2, 15.seconds)
+    if outcome.isErr:
+      checkpoint $outcome.error
+    check outcome.isOk
