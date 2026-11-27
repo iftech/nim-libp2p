@@ -4,6 +4,7 @@
 import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
+import tools/license_linter
 
 runLint:
   sources = ["."]
@@ -34,6 +35,11 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
+
+  step "Check license headers":
+    ignoredPatterns = ["./examples/**/*", "./.nim_runtime/**/*"]
+    check licenseHeader:
+      severity = error
 
   step "Semantic checks":
     ignoredPatterns = ["./**/*"]
