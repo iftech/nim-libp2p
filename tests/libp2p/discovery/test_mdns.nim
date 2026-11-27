@@ -3,7 +3,7 @@
 
 {.used.}
 
-import std/[sequtils, strutils]
+import std/[sequtils, strutils, tables]
 import chronos
 import chronos/transports/osnet
 import ../../../libp2p/[switch, peerinfo, peerstore, utils/future]
@@ -131,6 +131,39 @@ suite "mDNS discovery":
       )
       announcement = MdnsService.new().announcement(peer, FixtureInstance)
     check encodeMessage(announcement) == packet(AnnouncementHex)
+
+  test "rust-libp2p TXT name must match a live service PTR":
+    let
+      service = MdnsService.new()
+      id = PeerId.init(FixturePeerId).get()
+      local = PeerId.random()
+    var message = DnsMessage(
+      response: true,
+      answers: @[
+        DnsRecord(name: @ServiceLabels, kind: PTR, ttl: 120, target: @[FixtureInstance])
+      ],
+      additionals: @[
+        DnsRecord(
+          name: @[FixtureInstance.toUpperAscii()],
+          kind: TXT,
+          ttl: 120,
+          strings: @[DnsAddressPrefix & FixtureAddress & PeerIdSuffix & $id],
+        )
+      ],
+    )
+
+    check service.peers(parseMessage(encodeMessage(message)), local) ==
+      @[MdnsPeer(peerId: id, addrs: @[ma(FixtureAddress)])]
+    message.answers[0].target = @[PeerInstance]
+    check service.peers(message, local).len == 0
+    message.answers[0].target = @[FixtureInstance]
+    message.answers[0].ttl = 0
+    check service.peers(message, local).len == 0
+    message.answers[0].ttl = 120
+    message.answers[0].name = @["_other", "_udp", "local"]
+    check service.peers(message, local).len == 0
+    message.answers.setLen(0)
+    check service.peers(message, local).len == 0
 
   test "ignore unrelated services, queries, expired and invalid TXT entries":
     let
@@ -288,6 +321,7 @@ suite "mDNS discovery":
   test "record TTL covers two query intervals":
     let peer = PeerInfo(peerId: PeerId.random(), listenAddrs: @[ma(PrivateAddress)])
     for (interval, ttl) in [
+      (10.seconds, 120'u32),
       (MdnsDefaultQueryInterval, 120'u32),
       (5.minutes, 600'u32),
       (5.minutes + 1.milliseconds, 602'u32),
@@ -352,7 +386,7 @@ suite "mDNS discovery":
       service = MdnsService.new()
       listener = MdnsNetwork.new()
       query = DnsMessage(questions: @[DnsQuestion(name: @ServiceLabels, kind: PTR)])
-    var responses = 0
+    var responses: Table[uint32, int]
     var unicastResponses = 0
     proc received(
         packet: seq[byte], context: MdnsReplyContext
@@ -363,7 +397,7 @@ suite "mDNS discovery":
             service.peers(message, PeerId.random()).anyIt(
               it.peerId == local.peerInfo.peerId
             ):
-          inc responses
+          responses.mgetOrPut(context.interfaceIndex, 0).inc
       except ValueError:
         raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
@@ -377,7 +411,7 @@ suite "mDNS discovery":
         raiseAssert "Unexpected error: " & getCurrentExceptionMsg()
 
     # Bind explicitly so Chronos receives the unicast replies on this socket.
-    let sender = newMulticastSender(receivedUnicast)
+    let sender = newMdnsTestSender(receivedUnicast)
     defer:
       await sender.closeWait()
       await listener.close()
@@ -387,24 +421,26 @@ suite "mDNS discovery":
     require opened.isOk
     # Let the initial announcement finish before counting query responses.
     await sleepAsync(200.milliseconds)
-    responses = 0
+    responses.clear()
     for i in 0 ..< 5:
       check await listener.multicast(encodeMessage(query))
     checkUntilTimeout:
-      responses > 0
+      responses.len > 0
     for i in 0 ..< 2:
       await sender.sendMulticast(query)
     checkUntilTimeout:
       unicastResponses >= 2
     # Wait out MdnsResponseInterval so the rate limiter accepts the next query.
     await sleepAsync(MdnsResponseInterval)
-    check responses == 1
+    for count in responses.values:
+      check count == 1
+    let previousTotal = responses.values.toSeq.foldl(a + b, 0)
     check await listener.multicast(encodeMessage(query))
     checkUntilTimeout:
-      responses >= 2
+      responses.values.toSeq.foldl(a + b, 0) > previousTotal
 
   asyncTest "advertise after ephemeral transport addresses are bound":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     proc interfaces(
         family: AddressFamily
     ): seq[InterfaceAddress] {.gcsafe, raises: [].} =
@@ -692,7 +728,7 @@ suite "mDNS discovery":
     check foundCount == 1
 
   asyncTest "two services discover each other over multicast":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let
       address = ma(PrivateAddress)
       first = Switch(

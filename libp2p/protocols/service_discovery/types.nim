@@ -22,6 +22,9 @@ const
 
   ExtendedServiceDiscoveryCodec* = "/logos/service-discovery/1.0.0"
 
+  StreamRetireTimeout* = 5.seconds
+    ## How long a finished client stream waits for the remote's EOF before a reset.
+
   Default_K_register* = 3
   Default_K_lookup* = 5
   CloserPeersPerBucket* = 1
@@ -157,6 +160,7 @@ type
     addressRepublish*: Future[void]
     addressObserver*: PeerInfoObserver
     dialFailures*: Table[PeerId, ProbeFailure]
+    cleanups*: seq[Future[void]] ## Client streams being retired: `stop` waits for them.
 
 proc new*(
     T: typedesc[ServiceDiscoveryConfig],

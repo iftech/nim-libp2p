@@ -7,6 +7,7 @@ import chronos
 import chronos/transports/osnet
 import ../../../libp2p/[multiaddress, results]
 import ../../../libp2p/utils/future
+import std/sequtils
 import ../../../libp2p/services/mdns/network
 import ../../tools/[unittest, mdns_sender, multiaddress]
 import ./mdns_fixtures
@@ -53,6 +54,21 @@ proc cachedInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
     ]
   else:
     @[]
+
+proc ipv4Interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+  var interfaces: seq[NetworkInterface]
+  for iface in getInterfaces():
+    if iface.ifIndex <= 0 or
+        (iface.state != StatusUp and iface.ifType != IfSoftwareLoopback):
+      continue
+    var ipv4 = iface
+    ipv4.addresses = @[]
+    for address in iface.addresses:
+      if address.host.family == AddressFamily.IPv4:
+        ipv4.addresses.add(address)
+    if ipv4.addresses.len > 0:
+      interfaces.add(ipv4)
+  interfaces
 
 suite "mDNS network":
   teardown:
@@ -207,8 +223,97 @@ suite "mDNS network":
     await network.close()
     check not network.isOpen
 
+  asyncTest "startup fails when all interface sockets fail and can be retried":
+    var expose = true
+    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      if expose:
+        return @[
+          NetworkInterface(
+            ifIndex: high(int32),
+            state: StatusUp,
+            addresses: @[InterfaceAddress.init(MissingInterface4, 24)],
+          )
+        ]
+      else:
+        return @[]
+
+    let network = MdnsNetwork.new(interfaceProvider = interfaces)
+    defer:
+      await network.close()
+    let opened = await network.open(ignorePacket)
+    check:
+      opened.isErr
+      not network.isOpen
+      network.ipv4InterfaceIndices().len == 0
+      not (await network.multicast(@[1'u8]))
+    expose = false
+    requireOpened(network, ignorePacket)
+    check network.isOpen
+
+  when defined(linux) or defined(android):
+    # This test relies on Linux UDP bind semantics: a socket without reuse flags
+    # prevents other sockets from sharing its port. Other platforms need their
+    # own setup to reserve the port exclusively.
+    asyncTest "startup reports an occupied port when interfaces exist":
+      requireMdnsMulticastRoute(ignoreDatagram)
+      require ipv4Interfaces().len > 0
+      var blocker: DatagramTransport
+      try:
+        blocker =
+          newDatagramTransport(ignoreDatagram, local = WildcardMdns4, flags = {})
+      except TransportError:
+        checkpoint "Cannot exclusively reserve mDNS port for startup test"
+        skip()
+      if not blocker.isNil:
+        defer:
+          await blocker.closeWait()
+        let network = MdnsNetwork.new(interfaceProvider = ipv4Interfaces)
+        defer:
+          await network.close()
+        let opened = await network.open(ignorePacket)
+        check:
+          opened.isErr
+          not network.isOpen
+          network.ipv4InterfaceIndices().len == 0
+          not (await network.multicast(@[1'u8]))
+        # No-interface startup must still succeed while the port is occupied.
+        let empty = MdnsNetwork.new(interfaceProvider = countingInterfaces)
+        defer:
+          await empty.close()
+        requireOpened(empty, ignorePacket)
+        await empty.close()
+        await blocker.closeWait()
+        requireOpened(network, ignorePacket)
+        check network.ipv4InterfaceIndices().len > 0
+
+    asyncTest "refresh retries sockets after the port becomes available":
+      requireMdnsMulticastRoute(ignoreDatagram)
+      require ipv4Interfaces().len > 0
+      var blocker: DatagramTransport
+      try:
+        blocker =
+          newDatagramTransport(ignoreDatagram, local = WildcardMdns4, flags = {})
+      except TransportError:
+        checkpoint "Cannot exclusively reserve mDNS port for refresh test"
+        skip()
+      if not blocker.isNil:
+        defer:
+          await blocker.closeWait()
+        exposeInterfaces = false
+        let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
+        defer:
+          exposeInterfaces = false
+          await network.close()
+        requireOpened(network, ignorePacket)
+        exposeInterfaces = true
+        network.refreshInterfaces()
+        check network.ipv4InterfaceIndices().len == 0
+        await blocker.closeWait()
+        network.refreshInterfaces()
+        check network.ipv4InterfaceIndices().len > 0
+
   asyncTest "refresh joins and leaves interfaces after startup":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
     exposeInterfaces = false
     requireOpened(network, ignorePacket)
@@ -273,6 +378,9 @@ suite "mDNS network":
     # responder, particularly on Windows. Multicast reaches group members.
     await sender.sendTo(MulticastMdns4, packet)
     check (await receivedReply) == response
+    # Observe a bounded window for duplicate deliveries from wildcard sockets;
+    # an event-loop step alone cannot establish that no datagram will arrive.
+    await sleepAsync(100.milliseconds)
     require contexts.len == 1
     check contexts[0].isLegacyQuery
     let other = MdnsNetwork.new()
@@ -289,8 +397,13 @@ suite "mDNS network":
       not (await network.reply(response, default(MdnsReplyContext), unicast = true))
 
   asyncTest "close drains handlers and packets remain stable across receives":
+    var refreshCount = 0
+    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+      inc refreshCount
+      getInterfaces()
+
     let
-      network = MdnsNetwork.new()
+      network = MdnsNetwork.new(interfaceProvider = interfaces)
       firstEntered = newAsyncEvent()
       secondEntered = newAsyncEvent()
       release = newAsyncEvent()
@@ -327,10 +440,14 @@ suite "mDNS network":
     check:
       not network.isOpen
       not closing.finished
-      network.close() == closing
+      cast[pointer](network.close()) == cast[pointer](closing)
       not completed
       (await network.open(ignorePacket)).isErr
       not (await network.multicast(second))
+    let countBeforeRefresh = refreshCount
+    network.refreshInterfaces()
+    network.refreshInterfaces()
+    check refreshCount == countBeforeRefresh
     release.fire()
     await closing
     check:
@@ -341,7 +458,7 @@ suite "mDNS network":
     check network.isOpen
 
   asyncTest "close waits for queued multicast sends":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new()
     requireOpened(network, ignorePacket)
     defer:
@@ -356,7 +473,7 @@ suite "mDNS network":
       not network.isOpen
 
   asyncTest "refreshing interfaces while a multicast send is queued":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
     exposeInterfaces = true
     requireOpened(network, ignorePacket)
@@ -370,7 +487,7 @@ suite "mDNS network":
     check not (await network.multicast(@[7'u8, 8, 9]))
 
   asyncTest "cancelling a queued multicast send keeps its packet alive":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     let network = MdnsNetwork.new()
     requireOpened(network, ignorePacket)
     defer:
@@ -383,8 +500,70 @@ suite "mDNS network":
     await network.close()
     check not network.isOpen
 
-  asyncTest "multicast sends bytes and replies through a multicast context":
+  asyncTest "multicast replies return on their sending interface":
     requireMdnsMulticastRoute(ignoreDatagram)
+    var interfaces = ipv4Interfaces()
+    block:
+      proc provider(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+        interfaces
+
+      let
+        network = MdnsNetwork.new(interfaceProvider = provider)
+        query = @[31'u8, 41, 59]
+      var responses: seq[tuple[origin, receivedOn: uint32]]
+      var contexts: seq[MdnsReplyContext]
+      var accepting = true
+      var pending = 0
+      proc received(
+          data: seq[byte], context: MdnsReplyContext
+      ) {.async: (raises: []).} =
+        if data == query and accepting:
+          inc pending
+          contexts.add(context)
+          let index = context.interfaceIndex
+          let response = @[
+            26'u8,
+            byte(index and 255),
+            byte((index shr 8) and 255),
+            byte((index shr 16) and 255),
+            byte(index shr 24),
+          ]
+          check await noCancel network.reply(response, context, unicast = false)
+          dec pending
+        elif data.len == 5 and data[0] == 26:
+          let origin =
+            uint32(data[1]) or (uint32(data[2]) shl 8) or (uint32(data[3]) shl 16) or
+            (uint32(data[4]) shl 24)
+          responses.add((origin, context.interfaceIndex))
+
+      requireOpened(network, received)
+      defer:
+        await network.close()
+
+      let configured = network.ipv4InterfaceIndices()
+      if configured.len == 0 or not network.ipv4IngressPinned():
+        checkpoint "No IPv4 multicast interface is configured or ingress cannot be pinned"
+        skip()
+        return
+
+      check await network.multicast(query)
+      checkUntilTimeout:
+        configured.allIt((it, it) in responses)
+      accepting = false
+      checkUntilTimeout:
+        pending == 0
+      # Removing and re-adding an interface must not revive old reply contexts.
+      interfaces = @[]
+      network.refreshInterfaces()
+      for context in contexts:
+        check not (await network.reply(query, context, unicast = false))
+      interfaces = getInterfaces()
+      network.refreshInterfaces()
+      for context in contexts:
+        check not (await network.reply(query, context, unicast = false))
+
+  asyncTest "multicast sends bytes and replies through a multicast context":
+    requireMdnsMulticastRoute()
     let
       network = MdnsNetwork.new()
       packet = @[9'u8, 8, 7]
