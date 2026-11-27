@@ -4,6 +4,7 @@
 import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
+import tools/peer_id_random_linter
 
 runLint:
   sources = ["."]
@@ -34,6 +35,11 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
+
+  step "Check PeerId test helpers":
+    ignoredPatterns = ["./libp2p/peerid.nim"]
+    check peerIdRandom:
+      severity = hint
 
   step "Semantic checks":
     ignoredPatterns = ["./**/*"]
