@@ -104,6 +104,7 @@ suite "Waggle direct streams":
   const
     objectId = @[byte 42]
     firstPiece = 0b001
+    emptyTopic: seq[byte] = @[]
 
   var
     waggle: Waggle
@@ -152,8 +153,8 @@ suite "Waggle direct streams":
     )
     events
 
-  proc registeredConnection(): TestStream =
-    let connection = openStream()
+  proc registeredConnection(peer: PeerId = PeerId.random()): TestStream =
+    let connection = openStream(peer)
     doAssert waggle.addConnection(Muxer(connection: connection)).get()
     connection
 
@@ -850,7 +851,6 @@ suite "Waggle direct streams":
       events[].len == 0
 
   asyncTest "a stream without its TopicSubscription does not count as a duplicate":
-    const emptyTopic: seq[byte] = @[]
     let pending = openStream()
     discard handle(pending)
     # pending's session exists, and its topic id stays empty until its
@@ -863,3 +863,111 @@ suite "Waggle direct streams":
     discard handle(stream)
     await handshake(stream, emptyTopic)
     check waggle.subscribers(emptyTopic) == @[stream.peerId]
+
+  asyncTest "send ignores the node's own subscription to the peer":
+    # the node subscribes to the peer, and the peer does not subscribe to the node
+    let stream = openStream()
+    discard receive(stream)
+    # the node's TopicSubscription
+    discard await stream.writes.popFirst()
+
+    check:
+      not (await waggle.send(stream.peerId, topic, ObjectPieces(objectId: objectId))).get()
+      # the subscriber writes nothing after its TopicSubscription
+      stream.writes.empty()
+
+  asyncTest "send ignores a stream whose TopicSubscription has not arrived":
+    let pending = openStream()
+    discard handle(pending)
+    # pending's session exists, and its topic id stays empty until its
+    # TopicSubscription arrives
+    discard await pending.readRequests.popFirst()
+
+    check:
+      # the peer has subscribed to no topic yet, the empty topic included
+      not (
+        await waggle.send(pending.peerId, emptyTopic, ObjectPieces(objectId: objectId))
+      ).get()
+      pending.writes.empty()
+
+  asyncTest "a queued send returns false after the write fails while the peer is subscribed on another connection":
+    # TODO: iftech/nim-libp2p#3559
+    let events = newAsyncQueue[WaggleEvent]()
+    waggle = Waggle.new(
+      onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+        try:
+          events.addLastNoWait(event)
+        except AsyncQueueFullError:
+          raiseAssert "an unbounded queue is never full"
+    )
+    let peer = PeerId.random()
+    # the peer subscribes to topic on two connections
+    let first = openStream(peer, wrapped = registeredConnection(peer))
+    let second = openStream(peer, wrapped = registeredConnection(peer))
+    discard handle(first)
+    discard handle(second)
+    for stream in [first, second]:
+      await stream.pushData(frame(TopicSubscription(topicId: topic).encode()))
+      check (await events.popFirst()).kind == WaggleEventKind.Subscribed
+
+    let
+      started = newAsyncEvent()
+      release = newAsyncEvent()
+    # the first connection's write is held until released, then fails
+    first.writeHandler = proc(
+        data: sink seq[byte]
+    ) {.async: (raises: [CancelledError, LPStreamError]).} =
+      started.fire()
+      await release.wait()
+      raise newException(LPStreamError, "write failed")
+
+    let msg = ObjectPieces(objectId: objectId)
+    # send picks the first connection's subscription, admitted first
+    let active = waggle.send(peer, topic, msg)
+    await started.wait()
+    # the queued send waits for the first connection's write lock
+    let queued = waggle.send(peer, topic, msg)
+    release.fire()
+
+    check:
+      (await active).isOfError("write failed")
+      # the failed write reset the first connection's stream, which the queued
+      # send then finds closed
+      not (await queued).get()
+      # the peer stays listed through its second connection, which got nothing
+      waggle.subscribers(topic) == @[peer]
+      second.writes.empty()
+
+  asyncTest "subscribe applies backpressure while its handler runs":
+    let
+      stream = openStream()
+      received = newAsyncQueue[ObjectPieces]()
+      release = newAsyncEvent()
+      messages = (1 .. 2).mapIt(ObjectPieces(objectId: @[byte it]))
+    proc onPieces(
+        peer: PeerId, t: seq[byte], msg: ObjectPieces
+    ) {.async: (raises: [CancelledError]).} =
+      await received.addLast(msg)
+      # the first message holds the handler until the test releases it
+      await release.wait()
+
+    discard receive(stream, handler = onPieces)
+    # the node's TopicSubscription
+    discard await stream.writes.popFirst()
+    await stream.pushData(messages.mapIt(frame(it.encode())).concat())
+    check:
+      (await received.popFirst()) == messages[0]
+      # the second frame is already buffered, and the node reads it only
+      # once the handler returns
+      received.empty()
+
+    release.fire()
+    check:
+      (await received.popFirst()) == messages[1]
+
+  test "subscribe raises an AssertionDefect for a nil handler before writing":
+    let stream = openStream()
+    expect AssertionDefect:
+      discard waggle.subscribe(stream, topic, nil)
+    # the node never sends its TopicSubscription
+    check stream.writes.empty()
