@@ -3,8 +3,8 @@
 
 use futures::StreamExt;
 use libp2p::{
-    SwarmBuilder, identify, mdns, noise,
-    swarm::{ConnectionError, NetworkBehaviour, SwarmEvent, dial_opts::DialOpts},
+    PeerId, Swarm, SwarmBuilder, identify, mdns, noise,
+    swarm::{ConnectionError, ConnectionId, NetworkBehaviour, SwarmEvent, dial_opts::DialOpts},
     tcp, yamux,
 };
 use std::{
@@ -18,6 +18,28 @@ use std::{
 struct Behaviour {
     mdns: mdns::tokio::Behaviour,
     identify: identify::Behaviour,
+}
+
+fn dial_discovered_peer(
+    swarm: &mut Swarm<Behaviour>,
+    peer_id: PeerId,
+    dialed_peers: &mut HashSet<PeerId>,
+    unidentified_dials: &mut HashMap<ConnectionId, PeerId>,
+) {
+    if dialed_peers.contains(&peer_id) {
+        return;
+    }
+    eprintln!("Dialing mDNS peer {peer_id}");
+    // The mDNS behaviour supplies the peer's cached addresses.
+    let opts = DialOpts::peer_id(peer_id).build();
+    let connection_id = opts.connection_id();
+    match swarm.dial(opts) {
+        Ok(()) => {
+            dialed_peers.insert(peer_id);
+            unidentified_dials.insert(connection_id, peer_id);
+        }
+        Err(error) => eprintln!("Failed to dial {peer_id}: {error:#}"),
+    }
 }
 
 fn check_connection_close(error: ConnectionError) -> Result<(), ConnectionError> {
@@ -72,27 +94,29 @@ async fn main() -> anyhow::Result<()> {
                     let candidates: HashSet<_> =
                         swarm.behaviour().mdns.discovered_nodes().copied().collect();
                     for peer_id in candidates {
-                        if dialed_peers.contains(&peer_id) {
-                            continue;
-                        }
-                        eprintln!("Dialing mDNS peer {peer_id}");
-                        // The mDNS behaviour supplies the peer's cached addresses.
-                        let opts = DialOpts::peer_id(peer_id).build();
-                        let connection_id = opts.connection_id();
-                        match swarm.dial(opts) {
-                            Ok(()) => {
-                                dialed_peers.insert(peer_id);
-                                unidentified_dials.insert(connection_id, peer_id);
-                            }
-                            Err(error) => {
-                                eprintln!("Failed to dial {peer_id}: {error:#}");
-                            }
-                        }
+                        dial_discovered_peer(
+                            &mut swarm,
+                            peer_id,
+                            &mut dialed_peers,
+                            &mut unidentified_dials,
+                        );
                     }
                     continue;
                 }
             };
             match event {
+                SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(peers)))
+                    if nim_peer.is_none() =>
+                {
+                    for (peer_id, _) in peers {
+                        dial_discovered_peer(
+                            &mut swarm,
+                            peer_id,
+                            &mut dialed_peers,
+                            &mut unidentified_dials,
+                        );
+                    }
+                }
                 SwarmEvent::OutgoingConnectionError {
                     connection_id,
                     peer_id,
