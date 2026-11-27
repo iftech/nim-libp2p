@@ -4,8 +4,10 @@
 {.used.}
 
 import chronos
-import ../../../libp2p/[protocols/kademlia, switch, builders]
-import ../../tools/[lifecycle, multiaddress, switch_builder, unittest]
+import
+  ../../../libp2p/
+    [protocols/kademlia, protocols/kademlia/kademlia_metrics, switch, builders]
+import ../../tools/[lifecycle, metrics_utils, multiaddress, switch_builder, unittest]
 import ./utils.nim
 
 type Answer = proc(stream: Stream) {.async: (raises: [CancelledError, LPStreamError]).}
@@ -109,3 +111,34 @@ suite "KadDHT Ping":
 
   asyncTest "Ping a peer that never replies returns read err":
     checkPingFails(kadPeerSilent(), $readStage)
+
+  asyncTest "Ping records round-trip duration in milliseconds":
+    let kads = setupKadSwitches(1)
+    startAndDeferStop(kads)
+    let peer = kadPeer(
+      proc(stream: Stream) {.async: (raises: [CancelledError, LPStreamError]).} =
+        await sleepAsync(25.milliseconds)
+        await stream.writeLp(Message(msgType: Opt.some(MessageType.ping)).encode())
+    )
+    startAndDeferStop(@[peer])
+
+    let countBefore = metricValueByName(
+      kad_message_duration_ms, "kad_message_duration_ms_count", ["ping"]
+    )
+    let sumBefore = metricValueByName(
+      kad_message_duration_ms, "kad_message_duration_ms_sum", ["ping"]
+    )
+
+    check (await kads[0].ping(peer.peerInfo)).isOk()
+
+    let countAfter = metricValueByName(
+      kad_message_duration_ms, "kad_message_duration_ms_count", ["ping"]
+    )
+    let sumAfter = metricValueByName(
+      kad_message_duration_ms, "kad_message_duration_ms_sum", ["ping"]
+    )
+    let observedMs = sumAfter - sumBefore
+    check:
+      countAfter == countBefore + 1.0
+      observedMs >= 20.0
+      observedMs < 1000.0

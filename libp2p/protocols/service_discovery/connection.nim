@@ -66,22 +66,26 @@ proc send*(
   cd_messages_sent.inc(labelValues = [$msg.msgType])
   cd_message_bytes_sent.inc(encodedMsg.len.float64, labelValues = [$msg.msgType])
 
-  var replyBuf: seq[byte]
-  cd_message_duration_ms.time(labelValues = [$msg.msgType]):
+  let started = Moment.now()
+  try:
+    await stream.writeLp(encodedMsg)
+  except LPStreamError as e:
+    disco.recordDialFailure(peerId, addrs)
+    disco.evictOnReset(peerId, e)
+    return err(e, "connection writing failed")
+  let replyBuf =
     try:
-      await stream.writeLp(encodedMsg)
-    except LPStreamError as e:
-      disco.recordDialFailure(peerId, addrs)
-      disco.evictOnReset(peerId, e)
-      return err(e, "connection writing failed")
-    try:
-      replyBuf = await stream.readLp(ServiceDiscoveryMaxMsgSize)
+      await stream.readLp(ServiceDiscoveryMaxMsgSize)
     except MaxSizeError as e:
       return err(e, "reply exceeds the read limit")
     except LPStreamError as e:
       disco.recordDialFailure(peerId, addrs)
       disco.evictOnReset(peerId, e)
       return err(e, "connection reading failed")
+  cd_message_duration_ms.observe(
+    float64((Moment.now() - started).nanoseconds) / 1_000_000.0,
+    labelValues = [$msg.msgType],
+  )
   replyRead = true
 
   cd_messages_received.inc(labelValues = [$msg.msgType])

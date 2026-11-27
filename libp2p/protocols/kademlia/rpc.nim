@@ -37,11 +37,14 @@ proc dispatchRpc*(
   var encoded = msg.encode(kad.config.hideConnectionStatus)
   let sentBytes = encoded.len.int64
 
-  var sendRes: Result[seq[byte], SendError]
-  kad_message_duration_ms.time(labelValues = [$msgType]):
-    sendRes = await kad.msgSender.sendRequest(
-      peer, addrs.valueOr(kad.dialAddrs(peer)), move encoded, kad.config.timeout
-    )
+  let started = Moment.now()
+  let sendRes = await kad.msgSender.sendRequest(
+    peer, addrs.valueOr(kad.dialAddrs(peer)), move encoded, kad.config.timeout
+  )
+  kad_message_duration_ms.observe(
+    float64((Moment.now() - started).nanoseconds) / 1_000_000.0,
+    labelValues = [$msgType],
+  )
   sendRes.countSent(msgType, sentBytes)
 
   let replyBuf = sendRes.valueOr:
