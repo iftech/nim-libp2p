@@ -18,7 +18,9 @@ import
   ]
 import ../../../tools/[unittest, crypto, multiaddress, bufferstream]
 
-const topic = @[byte 0, 255, 1]
+const
+  topic = @[byte 0, 255, 1]
+  deliveryTimeout = when defined(libp2p_testing_slow): 15.seconds else: 5.seconds
 
 type Node = ref object
   peer: PeerId
@@ -253,16 +255,27 @@ suite "Waggle managed dissemination":
       relay.protocol.subscribers(topic).len == 2 and
         source.protocol.subscribers(topic).len == 1 and
         other.protocol.subscribers(topic).len == 1
+    let relayReceived = newAsyncEvent()
+    let otherReceived = newAsyncEvent()
+    relay.onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.Received and
+          event.message.pieces == Opt.some(@[byte 7]):
+        relayReceived.fire()
+    other.onEvent = proc(event: WaggleEvent) {.gcsafe, raises: [].} =
+      if event.kind == WaggleEventKind.Received and
+          event.message.pieces == Opt.some(@[byte 7]):
+        otherReceived.fire()
+
     check source.protocol.publish(topic, BitShard(id: @[byte 1], have: 7)).get() == 1
-    checkUntilTimeout:
-      relay.events.anyIt(
-        it.kind == WaggleEventKind.Received and it.message.pieces == Opt.some(@[byte 7])
-      )
+    await relayReceived.wait().wait(deliveryTimeout)
+    check relay.events.anyIt(
+      it.kind == WaggleEventKind.Received and it.message.pieces == Opt.some(@[byte 7])
+    )
     check relay.protocol.publish(topic, BitShard(id: @[byte 1], have: 7)).get() == 2
-    checkUntilTimeout:
-      other.events.anyIt(
-        it.kind == WaggleEventKind.Received and it.message.pieces == Opt.some(@[byte 7])
-      )
+    await otherReceived.wait().wait(deliveryTimeout)
+    check other.events.anyIt(
+      it.kind == WaggleEventKind.Received and it.message.pieces == Opt.some(@[byte 7])
+    )
 
   asyncTest "oversized outgoing messages report local rejection without blaming peers":
     let a = await newNode()
