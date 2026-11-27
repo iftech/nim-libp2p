@@ -635,6 +635,7 @@ suite "MultiAddress IP utilities":
     check:
       MultiAddress.init(raw & marker.bytes()).isErr()
       MultiAddress.init($address & "/ws").isErr()
+      MultiAddress.init($address & "/unix/tmp/sock").isErr()
       address.append(marker).isErr()
       concat(MultiAddress.init(raw).get(), marker).isErr()
 
@@ -652,4 +653,17 @@ suite "MultiAddress IP utilities":
         .init(fits.bytes() & MultiAddress.init("/dns4/" & longName).get().bytes())
         .isErr()
       MultiAddress.init(multiCodec("dns4"), newSeq[byte](MaxMultiAddressLen + 1)).isErr()
+      # the protocol and length headers count toward the cap
+      MultiAddress
+        .init(multiCodec("dns4"), "a".repeat(MaxMultiAddressLen).toBytes())
+        .isErr()
       MultiAddress.init("/" & "x".repeat(4 * MaxMultiAddressLen)).isErr()
+
+  test "a single component that fills MaxMultiAddressLen decodes back":
+    # a two-byte length header and a one-byte protocol header leave the rest
+    let value = "a".repeat(MaxMultiAddressLen - 3).toBytes()
+    let address = MultiAddress.init(multiCodec("dns4"), value).get()
+    check:
+      address.bytes().len == MaxMultiAddressLen
+      MultiAddress.init(address.bytes()).get() == address
+      MultiAddress.init(multiCodec("dns4"), value & @[byte('a')]).isErr()

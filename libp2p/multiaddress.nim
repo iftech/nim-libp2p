@@ -867,8 +867,6 @@ proc init*(
   let proto = CodeAddresses.getOrDefault(protocol)
   if proto.kind == None:
     err("multiaddress: Protocol not found")
-  elif len(value) > MaxMultiAddressLen:
-    err("multiaddress: Address is too long!")
   else:
     var res: MultiAddress
     # Pre-allocate: varint(protocol) ≈ maxSize(proto.mcodec) + value size + overhead
@@ -894,6 +892,9 @@ proc init*(
             return err("multiaddress: Invalid sni protocol value")
 
         res.data.writeSeq(value)
+        # the cap covers the headers too, so the address decodes back
+        if res.data.buffer.len > MaxMultiAddressLen:
+          return err("multiaddress: Address is too long!")
         res.data.finish()
         ok(res)
     of Marker:
@@ -984,6 +985,10 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     let proto = getProtocol(part)
     if proto.kind == None:
       return err(part, "multiaddress: Unsupported protocol")
+    # counted first: a Path component ends the loop
+    inc components
+    if components > MaxMultiAddressParts:
+      return err("multiaddress: Too many components!")
 
     if proto.kind in {Fixed, Length, Path}:
       if isNil(proto.coder.stringToBuffer):
@@ -1014,9 +1019,6 @@ proc init*(mtype: typedesc[MultiAddress], value: string): MaResult[MultiAddress]
     elif proto.kind == Marker:
       res.data.write(proto.mcodec)
       offset += 1
-    inc components
-    if components > MaxMultiAddressParts:
-      return err("multiaddress: Too many components!")
 
   if res.data.buffer.len > MaxMultiAddressLen:
     return err("multiaddress: Address is too long!")
