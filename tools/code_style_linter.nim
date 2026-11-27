@@ -39,8 +39,8 @@ proc declaresResult(node: PNode): bool =
   false
 
 proc usesResult(node: PNode): bool =
-  ## True when `node` refers to or assigns to `result`.
-  if node == nil:
+  ## True when `node` uses `result`, excluding nested routine definitions.
+  if node == nil or isRoutine(node):
     return false
   if isResult(node):
     return true
@@ -65,8 +65,7 @@ proc runImplicitResult(
 ): seq[Finding] =
   ## Reports a routine that uses `result` without declaring it.
   ##
-  ## Routines are visited outermost first, and a routine's body is not
-  ## searched for nested routines: a nested routine's `result` is its own.
+  ## Check each routine independently: a nested routine's `result` is its own.
   var findings: seq[Finding]
   var stack = @[ast]
   while stack.len > 0:
@@ -78,7 +77,6 @@ proc runImplicitResult(
       if routineBody != nil and not declaresResult(routineBody) and
           usesResult(routineBody):
         findings.add(node.toFinding("do not use implicit `result` variable"))
-      continue
     if node.kind in {nkNone .. nkNilLit}:
       continue
     for i in countdown(node.safeLen - 1, 0):
