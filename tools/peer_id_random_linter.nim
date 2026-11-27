@@ -32,7 +32,7 @@ proc runPeerIdRandom(
       continue
     if isPeerIdRandomWithRng(node):
       result.add node.toFinding(
-        "use the `PeerId.random()` test helper instead of `PeerId.random(rng)`"
+        "use the `PeerId.random()` test helper without the RNG argument"
       )
     if node.kind in {nkNone .. nkNilLit}:
       continue
