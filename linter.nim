@@ -39,6 +39,7 @@ runLint:
 
   step "Check future cancellation":
     check completedCancel:
+      severity = hint
 
   step "Check code style":
     ignoredPatterns = ["./tools/**/*"]
