@@ -69,6 +69,14 @@ proc usesResult(node: PNode, shadowed = false): bool =
         return true
   of nkDotExpr:
     return node.len > 0 and usesResult(node[0], shadowed)
+  of nkTableConstr:
+    # Both sides of a table entry are expressions, unlike constructor fields.
+    for entry in node.sons:
+      if entry.kind == nkExprColonExpr:
+        if usesResult(entry[0], shadowed) or usesResult(entry[1], shadowed):
+          return true
+      elif usesResult(entry, shadowed):
+        return true
   of nkExprEqExpr, nkExprColonExpr:
     return node.len > 1 and usesResult(node[1], shadowed)
   of nkIdentDefs, nkConstDef, nkVarTuple:
