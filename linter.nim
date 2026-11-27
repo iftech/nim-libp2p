@@ -4,6 +4,7 @@
 import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
+import tools/peer_id_random_linter
 import tools/code_style_linter
 
 runLint:
@@ -48,3 +49,5 @@ runLint:
       settings:
         ignoredTypes =
           @["Duration", "MultiAddress", "IpAddress", "GroupId", "RateLimit"]
+    semCheck peerIdRandom:
+      severity = error
