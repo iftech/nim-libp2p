@@ -145,7 +145,7 @@ suite "RendezVous Errors":
 
       check actualStatus == expectedStatus
 
-  asyncTest "Node returns NotAuthorized when Register exceeding peer limit":
+  asyncTest "Node returns Unavailable when Register exceeds peer limit":
     let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(1)
     startAndDeferStop(peerNodes & rendezvousNode)
 
@@ -168,4 +168,4 @@ suite "RendezVous Errors":
 
     let responseBuf = await sendRdvMessage(peerNodes[0], rendezvousNode, messageBuf)
     let responseMessage = Message.decode(responseBuf).tryGet()
-    check responseMessage.registerResponse.get.status == ResponseStatus.NotAuthorized
+    check responseMessage.registerResponse.get.status == ResponseStatus.Unavailable

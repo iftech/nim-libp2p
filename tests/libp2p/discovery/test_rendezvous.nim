@@ -671,27 +671,21 @@ suite "RendezVous":
       )
     ).len == 1
 
-  asyncTest "Peer registration is ignored if limit of 1000 registrations is reached":
-    let (rendezvousNode, peerNodes) = setupRendezvousNodeWithPeerNodes(1)
-    startAndDeferStop(rendezvousNode & peerNodes)
+  asyncTest "Peer registration is ignored if the per-peer registration limit is reached":
+    let
+      rendezvousNode = createSwitch(RendezVousConfig.new(maxRegistrationsPerPeer = 2))
+      peerNode = createSwitch(RendezVousConfig.new())
+    startAndDeferStop(@[rendezvousNode, peerNode])
 
-    await connect(peerNodes[0], rendezvousNode)
+    await connect(peerNode, rendezvousNode)
 
     const namespace = "foo"
-    let peerRdv = peerNodes[0]
+    await peerNode.advertise(namespace)
+    await peerNode.advertise("bar")
+    check rendezvousNode.registered.len == 2
 
-    # Create 999 registrations
-    await populatePeerRegistrations(
-      peerRdv, rendezvousNode, namespace, RegistrationLimitPerPeer - 1
-    )
-
-    # 1000th registration allowed
-    await peerRdv.advertise("bar")
-    check rendezvousNode.registered.len == RegistrationLimitPerPeer
-
-    # 1001st registration ignored, limit reached
-    await peerRdv.advertise("baz")
-    check rendezvousNode.registered.len == RegistrationLimitPerPeer
+    await peerNode.advertise("baz")
+    check rendezvousNode.registered.len == 2
 
   asyncTest "Registration in a new namespace is ignored if the namespace limit is reached":
     let
@@ -721,9 +715,42 @@ suite "RendezVous":
       0.RegistrationId notin rendezvousNode.registered
       rendezvousNode.registered[2].expiration > before
 
+  asyncTest "Own advertise in a new namespace succeeds when the namespace table is full":
+    let
+      rendezvousNode = createSwitch(RendezVousConfig.new(maxNamespaces = 1))
+      peerNode = createSwitch(RendezVousConfig.new())
+    startAndDeferStop(@[rendezvousNode, peerNode])
+
+    await connect(peerNode, rendezvousNode)
+
+    await peerNode.advertise("foo0")
+    check rendezvousNode.namespaces.len == 1
+
+    await rendezvousNode.advertise("own")
+    check rendezvousNode.namespaces.len == 2
+
+  test "Remote registrations stop at the global registration cap":
+    let rdv = RendezVous.new(rng(), RendezVousConfig.new(maxRegistrations = 2))
+    for i in 0 ..< 2:
+      let ns = "ns" & $i
+      let r = Register(ns: ns, signedPeerRecord: @[], ttl: Opt.some(3600'u64))
+      check rdv.save(ns, PeerId.random(), r).isOk()
+    let r = Register(ns: "ns0", signedPeerRecord: @[], ttl: Opt.some(3600'u64))
+    check:
+      rdv.save("ns0", PeerId.random(), r).isErr()
+      rdv.save("ns0", PeerId.random(), r, isLocal = true).isOk()
+
   test "A config built with an object literal keeps the default namespace limit":
     check RendezVousConfig(minTTL: 60, maxTTL: 3600).namespaceLimit() ==
       MaximumNamespaces
+
+  test "A config built with an object literal keeps the default registration limit":
+    check RendezVousConfig(minTTL: 60, maxTTL: 3600).registrationLimit() ==
+      MaximumRegistrations
+
+  test "A config built with an object literal keeps the default per-peer limit":
+    check RendezVousConfig(minTTL: 60, maxTTL: 3600).registrationLimitPerPeer() ==
+      RegistrationLimitPerPeer
 
   asyncTest "Namespace with no live registration is deleted and frees a slot":
     let
