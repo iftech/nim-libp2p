@@ -4,6 +4,7 @@
 import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
+import tools/completed_cancel_linter
 import tools/code_style_linter
 
 runLint:
@@ -35,6 +36,10 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
+
+  step "Check future cancellation":
+    check completedCancel:
+      severity = hint
 
   step "Check code style":
     ignoredPatterns = ["./tools/**/*"]
