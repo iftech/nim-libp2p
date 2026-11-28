@@ -246,12 +246,12 @@ proc reset(channel: YamuxChannel, isLocal: bool = false) {.async: (raises: []).}
   channel.clearQueues(newLPStreamEOFError())
 
   channel.sendWindow = 0
+  if isLocal and not channel.isSending:
+    try:
+      await channel.conn.write(YamuxHeader.data(channel.id, 0, {Rst}))
+    except CancelledError, LPStreamError:
+      discard
   if not channel.closedLocally:
-    if isLocal and not channel.isSending:
-      try:
-        await channel.conn.write(YamuxHeader.data(channel.id, 0, {Rst}))
-      except CancelledError, LPStreamError:
-        discard
     await channel.closeImpl()
   if not channel.closedRemotely.isSet():
     await channel.remoteClosed()
@@ -723,7 +723,15 @@ method handle*(m: Yamux) {.async: (raises: []).} =
             # check before allocating the buffer
             raise newException(YamuxError, "Peer exhausted the recvWindow")
 
-          if header.length > 0:
+          if header.length > 0 and not channel.handlerFut.isNil() and
+              channel.handlerFut.finished():
+            # The handler owned the stream and returned: nobody will read this.
+            trace "Yamux data after the stream handler returned, resetting",
+              channel = $channel
+            await m.connection.discardData(header.length)
+            channel.recvWindow -= int(header.length)
+            await channel.reset(isLocal = true)
+          elif header.length > 0:
             var buffer = newSeqUninit[byte](header.length)
             await m.connection.readExactly(addr buffer[0], int(header.length))
             trace "Yamux data frame received", messageSize = buffer.len
