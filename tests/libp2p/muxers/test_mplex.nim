@@ -570,8 +570,8 @@ suite "Mplex":
     asyncTest "handler return unblocks a pending data delivery":
       let
         handlerGate = Future[void].Raising([]).init(
-          "test_mplex.handlerGate", {FutureFlag.OwnCancelSchedule}
-        )
+            "test_mplex.handlerGate", {FutureFlag.OwnCancelSchedule}
+          )
         resetSent = newFuture[void]("test_mplex.resetSent")
         nextHandled = newFuture[void]("test_mplex.nextHandled")
       proc resetWriteHandler(
