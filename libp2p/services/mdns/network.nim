@@ -9,7 +9,7 @@
 import std/[os, sequtils]
 import chronos, chronicles
 import chronos/transports/osnet
-import ../../[address_manager, multiaddress, results]
+import ../../[address_manager, ip_address, multiaddress, results]
 
 import ./socketoptions
 
@@ -34,7 +34,7 @@ type
 
   MdnsInterface = object
     transport: DatagramTransport
-    address4: array[4, byte]
+    address4: Ipv4Address
     index: uint32
     ingressPinned: bool
     activeOperations: int
@@ -140,7 +140,7 @@ template checkSocketOption(status: cint, option: string) =
     return err(option & " failed (OS error " & $code.int & "): " & osErrorMsg(code))
 
 proc membership4(
-    transport: DatagramTransport, address: array[4, byte], join: bool
+    transport: DatagramTransport, address: Ipv4Address, join: bool
 ): LPResult[void] =
   var membership: array[8, byte] = [224'u8, 0, 0, 251, 0, 0, 0, 0]
   for i in 0 .. 3:
@@ -168,7 +168,7 @@ proc configureMulticast(transport: DatagramTransport): LPResult[void] =
   ok()
 
 proc selectMulticastInterface4(
-    transport: DatagramTransport, address: array[4, byte]
+    transport: DatagramTransport, address: Ipv4Address
 ): bool =
   var selected = address
   setSocketOption(
@@ -187,7 +187,7 @@ proc membership6(
 ): LPResult[void] =
   # ipv6_mreq contains the 16-byte group followed by the native interface index.
   type Ipv6Membership = object
-    group: array[16, uint8]
+    group: Ipv6Address
     interfaceIndex: uint32
 
   var membership: Ipv6Membership
@@ -320,7 +320,7 @@ proc newInterfaceTransport(
     )
 
 proc openInterface(
-    network: MdnsNetwork, address4: array[4, byte], index: uint32, ipv6: bool
+    network: MdnsNetwork, address4: Ipv4Address, index: uint32, ipv6: bool
 ): ref MdnsInterface =
   let iface =
     (ref MdnsInterface)(address4: address4, index: index, idle: newAsyncEvent())
@@ -412,7 +412,7 @@ proc currentInterfaces6(
           found = iface
           break
       if found.isNil:
-        found = network.openInterface(default(array[4, byte]), wanted.index, true)
+        found = network.openInterface(default(Ipv4Address), wanted.index, true)
       if not found.isNil:
         current.add(found)
   current

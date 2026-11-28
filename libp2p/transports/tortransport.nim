@@ -15,6 +15,7 @@ import
   ../switch,
   ../builders,
   ../stream/[lpstream, connection, chronosstream],
+  ../ip_address,
   ../multiaddress,
   ../upgrademngrs/upgrade
 
@@ -143,13 +144,13 @@ proc readServerReply(
   let addressLength =
     case header[3]
     of Socks5AddressType.IPv4.byte:
-      4
+      sizeof(Ipv4Address)
     of Socks5AddressType.FQDN.byte:
       var length: byte
       await transp.readExactly(addr length, 1)
       int(length)
     of Socks5AddressType.IPv6.byte:
-      16
+      sizeof(Ipv6Address)
     else:
       return err("Address not supported")
   var addressAndPort = newSeqUninit[byte](addressLength + 2)

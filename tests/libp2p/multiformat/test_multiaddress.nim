@@ -5,7 +5,7 @@
 
 import std/[net, strutils], stew/byteutils, chronos
 import protobuf_serialization, protobuf_serialization/pkg/results
-import ../../../libp2p/[multicodec, multiaddress, peerid]
+import ../../../libp2p/[ip_address, multicodec, multiaddress, peerid]
 import ../../tools/[unittest, multiaddress]
 
 {.push raises: [].}
@@ -406,8 +406,8 @@ suite "MultiAddress test suite":
 
   test "MultiAddress protoAddress(fixed) test":
     var
-      address_v4: array[4, byte]
-      address_v6: array[16, byte]
+      address_v4: Ipv4Address
+      address_v6: Ipv6Address
     let
       onionMa = MultiAddress.init("/onion/timaq4ygg2iegci7:1234/http").get()
       onionPart = onionMa.getPart(multiCodec("onion")).get()

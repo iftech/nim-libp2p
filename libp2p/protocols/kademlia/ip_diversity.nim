@@ -6,17 +6,12 @@
 
 import std/[sequtils, net, sets]
 import results
-import ../../[peerid, peerstore, multiaddress, wire]
+import ../../[peerid, peerstore, multiaddress, ip_address, wire]
 import ./[types, routing_table]
 
 {.push raises: [].}
 
 type
-  Ipv4Address = array[4, byte]
-  Ipv4Subnet24 = array[3, byte]
-  Ipv6Address = array[16, byte]
-  Ipv6Subnet64 = array[8, byte]
-
   PeerIps = object
     ipv4s: seq[Ipv4Address]
     ipv6s: seq[Ipv6Address]
@@ -28,19 +23,6 @@ type
   GroupCount = object
     table: int
     bucket: int
-
-func subnetOf(ip: Ipv4Address): Ipv4Subnet24 =
-  var subnet: Ipv4Subnet24
-  subnet[0] = ip[0]
-  subnet[1] = ip[1]
-  subnet[2] = ip[2]
-  subnet
-
-func subnetOf(ip: Ipv6Address): Ipv6Subnet64 =
-  var subnet: Ipv6Subnet64
-  for i in 0 ..< subnet.len:
-    subnet[i] = ip[i]
-  subnet
 
 func ipsOf(peer: DiversityPeer, sameFamilyAs: Ipv4Address): seq[Ipv4Address] =
   peer.ips.ipv4s
