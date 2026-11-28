@@ -12,12 +12,8 @@ import ./[types, routing_table]
 {.push raises: [].}
 
 type
-  PeerIps = object
-    ipv4s: seq[IpAddress]
-    ipv6s: seq[IpAddress]
-
   DiversityPeer = object
-    ips: PeerIps
+    ips: seq[IpAddress]
     sameBucket: bool ## shares the bucket the candidate would be admitted to
 
   GroupCount = object
@@ -32,14 +28,7 @@ func subnetOf(ip: IpAddress): IpAddress =
   of IpAddressFamily.IPv6:
     for i in 8 ..< 16:
       subnet.address_v6[i] = 0
-  return subnet
-
-func ipsOf(peer: DiversityPeer, ip: IpAddress): seq[IpAddress] =
-  case ip.family
-  of IpAddressFamily.IPv4:
-    return peer.ips.ipv4s
-  of IpAddressFamily.IPv6:
-    return peer.ips.ipv6s
+  subnet
 
 func countPeer(c: var GroupCount, sameBucket: bool) =
   c.table.inc
@@ -49,9 +38,9 @@ func countPeer(c: var GroupCount, sameBucket: bool) =
 func within(c: GroupCount, cap: DiversityCap): bool =
   return c.table < cap.table and c.bucket < cap.bucket
 
-func uniquePublicIps(addrs: openArray[MultiAddress]): PeerIps =
+func uniquePublicIps(addrs: openArray[MultiAddress]): seq[IpAddress] =
   # Only a literal public IP has a prefix to count; a relay or DNS address has none.
-  var peerIps: PeerIps
+  var peerIps: seq[IpAddress]
   var ipv4s: HashSet[array[4, byte]]
   var ipv6s: HashSet[array[16, byte]]
   for ma in addrs:
@@ -62,11 +51,11 @@ func uniquePublicIps(addrs: openArray[MultiAddress]): PeerIps =
     case ip.family
     of IpAddressFamily.IPv4:
       if not ipv4s.containsOrIncl(ip.address_v4):
-        peerIps.ipv4s.add(ip)
+        peerIps.add(ip)
     of IpAddressFamily.IPv6:
       if not ipv6s.containsOrIncl(ip.address_v6):
-        peerIps.ipv6s.add(ip)
-  return peerIps
+        peerIps.add(ip)
+  peerIps
 
 proc diversityPeer(
     addressBook: AddressBook, peerId: PeerId, sameBucket: bool
@@ -115,7 +104,7 @@ func admitsIp(
   var exact, subnet: GroupCount
 
   for other in others:
-    let ips = other.ipsOf(candidateIp)
+    let ips = other.ips
     if ips.anyIt(it == candidateIp):
       exact.countPeer(other.sameBucket)
     if ips.anyIt(it.subnetOf() == candidateSubnet):
@@ -137,17 +126,17 @@ proc hasIpDiversity*(
 
   let candidateIps = addrs.uniquePublicIps()
   # No public literal IP means no prefix to count; the address policy decides.
-  if candidateIps.ipv4s.len == 0 and candidateIps.ipv6s.len == 0:
+  if candidateIps.len == 0:
     return true
 
   let others = addressBook.diversityPeers(rtable, peerId, pending)
   # One public address below every cap admits the peer.
-  for candidateIp in candidateIps.ipv4s:
-    if candidateIp.admitsIp(others, caps.perIp, caps.perIpv4Subnet):
-      return true
-
-  for candidateIp in candidateIps.ipv6s:
-    if candidateIp.admitsIp(others, caps.perIp, caps.perIpv6Subnet):
+  for candidateIp in candidateIps:
+    let subnetCap =
+      case candidateIp.family
+      of IpAddressFamily.IPv4: caps.perIpv4Subnet
+      of IpAddressFamily.IPv6: caps.perIpv6Subnet
+    if candidateIp.admitsIp(others, caps.perIp, subnetCap):
       return true
 
   false
