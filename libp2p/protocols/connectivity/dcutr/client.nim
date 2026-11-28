@@ -99,7 +99,8 @@ proc tryStartSync*(
       await stream.close()
 
   try:
-    let ourDialableAddrs = getHolePunchableAddrs(addrs)
+    let ourDialableAddrs =
+      getHolePunchableAddrs(addrs).filterIt(not DNS.matchPartial(it))
     if ourDialableAddrs.len == 0:
       trace "Aborting Dcutr because the initiator has no supported dialable addresses",
         addresses = addrs
@@ -117,7 +118,7 @@ proc tryStartSync*(
       )
 
     var peerDialableAddrs = switch.peerStore.addressPolicy.filterAddrs(
-      getHolePunchableAddrs(connectAnswer.addrs)
+      getHolePunchableAddrs(connectAnswer.addrs).filterIt(not DNS.matchPartial(it))
     )
     if peerDialableAddrs.len == 0:
       trace "Aborting Dcutr because the receiver has no supported dialable addresses",

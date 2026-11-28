@@ -20,6 +20,7 @@ method connect*(
     forceDial = false,
     reuseConnection = true,
     dir = Direction.Out,
+    bypassBackoff = false,
 ) {.base, async: (raises: [DialFailedError, CancelledError]).} =
   ## connect remote peer without negotiating
   ## a protocol

@@ -3,18 +3,41 @@
 
 {.used.}
 
+import std/tables
 import chronos
 import stew/byteutils
 import ../../../libp2p/protocols/connectivity/dcutr/core as dcore
 import ../../../libp2p/protocols/connectivity/dcutr/[client, server]
 from ../../../libp2p/protocols/connectivity/autonat/types import NetworkReachability
 import ../../../libp2p/connmanager
+import ../../../libp2p/protocols/connectivity/relay/[relay, client as relayclient]
 import ../../../libp2p/[builders, utils/future]
 import ../../stubs/switchstub
 import ../../tools/[unittest, switch_builder, multiaddress]
 
+var relayClients {.threadvar.}: Table[PeerId, RelayClient]
+
 proc makeSwitch(address: MultiAddress = TcpAutoAddress): Switch =
-  return makeStandardSwitch(address)
+  let relayClient = RelayClient.new()
+  let switch = makeStandardSwitchBuilder(address).withCircuitRelay(relayClient).build()
+  relayClients[switch.peerInfo.peerId] = relayClient
+  switch
+
+proc connectOverRelay(
+    behindNAT, public: Switch, address: MultiAddress = TcpAutoAddress
+): Future[Switch] {.async.} =
+  ## Connects `public` to `behindNAT` through a new relay, the setting DCUtR upgrades.
+  let relay = makeStandardSwitchBuilder(address).withCircuitRelay(Relay.new()).build()
+  await relay.start()
+  await behindNAT.connect(relay.peerInfo.peerId, relay.peerInfo.addrs)
+  discard await relayClients[behindNAT.peerInfo.peerId].reserve(
+    relay.peerInfo.peerId, relay.peerInfo.addrs
+  )
+  let circuit = MultiAddress
+    .init($relay.peerInfo.addrs[0] & "/p2p/" & $relay.peerInfo.peerId & "/p2p-circuit")
+    .get()
+  await public.connect(behindNAT.peerInfo.peerId, @[circuit])
+  relay
 
 proc waitDirectConnIdentified(
     clientSwitch: Switch, serverPeerId: PeerId
@@ -37,6 +60,7 @@ proc waitDirectConnIdentified(
 
 suite "Dcutr":
   teardown:
+    relayClients.clear()
     checkTrackers()
 
   asyncTest "Connect msg Encode / Decode":
@@ -65,6 +89,13 @@ suite "Dcutr":
     check syncMsg == syncMsgDecoded
     check pb == hexToSeqByte(pbHexReference)
 
+  asyncTest "DCUtR initiator skips DNS-only addresses":
+    let switch = makeSwitch()
+    let synced = await DcutrClient.new().tryStartSync(
+      switch, switch.peerInfo.peerId, @[ma("/dns4/example.com/tcp/3456")]
+    )
+    check synced.isOk()
+
   asyncTest "DCUtR establishes a new connection":
     let behindNATSwitch = makeSwitch()
     let publicSwitch = makeSwitch()
@@ -79,7 +110,9 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(behindNATSwitch)
+    let relaySwitch = await connectOverRelay(behindNATSwitch, publicSwitch)
+    defer:
+      await relaySwitch.stop()
 
     for t in behindNATSwitch.transports:
       t.networkReachability = NetworkReachability.NotReachable
@@ -100,6 +133,52 @@ suite "Dcutr":
     # inbound identify stream
     check await directConnIdentified.withTimeout(30.seconds)
 
+  asyncTest "DCUtR receiver ignores a Connect over a direct connection":
+    let behindNATSwitch = makeSwitch()
+    let publicSwitch = makeSwitch()
+    publicSwitch.mount(Dcutr.new(publicSwitch))
+
+    await allFutures(behindNATSwitch.start(), publicSwitch.start())
+    defer:
+      await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
+
+    await publicSwitch.connect(behindNATSwitch)
+
+    let synced = await DcutrClient.new(connectTimeout = 300.millis).tryStartSync(
+      behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
+    )
+    check:
+      synced.isErr()
+      not synced.isParentErrOf(AsyncTimeoutError) # refused, not attempted
+      publicSwitch.connManager.connCount(behindNATSwitch.peerInfo.peerId) == 1
+
+  asyncTest "DCUtR receiver ignores a Connect once a direct connection exists":
+    let behindNATSwitch = makeSwitch()
+    let publicSwitch = makeSwitch()
+    publicSwitch.mount(Dcutr.new(publicSwitch))
+
+    await allFutures(behindNATSwitch.start(), publicSwitch.start())
+    defer:
+      await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
+
+    let relaySwitch = await connectOverRelay(behindNATSwitch, publicSwitch)
+    defer:
+      await relaySwitch.stop()
+    await publicSwitch.connect(
+      behindNATSwitch.peerInfo.peerId,
+      behindNATSwitch.peerInfo.addrs,
+      forceDial = true,
+      reuseConnection = false,
+    )
+    check publicSwitch.connManager.connCount(behindNATSwitch.peerInfo.peerId) == 2
+
+    let synced = await DcutrClient.new(connectTimeout = 300.millis).tryStartSync(
+      behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
+    )
+    check:
+      synced.isErr()
+      publicSwitch.connManager.connCount(behindNATSwitch.peerInfo.peerId) == 2
+
   asyncTest "DCUtR QUIC initiator uses listener role":
     let behindNATSwitch = makeSwitch(QuicAutoAddress)
     let publicSwitch = makeSwitch(QuicAutoAddress)
@@ -111,7 +190,10 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(behindNATSwitch)
+    let relaySwitch =
+      await connectOverRelay(behindNATSwitch, publicSwitch, QuicAutoAddress)
+    defer:
+      await relaySwitch.stop()
     let initialConnCount =
       behindNATSwitch.connManager.connCount(publicSwitch.peerInfo.peerId)
     check initialConnCount == 1
@@ -119,8 +201,7 @@ suite "Dcutr":
     for t in behindNATSwitch.transports:
       t.networkReachability = NetworkReachability.NotReachable
 
-    # A direct QUIC connection stands in for the relay, so the listener-role
-    # hole punch must time out.
+    # Both peers share a machine, so the listener-role hole punch must time out.
     let synced = await DcutrClient.new(connectTimeout = 300.millis).tryStartSync(
       behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
     )
@@ -139,7 +220,9 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(behindNATSwitch)
+    let relaySwitch = await connectOverRelay(behindNATSwitch, publicSwitch)
+    defer:
+      await relaySwitch.stop()
 
     for t in behindNATSwitch.transports:
       t.networkReachability = NetworkReachability.NotReachable
@@ -159,12 +242,15 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
       await sleepAsync(50.millis)
 
-    let behindNATSwitch = SwitchStub.new(makeSwitch(), connectTimeoutProc)
+    let behindNATSwitch = SwitchStub.new(makeSwitch())
     let publicSwitch = makeSwitch()
     ductrClientTest(behindNATSwitch, publicSwitch):
+      # stubbed only now, so the relayed connection is a real one
+      behindNATSwitch.connectStub = connectTimeoutProc
       let synced = await DcutrClient.new(connectTimeout = 5.millis).tryStartSync(
         behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
       )
@@ -178,12 +264,15 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
       raise newException(DialFailedError, "error")
 
-    let behindNATSwitch = SwitchStub.new(makeSwitch(), connectErrorProc)
+    let behindNATSwitch = SwitchStub.new(makeSwitch())
     let publicSwitch = makeSwitch()
     ductrClientTest(behindNATSwitch, publicSwitch):
+      # stubbed only now, so the relayed connection is a real one
+      behindNATSwitch.connectStub = connectErrorProc
       let synced = await DcutrClient.new(connectTimeout = 5.millis).tryStartSync(
         behindNATSwitch, publicSwitch.peerInfo.peerId, behindNATSwitch.peerInfo.addrs
       )
@@ -200,7 +289,9 @@ suite "Dcutr":
     defer:
       await allFutures(behindNATSwitch.stop(), publicSwitch.stop())
 
-    await publicSwitch.connect(behindNATSwitch)
+    let relaySwitch = await connectOverRelay(behindNATSwitch, publicSwitch)
+    defer:
+      await relaySwitch.stop()
 
     publicSwitch.connectStub = connectStub
 
@@ -230,7 +321,9 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
+      check not forceDial and bypassBackoff
       await sleepAsync(50.millis)
 
     await ductrServerTest(connectProc)
@@ -243,7 +336,9 @@ suite "Dcutr":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
+      check not forceDial and bypassBackoff
       raise newException(DialFailedError, "error")
 
     await ductrServerTest(connectProc)

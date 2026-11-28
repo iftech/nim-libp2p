@@ -865,6 +865,10 @@ suite "Dialer":
       await dialer.connect(peerId, fresh, forceDial = true)
     check transport.dialedAddrs.len == 2
 
+    expect DialFailedError:
+      await dialer.connect(peerId, fresh, bypassBackoff = true)
+    check transport.dialedAddrs.len == 3
+
   asyncTest "A switch that opted into backoffs still dials a reachable peer":
     let
       src = makeStandardSwitchBuilder().withDialBackoff().build()

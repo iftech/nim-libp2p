@@ -125,6 +125,7 @@ suite "Hole Punching":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
       calls.add(addrs)
       forcedOrReused.add(forceDial or reuseConnection)
@@ -363,6 +364,7 @@ suite "Hole Punching":
         forceDial = false,
         reuseConnection = true,
         dir = Direction.Out,
+        bypassBackoff = false,
     ): Future[void] {.async: (raises: [DialFailedError, CancelledError]).} =
       self.connectStub = nil # this stub should be called only once
       raise newException(DialFailedError, "error")

@@ -10,10 +10,16 @@ import results, chronos, chronicles
 import core
 import
   ../../protocol, ../../../stream/connection, ../../../switch, ../../../utils/future
+import ../relay/relay
 
 export chronicles
 
 type Dcutr* = ref object of LPProtocol
+
+proc hasDirectConnection(switch: Switch, peerId: PeerId): bool =
+  switch.connManager.getConnections(peerId).valueOr(@[]).anyIt(
+    not it.connection.isRelayed()
+  )
 
 logScope:
   topics = "libp2p hole-punching"
@@ -28,6 +34,12 @@ proc new*(
       stream: Stream, proto: string
   ) {.async: (raises: [CancelledError]).} =
     var peerDialableAddrs: seq[MultiAddress]
+    # Hole punching upgrades a relayed-only peer; elsewhere a Connect would only
+    # make us dial addresses of the remote's choosing.
+    if not stream.isRelayed() or switch.hasDirectConnection(stream.peerId):
+      trace "Ignoring Dcutr Connect: the peer is not relayed-only",
+        remotePeerId = stream.peerId
+      return
     try:
       let connectMsg =
         DcutrMsg.decode(await stream.readLp(1024)).valueOrRaise(DcutrError)
@@ -45,14 +57,16 @@ proc new*(
             switch.peerInfo.addrs
           else:
             switch.peerInfo.listenAddrs.mapIt(switch.addressManager.externalAddrFor(it))
-      var ourDialableAddrs = getHolePunchableAddrs(ourAddrs)
+      let ourDialableAddrs =
+        getHolePunchableAddrs(ourAddrs).filterIt(not DNS.matchPartial(it))
       if ourDialableAddrs.len == 0:
         trace "Aborting Dcutr because the receiver has no supported dialable addresses",
           addresses = ourAddrs
         return
 
+      # a name has no endpoint to punch a hole towards
       peerDialableAddrs = switch.peerStore.addressPolicy.filterAddrs(
-        getHolePunchableAddrs(connectMsg.addrs)
+        getHolePunchableAddrs(connectMsg.addrs).filterIt(not DNS.matchPartial(it))
       )
       if peerDialableAddrs.len == 0:
         await stream.send(MsgType.Connect, ourAddrs)
@@ -64,7 +78,7 @@ proc new*(
           addresses = connectMsg.addrs
         return
 
-      # Expected DCUtR connections bypass ConnManager limits.
+      # Expected DCUtR connections bypass the per-peer limit, not the global one.
       trace "Dcutr receiver registering expected incoming connection",
         remotePeerId = stream.peerId
       let expectedIncoming = switch.connManager.expectDcutrConnection(stream.peerId, In)
@@ -91,9 +105,9 @@ proc new*(
         switch.connect(
           stream.peerId,
           @[it],
-          forceDial = true,
           reuseConnection = false,
           dir = Direction.Out,
+          bypassBackoff = true,
         )
       )
       var futs = dialFuts
