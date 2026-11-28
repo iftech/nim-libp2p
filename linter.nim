@@ -4,6 +4,7 @@
 import lint
 import tools/chronicles_linter
 import tools/log_payload_linter
+import tools/license_linter
 import tools/code_style_linter
 
 runLint:
@@ -35,6 +36,15 @@ runLint:
           "msg", "message", "buffer", "record", "reply", "response", "rpcMsg", "data",
           "encoded", "certificate", "ticket", "key",
         ]
+
+  step "Check license headers":
+    ignoredPatterns = ["./examples/**/*", "./.nim_runtime/**/*"]
+    check licenseHeader:
+      severity = error
+      settings:
+        license = """# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright (c) Status Research & Development GmbH
+"""
 
   step "Check code style":
     ignoredPatterns = ["./tools/**/*"]

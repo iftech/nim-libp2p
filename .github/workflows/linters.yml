@@ -51,8 +51,3 @@ jobs:
         with:
           config: linter.nim
           semantic: true
-
-      - name: Check License Header
-        uses: apache/skywalking-eyes/header@v0.8.0
-        with:
-          config: .github/.licenserc.yaml
