@@ -38,8 +38,11 @@ const
   MaximumMessageLen = 1 shl 22 # 4MB
   MinimumNamespaceLen = 1
   MaximumNamespaceLen = 255
-  RegistrationLimitPerPeer* = 1000
+  RegistrationLimitPerPeer* = 100
+    ## Well below `MaximumNamespaces`, so one peer cannot fill the namespace table.
   MaximumNamespaces* = 1000
+  MaximumRegistrations* = 10_000
+    ## Registrations kept across all namespaces; each holds up to 4 KiB.
   DiscoverLimit = 1000'u64
   SemaphoreDefaultSize* = 5
 
@@ -52,16 +55,22 @@ type RendezVousConfig* = object
   minTTL*: uint64
   maxTTL*: uint64
   maxNamespaces*: int
+  maxRegistrations*: int
+  maxRegistrationsPerPeer*: int
 
 proc new*(
     T: typedesc[RendezVousConfig],
     minDuration: Duration = MinimumDuration,
     maxDuration: Duration = MaximumDuration,
     maxNamespaces: int = MaximumNamespaces,
+    maxRegistrations: int = MaximumRegistrations,
+    maxRegistrationsPerPeer: int = RegistrationLimitPerPeer,
 ): T =
   var minD = minDuration
   var maxD = maxDuration
   var maxNs = maxNamespaces
+  var maxRegs = maxRegistrations
+  var maxRegsPerPeer = maxRegistrationsPerPeer
   if minD < MinimumAcceptedDuration:
     warn "TTL too short: 1 minute minimum"
     minD = MinimumAcceptedDuration
@@ -75,17 +84,34 @@ proc new*(
   if maxNs <= 0:
     warn "Namespace limit must be positive"
     maxNs = MaximumNamespaces
+  if maxRegs <= 0:
+    warn "Registration limit must be positive"
+    maxRegs = MaximumRegistrations
+  if maxRegsPerPeer <= 0:
+    warn "Per-peer registration limit must be positive"
+    maxRegsPerPeer = RegistrationLimitPerPeer
   T(
     minDuration: minD,
     maxDuration: maxD,
     minTTL: minD.seconds.uint64,
     maxTTL: maxD.seconds.uint64,
     maxNamespaces: maxNs,
+    maxRegistrations: maxRegs,
+    maxRegistrationsPerPeer: maxRegsPerPeer,
   )
 
 # A config built with an object literal leaves maxNamespaces at 0.
 func namespaceLimit*(config: RendezVousConfig): int =
   if config.maxNamespaces <= 0: MaximumNamespaces else: config.maxNamespaces
+
+func registrationLimit*(config: RendezVousConfig): int =
+  if config.maxRegistrations <= 0: MaximumRegistrations else: config.maxRegistrations
+
+func registrationLimitPerPeer*(config: RendezVousConfig): int =
+  if config.maxRegistrationsPerPeer <= 0:
+    RegistrationLimitPerPeer
+  else:
+    config.maxRegistrationsPerPeer
 
 type
   RendezVousError* = object of LPError
@@ -235,11 +261,16 @@ proc save*[E](
     peerId: PeerId,
     r: Register,
     update: bool = true,
+    isLocal: bool = false,
 ): LPResult[void] =
+  ## The table caps bound remote input only; `isLocal` exempts our own advertise.
   let nsSalted = ns & rdv.salt
-  if not rdv.namespaces.hasKey(nsSalted) and
-      rdv.namespaces.len >= rdv.config.namespaceLimit():
-    return err("Namespace limit reached")
+  if not isLocal and not rdv.isRegistered(ns, peerId):
+    if not rdv.namespaces.hasKey(nsSalted) and
+        rdv.namespaces.len >= rdv.config.namespaceLimit():
+      return err("Namespace limit reached")
+    if rdv.registered.len >= rdv.config.registrationLimit():
+      return err("Registration limit reached")
 
   let reg = RegisteredData(
     peerId: peerId,
@@ -262,12 +293,12 @@ proc register*[E](
     return stream.sendRegisterResponseError(InvalidTTL)
   rdv.peerRecordValidator(peerRecord, r.signedPeerRecord, stream.peerId).isOkOr:
     return stream.sendRegisterResponseError(InvalidSignedPeerRecord, $error)
-  if rdv.countRegister(stream.peerId) >= RegistrationLimitPerPeer and
+  if rdv.countRegister(stream.peerId) >= rdv.config.registrationLimitPerPeer() and
       not rdv.isRegistered(r.ns, stream.peerId):
-    return stream.sendRegisterResponseError(NotAuthorized, "Registration limit reached")
+    return stream.sendRegisterResponseError(Unavailable, "Registration limit reached")
 
   rdv.save(r.ns, stream.peerId, r).isOkOr:
-    return stream.sendRegisterResponseError(NotAuthorized, $error)
+    return stream.sendRegisterResponseError(Unavailable, $error)
   libp2p_rendezvous_registered.inc()
   libp2p_rendezvous_namespaces.set(int64(rdv.namespaces.len))
   stream.sendRegisterResponse(ttl)
@@ -424,7 +455,9 @@ proc advertise*[E](
     r = Register(ns: ns, signedPeerRecord: sprBuff, ttl: Opt.some(ttl.seconds.uint64))
     msg = encode(Message(msgType: MessageType.Register, register: Opt.some(r)))
 
-  rdv.save(ns, rdv.switch.peerInfo.peerId, r).onErrorRaise(AdvertiseError)
+  rdv.save(ns, rdv.switch.peerInfo.peerId, r, isLocal = true).onErrorRaise(
+    AdvertiseError
+  )
 
   let futs = peers.mapIt(rdv.advertisePeer(it, msg))
   await allFutures(futs.mapIt(it.withTimeout(5.seconds)))
