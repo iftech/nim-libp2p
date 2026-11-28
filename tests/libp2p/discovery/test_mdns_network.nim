@@ -29,31 +29,23 @@ template requireOpened(network, callback: untyped) =
       checkpoint "mDNS network startup failed: " & $opened.error
     require opened.isOk
 
-var exposeInterfaces = false
-var interfaceQueries = 0
+type TestInterfaceProvider = object
+  current: seq[NetworkInterface]
+  queries: int
 
-proc changingInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
-  if exposeInterfaces:
-    getInterfaces()
-  else:
-    @[]
+proc setInterfaces(
+    provider: ref TestInterfaceProvider, interfaces: seq[NetworkInterface]
+) =
+  provider.current = interfaces
 
-proc countingInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
-  inc interfaceQueries
-  @[]
+proc interfaces(
+    provider: ref TestInterfaceProvider
+): proc(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+  proc queryInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
+    inc provider.queries
+    provider.current
 
-proc cachedInterfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
-  inc interfaceQueries
-  if exposeInterfaces:
-    @[
-      NetworkInterface(
-        ifIndex: 1,
-        state: StatusUp,
-        addresses: @[InterfaceAddress.init(LocalSubnet4, 24)],
-      )
-    ]
-  else:
-    @[]
+  queryInterfaces
 
 proc ipv4Interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
   var interfaces: seq[NetworkInterface]
@@ -104,23 +96,31 @@ suite "mDNS network":
       not network.isLocalAddress(MulticastMdns4)
 
   test "source subnets are cached until interface refresh":
-    interfaceQueries = 0
-    exposeInterfaces = true
-    let network = MdnsNetwork.new(interfaceProvider = cachedInterfaces)
+    let provider = new TestInterfaceProvider
+    provider.setInterfaces(
+      @[
+        NetworkInterface(
+          ifIndex: 1,
+          state: StatusUp,
+          addresses: @[InterfaceAddress.init(LocalSubnet4, 24)],
+        )
+      ]
+    )
+    let network = MdnsNetwork.new(interfaceProvider = provider.interfaces)
     network.refreshInterfaces()
-    exposeInterfaces = false
+    provider.setInterfaces(@[])
     let remote = SubnetPeer4
     check:
       network.isLocalAddress(remote)
       network.isLocalAddress(remote)
       network.sourceInterfaceIndex(remote) == 1
       network.sourceInterfaceIndex(remote) == 1
-      interfaceQueries == 1
+      provider.queries == 1
     network.refreshInterfaces()
     check:
       not network.isLocalAddress(remote)
       network.sourceInterfaceIndex(remote) == 0
-      interfaceQueries == 2
+      provider.queries == 2
 
   test "invalid sources do not match even broad interface subnets":
     const
@@ -255,7 +255,7 @@ suite "mDNS network":
     # prevents other sockets from sharing its port. Other platforms need their
     # own setup to reserve the port exclusively.
     asyncTest "startup reports an occupied port when interfaces exist":
-      requireMdnsMulticastRoute(ignoreDatagram)
+      requireMdnsMulticastRoute()
       require ipv4Interfaces().len > 0
       var blocker: DatagramTransport
       try:
@@ -277,7 +277,8 @@ suite "mDNS network":
           network.ipv4InterfaceIndices().len == 0
           not (await network.multicast(@[1'u8]))
         # No-interface startup must still succeed while the port is occupied.
-        let empty = MdnsNetwork.new(interfaceProvider = countingInterfaces)
+        let emptyProvider = new TestInterfaceProvider
+        let empty = MdnsNetwork.new(interfaceProvider = emptyProvider.interfaces)
         defer:
           await empty.close()
         requireOpened(empty, ignorePacket)
@@ -287,7 +288,7 @@ suite "mDNS network":
         check network.ipv4InterfaceIndices().len > 0
 
     asyncTest "refresh retries sockets after the port becomes available":
-      requireMdnsMulticastRoute(ignoreDatagram)
+      requireMdnsMulticastRoute()
       require ipv4Interfaces().len > 0
       var blocker: DatagramTransport
       try:
@@ -299,13 +300,12 @@ suite "mDNS network":
       if not blocker.isNil:
         defer:
           await blocker.closeWait()
-        exposeInterfaces = false
-        let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
+        let provider = new TestInterfaceProvider
+        let network = MdnsNetwork.new(interfaceProvider = provider.interfaces)
         defer:
-          exposeInterfaces = false
           await network.close()
         requireOpened(network, ignorePacket)
-        exposeInterfaces = true
+        provider.setInterfaces(getInterfaces())
         network.refreshInterfaces()
         check network.ipv4InterfaceIndices().len == 0
         await blocker.closeWait()
@@ -318,40 +318,39 @@ suite "mDNS network":
     proc changed(indices: seq[uint32]) {.gcsafe, raises: [].} =
       refreshed = indices
 
+    let provider = new TestInterfaceProvider
     let network = MdnsNetwork.new(
-      interfaceProvider = changingInterfaces, onInterfacesChanged = changed
+      interfaceProvider = provider.interfaces, onInterfacesChanged = changed
     )
-    exposeInterfaces = false
     requireOpened(network, ignorePacket)
     defer:
-      exposeInterfaces = false
       await network.close()
     check not (await network.multicast(@[1'u8]))
-    exposeInterfaces = true
+    provider.setInterfaces(getInterfaces())
     network.refreshInterfaces()
     check (await network.multicast(@[1'u8]))
     check refreshed.len > 0
     network.refreshInterfaces() # Repeated refreshes retain existing memberships.
     check (await network.multicast(@[1'u8]))
-    exposeInterfaces = false
+    provider.setInterfaces(@[])
     network.refreshInterfaces()
     check not (await network.multicast(@[1'u8]))
     check refreshed.len == 0
-    exposeInterfaces = true
+    provider.setInterfaces(getInterfaces())
     network.refreshInterfaces()
     check (await network.multicast(@[1'u8]))
 
   asyncTest "interfaces are refreshed periodically":
-    interfaceQueries = 0
+    let provider = new TestInterfaceProvider
     let network = MdnsNetwork.new(
-      interfaceProvider = countingInterfaces, refreshInterval = 10.milliseconds
+      interfaceProvider = provider.interfaces, refreshInterval = 10.milliseconds
     )
     requireOpened(network, ignorePacket)
     defer:
       await network.close()
-    check interfaceQueries == 1 # Opening performs the initial refresh.
+    check provider.queries == 1 # Opening performs the initial refresh.
     checkUntilTimeout:
-      interfaceQueries >= 2
+      provider.queries >= 2
 
   asyncTest "receive arbitrary bytes and reply to the original sender":
     let
@@ -405,13 +404,11 @@ suite "mDNS network":
       not (await network.reply(response, default(MdnsReplyContext), unicast = true))
 
   asyncTest "close drains handlers and packets remain stable across receives":
-    var refreshCount = 0
-    proc interfaces(): seq[NetworkInterface] {.gcsafe, raises: [].} =
-      inc refreshCount
-      getInterfaces()
+    let provider = new TestInterfaceProvider
+    provider.setInterfaces(getInterfaces())
 
     let
-      network = MdnsNetwork.new(interfaceProvider = interfaces)
+      network = MdnsNetwork.new(interfaceProvider = provider.interfaces)
       firstEntered = newAsyncEvent()
       secondEntered = newAsyncEvent()
       release = newAsyncEvent()
@@ -452,10 +449,10 @@ suite "mDNS network":
       not completed
       (await network.open(ignorePacket)).isErr
       not (await network.multicast(second))
-    let countBeforeRefresh = refreshCount
+    let countBeforeRefresh = provider.queries
     network.refreshInterfaces()
     network.refreshInterfaces()
-    check refreshCount == countBeforeRefresh
+    check provider.queries == countBeforeRefresh
     release.fire()
     await closing
     check:
@@ -482,14 +479,14 @@ suite "mDNS network":
 
   asyncTest "refreshing interfaces while a multicast send is queued":
     requireMdnsMulticastRoute()
-    let network = MdnsNetwork.new(interfaceProvider = changingInterfaces)
-    exposeInterfaces = true
+    let provider = new TestInterfaceProvider
+    provider.setInterfaces(getInterfaces())
+    let network = MdnsNetwork.new(interfaceProvider = provider.interfaces)
     requireOpened(network, ignorePacket)
     defer:
-      exposeInterfaces = false
       await network.close()
     let sending = network.multicast(@[7'u8, 8, 9])
-    exposeInterfaces = false
+    provider.setInterfaces(@[])
     network.refreshInterfaces()
     check await sending
     check not (await network.multicast(@[7'u8, 8, 9]))
@@ -509,7 +506,7 @@ suite "mDNS network":
     check not network.isOpen
 
   asyncTest "multicast replies return on their sending interface":
-    requireMdnsMulticastRoute(ignoreDatagram)
+    requireMdnsMulticastRoute()
     var interfaces = ipv4Interfaces()
     block:
       proc provider(): seq[NetworkInterface] {.gcsafe, raises: [].} =
