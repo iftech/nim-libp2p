@@ -140,6 +140,8 @@ proc handleStream(m: Mplex, chann: LPChannel) {.async: (raises: []).} =
   await m.streamHandler(chann)
   trace "Mplex stream handler completed", muxer = m, channel = chann
   doAssert(chann.closed, "connection not closed by handler!")
+  if chann.pushing:
+    await chann.reset()
 
 method handle*(m: Mplex) {.async: (raises: []).} =
   trace "Mplex handler started", muxer = m

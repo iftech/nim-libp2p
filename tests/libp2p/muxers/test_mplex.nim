@@ -567,6 +567,48 @@ suite "Mplex":
       await mplex.close()
       await handleFut
 
+    asyncTest "handler return unblocks a pending data delivery":
+      let
+        handlerGate = Future[void].Raising([]).init(
+          "test_mplex.handlerGate", {FutureFlag.OwnCancelSchedule}
+        )
+        resetSent = newFuture[void]("test_mplex.resetSent")
+        nextHandled = newFuture[void]("test_mplex.nextHandled")
+      proc resetWriteHandler(
+          data: sink seq[byte]
+      ) {.async: (raises: [CancelledError, LPStreamError]).} =
+        if data == encodeMessage(0, MessageType.ResetIn, @[]):
+          resetSent.complete()
+
+      let
+        conn = TestBufferStream.new(resetWriteHandler)
+        mplex = Mplex.new(conn)
+      var stream: LPChannel
+      mplex.streamHandler = proc(s: MuxedStream) {.async: (raises: []).} =
+        if LPChannel(s).id == 0:
+          stream = LPChannel(s)
+          await handlerGate
+        else:
+          nextHandled.complete()
+        await s.close()
+
+      let handleFut = mplex.handle()
+      await conn.pushData(
+        encodeMessage(0, MessageType.New, @[]) &
+          encodeMessage(0, MessageType.MsgOut, @[1'u8]) &
+          encodeMessage(0, MessageType.MsgOut, @[2'u8]) &
+          encodeMessage(1, MessageType.New, @[])
+      )
+      checkUntilTimeoutCustom(1.seconds, 10.millis):
+        not stream.isNil and stream.pushing
+
+      handlerGate.complete()
+      check await resetSent.withTimeout(1.seconds)
+      check await nextHandled.withTimeout(1.seconds)
+
+      await mplex.close()
+      await handleFut
+
     asyncTest "does not limit negotiated stream buffers":
       let
         conn = TestBufferStream.new(noopWriteHandler)

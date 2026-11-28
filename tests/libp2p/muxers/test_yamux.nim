@@ -82,7 +82,7 @@ suite "Yamux":
     asyncTest "Data after the stream handler returned resets the stream":
       mSetup()
 
-      let handlerDone = newFuture[void]()
+      let handlerDone = newFuture[void]("test_yamux.handlerDone")
       var channelB: YamuxChannel
       yamuxb.streamHandler = proc(stream: MuxedStream) {.async: (raises: []).} =
         channelB = YamuxChannel(stream)
@@ -99,7 +99,10 @@ suite "Yamux":
 
       check await channelB.closedRemotely.wait().withTimeout(1.seconds)
       check channelB.isReset
-      check channelB.recvQueue.len <= 1
+      check channelB.recvQueue.len == 0
+      check channelB.recvWindow == YamuxDefaultWindowSize - 2
+      checkUntilTimeoutCustom(1.seconds, 10.millis):
+        YamuxChannel(streamA).remoteReset
       await streamA.close()
 
     asyncTest "Continuing read after close":
