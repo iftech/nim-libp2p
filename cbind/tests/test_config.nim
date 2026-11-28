@@ -50,6 +50,11 @@ func mounted(cfg: GossipsubConfig): GossipsubConfig =
   mountedCfg.mount = true
   mountedCfg
 
+proc parseWithTcp(cfg: Libp2pConfig): Result[ParsedConfig, string] =
+  var withTcp = cfg
+  withTcp.transports = TransportTcp
+  withTcp.parse()
+
 suite "cbind config":
   test "parse: service discovery settings":
     const needsMount = "service discovery settings require serviceDiscovery.mount"
@@ -97,7 +102,25 @@ suite "cbind config":
         "fReturn exceeds the limit of " & $MaxFReturn & " (" & $(MaxFReturn + 1) & ")",
       ),
     ]
-    checkCases(cases, parse)
+    checkCases(cases, parseWithTcp)
+
+  test "parse: transports and dialRanking":
+    check Libp2pConfig().parse().error == "no transport enabled: set tcp, quic or both"
+    let both = Libp2pConfig(
+        transports: TransportTcp or TransportQuic,
+        muxer: MuxerType.Yamux,
+        dialRanking: true,
+      )
+      .parse()
+      .get()
+    check both.tcp
+    check both.quic
+    check both.muxer == MuxerType.Yamux
+    check both.dialRanking
+    let quicOnly = Libp2pConfig(transports: TransportQuic).parse().get()
+    check quicOnly.quic
+    check not quicOnly.tcp
+    check Libp2pConfig(transports: 4).parse().error == "unknown transports bits: 4"
 
   test "parse: addrs, bootstrap nodes, keys and dns":
     const
@@ -157,7 +180,7 @@ suite "cbind config":
         "invalid multiaddress '" & noSlash & "': " & noSlashErr,
       ),
     ]
-    checkCases(cases, parse)
+    checkCases(cases, parseWithTcp)
 
   test "parseGossipsub: limits":
     const needsMount = "gossipsub limits require gossipsub.mount"

@@ -406,19 +406,20 @@ proc mountProtocols(lib: LibP2P, cfg: ParsedConfig): Result[void, string] =
     return err(e)
   ok()
 
-proc withConfiguredTransport(
-    builder: SwitchBuilder, transport: ParsedTransport
+proc withConfiguredTransports(
+    builder: SwitchBuilder, cfg: ParsedConfig
 ): SwitchBuilder =
-  case transport.kind
-  of TransportType.Quic:
-    builder.withQuicTransport()
-  of TransportType.Tcp:
-    let tcp = builder.withTcpTransport()
-    case transport.muxer
+  var b = builder
+  if cfg.tcp:
+    b = b.withTcpTransport()
+    case cfg.muxer
     of MuxerType.Mplex:
-      tcp.withMplex()
+      b = b.withMplex()
     of MuxerType.Yamux:
-      tcp.withYamux()
+      b = b.withYamux()
+  if cfg.quic:
+    b = b.withQuicTransport()
+  b
 
 proc createLibp2pNode(config: Libp2pConfig): Result[LibP2P, string] =
   let cfg = ?config.parse()
@@ -432,7 +433,8 @@ proc createLibp2pNode(config: Libp2pConfig): Result[LibP2P, string] =
     .withNoise()
     .withPrivateKey(cfg.privKey)
     .withAddresses(cfg.addrs)
-    .withConfiguredTransport(cfg.transport)
+    .withConfiguredTransports(cfg)
+    .withDialRanking(cfg.dialRanking)
 
   if cfg.maxIn > 0 and cfg.maxOut > 0:
     switchBuilder = switchBuilder.withConnectionLimits(
@@ -530,8 +532,8 @@ proc libp2pDestroy*(lib: LibP2P): Future[void] {.ffiDtor.} =
 
 # Hand-maintained plain-C mirror of `Libp2pConfig`, for hosts that build the
 # config without the generated header. Not layout-compatible with the generated
-# `Libp2pConfig` (strings and enums differ); `muxer`/`transport` carry the
-# `MuxerType`/`TransportType` ordinals. Keep the field list in sync.
+# `Libp2pConfig` (strings and enums differ); `muxer` carries the
+# `MuxerType` ordinal and `transports` the `TRANSPORT_*` bits. Keep the field list in sync.
 type CRateLimitConfig {.exportc: "libp2p_rate_limit_config", bycopy.} = object
   bytes: cint
   intervalMs: int64
@@ -565,7 +567,8 @@ type CLibp2pConfig {.exportc: "libp2p_config", bycopy.} = object
   addrs: ptr cstring
   addrsLen: csize_t
   muxer: cint
-  transport: cint
+  transports: cint
+  dialRanking: cint
   bootstrapNodes: pointer
   bootstrapNodesLen: csize_t
   privKey: ptr byte
@@ -595,7 +598,8 @@ type CLibp2pConfig {.exportc: "libp2p_config", bycopy.} = object
 proc libp2pNewDefaultConfig(): CLibp2pConfig {.
     exportc: "libp2p_new_default_config", cdecl, dynlib
 .} =
-  CLibp2pConfig()
+  ## TCP only. A zero-initialized config enables no transport and fails to parse.
+  CLibp2pConfig(transports: 1)
 
 proc libp2pPublicKey*(lib: LibP2P): Future[Result[seq[byte], string]] {.ffi.} =
   ## The node's public key, serialized in its own key scheme's format.

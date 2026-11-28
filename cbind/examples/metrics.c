@@ -35,7 +35,7 @@ int main(void) {
   cfg.addrs.data = &addr;
   cfg.addrs.len = 1;
   cfg.muxer = MUXER_TYPE_MPLEX;
-  cfg.transport = TRANSPORT_TYPE_TCP;
+  cfg.transports = TRANSPORT_TCP;
 
   LibP2PCtx *node = await_create(&cfg, "node");
   if (!node)

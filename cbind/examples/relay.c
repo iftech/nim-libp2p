@@ -78,7 +78,7 @@ static LibP2PCtx *createNode(const char *addr, const char *label, bool client) {
   cfg.addrs.data = &slot;
   cfg.addrs.len = 1;
   cfg.muxer = MUXER_TYPE_MPLEX;
-  cfg.transport = TRANSPORT_TYPE_TCP;
+  cfg.transports = TRANSPORT_TCP;
   cfg.circuitRelay = !client;
   cfg.circuitRelayClient = client;
   return await_create(&cfg, label);

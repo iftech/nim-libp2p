@@ -225,6 +225,7 @@ task test, "Run the config unit tests, the C FFI tests and the examples":
   let b = setupCBuild()
   b.buildAndRunC("tests/ffi_contract.c")
   b.buildAndRunC("tests/release_resets.c")
+  b.buildAndRunC("tests/mixed_transports.c")
   setupCBuild(OverflowTestCapacity, "../build/overflow").buildAndRunC(
     "tests/event_overflow.c"
   )
