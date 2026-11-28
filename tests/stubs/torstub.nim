@@ -108,20 +108,18 @@ proc start*(self: TorServerStub, address: TransportAddress) {.async.} =
         let n = 4 + 2 # +2 bytes for the port
         msg = newSeq[byte](n)
         await connSrc.readExactly(addr msg[0], n)
-        var ip: array[4, byte]
+        var ip = IpAddress(family: IPv4)
         for i, e in msg[0 ..^ 3]:
-          ip[i] = e
-        $(IpAddress(family: IPv4, address_v4: ip)) & ":" &
-          $(Port(fromBytesBE(uint16, msg[^2 ..^ 1])))
+          ip.address_v4[i] = e
+        $ip & ":" & $(Port(fromBytesBE(uint16, msg[^2 ..^ 1])))
       of Socks5AddressType.IPv6.byte:
         let n = 16 + 2 # +2 bytes for the port
         msg = newSeq[byte](n) # +2 bytes for the port
         await connSrc.readExactly(addr msg[0], n)
-        var ip: array[16, byte]
+        var ip = IpAddress(family: IPv6)
         for i, e in msg[0 ..^ 3]:
-          ip[i] = e
-        $(IpAddress(family: IPv6, address_v6: ip)) & ":" &
-          $(Port(fromBytesBE(uint16, msg[^2 ..^ 1])))
+          ip.address_v6[i] = e
+        $ip & ":" & $(Port(fromBytesBE(uint16, msg[^2 ..^ 1])))
       of Socks5AddressType.FQDN.byte:
         await connSrc.readExactly(addr msg[0], 1)
         let n = int(uint8.fromBytes(msg[0 .. 0])) + 2 # +2 bytes for the port
