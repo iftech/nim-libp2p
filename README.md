@@ -101,50 +101,58 @@ List of packages modules implemented in nim-libp2p:
 | Name | Description |
 | ---- | ----------- |
 | **Libp2p** | |
-| [libp2p](nim-libp2p/libp2p/switch.nim) | The core Switch orchestrating transports, connections, and protocols |
-| [builders](nim-libp2p/libp2p/builders.nim) | SwitchBuilder fluent API for configuring and instantiating nodes |
-| [connmanager](nim-libp2p/libp2p/connmanager.nim) | Connection manager |
-| [identify / push identify](nim-libp2p/libp2p/protocols/identify.nim) | [Identify](https://libp2p.io/docs/protocols/#identify) protocol |
-| [ping](nim-libp2p/libp2p/protocols/ping.nim) | [Ping](https://libp2p.io/docs/protocols/#ping) protocol |
-| [rendezvous](nim-libp2p/libp2p/protocols/rendezvous.nim) | [Rendezvous](https://github.com/libp2p/specs/blob/master/rendezvous/README.md) peer discovery protocol |
+| [libp2p](libp2p/switch.nim) | The core Switch orchestrating transports, connections, and protocols |
+| [builders](libp2p/builders.nim) | SwitchBuilder fluent API for configuring and instantiating nodes |
+| [connmanager](libp2p/connmanager.nim) | Connection manager |
+| [identify / push identify](libp2p/protocols/identify.nim) | [Identify](https://libp2p.io/docs/protocols/#identify) protocol |
+| [ping](libp2p/protocols/ping.nim) | [Ping](https://libp2p.io/docs/protocols/#ping) protocol |
 | **Transports** | |
-| [tcp](nim-libp2p/libp2p/transports/tcptransport.nim) | TCP transport |
-| [ws](nim-libp2p/libp2p/transports/wstransport.nim) | WebSocket & WebSocket Secure transport |
-| [quic](nim-libp2p/libp2p/transports/quictransport.nim) | QUIC transport |
-| [tor](nim-libp2p/libp2p/transports/tortransport.nim) | Tor transport |
-| [memory](nim-libp2p/libp2p/transports/memorytransport.nim) | In-memory transport for testing |
+| [tcp](libp2p/transports/tcptransport.nim) | TCP transport |
+| [ws](libp2p/transports/wstransport.nim) | WebSocket & WebSocket Secure transport |
+| [quic](libp2p/transports/quictransport.nim) | QUIC transport |
+| [tor](libp2p/transports/tortransport.nim) | Tor transport |
+| [memory](libp2p/transports/memorytransport.nim) | In-memory transport for testing |
 | **Secure Channels** | |
-| [noise](nim-libp2p/libp2p/protocols/secure/noise.nim) | [Noise](https://libp2p.io/docs/noise/) secure channel |
-| [plaintext](nim-libp2p/libp2p/protocols/secure/plaintext.nim) | Plain text for development purposes |
+| [noise](libp2p/protocols/secure/noise.nim) | [Noise](https://libp2p.io/docs/noise/) secure channel |
+| [plaintext](libp2p/protocols/secure/plaintext.nim) | Plain text for development purposes |
 | **Stream Multiplexers** | |
-| [mplex](nim-libp2p/libp2p/muxers/mplex/mplex.nim) | [MPlex](https://github.com/libp2p/specs/tree/master/mplex) multiplexer |
-| [yamux](nim-libp2p/libp2p/muxers/yamux/yamux.nim) | [Yamux](https://github.com/libp2p/specs/tree/master/yamux) multiplexer |
+| [mplex](libp2p/muxers/mplex/mplex.nim) | [MPlex](https://github.com/libp2p/specs/tree/master/mplex) multiplexer |
+| [yamux](libp2p/muxers/yamux/yamux.nim) | [Yamux](https://github.com/libp2p/specs/tree/master/yamux) multiplexer |
 | **Data Types** | |
-| [peer-id](nim-libp2p/libp2p/peerid.nim) | [Cryptographic peer identifiers](https://libp2p.io/docs/peers/#peer-id) |
-| [peer-store](nim-libp2p/libp2p/peerstore.nim) | [Address book of known peers](https://libp2p.io/docs/peers/#peer-store) |
-| [multiaddress](nim-libp2p/libp2p/multiaddress.nim) | [Composable network addresses](https://github.com/multiformats/multiaddr) |
-| [signed-envelope](nim-libp2p/libp2p/signed_envelope.nim) | [Signed generic data container](https://github.com/libp2p/specs/blob/master/RFC/0002-signed-envelopes.md) |
-| [routing-record](nim-libp2p/libp2p/routing_record.nim) | [Signed peer dialing information](https://github.com/libp2p/specs/blob/master/RFC/0003-routing-records.md) |
-| [discovery manager](nim-libp2p/libp2p/discovery/discoverymngr.nim) | Discovery manager |
+| [peer-id](libp2p/peerid.nim) | [Cryptographic peer identifiers](https://libp2p.io/docs/peers/#peer-id) |
+| [peer-info](libp2p/peerinfo.nim) | Local peer identity, listen and advertised addresses, and supported protocols |
+| [peer-store](libp2p/peerstore.nim) | [Address book of known peers](https://libp2p.io/docs/peers/#peer-store) |
+| [multiaddress](libp2p/multiaddress.nim) | [Composable network addresses](https://github.com/multiformats/multiaddr) |
+| [signed-envelope](libp2p/signed_envelope.nim) | [Signed generic data container](https://github.com/libp2p/specs/blob/master/RFC/0002-signed-envelopes.md) |
+| [routing-record](libp2p/routing_record.nim) | [Signed peer dialing information](https://github.com/libp2p/specs/blob/master/RFC/0003-routing-records.md) |
+| [extended-peer-record](libp2p/extended_peer_record.nim) | Peer addresses and advertised services in a signable record |
 | **Connectivity** | |
-| [autonat](nim-libp2p/libp2p/protocols/connectivity/autonat/service.nim) | [AutoNAT v1](https://github.com/libp2p/specs/blob/master/autonat/README.md) - automatic NAT detection |
-| [autonat-v2](nim-libp2p/libp2p/protocols/connectivity/autonatv2/service.nim) | [AutoNAT v2](https://github.com/libp2p/specs/blob/master/autonat/autonat-v2.md) - improved NAT detection |
-| [relay](nim-libp2p/libp2p/protocols/connectivity/relay/relay.nim) | [Circuit Relay v2](https://libp2p.io/docs/circuit-relay/) for NAT traversal |
-| [dcutr](nim-libp2p/libp2p/protocols/connectivity/dcutr/core.nim) | [Direct Connection Upgrade through Relay](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md) (hole punching) |
-| [hole-punching service](nim-libp2p/libp2p/services/hpservice.nim) | Hole punching service coordinating AutoNAT, Relay, and DCUTR |
-| [auto-relay service](nim-libp2p/libp2p/services/autorelayservice.nim) | Automatic relay node discovery and management |
+| [autonat](libp2p/protocols/connectivity/autonat/service.nim) | [AutoNAT v1](https://github.com/libp2p/specs/blob/master/autonat/README.md) - automatic NAT detection |
+| [autonat-v2](libp2p/protocols/connectivity/autonatv2/service.nim) | [AutoNAT v2](https://github.com/libp2p/specs/blob/master/autonat/autonat-v2.md) - improved NAT detection |
+| [relay](libp2p/protocols/connectivity/relay/relay.nim) | [Circuit Relay v2](https://libp2p.io/docs/circuit-relay/) for NAT traversal |
+| [dcutr](libp2p/protocols/connectivity/dcutr/core.nim) | [Direct Connection Upgrade through Relay](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md) (hole punching) |
+| [hole-punching service](libp2p/services/hpservice.nim) | Hole punching service coordinating AutoNAT, Relay, and DCUTR |
+| [auto-relay service](libp2p/services/autorelayservice.nim) | Automatic relay node discovery and management |
+| [NAT port mapping service](libp2p/services/natservice.nim) | Maps listening ports on a NAT gateway using PCP, NAT-PMP, or UPnP IGD |
 | **Utilities** | |
-| [crypto](nim-libp2p/libp2p/crypto/crypto.nim) | Cryptographic backend (RSA, Ed25519, Secp256k1, ECDSA) |
-| [crypto-secp256k1](nim-libp2p/libp2p/crypto/secp.nim) | Secp256k1 elliptic curve |
-| [multistream-select](nim-libp2p/libp2p/multistream.nim) | [Protocol negotiation](https://github.com/multiformats/multistream-select) |
-| [autotls](nim-libp2p/libp2p/autotls/service.nim) | [Automatic TLS](https://github.com/libp2p/specs/blob/master/tls/autotls-client.md) certificate provisioning via ACME |
-| [nameresolving](nim-libp2p/libp2p/nameresolving/dnsresolver.nim) | DNS name resolver for multiaddresses |
+| [crypto](libp2p/crypto/crypto.nim) | Cryptographic backend (RSA, Ed25519, Secp256k1, ECDSA) |
+| [crypto-secp256k1](libp2p/crypto/secp.nim) | Secp256k1 elliptic curve |
+| [multistream-select](libp2p/multistream.nim) | [Protocol negotiation](https://github.com/multiformats/multistream-select) |
+| [autotls](libp2p/autotls/service.nim) | [Automatic TLS](https://github.com/libp2p/specs/blob/master/tls/autotls-client.md) certificate provisioning via ACME |
+| [nameresolving](libp2p/nameresolving/dnsresolver.nim) | DNS name resolver for multiaddresses |
 | **Pubsub** | |
-| [pubsub](nim-libp2p/libp2p/protocols/pubsub/pubsub.nim) | Pub-Sub generic interface |
-| [floodsub](nim-libp2p/libp2p/protocols/pubsub/floodsub.nim) | FloodSub implementation |
-| [gossipsub](nim-libp2p/libp2p/protocols/pubsub/gossipsub.nim) | [GossipSub](https://github.com/libp2p/specs/tree/master/pubsub) implementation |
+| [pubsub](libp2p/protocols/pubsub/pubsub.nim) | Pub-Sub generic interface |
+| [floodsub](libp2p/protocols/pubsub/floodsub.nim) | FloodSub implementation |
+| [gossipsub](libp2p/protocols/pubsub/gossipsub.nim) | [GossipSub](https://github.com/libp2p/specs/tree/master/pubsub) implementation with optional Peer Exchange to learn about additional peers for a topic |
+| **Peer Discovery** | |
+| [mDNS](libp2p/services/mdns.nim) | Discovers peers on the local network using multicast DNS. Enable it with `SwitchBuilder.withMdns`. |
+| [rendezvous](libp2p/protocols/rendezvous.nim) | Registers and finds peers by namespace through a [Rendezvous](https://github.com/libp2p/specs/blob/master/rendezvous/README.md) server. |
+| [service discovery](libp2p/protocols/service_discovery.nim) | Advertises services and discovers peers offering them using Kademlia. |
+| **Bootstrapping** | |
+| [configured seed peers](libp2p/builders.nim) | Supply known peer IDs and addresses through `withKademlia(bootstrapNodes = ...)` to seed the DHT routing table |
+| [DNSADDR resolution](libp2p/nameresolving/nameresolver.nim) | Resolves `/dnsaddr` multiaddresses into peer addresses published in DNS TXT records |
 | **DHT** | |
-| [kademlia](nim-libp2p/libp2p/protocols/kademlia.nim) | [Kademlia DHT](https://github.com/libp2p/specs/tree/master/kad-dht) for peer/value discovery |
-| [kademlia-discovery](nim-libp2p/libp2p/protocols/kad_disco.nim) | Kademlia-based peer discovery |
+| [kademlia](libp2p/protocols/kademlia.nim) | [Kademlia DHT](https://github.com/libp2p/specs/tree/master/kad-dht) for peer routing and value lookups |
+| [service discovery](libp2p/protocols/service_discovery.nim) | Uses Kademlia to locate service advertisements and maintains per-service routing tables |
 | **Performance** | |
-| [perf](nim-libp2p/libp2p/protocols/perf/core.nim) | [Perf](https://github.com/libp2p/specs/blob/master/perf/perf.md) protocol for benchmarking libp2p nodes |
+| [perf](libp2p/protocols/perf/core.nim) | [Perf](https://github.com/libp2p/specs/blob/master/perf/perf.md) protocol for benchmarking libp2p nodes |
