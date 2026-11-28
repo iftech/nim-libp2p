@@ -153,5 +153,6 @@ List of packages modules implemented in nim-libp2p:
 | [DNSADDR resolution](libp2p/nameresolving/nameresolver.nim) | Resolves `/dnsaddr` multiaddresses into peer addresses published in DNS TXT records |
 | **DHT** | |
 | [kademlia](libp2p/protocols/kademlia.nim) | [Kademlia DHT](https://github.com/libp2p/specs/tree/master/kad-dht) for peer routing and value lookups |
+| [service discovery](libp2p/protocols/service_discovery.nim) | Uses Kademlia to locate service advertisements and maintains per-service routing tables |
 | **Performance** | |
 | [perf](libp2p/protocols/perf/core.nim) | [Perf](https://github.com/libp2p/specs/blob/master/perf/perf.md) protocol for benchmarking libp2p nodes |
