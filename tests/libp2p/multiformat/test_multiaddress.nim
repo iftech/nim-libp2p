@@ -5,7 +5,7 @@
 
 import std/[net, strutils], stew/byteutils, chronos
 import protobuf_serialization, protobuf_serialization/pkg/results
-import ../../../libp2p/[ip_address, multicodec, multiaddress, peerid]
+import ../../../libp2p/[multicodec, multiaddress, peerid]
 import ../../tools/[unittest, multiaddress]
 
 {.push raises: [].}
@@ -405,16 +405,14 @@ suite "MultiAddress test suite":
       MultiAddress.init(multiCodec("sctp"), -1).isErr()
 
   test "MultiAddress protoAddress(fixed) test":
-    var
-      address_v4: Ipv4Address
-      address_v6: Ipv6Address
     let
       onionMa = MultiAddress.init("/onion/timaq4ygg2iegci7:1234/http").get()
       onionPart = onionMa.getPart(multiCodec("onion")).get()
       onionArg = onionPart.protoAddress().get()
     check:
-      MultiAddress.init("/ip4/0.0.0.0").get().protoAddress().get() == address_v4
-      MultiAddress.init("/ip6/::0").get().protoAddress().get() == address_v6
+      MultiAddress.init("/ip4/0.0.0.0").get().protoAddress().get() == [0'u8, 0, 0, 0]
+      MultiAddress.init("/ip6/::0").get().protoAddress().get() ==
+        [0'u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
       $onionMa == "/onion/timaq4ygg2iegci7:1234/http"
       onionMa.protocols().get() == @[multiCodec("onion"), multiCodec("http")]
       len(onionMa).get() == 2

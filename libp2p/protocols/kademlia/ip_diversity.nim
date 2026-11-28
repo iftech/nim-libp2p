@@ -6,15 +6,15 @@
 
 import std/[sequtils, net, sets]
 import results
-import ../../[peerid, peerstore, multiaddress, ip_address, wire]
+import ../../[peerid, peerstore, multiaddress, wire]
 import ./[types, routing_table]
 
 {.push raises: [].}
 
 type
   PeerIps = object
-    ipv4s: seq[Ipv4Address]
-    ipv6s: seq[Ipv6Address]
+    ipv4s: seq[IpAddress]
+    ipv6s: seq[IpAddress]
 
   DiversityPeer = object
     ips: PeerIps
@@ -24,11 +24,22 @@ type
     table: int
     bucket: int
 
-func ipsOf(peer: DiversityPeer, sameFamilyAs: Ipv4Address): seq[Ipv4Address] =
-  peer.ips.ipv4s
+func subnetOf(ip: IpAddress): IpAddress =
+  var subnet = ip
+  case ip.family
+  of IpAddressFamily.IPv4:
+    subnet.address_v4[3] = 0
+  of IpAddressFamily.IPv6:
+    for i in 8 ..< 16:
+      subnet.address_v6[i] = 0
+  return subnet
 
-func ipsOf(peer: DiversityPeer, sameFamilyAs: Ipv6Address): seq[Ipv6Address] =
-  peer.ips.ipv6s
+func ipsOf(peer: DiversityPeer, ip: IpAddress): seq[IpAddress] =
+  case ip.family
+  of IpAddressFamily.IPv4:
+    return peer.ips.ipv4s
+  of IpAddressFamily.IPv6:
+    return peer.ips.ipv6s
 
 func countPeer(c: var GroupCount, sameBucket: bool) =
   c.table.inc
@@ -36,13 +47,13 @@ func countPeer(c: var GroupCount, sameBucket: bool) =
     c.bucket.inc
 
 func within(c: GroupCount, cap: DiversityCap): bool =
-  c.table < cap.table and c.bucket < cap.bucket
+  return c.table < cap.table and c.bucket < cap.bucket
 
 func uniquePublicIps(addrs: openArray[MultiAddress]): PeerIps =
   # Only a literal public IP has a prefix to count; a relay or DNS address has none.
   var peerIps: PeerIps
-  var ipv4s: HashSet[Ipv4Address]
-  var ipv6s: HashSet[Ipv6Address]
+  var ipv4s: HashSet[array[4, byte]]
+  var ipv6s: HashSet[array[16, byte]]
   for ma in addrs:
     if not ma.isPublicMA():
       continue
@@ -51,10 +62,10 @@ func uniquePublicIps(addrs: openArray[MultiAddress]): PeerIps =
     case ip.family
     of IpAddressFamily.IPv4:
       if not ipv4s.containsOrIncl(ip.address_v4):
-        peerIps.ipv4s.add(ip.address_v4)
+        peerIps.ipv4s.add(ip)
     of IpAddressFamily.IPv6:
       if not ipv6s.containsOrIncl(ip.address_v6):
-        peerIps.ipv6s.add(ip.address_v6)
+        peerIps.ipv6s.add(ip)
   return peerIps
 
 proc diversityPeer(
@@ -94,8 +105,10 @@ proc diversityPeers(
 
   peers
 
-func admitsIp[A](
-    candidateIp: A, others: openArray[DiversityPeer], ipCap, subnetCap: DiversityCap
+func admitsIp(
+    candidateIp: IpAddress,
+    others: openArray[DiversityPeer],
+    ipCap, subnetCap: DiversityCap,
 ): bool =
   ## Counts peers, not addresses: many addresses of one group fill one slot.
   let candidateSubnet = candidateIp.subnetOf()
@@ -108,7 +121,7 @@ func admitsIp[A](
     if ips.anyIt(it.subnetOf() == candidateSubnet):
       subnet.countPeer(other.sameBucket)
 
-  exact.within(ipCap) and subnet.within(subnetCap)
+  return exact.within(ipCap) and subnet.within(subnetCap)
 
 proc hasIpDiversity*(
     addressBook: AddressBook,

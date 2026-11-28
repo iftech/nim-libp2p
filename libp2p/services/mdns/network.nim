@@ -9,7 +9,7 @@
 import std/[os, sequtils]
 import chronos, chronicles
 import chronos/transports/osnet
-import ../../[address_manager, ip_address, multiaddress, results]
+import ../../[address_manager, multiaddress, results]
 
 import ./socketoptions
 
@@ -23,6 +23,9 @@ const
   MdnsBindAddress6 = initTAddress("[::]:5353")
 
 type
+  Ipv4Address = array[4, byte]
+  Ipv6Address = array[16, byte]
+
   MdnsLocalAddress = object
     index: uint32
     address: InterfaceAddress

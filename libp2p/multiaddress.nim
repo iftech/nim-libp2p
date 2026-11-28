@@ -10,7 +10,6 @@ import ./results
 import std/[nativesockets, net, hashes, unicode]
 import tables, strformat, strutils, sets
 import
-  ip_address,
   multicodec,
   multibase,
   transcoder,
@@ -107,16 +106,16 @@ proc ip4StB(s: string, vb: var VBuffer): bool =
 
 proc ip4BtS(vb: var VBuffer, s: var string): bool =
   ## IPv4 bufferToString() implementation.
-  var ip: Ipv4Address
-  if vb.readArray(ip) == ip.len:
-    s = $ip.toIpAddress()
+  var ip = IpAddress(family: IpAddressFamily.IPv4)
+  if vb.readArray(ip.address_v4) == 4:
+    s = $ip
     return true
   false
 
 proc ip4VB(vb: var VBuffer): bool =
   ## IPv4 validateBuffer() implementation.
-  var ip: Ipv4Address
-  vb.readArray(ip) == ip.len
+  var ip = IpAddress(family: IpAddressFamily.IPv4)
+  vb.readArray(ip.address_v4) == 4
 
 proc ip6StB(s: string, vb: var VBuffer): bool =
   ## IPv6 stringToBuffer() implementation.
@@ -131,16 +130,16 @@ proc ip6StB(s: string, vb: var VBuffer): bool =
 
 proc ip6BtS(vb: var VBuffer, s: var string): bool =
   ## IPv6 bufferToString() implementation.
-  var ip: Ipv6Address
-  if vb.readArray(ip) == ip.len:
-    s = $ip.toIpAddress()
+  var ip = IpAddress(family: IpAddressFamily.IPv6)
+  if vb.readArray(ip.address_v6) == 16:
+    s = $ip
     return true
   false
 
 proc ip6VB(vb: var VBuffer): bool =
   ## IPv6 validateBuffer() implementation.
-  var ip: Ipv6Address
-  vb.readArray(ip) == ip.len
+  var ip = IpAddress(family: IpAddressFamily.IPv6)
+  vb.readArray(ip.address_v6) == 16
 
 template pathStringToBuffer(s: string, vb: var VBuffer): bool =
   if len(s) > 0:
@@ -1293,15 +1292,15 @@ proc getIp*(ma: MultiAddress): Opt[IpAddress] =
 
     if proto.kind == Fixed:
       if proto.mcodec == multiCodec("ip4"):
-        var addrV4: Ipv4Address
-        if cursor.readArray(addrV4) == addrV4.len:
-          return Opt.some(addrV4.toIpAddress())
+        var ip = IpAddress(family: IpAddressFamily.IPv4)
+        if cursor.readArray(ip.address_v4) == 4:
+          return Opt.some(ip)
         else:
           return Opt.none(IpAddress)
       elif proto.mcodec == multiCodec("ip6"):
-        var addrV6: Ipv6Address
-        if cursor.readArray(addrV6) == addrV6.len:
-          return Opt.some(addrV6.toIpAddress())
+        var ip = IpAddress(family: IpAddressFamily.IPv6)
+        if cursor.readArray(ip.address_v6) == 16:
+          return Opt.some(ip)
         else:
           return Opt.none(IpAddress)
       else:
